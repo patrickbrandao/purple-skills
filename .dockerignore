@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+**/dist
+**/dist-web
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+coverage
+docs
+tasks
+sync.sh
+.DS_Store
+**/.DS_Store

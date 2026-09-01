@@ -1,0 +1,38 @@
+{
+  "name": "purple-skills",
+  "version": "1.0.0-beta.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Catálogo open-source de skills para agentes de IA, com site público, painel admin e servidores MCP.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build -w @purple-skills/shared && npm run build -w @purple-skills/db && npm run build -w @purple-skills/site && npm run build -w @purple-skills/admin && npm run build -w @purple-skills/mcp-public && npm run build -w @purple-skills/mcp-admin",
+    "typecheck": "npm run build:packages && npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "npm run typecheck",
+    "migrate": "npm run migrate -w @purple-skills/db",
+    "seed": "npm run seed -w @purple-skills/db",
+    "dev:site": "npm run dev -w @purple-skills/site",
+    "dev:admin": "npm run dev -w @purple-skills/admin",
+    "dev:mcp-public": "npm run dev -w @purple-skills/mcp-public",
+    "dev:mcp-admin": "npm run dev -w @purple-skills/mcp-admin",
+    "build:packages": "npm run build -w @purple-skills/shared && npm run build -w @purple-skills/db"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

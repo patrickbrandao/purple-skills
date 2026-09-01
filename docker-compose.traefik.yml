@@ -1,0 +1,58 @@
+# Override para publicar os serviços atrás do Traefik, usando os FQDNs do .env.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
+#
+# Pressupõe um Traefik já rodando, conectado à rede externa `traefik`, com um
+# entrypoint `websecure` e um certresolver chamado `le` (ajuste se necessário).
+
+services:
+  site:
+    ports: !reset []
+    networks: [internal, traefik]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik
+      traefik.http.routers.purple-site.rule: Host(`${SITE_FQDN}`)
+      traefik.http.routers.purple-site.entrypoints: websecure
+      traefik.http.routers.purple-site.tls.certresolver: le
+      traefik.http.services.purple-site.loadbalancer.server.port: '3000'
+
+  admin:
+    ports: !reset []
+    networks: [internal, traefik]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik
+      traefik.http.routers.purple-admin.rule: Host(`${ADMIN_FQDN}`)
+      traefik.http.routers.purple-admin.entrypoints: websecure
+      traefik.http.routers.purple-admin.tls.certresolver: le
+      traefik.http.services.purple-admin.loadbalancer.server.port: '3001'
+
+  mcp-public:
+    ports: !reset []
+    networks: [internal, traefik]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik
+      traefik.http.routers.purple-mcp.rule: Host(`${MCP_PUBLIC_FQDN}`)
+      traefik.http.routers.purple-mcp.entrypoints: websecure
+      traefik.http.routers.purple-mcp.tls.certresolver: le
+      traefik.http.services.purple-mcp.loadbalancer.server.port: '3002'
+
+  mcp-admin:
+    ports: !reset []
+    networks: [internal, traefik]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik
+      traefik.http.routers.purple-mcp-admin.rule: Host(`${MCP_ADMIN_FQDN}`)
+      traefik.http.routers.purple-mcp-admin.entrypoints: websecure
+      traefik.http.routers.purple-mcp-admin.tls.certresolver: le
+      traefik.http.services.purple-mcp-admin.loadbalancer.server.port: '3003'
+
+  postgres:
+    ports: !reset []
+
+networks:
+  traefik:
+    external: true
