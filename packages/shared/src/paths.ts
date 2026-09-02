@@ -105,3 +105,40 @@ export function isTextualMime(mimeType: string): boolean {
     mimeType === 'image/svg+xml'
   );
 }
+
+/**
+ * Tipos que o navegador executa quando renderizados na origem do site.
+ * Arquivos anexos a uma skill são conteúdo enviado por terceiros: servi-los
+ * com esses `Content-Type` equivale a hospedar um script na própria origem.
+ */
+const EXECUTABLE_INLINE_MIME = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'application/xml',
+  'text/xml',
+]);
+
+export function isExecutableInlineMime(mimeType: string): boolean {
+  return EXECUTABLE_INLINE_MIME.has(mimeType);
+}
+
+/**
+ * `Content-Type` seguro para entregar um arquivo de skill: tipos executáveis
+ * viram `text/plain`, o resto é preservado.
+ */
+export function safeContentType(mimeType: string, isText: boolean): string {
+  if (isExecutableInlineMime(mimeType)) return 'text/plain; charset=utf-8';
+  return isText ? `${mimeType}; charset=utf-8` : mimeType;
+}
+
+/**
+ * Monta um `Content-Disposition` com o nome saneado. Aspas e caracteres fora
+ * do ASCII imprimível quebrariam o header; o `filename*` (RFC 5987) carrega o
+ * nome original para os navegadores que o entendem.
+ */
+export function contentDisposition(relativePath: string, type: 'attachment' | 'inline'): string {
+  const raw = relativePath.split('/').pop() || 'arquivo';
+  const ascii = raw.replace(/[^\w.\-]+/g, '_') || 'arquivo';
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(raw)}`;
+}

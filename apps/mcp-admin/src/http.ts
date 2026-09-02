@@ -1,17 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import type { RequestHandler } from 'express';
+import type { ErrorRequestHandler, RequestHandler } from 'express';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { healthCheck } from '@purple-skills/db';
+import { readIntEnv, trustProxySetting } from '@purple-skills/shared';
 
 export type McpHttpOptions = {
   /** Fábrica do servidor MCP — chamada uma vez por sessão/requisição. */
   createServer: () => McpServer;
   /** Middleware de autenticação aplicado às rotas MCP. */
   auth: RequestHandler;
+  /**
+   * Tamanho máximo do corpo JSON aceito nas rotas POST.
+   *
+   * O parser roda **depois** de `auth`, para que um cliente sem credencial não
+   * consiga fazer o processo bufferizar e desserializar megabytes. O teto é por
+   * serviço: o MCP público troca argumentos de poucos bytes, enquanto o admin
+   * recebe o `.zip` em base64 do `set_files_bulk`.
+   */
+  jsonLimit: string;
   /** Metadados expostos em `GET /`. */
   info: {
     name: string;
@@ -37,13 +47,38 @@ const jsonRpcError = (code: number, message: string) => ({
  * - `POST /mcp/stateless`  — Streamable HTTP **stateless** (um servidor por request);
  * - `GET /sse` + `POST /messages` — transporte SSE legado.
  */
+/**
+ * Sessões vivem em memória e só saíam do mapa quando o cliente fechava a
+ * conexão corretamente. Um cliente que inicializa e some deixava a entrada
+ * para sempre — no MCP público, que roda sem autenticação por padrão, isso é
+ * exaustão de memória trivial de provocar. Daí o TTL e o teto abaixo.
+ */
+const MAX_SESSIONS = readIntEnv('MCP_MAX_SESSIONS', 500);
+const SESSION_TTL_MS = readIntEnv('MCP_SESSION_TTL_MS', 30 * 60_000, { min: 1000 });
+const SESSION_SWEEP_MS = readIntEnv('MCP_SESSION_SWEEP_MS', 60_000, { min: 1000 });
+
+type TrackedStreamable = { transport: StreamableHTTPServerTransport; lastSeen: number };
+
 export function createHttpApp(options: McpHttpOptions): Express {
   const app = express();
-  const streamableSessions = new Map<string, StreamableHTTPServerTransport>();
+  const streamableSessions = new Map<string, TrackedStreamable>();
   const sseSessions = new Map<string, SSEServerTransport>();
 
+  // Varredura periódica: fecha o que passou do TTL sem atividade.
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [id, tracked] of streamableSessions) {
+      if (now - tracked.lastSeen > SESSION_TTL_MS) {
+        streamableSessions.delete(id);
+        void tracked.transport.close().catch(() => undefined);
+      }
+    }
+  }, SESSION_SWEEP_MS);
+  // Não segura o event loop no shutdown.
+  sweep.unref?.();
+
   app.disable('x-powered-by');
-  app.set('trust proxy', true);
+  app.set('trust proxy', trustProxySetting());
 
   app.use(
     cors({
@@ -53,7 +88,9 @@ export function createHttpApp(options: McpHttpOptions): Express {
       methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     }),
   );
-  app.use(express.json({ limit: '64mb' }));
+  // Registrado por rota, sempre DEPOIS de `options.auth`: ler o corpo antes de
+  // saber quem está chamando entrega memória de graça a qualquer anônimo.
+  const json = express.json({ limit: options.jsonLimit });
 
   app.get('/healthz', (_req, res) => {
     healthCheck()
@@ -74,13 +111,14 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
   // ------------------------------------------- Streamable HTTP com sessão ---
 
-  app.post('/mcp', options.auth, async (req, res) => {
+  app.post('/mcp', options.auth, json, async (req, res) => {
     try {
       const sessionId = req.header('mcp-session-id');
       const existing = sessionId ? streamableSessions.get(sessionId) : undefined;
 
       if (existing) {
-        await existing.handleRequest(req, res, req.body);
+        existing.lastSeen = Date.now();
+        await existing.transport.handleRequest(req, res, req.body);
         return;
       }
 
@@ -89,10 +127,15 @@ export function createHttpApp(options: McpHttpOptions): Express {
         return;
       }
 
+      if (streamableSessions.size >= MAX_SESSIONS) {
+        res.status(503).json(jsonRpcError(-32000, 'Limite de sessões atingido, tente mais tarde'));
+        return;
+      }
+
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
-          streamableSessions.set(id, transport);
+          streamableSessions.set(id, { transport, lastSeen: Date.now() });
         },
         onsessionclosed: (id) => {
           streamableSessions.delete(id);
@@ -114,14 +157,15 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
   const streamableSession: RequestHandler = async (req, res) => {
     const sessionId = req.header('mcp-session-id');
-    const transport = sessionId ? streamableSessions.get(sessionId) : undefined;
+    const tracked = sessionId ? streamableSessions.get(sessionId) : undefined;
 
-    if (!transport) {
+    if (!tracked) {
       res.status(404).json(jsonRpcError(-32001, 'Sessão desconhecida ou expirada'));
       return;
     }
 
-    await transport.handleRequest(req, res);
+    tracked.lastSeen = Date.now();
+    await tracked.transport.handleRequest(req, res);
   };
 
   app.get('/mcp', options.auth, streamableSession);
@@ -129,7 +173,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
   // ------------------------------------------------ Streamable HTTP stateless ---
 
-  app.post('/mcp/stateless', options.auth, async (req, res) => {
+  app.post('/mcp/stateless', options.auth, json, async (req, res) => {
     const server = options.createServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -153,6 +197,11 @@ export function createHttpApp(options: McpHttpOptions): Express {
   // ---------------------------------------------------------- SSE legado ---
 
   app.get('/sse', options.auth, async (_req, res) => {
+    if (sseSessions.size >= MAX_SESSIONS) {
+      res.status(503).json(jsonRpcError(-32000, 'Limite de sessões atingido, tente mais tarde'));
+      return;
+    }
+
     const transport = new SSEServerTransport('/messages', res);
     sseSessions.set(transport.sessionId, transport);
 
@@ -167,7 +216,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     await server.connect(transport);
   });
 
-  app.post('/messages', options.auth, async (req, res) => {
+  app.post('/messages', options.auth, json, async (req, res) => {
     const sessionId = String(req.query.sessionId ?? '');
     const transport = sseSessions.get(sessionId);
 
@@ -183,10 +232,37 @@ export function createHttpApp(options: McpHttpOptions): Express {
     res.status(404).json(jsonRpcError(-32601, `Rota não encontrada: ${req.path}`));
   });
 
+  // Sem este handler, um corpo malformado ou grande demais sai como HTML pelo
+  // tratamento padrão do Express — e o cliente MCP espera JSON-RPC.
+  const onError: ErrorRequestHandler = (err, _req, res, _next) => {
+    if (res.headersSent) return;
+
+    const status = Number((err as { status?: number })?.status);
+    const type = (err as { type?: string })?.type;
+
+    if (type === 'entity.parse.failed') {
+      res.status(400).json(jsonRpcError(-32700, 'Corpo JSON malformado'));
+      return;
+    }
+    if (type === 'entity.too.large') {
+      res.status(413).json(jsonRpcError(-32600, `Corpo maior que o limite de ${options.jsonLimit}`));
+      return;
+    }
+    if (status >= 400 && status < 500) {
+      res.status(status).json(jsonRpcError(-32600, 'Requisição inválida'));
+      return;
+    }
+
+    console.error('[mcp] erro não tratado:', err);
+    res.status(500).json(jsonRpcError(-32603, 'Erro interno do servidor'));
+  };
+  app.use(onError);
+
   /** Fecha todas as sessões abertas — usado no shutdown gracioso. */
   (app as Express & { closeSessions: () => Promise<void> }).closeSessions = async () => {
+    clearInterval(sweep);
     await Promise.allSettled([
-      ...[...streamableSessions.values()].map((transport) => transport.close()),
+      ...[...streamableSessions.values()].map((tracked) => tracked.transport.close()),
       ...[...sseSessions.values()].map((transport) => transport.close()),
     ]);
     streamableSessions.clear();

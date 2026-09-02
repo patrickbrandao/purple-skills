@@ -32,7 +32,13 @@ export function createMcpServer(): McpServer {
         includePrivate: z.boolean().describe('Inclui skills privadas (padrão true).').optional(),
         query: z.string().describe('Filtro por texto livre.').optional(),
         tag: z.string().describe('Filtro por tag.').optional(),
-        limit: z.number().int().min(1).max(200).optional(),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .describe('Máximo de resultados por página (padrão 50, teto 100).')
+          .optional(),
         offset: z.number().int().min(0).optional(),
       },
     },

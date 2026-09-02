@@ -2,7 +2,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDb, databaseUrl, waitForDatabase } from './client.js';
+import type pg from 'pg';
+import { createDb, databaseConfig, waitForDatabase } from './client.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -11,8 +12,10 @@ export function migrationsDir(): string {
   return join(here, '..', 'migrations');
 }
 
-export async function runMigrations(connectionString = databaseUrl()): Promise<string[]> {
-  const { pool } = createDb(connectionString);
+export async function runMigrations(
+  connection: string | pg.PoolConfig = databaseConfig(),
+): Promise<string[]> {
+  const { pool } = createDb(connection);
   const applied: string[] = [];
 
   try {

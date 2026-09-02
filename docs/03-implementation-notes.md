@@ -33,9 +33,12 @@ builder.
 - Consulta com `websearch_to_tsquery` (aceita `"frase exata"`, `-excluir`,
   `or`), com **fallback `ILIKE`** em nome/descrição/slug para termos parciais —
   a extensão `pg_trgm` e um índice GIN trigram tornam isso barato.
-- O trigger de reindexação **pula** updates que só mexem nos contadores
-  (`view_count`/`download_count` mudam sem tocar `updated_at`), evitando
-  recalcular o `tsvector` a cada acesso.
+- O trigger de reindexação **pula** updates que não alteram `name`,
+  `description` nem `search_vector` — o caso dos contadores —, evitando
+  recalcular o `tsvector` a cada acesso. Mudanças no `SKILL.md` reindexam
+  explicitamente pelo trigger de `files` (migration `0002`). O atalho original
+  se baseava em `updated_at`, mas `now()` é constante dentro da transação, o
+  que fazia a criação da skill indexar sem o corpo do SKILL.md.
 
 ## Contadores
 
@@ -83,9 +86,12 @@ ler antes), e o comportamento destrutivo fica visível na tela.
 
 - Cookie assinado com HMAC-SHA256, `httpOnly`, `SameSite=Lax`, TTL de 12h
   (configurável por `ADMIN_SESSION_TTL`). Sem session store, como pedido.
-- `ADMIN_SESSION_SECRET` é **opcional**: se ausente, é derivado da senha. O
-  serviço sobe sem configuração extra e trocar a senha invalida as sessões
-  antigas — que é o comportamento desejado.
+- `ADMIN_SESSION_SECRET` é **opcional**: se ausente, é derivado da senha com
+  **scrypt** (`N=2^15`), uma vez por processo. O serviço sobe sem configuração
+  extra e trocar a senha invalida as sessões antigas — que é o comportamento
+  desejado. A KDF lenta é o que impede que um cookie capturado vire um teste
+  offline barato da senha do painel; mesmo assim, em produção vale definir o
+  segredo explicitamente.
 - A flag `Secure` **acompanha o protocolo da requisição** (respeitando
   `X-Forwarded-Proto` via `trust proxy`) em vez de `NODE_ENV`. Fixá-la em
   produção quebraria qualquer deploy HTTP interno; `ADMIN_COOKIE_SECURE`
@@ -110,6 +116,56 @@ ler antes), e o comportamento destrutivo fica visível na tela.
 - `react-markdown` sem `rehype-raw`: HTML cru no `SKILL.md` não é renderizado,
   então conteúdo vindo do painel não injeta script.
 
+## Conexão com o banco
+
+O compose passa `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`, lidos
+nativamente pelo driver, em vez de montar uma `DATABASE_URL`. Motivo: numa URL,
+`/`, `?` e `#` na senha encerram a autoridade e quebram o parse, e `%XY` é
+percent-decodificado em silêncio — a senha que chega ao Postgres deixa de ser a
+configurada. Senha gerada aleatoriamente cai nisso com frequência.
+`DATABASE_URL` continua aceita (é o caminho para rodar fora do compose) e é
+validada no boot, com uma mensagem que explica o percent-encoding.
+
+## Configuração numérica
+
+Limites vindos do ambiente passam por `readIntEnv` (`packages/shared`), que
+trata vazio como ausente e **derruba o boot** quando o valor não é um inteiro na
+faixa. `Number('25MB')` é `NaN`, e como toda comparação com `NaN` é falsa, um
+sufixo distraído desligaria justamente a proteção que a variável configura — o
+teto de descompressão de zip, o teto de sessões MCP, o tamanho máximo de upload.
+Para um limite de segurança, falhar alto é melhor que relaxar em silêncio.
+
+O mesmo vale para strings: `readTextEnv` trata vazio como ausente, porque o
+compose repassa variáveis não preenchidas como string vazia e `??` só cobre
+`undefined`.
+
+## Ordem dos middlewares
+
+O parser JSON é montado **depois** da autenticação, não no topo do app:
+
+- MCP: `express.json` entra por rota, sempre após `options.auth`, com o teto
+  declarado por serviço (`jsonLimit`) — 1 MB no público, cujas ferramentas
+  trocam poucos bytes, e 48 MB no admin, que recebe o `.zip` em base64.
+- Painel: um parser de 4 KB só para `/api/login`, e o de 32 MB depois de
+  `requireAuth`.
+
+Ler megabytes antes de saber quem está chamando entrega memória de graça a
+qualquer anônimo — no MCP público, que roda aberto por padrão, isso bastava para
+derrubar o processo.
+
+Cada app tem um tratador de erros no fim da cadeia. Sem ele, o que os
+middlewares lançam (upload acima do limite, JSON malformado) escapa do
+`route()`/`guard()` e sai como HTML — numa API JSON, o cliente vê apenas
+"Erro 500" para o que é erro dele, com o status errado.
+
+## Slug e concorrência
+
+`resolveSlug` consulta os slugs ocupados e o INSERT vem depois, então duas
+criações simultâneas podem escolher o mesmo. A constraint `UNIQUE` do banco
+resolve o empate; o código traduz o `23505` resultante: com slug gerado a partir
+do nome, escolhe outro e tenta de novo (a intenção é "qualquer slug livre"); com
+slug pedido explicitamente, devolve 409.
+
 ## Portas
 
 | Serviço | Porta |
@@ -121,8 +177,11 @@ ler antes), e o comportamento destrutivo fica visível na tela.
 
 ## O que foi verificado
 
-- 78 testes unitários (Vitest) em `packages/shared` e nos handlers das duas
-  famílias de ferramentas MCP.
+- Testes unitários (Vitest, `npm test`) em `packages/shared` e nos handlers das
+  duas famílias de ferramentas MCP, com o banco mockado.
+- Verificação em runtime da ordem autenticação → parser nos servidores MCP:
+  POST anônimo com corpo grande é recusado com 401 antes de o corpo ser lido, e
+  corpo acima do teto responde 413 em JSON-RPC.
 - Smoke test manual contra o stack em Docker: os **três transportes** (
   Streamable HTTP com sessão, stateless e SSE legado) nos **dois** servidores
   MCP, CRUD completo pelo MCP admin, propagação de visibilidade para o site,

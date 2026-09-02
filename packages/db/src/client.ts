@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { readIntEnv } from '@purple-skills/shared';
 import * as schema from './schema.js';
 
 export type Database = ReturnType<typeof createDb>['db'];
@@ -9,16 +10,46 @@ pg.types.setTypeParser(20, (value) => Number(value));
 
 let cached: { pool: pg.Pool; db: ReturnType<typeof drizzle<typeof schema>> } | null = null;
 
-export function databaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * Parâmetros de conexão, a partir de `DATABASE_URL` **ou** das variáveis
+ * `PG*` do próprio driver.
+ *
+ * A URL é um formato traiçoeiro para senha: `/`, `?` e `#` encerram a
+ * autoridade e quebram o parse, e `%` seguido de dois hexadecimais é decodificado
+ * em silêncio (a senha que chega ao Postgres não é a configurada). Como a senha
+ * costuma ser gerada aleatoriamente, isso acontece com facilidade. `PGHOST`,
+ * `PGUSER`, `PGPASSWORD` e `PGDATABASE` não passam por nenhum parse — é o que o
+ * docker-compose usa. `DATABASE_URL` continua aceita e, quando presente, é
+ * validada aqui para falhar com uma mensagem clara em vez de um erro do driver.
+ */
+export function databaseConfig(env: NodeJS.ProcessEnv = process.env): pg.PoolConfig {
   const url = env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL não definida');
-  return url;
+
+  if (url) {
+    try {
+      new URL(url);
+    } catch {
+      throw new Error(
+        'DATABASE_URL inválida: percent-encode a senha (/ → %2F, ? → %3F, # → %23, % → %25) ' +
+          'ou use PGHOST/PGUSER/PGPASSWORD/PGDATABASE, que dispensam escape.',
+      );
+    }
+    return { connectionString: url };
+  }
+
+  // O driver lê PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE por conta própria.
+  if (env.PGHOST || env.PGUSER || env.PGPASSWORD || env.PGDATABASE) return {};
+
+  throw new Error('Defina DATABASE_URL ou PGHOST/PGUSER/PGPASSWORD/PGDATABASE');
 }
 
-export function createDb(connectionString: string = databaseUrl()) {
+export function createDb(connection: string | pg.PoolConfig = databaseConfig()) {
+  const base: pg.PoolConfig =
+    typeof connection === 'string' ? { connectionString: connection } : connection;
+
   const pool = new pg.Pool({
-    connectionString,
-    max: Number(process.env.DB_POOL_MAX ?? 10),
+    ...base,
+    max: readIntEnv('DB_POOL_MAX', 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   });

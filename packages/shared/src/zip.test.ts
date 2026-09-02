@@ -1,6 +1,13 @@
 import AdmZip from 'adm-zip';
 import { describe, expect, it } from 'vitest';
-import { extractZip, toExtractedFile, zipToBuffer } from './zip.js';
+import {
+  ZipError,
+  ZipFormatError,
+  ZipLimitError,
+  extractZip,
+  toExtractedFile,
+  zipToBuffer,
+} from './zip.js';
 
 function makeZip(entries: Record<string, Buffer | string>): Buffer {
   const zip = new AdmZip();
@@ -79,5 +86,61 @@ describe('toExtractedFile', () => {
     const file = toExtractedFile('notas.md', Buffer.from([0x61, 0x00, 0x62]));
     expect(file.textContent).toBeNull();
     expect(file.binaryContent).not.toBeNull();
+  });
+});
+
+describe('extractZip — limites de descompressão', () => {
+  it('recusa quando o conteúdo descomprimido passa do teto', () => {
+    // 4 MB de zeros comprimem para poucos KB: é o formato de uma zip bomb.
+    const bomb = makeZip({ 'SKILL.md': '# ok', 'bomba.bin': Buffer.alloc(4 * 1024 * 1024) });
+
+    expect(() => extractZip(bomb, { maxUncompressedBytes: 1024 * 1024 })).toThrow(ZipLimitError);
+  });
+
+  it('recusa quando há entradas demais', () => {
+    const entries: Record<string, string> = { 'SKILL.md': '# ok' };
+    for (let i = 0; i < 20; i += 1) entries[`f${i}.md`] = 'x';
+
+    expect(() => extractZip(makeZip(entries), { maxEntries: 5 })).toThrow(ZipLimitError);
+  });
+
+  it('deixa passar um .zip dentro dos limites', () => {
+    const files = extractZip(makeZip({ 'SKILL.md': '# ok', 'nota.md': 'oi' }), {
+      maxUncompressedBytes: 1024 * 1024,
+      maxEntries: 10,
+      stripSingleRootDir: false,
+    });
+
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['SKILL.md', 'nota.md']);
+  });
+
+  it('não estoura o teto somando entradas individualmente pequenas', () => {
+    const entries: Record<string, Buffer> = {};
+    for (let i = 0; i < 10; i += 1) entries[`p${i}.bin`] = Buffer.alloc(200 * 1024);
+
+    expect(() => extractZip(makeZip(entries), { maxUncompressedBytes: 1024 * 1024 })).toThrow(
+      ZipLimitError,
+    );
+  });
+});
+
+describe('extractZip — arquivo ilegível', () => {
+  it('recusa um arquivo que não é zip com erro tipado, não genérico', () => {
+    const lixo = Buffer.from('isto não é um zip, é um .txt renomeado', 'utf8');
+
+    expect(() => extractZip(lixo)).toThrow(ZipFormatError);
+    // A borda HTTP trata `ZipError` como 400; um Error solto viraria 500.
+    expect(() => extractZip(lixo)).toThrow(ZipError);
+  });
+
+  it('recusa um zip truncado', () => {
+    const completo = makeZip({ 'SKILL.md': '# ok' });
+    expect(() => extractZip(completo.subarray(0, completo.length - 12))).toThrow(ZipFormatError);
+  });
+
+  it('mantém ZipLimitError como subclasse de ZipError', () => {
+    const bomba = makeZip({ 'grande.bin': Buffer.alloc(2 * 1024 * 1024) });
+    expect(() => extractZip(bomba, { maxUncompressedBytes: 1024 })).toThrow(ZipLimitError);
+    expect(() => extractZip(bomba, { maxUncompressedBytes: 1024 })).toThrow(ZipError);
   });
 });

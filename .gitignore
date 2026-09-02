@@ -10,4 +10,3 @@ tasks/
 sync.sh
 run-builder.sh
 docker-compose-builder.yml
-package-lock.json

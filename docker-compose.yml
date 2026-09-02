@@ -6,12 +6,36 @@
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
 # externo via DATABASE_URL.
+#
+# As portas são publicadas só no loopback por padrão. O Docker escreve regras
+# de iptables diretamente e um bind em 0.0.0.0 contorna o UFW na maioria das
+# instalações Debian/Ubuntu — expor o Postgres e o painel assim, sem perceber,
+# é fácil demais. Para alcançar os serviços de outra máquina (um servidor de
+# testes remoto, por exemplo), defina BIND_ADDR=0.0.0.0 no .env, cientes de que
+# aí eles ficam acessíveis para quem chegar na rede.
 
+# O `.env` do compose serve para interpolar `${VAR}` NESTE arquivo; ele não
+# chega sozinho aos containers. Tudo o que a aplicação lê precisa estar listado
+# em `environment`, ou o ajuste do operador é ignorado em silêncio.
 x-app-env: &app-env
   NODE_ENV: production
-  DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-purple_skills}
+  # Campos separados em vez de DATABASE_URL: a senha não passa por parse de URL,
+  # então `/`, `?`, `#` e `%` funcionam sem percent-encoding.
+  PGHOST: postgres
+  PGPORT: '5432'
+  PGUSER: ${POSTGRES_USER:-postgres}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+  PGDATABASE: ${POSTGRES_DB:-purple_skills}
   SITE_BASE_URL: ${SITE_BASE_URL:-http://localhost:3000}
   SITE_NAME: ${SITE_NAME:-Purple Skills}
+  # Em quais proxies confiar para X-Forwarded-*. Vazio = loopback + faixas privadas.
+  TRUST_PROXY: ${TRUST_PROXY:-}
+  # Defesa contra zip bomb. Valor inválido derruba o boot (não vira "sem limite").
+  ZIP_MAX_UNCOMPRESSED_BYTES: ${ZIP_MAX_UNCOMPRESSED_BYTES:-26214400}
+  ZIP_MAX_ENTRIES: ${ZIP_MAX_ENTRIES:-2000}
+  # Sessões MCP mantidas em memória.
+  MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
+  MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}
 
 x-app-common: &app-common
   restart: unless-stopped
@@ -26,14 +50,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
       POSTGRES_DB: ${POSTGRES_DB:-purple_skills}
       # `trust` só valeria dentro do container; mantemos scram por padrão.
       POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256'
     volumes:
       - pgdata:/var/lib/postgresql
     ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      - '${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-purple_skills}']
       interval: 5s
@@ -81,9 +105,10 @@ services:
     environment:
       <<: *app-env
       PORT: 3000
+      SITE_TAGLINE: ${SITE_TAGLINE:-}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
     ports:
-      - '${SITE_PORT:-3000}:3000'
+      - '${BIND_ADDR:-127.0.0.1}:${SITE_PORT:-3000}:3000'
 
   admin:
     <<: *app-common
@@ -94,10 +119,18 @@ services:
     environment:
       <<: *app-env
       PORT: 3001
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?defina ADMIN_PASSWORD no .env}
+      # A senha é obrigatória, mas pode vir por arquivo (Docker secrets): quem
+      # valida é a aplicação, que aceita ADMIN_PASSWORD ou ADMIN_PASSWORD_FILE.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_PASSWORD_FILE: ${ADMIN_PASSWORD_FILE:-}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
+      ADMIN_SESSION_SECRET_FILE: ${ADMIN_SESSION_SECRET_FILE:-}
+      ADMIN_SESSION_TTL: ${ADMIN_SESSION_TTL:-}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
+      ADMIN_ALLOWED_ORIGINS: ${ADMIN_ALLOWED_ORIGINS:-}
+      ADMIN_MAX_UPLOAD_BYTES: ${ADMIN_MAX_UPLOAD_BYTES:-}
     ports:
-      - '${ADMIN_PORT:-3001}:3001'
+      - '${BIND_ADDR:-127.0.0.1}:${ADMIN_PORT:-3001}:3001'
 
   mcp-public:
     <<: *app-common
@@ -109,8 +142,9 @@ services:
       <<: *app-env
       PORT: 3002
       MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
+      MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
     ports:
-      - '${MCP_PUBLIC_PORT:-3002}:3002'
+      - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
 
   mcp-admin:
     <<: *app-common
@@ -121,9 +155,12 @@ services:
     environment:
       <<: *app-env
       PORT: 3003
-      MCP_ADMIN_TOKEN: ${MCP_ADMIN_TOKEN:?defina MCP_ADMIN_TOKEN no .env}
+      # Obrigatório, mas aceita a variante _FILE; a aplicação é quem valida.
+      MCP_ADMIN_TOKEN: ${MCP_ADMIN_TOKEN:-}
+      MCP_ADMIN_TOKEN_FILE: ${MCP_ADMIN_TOKEN_FILE:-}
+      MCP_MAX_ZIP_BASE64: ${MCP_MAX_ZIP_BASE64:-}
     ports:
-      - '${MCP_ADMIN_PORT:-3003}:3003'
+      - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
 
 volumes:
   pgdata:

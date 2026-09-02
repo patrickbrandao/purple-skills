@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import {
   AppError,
@@ -16,9 +16,16 @@ import {
   setFiles,
   setVisibility,
   stats,
-  updateSkill,
+  updateSkillWithContent,
 } from '@purple-skills/db';
-import { extractZip, normalizeRelativePath, skillMetaFromMarkdown } from '@purple-skills/shared';
+import {
+  ZipError,
+  contentDisposition,
+  extractZip,
+  normalizeRelativePath,
+  safeContentType,
+  skillMetaFromMarkdown,
+} from '@purple-skills/shared';
 import { checkPassword, clearSession, isAuthenticated, issueSession, requireAuth } from './auth.js';
 import { config } from './config.js';
 
@@ -39,8 +46,14 @@ function fail(res: Response, err: unknown) {
     res.status(err.status).json({ error: err.code, message: err.message });
     return;
   }
+  // ZIP ilegível ou acima de um limite é erro do cliente, não do servidor.
+  if (err instanceof ZipError) {
+    res.status(400).json({ error: 'bad_request', message: err.message });
+    return;
+  }
+  // A mensagem interna fica no log; o cliente recebe só o código.
   console.error('[admin] erro inesperado:', err);
-  res.status(500).json({ error: 'internal_error', message: (err as Error)?.message ?? 'Erro interno' });
+  res.status(500).json({ error: 'internal_error', message: 'Erro interno' });
 }
 
 const route =
@@ -59,6 +72,55 @@ api.get(
   }),
 );
 
+// ----------------------------------------------------------------- CSRF ---
+
+/**
+ * O painel é same-origin: uma escrita com `Origin` de outro site é CSRF.
+ *
+ * O cookie de sessão é `SameSite=Lax`, o que já barra o ataque nos navegadores
+ * atuais — mas as rotas de upload aceitam `multipart/form-data`, que não
+ * dispara preflight, então a única barreira hoje é o `Lax`. Esta checagem é a
+ * segunda camada, para o dia em que essa premissa mudar.
+ */
+api.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    next();
+    return;
+  }
+
+  const origin = req.get('origin');
+  // Ausente em clientes não-navegador (curl, scripts) — nada a verificar.
+  if (!origin) {
+    next();
+    return;
+  }
+
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    res.status(403).json({ error: 'forbidden', message: 'Origem inválida' });
+    return;
+  }
+
+  const allowed =
+    hostname === req.hostname ||
+    config.extraAllowedOrigins.some((entry) => {
+      try {
+        return new URL(entry).hostname === hostname;
+      } catch {
+        return false;
+      }
+    });
+
+  if (!allowed) {
+    res.status(403).json({ error: 'forbidden', message: 'Origem não permitida' });
+    return;
+  }
+
+  next();
+});
+
 // --------------------------------------------------------------- sessão ----
 
 api.get('/api/session', (req, res) => {
@@ -69,7 +131,7 @@ api.get('/api/session', (req, res) => {
   });
 });
 
-api.post('/api/login', (req, res) => {
+api.post('/api/login', express.json({ limit: '4kb' }), (req, res) => {
   if (!checkPassword((req.body as { password?: unknown })?.password)) {
     res.status(401).json({ error: 'unauthorized', message: 'Senha incorreta' });
     return;
@@ -84,6 +146,10 @@ api.post('/api/logout', (_req, res) => {
 });
 
 api.use('/api', requireAuth);
+
+// Corpos grandes (SKILL.md, arquivos de texto) só são lidos depois que a sessão
+// foi validada.
+api.use('/api', express.json({ limit: '32mb' }));
 
 // ------------------------------------------------------------- dashboard ---
 
@@ -173,7 +239,11 @@ api.post(
     const body = req.body as { name?: string; description?: string; tags?: string; isPublic?: string };
     const meta = skillMetaFromMarkdown(skillMd.textContent);
     const fallbackName = req.file.originalname.replace(/\.zip$/i, '');
+    const attachments = files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
 
+    // Skill, SKILL.md e anexos numa transação só: gravar os anexos depois
+    // deixava uma skill pela metade quando o segundo passo falhava, e a nova
+    // tentativa criava uma duplicata com slug "-2".
     const detail = await createSkill(
       {
         name: body.name?.trim() || meta.name || fallbackName,
@@ -181,24 +251,15 @@ api.post(
         skillMd: skillMd.textContent,
         tags: parseTags(body.tags),
         isPublic: body.isPublic === 'true',
+        files: attachments.map((file) => ({
+          relativePath: file.relativePath,
+          content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+        })),
       },
       SOURCE,
     );
 
-    const attachments = files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
-    if (attachments.length > 0) {
-      await setFiles(
-        detail.slug,
-        attachments.map((file) => ({
-          relativePath: file.relativePath,
-          content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
-        })),
-        SOURCE,
-        { replace: false },
-      );
-    }
-
-    res.status(201).json(await getSkillDetail(detail.slug, { includePrivate: true }));
+    res.status(201).json(detail);
   }),
 );
 
@@ -226,19 +287,17 @@ api.patch(
       skillMd?: string;
     };
 
-    const slug = param(req, 'slug');
-    if (typeof body.skillMd === 'string') {
-      await setFile(slug, 'SKILL.md', body.skillMd, SOURCE);
-    }
-
-    const detail = await updateSkill(
-      slug,
+    // Conteúdo e metadados numa transação só: se o slug colidir ou o nome vier
+    // vazio, o SKILL.md também não é gravado.
+    const detail = await updateSkillWithContent(
+      param(req, 'slug'),
       {
         name: body.name,
         slug: body.slug,
         description: body.description,
         tags: body.tags,
         isPublic: body.isPublic,
+        skillMd: body.skillMd,
       },
       SOURCE,
     );
@@ -281,7 +340,11 @@ api.get(
     }
 
     if (req.query.raw !== undefined) {
-      res.setHeader('Content-Type', file.isText ? `${file.mimeType}; charset=utf-8` : file.mimeType);
+      // "Abrir cru" na origem do painel: um .html/.svg anexado rodaria JS
+      // autenticado como o operador. Tipos executáveis descem como texto.
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
+      res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'inline'));
       res.send(file.buffer);
       return;
     }

@@ -6,11 +6,14 @@ node_modules
 .github
 .env
 .env.*
+.env-builder
 !.env.example
 *.log
 coverage
 docs
 tasks
 sync.sh
+run-builder.sh
+docker-compose-builder.yml
 .DS_Store
 **/.DS_Store

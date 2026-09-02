@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isSkillMd, isTextualMime, mimeTypeFor, normalizeRelativePath } from './paths.js';
+import {
+  contentDisposition,
+  isExecutableInlineMime,
+  isSkillMd,
+  isTextualMime,
+  mimeTypeFor,
+  normalizeRelativePath,
+  safeContentType,
+} from './paths.js';
 
 describe('normalizeRelativePath', () => {
   it('mantém caminhos simples', () => {
@@ -56,5 +64,43 @@ describe('isTextualMime', () => {
     expect(isTextualMime('image/svg+xml')).toBe(true);
     expect(isTextualMime('image/png')).toBe(false);
     expect(isTextualMime('application/octet-stream')).toBe(false);
+  });
+});
+
+describe('safeContentType', () => {
+  it('neutraliza tipos que o navegador executaria na origem', () => {
+    expect(safeContentType('text/html', true)).toBe('text/plain; charset=utf-8');
+    expect(safeContentType('image/svg+xml', true)).toBe('text/plain; charset=utf-8');
+    expect(safeContentType('application/xml', true)).toBe('text/plain; charset=utf-8');
+  });
+
+  it('preserva os demais tipos', () => {
+    expect(safeContentType('text/markdown', true)).toBe('text/markdown; charset=utf-8');
+    expect(safeContentType('image/png', false)).toBe('image/png');
+  });
+
+  it('concorda com isExecutableInlineMime', () => {
+    expect(isExecutableInlineMime('text/html')).toBe(true);
+    expect(isExecutableInlineMime('text/markdown')).toBe(false);
+  });
+});
+
+describe('contentDisposition', () => {
+  it('usa só o nome do arquivo, sem o diretório', () => {
+    expect(contentDisposition('examples/foo.md', 'attachment')).toBe(
+      'attachment; filename="foo.md"; filename*=UTF-8\'\'foo.md',
+    );
+  });
+
+  it('saneia aspas, que corromperiam o header', () => {
+    const header = contentDisposition('a"b.md', 'attachment');
+    expect(header).not.toContain('a"b.md');
+    expect(header).toContain('filename="a_b.md"');
+  });
+
+  it('carrega o nome original em filename* quando há acentos', () => {
+    const header = contentDisposition('anotações.md', 'inline');
+    expect(header.startsWith('inline; ')).toBe(true);
+    expect(header).toContain(`filename*=UTF-8''${encodeURIComponent('anotações.md')}`);
   });
 });

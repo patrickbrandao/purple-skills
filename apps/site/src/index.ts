@@ -5,6 +5,7 @@ import compression from 'compression';
 import cors from 'cors';
 import express from 'express';
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
+import { trustProxySetting } from '@purple-skills/shared';
 import { api } from './api.js';
 import { config } from './config.js';
 
@@ -15,11 +16,18 @@ const webRoot = resolve(here, '..', 'dist-web');
 const app = express();
 
 app.disable('x-powered-by');
-app.set('trust proxy', true);
+app.set('trust proxy', trustProxySetting());
 app.use(compression());
 // API pública: qualquer origem pode consumir como alternativa ao MCP.
 app.use(cors({ origin: '*', methods: ['GET', 'HEAD', 'OPTIONS'] }));
-app.use(express.json({ limit: '1mb' }));
+// Sem `express.json`: todas as rotas do site são GET. Um parser de corpo aberto
+// a qualquer anônimo seria memória oferecida sem nenhum consumidor.
+
+// Nada servido pelo site deve ser interpretado por sniffing de conteúdo.
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 
 app.use(api);
 

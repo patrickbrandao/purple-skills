@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { bearerToken } from '@purple-skills/shared';
+import { bearerToken, safeEqual } from '@purple-skills/shared';
 import { publicKey } from './config.js';
 
 /**
@@ -14,7 +14,8 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
   }
 
   const provided = bearerToken(req.header('authorization'));
-  if (provided === expected) {
+  // Mesma política do MCP admin e do painel: comparação em tempo constante.
+  if (provided !== null && safeEqual(provided, expected)) {
     next();
     return;
   }

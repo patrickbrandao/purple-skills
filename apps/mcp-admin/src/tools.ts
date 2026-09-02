@@ -13,8 +13,18 @@ import {
   stats,
   updateSkill,
 } from '@purple-skills/db';
-import { SKILL_MD, extractZip, isSkillMd, normalizeRelativePath } from '@purple-skills/shared';
+import {
+  SKILL_MD,
+  ZipError,
+  extractZip,
+  isSkillMd,
+  normalizeRelativePath,
+  readIntEnv,
+} from '@purple-skills/shared';
 import { config } from './config.js';
+
+/** Teto do payload base64 do `set_files_bulk` (~32 MB codificados). */
+const MAX_ZIP_BASE64_CHARS = readIntEnv('MCP_MAX_ZIP_BASE64', 32 * 1024 * 1024, { min: 1024 });
 
 const SOURCE = 'mcp-admin' as const;
 
@@ -66,6 +76,10 @@ export const handlers = {
 
     return asJson({
       total: result.total,
+      // O teto real de `limit` é aplicado na query; devolvê-lo evita que o
+      // agente calcule a paginação com um valor que não foi o usado.
+      limit: result.limit,
+      offset: result.offset,
       skills: result.items.map((skill) => ({
         slug: skill.slug,
         name: skill.name,
@@ -182,15 +196,28 @@ export const handlers = {
     zip_base64: string;
     replace?: boolean;
   }): Promise<ToolResult> {
-    let buffer: Buffer;
-    try {
-      buffer = Buffer.from(args.zip_base64, 'base64');
-    } catch {
-      return fail('zip_base64 não é um base64 válido.');
+    // Recusa antes de decodificar: o único teto até aqui era o limite do corpo
+    // JSON (64 MB), e um .zip desse tamanho descomprime para muito mais.
+    if (args.zip_base64.length > MAX_ZIP_BASE64_CHARS) {
+      return fail(
+        `zip_base64 grande demais (limite de ~${Math.round(MAX_ZIP_BASE64_CHARS / (1024 * 1024))} MB codificados).`,
+      );
     }
 
-    const extracted = extractZip(buffer);
-    if (extracted.length === 0) return fail('O .zip está vazio ou não pôde ser lido.');
+    // `Buffer.from(..., 'base64')` nunca lança: bytes inválidos simplesmente
+    // produzem um ZIP ilegível, tratado logo abaixo como erro de formato.
+    const buffer = Buffer.from(args.zip_base64, 'base64');
+
+    let extracted: ReturnType<typeof extractZip>;
+    try {
+      extracted = extractZip(buffer);
+    } catch (err) {
+      // Limite estourado ou arquivo ilegível são erros do payload enviado pelo
+      // agente, não falhas do servidor: devolvemos a mensagem para ele corrigir.
+      if (err instanceof ZipError) return fail(err.message);
+      throw err;
+    }
+    if (extracted.length === 0) return fail('O .zip não contém nenhum arquivo aproveitável.');
 
     const files = await setFiles(
       args.slug,

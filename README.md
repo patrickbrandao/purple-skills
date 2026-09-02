@@ -173,9 +173,9 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `DATABASE_URL` | sim | Conexão com o Postgres |
+| `DATABASE_URL` | sim* | Conexão com o Postgres (senha percent-encodada). *Alternativa sem escape: `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` — é o que o compose usa |
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha do painel |
-| `ADMIN_SESSION_SECRET` / `_FILE` | não | Chave do cookie de sessão (derivada da senha se ausente) |
+| `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
@@ -185,7 +185,10 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md):
 
 - Contadores sem deduplicação — infláveis por refresh-spam.
-- Sem limite de tamanho de arquivo/skill.
+- Sem limite por skill (soma dos arquivos). Existem tetos por requisição:
+  upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), zip de 25 MB descomprimidos e
+  2000 entradas (`ZIP_MAX_UNCOMPRESSED_BYTES`, `ZIP_MAX_ENTRIES`) e 32 MB de
+  base64 no `set_files_bulk` (`MCP_MAX_ZIP_BASE64`).
 - Login do painel sem rate limiting.
 - Sem versionamento de arquivos (apenas um log de auditoria, sem restore).
 - Busca vetorial deixada para uma versão futura.

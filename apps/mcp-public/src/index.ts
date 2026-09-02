@@ -1,4 +1,5 @@
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
+import { readTextEnv } from '@purple-skills/shared';
 import { optionalAuth } from './auth.js';
 import { config, publicKey } from './config.js';
 import { createHttpApp, type McpApp } from './http.js';
@@ -10,6 +11,9 @@ async function main() {
   const app = createHttpApp({
     createServer: createMcpServer,
     auth: optionalAuth,
+    // As ferramentas públicas recebem slug, termo de busca e paginação: alguns
+    // bytes. 1 MB já é folga larga.
+    jsonLimit: readTextEnv('MCP_JSON_LIMIT', '1mb'),
     openCors: true,
     info: {
       name: config.serverName,

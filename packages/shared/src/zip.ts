@@ -1,6 +1,7 @@
 import { Writable } from 'node:stream';
 import AdmZip from 'adm-zip';
 import archiver from 'archiver';
+import { readIntEnv } from './env.js';
 import { isTextualMime, mimeTypeFor, normalizeRelativePath } from './paths.js';
 
 export type ZipEntryInput = {
@@ -64,29 +65,116 @@ export type ExtractedFile = {
   sizeBytes: number;
 };
 
+/**
+ * Teto padrão do conteúdo descomprimido de um ZIP.
+ *
+ * Lido com `readIntEnv`: um valor inválido aqui viraria `NaN` e desligaria a
+ * checagem de zip bomb sem avisar ninguém.
+ */
+export const DEFAULT_MAX_UNCOMPRESSED_BYTES = readIntEnv(
+  'ZIP_MAX_UNCOMPRESSED_BYTES',
+  25 * 1024 * 1024,
+  { min: 1024 },
+);
+
+/** Teto padrão de entradas por ZIP. */
+export const DEFAULT_MAX_ZIP_ENTRIES = readIntEnv('ZIP_MAX_ENTRIES', 2000);
+
 export type ExtractZipOptions = {
   /**
    * Quando o ZIP tem uma única pasta raiz (padrão de `zip -r skill.zip skill/`),
    * essa pasta é removida dos caminhos. Ligado por padrão.
    */
   stripSingleRootDir?: boolean;
+  /** Teto do total descomprimido. Acima disso, `extractZip` lança. */
+  maxUncompressedBytes?: number;
+  /** Teto do número de entradas do ZIP. */
+  maxEntries?: number;
 };
+
+/** Base dos erros de ZIP causados pelo arquivo enviado — sempre 400, nunca 500. */
+export class ZipError extends Error {
+  constructor(message: string, name: string) {
+    super(message);
+    this.name = name;
+  }
+}
+
+/** ZIP recusado por exceder um limite (tamanho descomprimido ou nº de entradas). */
+export class ZipLimitError extends ZipError {
+  constructor(message: string) {
+    super(message, 'ZipLimitError');
+  }
+}
+
+/** ZIP ilegível: não é um ZIP, está truncado ou corrompido. */
+export class ZipFormatError extends ZipError {
+  constructor(message: string) {
+    super(message, 'ZipFormatError');
+  }
+}
 
 /**
  * Extrai um ZIP em memória para a representação usada na tabela `files`.
  * Ignora diretórios, arquivos de metadados de SO e caminhos inseguros.
+ *
+ * O conteúdo descomprimido é limitado: um ZIP de poucos KB pode expandir para
+ * gigabytes ("zip bomb") e derrubar o processo por falta de memória. O tamanho
+ * declarado no cabeçalho é checado antes de descomprimir (evita materializar a
+ * entrada), e o tamanho real é somado depois, porque um ZIP malformado pode
+ * declarar qualquer coisa.
  */
 export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): ExtractedFile[] {
-  const { stripSingleRootDir = true } = options;
-  const zip = new AdmZip(buffer);
+  const {
+    stripSingleRootDir = true,
+    maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
+    maxEntries = DEFAULT_MAX_ZIP_ENTRIES,
+  } = options;
+  // `adm-zip` lança um Error genérico ("Invalid or unsupported zip format")
+  // para qualquer coisa que não seja um ZIP; sem este `catch` isso viraria 500.
+  let zip: AdmZip;
+  let entries: ReturnType<AdmZip['getEntries']>;
+  try {
+    zip = new AdmZip(buffer);
+    entries = zip.getEntries();
+  } catch (err) {
+    throw new ZipFormatError(`O arquivo não é um .zip válido: ${(err as Error).message}`);
+  }
 
+  if (entries.length > maxEntries) {
+    throw new ZipLimitError(
+      `O .zip tem entradas demais (${entries.length}); o limite é ${maxEntries}.`,
+    );
+  }
+
+  const limitMb = Math.round(maxUncompressedBytes / (1024 * 1024));
+  const tooBig = () =>
+    new ZipLimitError(`O conteúdo descomprimido do .zip passa do limite de ${limitMb} MB.`);
+
+  let total = 0;
   const raw: { path: string; data: Buffer }[] = [];
-  for (const entry of zip.getEntries()) {
+  for (const entry of entries) {
     if (entry.isDirectory) continue;
+
+    // Checagem barata antes de descomprimir a entrada.
+    if (total + (entry.header?.size ?? 0) > maxUncompressedBytes) throw tooBig();
+
     const path = normalizeRelativePath(entry.entryName);
     if (!path) continue;
     if (isJunkPath(path)) continue;
-    raw.push({ path, data: entry.getData() });
+
+    let data: Buffer;
+    try {
+      data = entry.getData();
+    } catch (err) {
+      throw new ZipFormatError(
+        `Não foi possível ler "${entry.entryName}" do .zip: ${(err as Error).message}`,
+      );
+    }
+    total += data.byteLength;
+    if (total > maxUncompressedBytes) throw tooBig();
+
+    raw.push({ path, data });
   }
 
   const prefix = stripSingleRootDir ? commonRootDir(raw.map((e) => e.path)) : null;

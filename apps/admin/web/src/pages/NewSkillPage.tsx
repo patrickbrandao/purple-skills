@@ -37,7 +37,8 @@ export function NewSkillPage() {
   const [slug, setSlug] = useState('');
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
-  const [isPublic, setIsPublic] = useState(true);
+  // Nasce privada, como o default do schema, do MCP admin e da documentação.
+  const [isPublic, setIsPublic] = useState(false);
   const [skillMd, setSkillMd] = useState(TEMPLATE);
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -147,7 +148,9 @@ export function NewSkillPage() {
               onChange={(event) => setIsPublic(event.target.checked)}
               className="h-4 w-4 accent-purple-500"
             />
-            <span className="text-sm text-purple-100">Publicar no site imediatamente</span>
+            <span className="text-sm text-purple-100">
+              Publicar no site agora (dá para publicar depois em Metadados)
+            </span>
           </label>
         </div>
 

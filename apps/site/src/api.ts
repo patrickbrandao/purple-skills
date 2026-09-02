@@ -11,7 +11,12 @@ import {
   getSkillDetail,
   healthCheck,
 } from '@purple-skills/db';
-import { isSkillMd, normalizeRelativePath } from '@purple-skills/shared';
+import {
+  contentDisposition,
+  isSkillMd,
+  normalizeRelativePath,
+  safeContentType,
+} from '@purple-skills/shared';
 import { config } from './config.js';
 import { streamSkillZip } from './zip.js';
 
@@ -134,13 +139,15 @@ const serveFile = asyncRoute(async (req, res) => {
     await incrementViewCount(skill.uuid);
   }
 
-  res.setHeader('Content-Type', file.isText ? `${file.mimeType}; charset=utf-8` : file.mimeType);
+  // Arquivos de skill são conteúdo de terceiros. Servi-los como `text/html` ou
+  // `image/svg+xml` na origem do catálogo permitiria rodar JS no domínio:
+  // tipos executáveis descem como texto, e nada é renderizado inline.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
   res.setHeader('Content-Length', String(file.buffer.byteLength));
   res.setHeader('Cache-Control', 'public, max-age=60');
-  if (req.query.download !== undefined) {
-    const filename = file.relativePath.split('/').pop() ?? 'arquivo';
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  }
+  res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'attachment'));
   res.send(file.buffer);
 });
 

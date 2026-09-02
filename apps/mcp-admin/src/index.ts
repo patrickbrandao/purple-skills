@@ -1,4 +1,5 @@
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
+import { readTextEnv } from '@purple-skills/shared';
 import { requireBearer } from './auth.js';
 import { adminToken, config } from './config.js';
 import { createHttpApp, type McpApp } from './http.js';
@@ -11,6 +12,8 @@ async function main() {
   const app = createHttpApp({
     createServer: createMcpServer,
     auth: requireBearer,
+    // `set_files_bulk` manda ~32 MB de base64; o resto é o envelope JSON-RPC.
+    jsonLimit: readTextEnv('MCP_JSON_LIMIT', '48mb'),
     openCors: false,
     info: {
       name: config.serverName,

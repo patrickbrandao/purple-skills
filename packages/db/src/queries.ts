@@ -16,7 +16,7 @@ import {
   type SearchResult,
 } from '@purple-skills/shared';
 import { getDb, type Database } from './client.js';
-import { badRequest, conflict, notFound } from './errors.js';
+import { badRequest, conflict, isUniqueViolation, notFound } from './errors.js';
 
 type Row = Record<string, any>;
 
@@ -86,9 +86,8 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
           ? sql`rank DESC, (s.view_count + s.download_count) DESC, s.updated_at DESC`
           : sql`(s.view_count + s.download_count) DESC, s.updated_at DESC`;
 
-  const result = await db().execute(sql`
-    SELECT ${SKILL_COLUMNS}, ${rank} AS rank, count(*) OVER () AS total_count
-    FROM skills s
+  // Filtro compartilhado entre a contagem e a página de resultados.
+  const where = sql`
     WHERE (${includePrivate} OR s.is_public)
       ${
         query
@@ -108,14 +107,26 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
             )`
           : sql``
       }
+  `;
+
+  // `count(*) OVER ()` só chega nas linhas retornadas: paginar além do fim
+  // devolvia total 0. A contagem precisa ser independente de LIMIT/OFFSET.
+  const counted = await db().execute(sql`
+    SELECT count(*)::int AS total FROM skills s ${where}
+  `);
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    SELECT ${SKILL_COLUMNS}, ${rank} AS rank
+    FROM skills s
+    ${where}
     ORDER BY ${order}
     LIMIT ${limit} OFFSET ${offset}
   `);
 
-  const rows = result.rows as Row[];
   return {
-    items: rows.map(toSummary),
-    total: rows.length ? Number(rows[0].total_count) : 0,
+    items: (result.rows as Row[]).map(toSummary),
+    total,
     limit,
     offset,
   };
@@ -260,7 +271,16 @@ export type CreateSkillInput = {
   tags?: string[];
   isPublic?: boolean;
   slug?: string;
+  /**
+   * Anexos gravados na mesma transação da criação (importação de `.zip`).
+   * Gravá-los depois deixaria a skill existindo sem os arquivos quando o
+   * segundo passo falhasse. `SKILL.md` vem sempre por `skillMd`.
+   */
+  files?: readonly FileInput[];
 };
+
+/** Quantas vezes reescolher um slug gerado automaticamente após uma colisão. */
+const SLUG_ATTEMPTS = 3;
 
 export async function createSkill(
   input: CreateSkillInput,
@@ -272,27 +292,61 @@ export async function createSkill(
     throw badRequest('O conteúdo do SKILL.md é obrigatório');
   }
 
-  const slug = await resolveSlug(input.slug, name);
+  // Validado antes de abrir a transação: um caminho recusado no meio da
+  // gravação deixaria a skill criada sem parte dos anexos.
+  const attachments = (input.files ?? [])
+    .map((file) => {
+      const path = normalizeRelativePath(file.relativePath);
+      if (!path) throw badRequest(`Caminho inválido: ${file.relativePath}`);
+      const buffer = Buffer.isBuffer(file.content)
+        ? file.content
+        : Buffer.from(file.content, 'utf8');
+      return { path, buffer };
+    })
+    // O SKILL.md vem por `skillMd`; um homônimo entre os anexos é ignorado.
+    .filter((file) => !isSkillMd(file.path));
 
-  await db().transaction(async (tx) => {
-    const inserted = await tx.execute(sql`
-      INSERT INTO skills (slug, name, description, is_public)
-      VALUES (${slug}, ${name}, ${input.description?.trim() ?? ''}, ${input.isPublic === true})
-      RETURNING uuid
-    `);
-    const uuid = (inserted.rows as Row[])[0].uuid as string;
+  const explicitSlug = Boolean(input.slug?.trim());
+  let slug = '';
 
-    await upsertFileTx(tx, uuid, SKILL_MD, Buffer.from(input.skillMd, 'utf8'));
-    await replaceTagsTx(tx, uuid, input.tags ?? []);
-    await auditTx(tx, {
-      skillUuid: uuid,
-      skillSlug: slug,
-      filePath: null,
-      action: 'create',
-      source,
-      previousContent: null,
-    });
-  });
+  // `resolveSlug` consulta os slugs ocupados e o INSERT acontece depois: duas
+  // criações simultâneas podem escolher o mesmo. Com slug gerado a partir do
+  // nome, a intenção é "qualquer slug livre" e vale tentar de novo; com slug
+  // pedido explicitamente, o conflito é a resposta correta.
+  for (let attempt = 1; ; attempt += 1) {
+    slug = await resolveSlug(input.slug, name);
+
+    try {
+      await db().transaction(async (tx) => {
+        const inserted = await tx.execute(sql`
+          INSERT INTO skills (slug, name, description, is_public)
+          VALUES (${slug}, ${name}, ${input.description?.trim() ?? ''}, ${input.isPublic === true})
+          RETURNING uuid
+        `);
+        const uuid = (inserted.rows as Row[])[0].uuid as string;
+
+        await upsertFileTx(tx, uuid, SKILL_MD, Buffer.from(input.skillMd, 'utf8'));
+        for (const file of attachments) {
+          await upsertFileTx(tx, uuid, file.path, file.buffer);
+        }
+        await replaceTagsTx(tx, uuid, input.tags ?? []);
+        await auditTx(tx, {
+          skillUuid: uuid,
+          skillSlug: slug,
+          filePath: null,
+          action: 'create',
+          source,
+          previousContent: null,
+        });
+      });
+      break;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      if (explicitSlug || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe uma skill com o slug "${slug}"`);
+      }
+    }
+  }
 
   const detail = await getSkillDetail(slug, { includePrivate: true });
   if (!detail) throw new Error('Skill criada mas não encontrada');
@@ -322,30 +376,110 @@ export async function updateSkill(
       ? await resolveSlug(input.slug, input.slug)
       : existing.slug;
 
-  await db().transaction(async (tx) => {
-    await tx.execute(sql`
-      UPDATE skills SET
-        name = ${name ?? existing.name},
-        description = ${input.description !== undefined ? input.description.trim() : existing.description},
-        is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
-        slug = ${newSlug},
-        updated_at = now()
-      WHERE uuid = ${existing.uuid}
-    `);
+  try {
+    await db().transaction(async (tx) => {
+      await tx.execute(sql`
+        UPDATE skills SET
+          name = ${name ?? existing.name},
+          description = ${input.description !== undefined ? input.description.trim() : existing.description},
+          is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          slug = ${newSlug},
+          updated_at = now()
+        WHERE uuid = ${existing.uuid}
+      `);
 
-    if (input.tags !== undefined) {
-      await replaceTagsTx(tx, existing.uuid, input.tags);
-    }
+      if (input.tags !== undefined) {
+        await replaceTagsTx(tx, existing.uuid, input.tags);
+      }
 
-    await auditTx(tx, {
-      skillUuid: existing.uuid,
-      skillSlug: newSlug,
-      filePath: null,
-      action: 'update',
-      source,
-      previousContent: null,
+      await auditTx(tx, {
+        skillUuid: existing.uuid,
+        skillSlug: newSlug,
+        filePath: null,
+        action: 'update',
+        source,
+        previousContent: null,
+      });
     });
-  });
+  } catch (err) {
+    // Outra escrita concorrente pode ter levado o slug entre a checagem e o
+    // UPDATE: isso é conflito (409), não falha interna.
+    if (isUniqueViolation(err)) throw conflict(`Já existe uma skill com o slug "${newSlug}"`);
+    throw err;
+  }
+
+  const detail = await getSkillDetail(newSlug, { includePrivate: true });
+  if (!detail) throw new Error('Skill atualizada mas não encontrada');
+  return detail;
+}
+
+/**
+ * Atualiza metadados **e** o SKILL.md numa transação só.
+ *
+ * O painel envia conteúdo e metadados numa única chamada; gravar o arquivo
+ * antes (em transação própria) e depois validar o slug deixava a skill num
+ * estado meio-salvo quando a validação falhava — conteúdo novo, metadados
+ * antigos. Aqui é tudo ou nada.
+ */
+export async function updateSkillWithContent(
+  slug: string,
+  input: UpdateSkillInput & { skillMd?: string },
+  source: AuditSource,
+): Promise<SkillDetail> {
+  const existing = await requireSkill(slug);
+
+  const name = input.name?.trim();
+  if (input.name !== undefined && !name) throw badRequest('O campo "name" não pode ficar vazio');
+
+  const newSlug =
+    input.slug !== undefined && input.slug.trim() && input.slug.trim() !== existing.slug
+      ? await resolveSlug(input.slug, input.slug)
+      : existing.slug;
+
+  const previousSkillMd =
+    typeof input.skillMd === 'string' ? await readTextFile(existing.uuid, SKILL_MD) : null;
+
+  try {
+    await db().transaction(async (tx) => {
+      await tx.execute(sql`
+        UPDATE skills SET
+          name = ${name ?? existing.name},
+          description = ${input.description !== undefined ? input.description.trim() : existing.description},
+          is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          slug = ${newSlug},
+          updated_at = now()
+        WHERE uuid = ${existing.uuid}
+      `);
+
+      if (input.tags !== undefined) {
+        await replaceTagsTx(tx, existing.uuid, input.tags);
+      }
+
+      if (typeof input.skillMd === 'string') {
+        await upsertFileTx(tx, existing.uuid, SKILL_MD, Buffer.from(input.skillMd, 'utf8'));
+        await auditTx(tx, {
+          skillUuid: existing.uuid,
+          skillSlug: newSlug,
+          filePath: SKILL_MD,
+          action: 'update',
+          source,
+          previousContent: previousSkillMd,
+        });
+      }
+
+      await auditTx(tx, {
+        skillUuid: existing.uuid,
+        skillSlug: newSlug,
+        filePath: null,
+        action: 'update',
+        source,
+        previousContent: null,
+      });
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) throw conflict(`Já existe uma skill com o slug "${newSlug}"`);
+    throw err;
+  }
 
   const detail = await getSkillDetail(newSlug, { includePrivate: true });
   if (!detail) throw new Error('Skill atualizada mas não encontrada');

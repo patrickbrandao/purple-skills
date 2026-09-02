@@ -80,7 +80,9 @@ a implementação.
   criação da skill + do arquivo SKILL.md ocorre na mesma transação. As
   ferramentas de edição nunca expõem uma opção de deletar o arquivo
   `SKILL.md` (apenas sobrescrever seu conteúdo).
-- Sem limite de tamanho de arquivo/skill no v1 (risco aceito e assumido).
+- Sem limite **por skill** (soma dos arquivos) no v1, risco aceito. Há tetos
+  por requisição — upload, corpo JSON e descompressão de zip — configuráveis
+  por env var e documentados no `.env.example`.
 
 ### 3.3 Tabela `tags` / `skill_tags`
 
@@ -149,14 +151,16 @@ a implementação.
 ### 7.2 MCP administrativo
 
 - Autenticação obrigatória via header `Authorization: Bearer <token>`,
-  token definido via env var/arquivo, comparação direta de string.
+  token definido via env var/arquivo, comparação em tempo constante
+  (`safeEqual`).
 
 ### 7.3 MCP público
 
 - Autenticação **opcional**, controlada pela env var `MCP_PUBLIC_KEY`:
   - Se vazia/ausente → servidor totalmente aberto, sem autenticação.
   - Se definida → exige header `Authorization: Bearer <MCP_PUBLIC_KEY>`,
-    comparação direta case-sensitive.
+    comparação case-sensitive em tempo constante (`safeEqual`), com a chave
+    lida uma única vez no boot.
 - CORS totalmente aberto (`*`), pois o objetivo é ser consumido por
   qualquer agente externo.
 
@@ -215,10 +219,11 @@ CRUD completo, espelhando o painel administrativo:
 
 ## 11. Testes e CI/CD
 
-- **Testes**: unitários (Vitest) cobrindo `packages/db`/`packages/shared`
-  (queries, cálculo de rating, geração de slug, geração de zip) e os
-  handlers das ferramentas MCP. Sem testes de integração com banco real
-  nem E2E no v1.
+- **Testes**: unitários (Vitest) cobrindo `packages/shared` (rating, slug,
+  caminhos, zip, frontmatter, segredos, sessão, leitura de env) e os handlers
+  das ferramentas MCP, com `@purple-skills/db` mockado. As queries de
+  `packages/db` não têm testes — dependem de um Postgres real, deixado para
+  uma etapa futura. Sem E2E no v1.
 - **CI/CD** (GitHub Actions):
   - Workflow de PR: lint + testes.
   - Workflow de release: build e push das 4 imagens para o GitHub
@@ -236,8 +241,8 @@ endereçadas em versões futuras:
 
 - Contadores de view/download podem ser inflacionados trivialmente (sem
   dedup, sem rate limiting).
-- Sem limite de tamanho de arquivo/skill — possível abuso de armazenamento
-  no Postgres.
+- Sem limite por skill (soma dos arquivos) — possível abuso de armazenamento
+  no Postgres, dentro dos tetos de cada requisição.
 - Login do admin sem rate limiting contra brute-force.
 - Sem histórico/versionamento de arquivos — edições sobrescrevem o estado
   atual (apenas um log de auditoria simples, sem restore).
