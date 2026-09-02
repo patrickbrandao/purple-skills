@@ -5,6 +5,7 @@ export const SKILL_MD = 'SKILL.md';
  * - troca `\` por `/`
  * - remove `./`, barras duplicadas e barras nas pontas
  * - rejeita travessia de diretório (`..`), caminhos absolutos e vazios
+ * - canoniza o arquivo principal para `SKILL.md`
  *
  * Retorna `null` quando o caminho não é aceitável.
  */
@@ -23,6 +24,12 @@ export function normalizeRelativePath(input: string): string | null {
   if (cleaned.includes('\0')) return null;
   if (/^[a-zA-Z]:/.test(cleaned)) return null;
   if (cleaned.length > 512) return null;
+
+  // O arquivo principal tem uma grafia só. Sem isso, `skill.md` gravado numa
+  // skill que já tem `SKILL.md` vira uma segunda linha "principal": a escrita
+  // diferencia a caixa e a leitura não, então o conteúdo exibido, indexado e
+  // empacotado passa a ser escolhido sem critério entre as duas.
+  if (isSkillMd(cleaned)) return SKILL_MD;
 
   return cleaned;
 }

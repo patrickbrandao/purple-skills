@@ -190,6 +190,7 @@ export async function readFile(
     SELECT relative_path, mime_type, size_bytes, text_content, binary_content
     FROM files
     WHERE skill_uuid = ${skillUuid} AND lower(relative_path) = lower(${relativePath})
+    ORDER BY relative_path
     LIMIT 1
   `);
 
@@ -579,8 +580,10 @@ export async function deleteFile(
   if (!previous) throw notFound(`Arquivo não encontrado: ${path}`);
 
   await db().transaction(async (tx) => {
+    // Pelo caminho exato da linha lida, não por `lower(...)`: um filtro
+    // insensível a caixa apagaria de uma vez todas as variantes do nome.
     await tx.execute(
-      sql`DELETE FROM files WHERE skill_uuid = ${existing.uuid} AND lower(relative_path) = lower(${path})`,
+      sql`DELETE FROM files WHERE skill_uuid = ${existing.uuid} AND relative_path = ${previous.relativePath}`,
     );
     await auditTx(tx, {
       skillUuid: existing.uuid,
@@ -745,10 +748,15 @@ async function upsertFileTx(tx: Tx, skillUuid: string, path: string, buffer: Buf
   const text = textual ? buffer.toString('utf8') : null;
   const binary = textual ? null : buffer;
 
+  // O conflito é inferido pelo índice `files_skill_path_lower_uniq`
+  // (migration 0003): gravar `Notas.md` sobre `notas.md` sobrescreve a linha
+  // existente em vez de criar uma segunda. A caixa recebida vira a definitiva —
+  // caso contrário a listagem continuaria mostrando o nome antigo.
   await tx.execute(sql`
     INSERT INTO files (skill_uuid, relative_path, text_content, binary_content, mime_type, size_bytes)
     VALUES (${skillUuid}, ${path}, ${text}, ${binary}, ${mimeType}, ${buffer.byteLength})
-    ON CONFLICT (skill_uuid, relative_path) DO UPDATE SET
+    ON CONFLICT (skill_uuid, lower(relative_path)) DO UPDATE SET
+      relative_path = EXCLUDED.relative_path,
       text_content = EXCLUDED.text_content,
       binary_content = EXCLUDED.binary_content,
       mime_type = EXCLUDED.mime_type,

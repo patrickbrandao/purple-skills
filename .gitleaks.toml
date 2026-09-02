@@ -1,0 +1,65 @@
+# Purple Skills — configuração do gitleaks (varredura de segredos no CI).
+#
+# As regras padrão reconhecem formatos de token conhecidos (AWS, GitHub,
+# Stripe…). Os segredos deste projeto não têm formato reconhecível:
+# ADMIN_PASSWORD é uma senha qualquer e MCP_ADMIN_TOKEN é texto livre — um
+# `git add -f .env` passaria batido só com as regras padrão. As regras abaixo
+# cobrem exatamente as variáveis que dão controle do catálogo.
+
+[extend]
+useDefault = true
+
+# --------------------------------------------------------------------------
+# Valores que não são segredo. O allowlist é por *valor*, não por caminho de
+# arquivo: um segredo de verdade colado no .env.example continua sendo
+# apontado.
+#
+# - `${VAR}` / `:-` / `:?msg`: interpolação do compose. As duas últimas formas
+#   entram aqui porque o valor casado começa depois do `:` de dentro do
+#   `${POSTGRES_PASSWORD:?defina …}`.
+# - `CHANGE_ME` e afins: placeholders do .env.example.
+# - `postgres`: senha padrão do Postgres em exemplo de DSN local.
+# --------------------------------------------------------------------------
+[[allowlists]]
+description = "Placeholders, interpolação do compose e DSN local de exemplo"
+regexTarget = "secret"
+regexes = [
+  '''^\$\{''',
+  '''^[?-]''',
+  '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+)''',
+  '''^postgres$''',
+]
+
+# --------------------------------------------------------------------------
+# O commit inicial publicou o .env.example com valores preenchidos em vez de
+# placeholders. São valores de exemplo, diferentes dos que estão em uso hoje, e
+# `7fd36ca` já os trocou por CHANGE_ME — mas continuam no histórico e fariam a
+# varredura falhar para sempre. A exceção é fechada: só aquele commit, só
+# aquele arquivo (`condition = "AND"`); qualquer outro segredo do mesmo commit
+# continua sendo apontado.
+# --------------------------------------------------------------------------
+[[allowlists]]
+description = ".env.example de a01fdaf — valores de exemplo, aposentados em 7fd36ca"
+condition = "AND"
+commits = ["a01fdaf4d1b7b941ad9ee75761daeb293cdfcfe3"]
+paths = ['''^\.env\.example$''']
+
+[[rules]]
+id = "purple-skills-env-secret"
+description = "Segredo do Purple Skills com valor preenchido (.env commitado?)"
+regex = '''(?i)\b(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|MCP_ADMIN_TOKEN|MCP_PUBLIC_KEY|POSTGRES_PASSWORD)\s*[:=]\s*["']?([^\s"'#]+)'''
+secretGroup = 2
+keywords = [
+  "admin_password",
+  "admin_session_secret",
+  "mcp_admin_token",
+  "mcp_public_key",
+  "postgres_password",
+]
+
+[[rules]]
+id = "purple-skills-database-url"
+description = "DATABASE_URL com senha preenchida"
+regex = '''(?i)postgres(?:ql)?://[^\s:/@"']+:([^\s@"']+)@'''
+secretGroup = 1
+keywords = ["postgres://", "postgresql://"]

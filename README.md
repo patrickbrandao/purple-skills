@@ -72,6 +72,15 @@ npm test                   # testes unitários (Vitest)
 npm run typecheck          # TypeScript em todos os workspaces
 ```
 
+Os testes das queries do `packages/db` exigem um Postgres real e ficam
+desligados por padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
+**descartável** — o schema é recriado do zero a cada execução:
+
+```bash
+TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
+  npx vitest run packages/db/src/files.integration.test.ts
+```
+
 ## Estrutura do repositório
 
 Monorepo com **npm workspaces**:

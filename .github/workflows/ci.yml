@@ -29,6 +29,37 @@ jobs:
       - name: Testes unitários
         run: npm test
 
+  secrets-scan:
+    name: Varredura de segredos
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks varre o histórico, não só a árvore do último commit.
+          fetch-depth: 0
+
+      # Guarda determinística, independente do formato do valor: nenhum arquivo
+      # de ambiente pode estar versionado — só o .env.example com placeholders.
+      - name: Nenhum .env versionado
+        run: |
+          tracked=$(git ls-files -- '.env' '.env.*' '**/.env' '**/.env.*' \
+                    | grep -v '\.env\.example$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::arquivo de ambiente versionado: $tracked"
+            exit 1
+          fi
+
+      - name: Instalar gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+
+      # --redact: o log do CI é público; um achado não pode imprimir o segredo.
+      - name: Varredura do histórico
+        run: gitleaks git --redact --no-banner --config=.gitleaks.toml .
+
   docker:
     name: Build das imagens (sem push)
     runs-on: ubuntu-latest

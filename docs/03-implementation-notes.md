@@ -82,6 +82,25 @@ padrão**, com um checkbox explícito para substituir a árvore inteira. É uma
 superfície diferente (um humano clicando, sem descrição de ferramenta para
 ler antes), e o comportamento destrutivo fica visível na tela.
 
+## Caminho de arquivo é único sem diferenciar caixa
+
+A escrita comparava `relative_path` byte a byte e a leitura comparava por
+`lower(...)`. `skill.md` gravado numa skill que já tinha `SKILL.md` inseria uma
+segunda linha "principal", e a partir dali o conteúdo exibido, indexado e
+empacotado saía de um `LIMIT 1` sem ordem. Duas travas, nas duas pontas:
+
+- `normalizeRelativePath` canoniza qualquer variante de caixa do arquivo
+  principal para `SKILL.md`, então as escritas caem sempre na mesma linha.
+- A migration `0003` troca a constraint `UNIQUE (skill_uuid, relative_path)` por
+  um índice funcional `UNIQUE (skill_uuid, lower(relative_path))`, e
+  `upsertFileTx` infere o conflito por ele. Vale para qualquer arquivo, não só o
+  `SKILL.md`: `Notas.md` sobrescreve `notas.md` em vez de duplicar.
+
+A migration consolida o que já tinha duplicado mantendo a linha mais recente —
+o mesmo resultado que o `ON CONFLICT` novo produziria. `deleteFile` passou a
+apagar pelo caminho exato da linha lida; com o filtro `lower(...)` anterior,
+remover `a.md` levava junto um eventual `A.md`.
+
 ## Sessão do painel
 
 - Cookie assinado com HMAC-SHA256, `httpOnly`, `SameSite=Lax`, TTL de 12h

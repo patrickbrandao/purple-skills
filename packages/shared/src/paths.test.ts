@@ -33,6 +33,19 @@ describe('normalizeRelativePath', () => {
     expect(normalizeRelativePath('/')).toBeNull();
     expect(normalizeRelativePath('a/'.repeat(400))).toBeNull();
   });
+
+  it('canoniza a caixa do arquivo principal', () => {
+    expect(normalizeRelativePath('skill.md')).toBe('SKILL.md');
+    expect(normalizeRelativePath('Skill.MD')).toBe('SKILL.md');
+    expect(normalizeRelativePath('./skill.md')).toBe('SKILL.md');
+    expect(normalizeRelativePath('\\SKILL.MD')).toBe('SKILL.md');
+  });
+
+  it('não mexe na caixa de outros arquivos nem do SKILL.md em subpasta', () => {
+    expect(normalizeRelativePath('docs/skill.md')).toBe('docs/skill.md');
+    expect(normalizeRelativePath('README.md')).toBe('README.md');
+    expect(normalizeRelativePath('skill.markdown')).toBe('skill.markdown');
+  });
 });
 
 describe('isSkillMd', () => {

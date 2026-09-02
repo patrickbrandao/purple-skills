@@ -1,12 +1,17 @@
 node_modules/
 dist/
 dist-web/
+# Só o .env.example é versionado; qualquer outro .env* fica de fora
+# (.env.local, .env.production… não estavam cobertos).
 .env
+.env.*
+!.env.example
 .env-builder
 *.log
 .DS_Store
 coverage/
 tasks/
 sync.sh
+run-rebuild.sh
 run-builder.sh
 docker-compose-builder.yml
