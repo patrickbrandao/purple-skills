@@ -7,8 +7,8 @@ type Props = {
   className?: string;
 };
 
-/** Copia um texto para a área de transferência, com fallback para navegadores antigos. */
-export function CopyButton({ value, label = 'Copiar link', className = '' }: Props) {
+/** Copia um texto para a área de transferência, com alternativa para navegadores antigos. */
+export function CopyButton({ value, label = 'Copiar link', className = 'btn btn-ghost' }: Props) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -38,14 +38,9 @@ export function CopyButton({ value, label = 'Copiar link', className = '' }: Pro
   }
 
   return (
-    <button
-      type="button"
-      onClick={copy}
-      className={`inline-flex items-center gap-2 rounded-lg border border-purple-400/20 bg-ink-800 px-4 py-2.5 text-sm font-medium text-purple-100 transition hover:border-purple-400/50 hover:bg-ink-700 ${className}`}
-      aria-live="polite"
-    >
-      {copied ? <CheckIcon className="h-4 w-4 text-emerald-400" /> : <LinkIcon />}
-      {copied ? 'Link copiado!' : label}
+    <button type="button" onClick={copy} className={className} aria-live="polite">
+      {copied ? <CheckIcon /> : <LinkIcon />}
+      {copied ? 'Copiado!' : label}
     </button>
   );
 }

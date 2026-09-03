@@ -3,15 +3,23 @@ import { ArrowLeftIcon } from '../components/Icons.js';
 
 export function NotFoundPage() {
   return (
-    <div className="py-32 text-center">
-      <p className="text-6xl font-bold text-purple-500/30">404</p>
-      <h1 className="mt-4 text-2xl font-semibold text-purple-100">Página não encontrada</h1>
-      <Link
-        to="/"
-        className="mt-6 inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-purple-500"
-      >
-        <ArrowLeftIcon /> Voltar ao catálogo
-      </Link>
-    </div>
+    <section className="skill-page">
+      <div className="wrap">
+        <div className="empty" style={{ maxWidth: '30rem', margin: '40px auto' }}>
+          <img className="wiz" src="/assets/images/icon-purple-right-137x158.png" alt="" />
+          <p
+            className="display grad-text"
+            style={{ fontSize: '3.4rem', lineHeight: 1, marginBottom: '10px' }}
+          >
+            404
+          </p>
+          <h3>O mago não encontrou esta página.</h3>
+          <p>O feitiço pode ter expirado — ou o endereço veio torto.</p>
+          <Link to="/" className="btn btn-primary" style={{ marginTop: '22px' }}>
+            <ArrowLeftIcon /> Voltar ao catálogo
+          </Link>
+        </div>
+      </div>
+    </section>
   );
 }

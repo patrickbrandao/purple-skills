@@ -1,0 +1,561 @@
+/* ============================================================
+   PURPLE SKILLS — Base e primitivos de UI
+   Tipografia, atmosfera, botões, cartões, campos e blocos de código.
+   Herdado do desenho do LangWizard, revestido de roxo.
+
+   Idêntico em apps/site e apps/admin — ao mudar um, copie para o outro.
+   ============================================================ */
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+  min-height: 100vh;
+  transition: background 0.5s ease, color 0.5s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--brand-soft);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-2);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-soft);
+}
+
+/* ---- atmosfera ---- */
+.atmos {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60vw 60vw at 80% -10%, var(--atmos-1), transparent 60%),
+    radial-gradient(48vw 48vw at 4% 14%, var(--atmos-2), transparent 62%);
+  transition: opacity 0.5s ease;
+}
+
+/* ---- barra de progresso de rolagem ---- */
+.progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  z-index: 1000;
+  width: var(--scroll, 0%);
+  background: linear-gradient(90deg, var(--brand), var(--gold));
+  box-shadow: 0 0 10px var(--glow);
+  transition: width 0.08s linear;
+}
+
+/* ============================================================
+   TIPOGRAFIA
+   ============================================================ */
+.display {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.04;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--brand-soft);
+  font-weight: 400;
+}
+.grad-text {
+  background: linear-gradient(120deg, #ff8e30 6%, #a742ed 52%, #5b21b6 94%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+:root[data-theme='dark'] .grad-text {
+  background: linear-gradient(120deg, #ffb15f 6%, #d8a5ff 52%, #9f7bff 94%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+.wrap {
+  max-width: 1180px;
+  margin-inline: auto;
+  padding-inline: clamp(20px, 5vw, 48px);
+  position: relative;
+  z-index: 1;
+}
+.wrap-wide {
+  max-width: 1320px;
+}
+section {
+  position: relative;
+  z-index: 1;
+}
+
+/* bloco de título de seção */
+.head {
+  max-width: 46rem;
+  margin-bottom: 2px;
+}
+.head.center {
+  margin-inline: auto;
+  text-align: center;
+}
+.head h2 {
+  font-size: clamp(2rem, 4.4vw, 3.3rem);
+  margin: 14px 0 18px;
+}
+.head p {
+  font-size: clamp(1rem, 1.5vw, 1.16rem);
+  color: var(--text-dim);
+}
+.head p + p {
+  margin-top: 10px;
+}
+
+/* ============================================================
+   BOTÕES
+   ============================================================ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 11px 20px;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+  font-family: var(--font-display);
+  white-space: nowrap;
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease,
+    background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none !important;
+}
+.btn-primary {
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(71, 6, 150, 0.3);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--brand-deep);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px -8px rgba(124, 36, 180, 0.6);
+}
+:root[data-theme='dark'] .btn-primary {
+  color: #1a0630;
+}
+:root[data-theme='dark'] .btn-primary:hover:not(:disabled) {
+  background: var(--brand-soft);
+}
+.btn-ghost {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--brand-soft);
+  color: var(--brand);
+  transform: translateY(-1px);
+}
+.btn-danger {
+  background: var(--surface);
+  color: var(--ember);
+  border-color: color-mix(in srgb, var(--ember) 40%, transparent);
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ember) 12%, var(--surface));
+  border-color: var(--ember);
+}
+.btn-lg {
+  padding: 15px 28px;
+  font-size: 1rem;
+}
+.btn-sm {
+  padding: 7px 14px;
+  font-size: 0.82rem;
+}
+.btn svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.icon-btn:hover {
+  color: var(--brand);
+  border-color: var(--brand-soft);
+}
+.icon-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* ============================================================
+   CARTÕES, CHIPS E DISTINTIVOS
+   ============================================================ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+.card-pad {
+  padding: 22px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.71rem;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  background: var(--surface);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 3px 10px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+.tag:hover {
+  border-color: var(--brand-soft);
+  color: var(--brand);
+}
+.tag.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+:root[data-theme='dark'] .tag.active {
+  color: #1a0630;
+}
+
+/* ============================================================
+   CAMPOS DE FORMULÁRIO
+   ============================================================ */
+.field {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.94rem;
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.field::placeholder {
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+.field:focus {
+  border-color: var(--brand-soft);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+.field-mono {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+.label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 7px;
+}
+select.field {
+  cursor: pointer;
+}
+input[type='checkbox'] {
+  accent-color: var(--brand);
+}
+
+/* ============================================================
+   BLOCO DE CÓDIGO
+   ============================================================ */
+.code-card {
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(167, 66, 237, 0.24);
+  background: var(--code-bg);
+  box-shadow: var(--code-glow);
+}
+.code-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 17px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.code-top .tl {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #a742ed;
+}
+.code-top .tl:nth-child(2) {
+  background: #c84197;
+}
+.code-top .tl:nth-child(3) {
+  background: #ce505d;
+}
+.code-top span {
+  margin-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: #b09ec4;
+}
+.code-body {
+  padding: 22px 20px;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  line-height: 1.9;
+  color: #ece5f6;
+  overflow-x: auto;
+  white-space: pre;
+}
+.code-body .c {
+  color: #b09ec4;
+}
+.code-body .k {
+  color: #d8b4fe;
+}
+.code-body .s {
+  color: #ffc976;
+}
+.code-body .n {
+  color: #7ee0b8;
+}
+
+/* ============================================================
+   COMPARTILHADOS: busca, segmentado, voltar e esqueleto
+   ============================================================ */
+/* ---- barra de busca ---- */
+.search-bar {
+  position: relative;
+  display: block;
+}
+.search-bar svg {
+  position: absolute;
+  top: 50%;
+  left: 17px;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.search-bar input {
+  border-radius: 999px;
+  padding: 14px 20px 14px 46px;
+  font-size: 0.98rem;
+  box-shadow: var(--shadow);
+}
+.search-bar input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+/* ---- alternador de ordenação ---- */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.segmented button {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 0.79rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.segmented button:hover {
+  color: var(--brand);
+}
+.segmented button.active {
+  background: var(--brand);
+  color: #fff;
+}
+:root[data-theme='dark'] .segmented button.active {
+  color: #1a0630;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.88rem;
+  color: var(--text-faint);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.back-link:hover {
+  color: var(--brand);
+}
+.back-link svg {
+  width: 15px;
+  height: 15px;
+}
+/* esqueleto de carregamento */
+.skel {
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  animation: skel-pulse 1.4s ease-in-out infinite;
+}
+@keyframes skel-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+/* ============================================================
+   REVELAR AO ROLAR
+   ============================================================ */
+.js-enabled .reveal {
+  opacity: 0;
+  transform: translateY(34px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.js-enabled .reveal.in {
+  opacity: 1;
+  transform: none;
+}
+.js-enabled .reveal.d1 {
+  transition-delay: 0.08s;
+}
+.js-enabled .reveal.d2 {
+  transition-delay: 0.16s;
+}
+.js-enabled .reveal.d3 {
+  transition-delay: 0.24s;
+}
+.js-enabled .reveal.d4 {
+  transition-delay: 0.32s;
+}
+.js-enabled .reveal.d5 {
+  transition-delay: 0.4s;
+}
+
+/* ============================================================
+   O MAGO ROXO — figuras em pixel art
+   ============================================================ */
+img.wiz {
+  display: block;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+@keyframes floaty {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-15px);
+  }
+}
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================
+   MOVIMENTO REDUZIDO
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

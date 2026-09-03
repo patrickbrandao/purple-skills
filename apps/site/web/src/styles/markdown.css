@@ -1,0 +1,129 @@
+/* ============================================================
+   PURPLE SKILLS — Renderização do SKILL.md
+   Idêntico em apps/site e apps/admin.
+   ============================================================ */
+
+.markdown {
+  color: var(--text-dim);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.markdown > * + * {
+  margin-top: 1rem;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-family: var(--font-display);
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  scroll-margin-top: 6rem;
+}
+.markdown h1 {
+  font-size: 1.9rem;
+  margin-top: 2.25rem;
+}
+.markdown h2 {
+  font-size: 1.42rem;
+  margin-top: 2rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.markdown h3 {
+  font-size: 1.16rem;
+  margin-top: 1.5rem;
+}
+.markdown a {
+  color: var(--brand);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.markdown a:hover {
+  color: var(--brand-soft);
+}
+.markdown strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 1.35rem;
+}
+.markdown ul {
+  list-style: disc;
+}
+.markdown ol {
+  list-style: decimal;
+}
+.markdown li + li {
+  margin-top: 0.35rem;
+}
+.markdown li::marker {
+  color: var(--brand-soft);
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+.markdown :not(pre) > code {
+  background: color-mix(in srgb, var(--brand-soft) 14%, transparent);
+  color: var(--brand);
+  padding: 0.15em 0.4em;
+  border-radius: 0.35rem;
+}
+:root[data-theme='dark'] .markdown :not(pre) > code {
+  color: var(--brand-soft);
+}
+.markdown pre {
+  background: var(--code-bg) !important;
+  border: 1px solid rgba(167, 66, 237, 0.24);
+  border-radius: 0.9rem;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  font-size: 0.86rem;
+  line-height: 1.75;
+}
+.markdown pre code {
+  background: transparent !important;
+  padding: 0;
+  color: #ece5f6;
+}
+.markdown blockquote {
+  border-left: 3px solid var(--brand-soft);
+  padding-left: 1rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.925rem;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.8rem;
+  text-align: left;
+}
+.markdown th {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+.markdown img {
+  max-width: 100%;
+  border-radius: 0.75rem;
+}
+.markdown input[type='checkbox'] {
+  margin-right: 0.4rem;
+}

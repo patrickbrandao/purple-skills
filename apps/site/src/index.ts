@@ -37,7 +37,12 @@ if (existsSync(webRoot)) {
       index: false,
       maxAge: config.isProduction ? '1h' : 0,
       setHeaders: (res, path) => {
-        if (path.includes('/assets/')) {
+        // Bundles do Vite trazem hash no nome — podem ser eternos. Imagens e
+        // fontes de `public/assets` mantêm o nome entre builds, então uma
+        // troca de logo levaria um ano para chegar a quem já visitou.
+        if (/\/assets\/(images|fonts)\//.test(path)) {
+          res.setHeader('Cache-Control', 'public, max-age=604800');
+        } else if (path.includes('/assets/')) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         }
       },

@@ -7,8 +7,7 @@ import {
   setVisibility,
   type SkillSummary,
 } from '../api.js';
-import { Badge, Button, inputClass } from '../components/ui.js';
-import { PlusIcon, TrashIcon } from '../components/Icons.js';
+import { PlusIcon, SearchIcon, TrashIcon } from '../components/Icons.js';
 import { useToast } from '../components/Toast.js';
 
 export function SkillsPage() {
@@ -23,7 +22,11 @@ export function SkillsPage() {
     async (search: string) => {
       setLoading(true);
       try {
-        const data = await listSkills({ q: search, limit: 100, sort: search ? undefined : 'recent' });
+        const data = await listSkills({
+          q: search,
+          limit: 100,
+          sort: search ? undefined : 'recent',
+        });
         setItems(data.items);
         setTotal(data.total);
       } catch (err) {
@@ -45,7 +48,9 @@ export function SkillsPage() {
     try {
       const updated = await setVisibility(skill.slug, !skill.isPublic);
       setItems((current) =>
-        current.map((item) => (item.uuid === skill.uuid ? { ...item, isPublic: updated.isPublic } : item)),
+        current.map((item) =>
+          item.uuid === skill.uuid ? { ...item, isPublic: updated.isPublic } : item,
+        ),
       );
       toast.success(`"${skill.name}" agora é ${updated.isPublic ? 'pública' : 'privada'}.`);
     } catch (err) {
@@ -73,90 +78,85 @@ export function SkillsPage() {
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="page-head">
         <div>
-          <h1 className="text-2xl font-semibold text-purple-50">Skills</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="display">Skills</h1>
+          <p className="sub">
             {loading ? 'Carregando…' : `${total} skill${total === 1 ? '' : 's'} no catálogo`}
           </p>
         </div>
-        <Link
-          to="/skills/new"
-          className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-purple-950/40 transition hover:from-purple-400 hover:to-purple-600"
-        >
+        <Link to="/skills/new" className="btn btn-primary">
           <PlusIcon /> Nova skill
         </Link>
       </div>
 
-      <input
-        type="search"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="Buscar por nome, descrição ou conteúdo…"
-        className={`${inputClass} mt-5 max-w-md`}
-      />
+      <label className="search-bar mb-5 block max-w-md">
+        <SearchIcon />
+        <span className="sr-only">Buscar skills</span>
+        <input
+          type="search"
+          className="field"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Buscar por nome, descrição ou conteúdo…"
+        />
+      </label>
 
-      <div className="mt-5 overflow-hidden rounded-2xl border border-purple-400/12">
-        <table className="w-full text-sm">
+      <div className="table-wrap">
+        <table className="data">
           <thead>
-            <tr className="bg-ink-850 text-left text-[11px] tracking-wider text-slate-500 uppercase">
-              <th className="px-4 py-3 font-semibold">Skill</th>
-              <th className="hidden px-4 py-3 font-semibold md:table-cell">Tags</th>
-              <th className="px-4 py-3 font-semibold">Estado</th>
-              <th className="hidden px-4 py-3 text-right font-semibold sm:table-cell">Acessos</th>
-              <th className="hidden px-4 py-3 text-right font-semibold sm:table-cell">Downloads</th>
-              <th className="hidden px-4 py-3 lg:table-cell">Atualizada</th>
-              <th className="px-4 py-3" />
+            <tr>
+              <th>Skill</th>
+              <th className="hidden md:table-cell">Tags</th>
+              <th>Estado</th>
+              <th className="num hidden sm:table-cell">Acessos</th>
+              <th className="num hidden sm:table-cell">Downloads</th>
+              <th className="hidden lg:table-cell">Atualizada</th>
+              <th />
             </tr>
           </thead>
-          <tbody className="divide-y divide-purple-400/8 bg-ink-900/40">
+          <tbody>
             {items.map((skill) => (
-              <tr key={skill.uuid} className="transition hover:bg-ink-850/60">
-                <td className="px-4 py-3">
+              <tr key={skill.uuid}>
+                <td>
                   <Link to={`/skills/${skill.slug}`} className="block">
-                    <span className="block font-medium text-purple-100">{skill.name}</span>
-                    <span className="block text-xs text-slate-600">{skill.slug}</span>
+                    <span className="row-title">{skill.name}</span>
+                    <span className="row-sub">{skill.slug}</span>
                   </Link>
                 </td>
-                <td className="hidden px-4 py-3 md:table-cell">
-                  <div className="flex flex-wrap gap-1">
+                <td className="hidden md:table-cell">
+                  <div className="flex flex-wrap gap-1.5">
                     {skill.tags.slice(0, 3).map((tag) => (
-                      <span
-                        key={tag}
-                        className="rounded bg-purple-500/12 px-1.5 py-0.5 text-[10px] text-purple-300"
-                      >
+                      <span className="tag" key={tag}>
                         {tag}
                       </span>
                     ))}
                   </div>
                 </td>
-                <td className="px-4 py-3">
+                <td>
                   <button
                     type="button"
                     disabled={busy === skill.slug}
                     onClick={() => toggleVisibility(skill)}
                     title="Alternar visibilidade"
-                    className="transition hover:opacity-75 disabled:opacity-40"
+                    className={`badge ${skill.isPublic ? 'public' : 'private'}`}
                   >
-                    <Badge isPublic={skill.isPublic} />
+                    <span className="dot" />
+                    {skill.isPublic ? 'pública' : 'privada'}
                   </button>
                 </td>
-                <td className="hidden px-4 py-3 text-right tabular-nums text-slate-400 sm:table-cell">
-                  {skill.viewCount}
+                <td className="num hidden sm:table-cell">{skill.viewCount}</td>
+                <td className="num hidden sm:table-cell">{skill.downloadCount}</td>
+                <td className="hidden lg:table-cell">
+                  <span className="row-sub">{formatDateTime(skill.updatedAt)}</span>
                 </td>
-                <td className="hidden px-4 py-3 text-right tabular-nums text-slate-400 sm:table-cell">
-                  {skill.downloadCount}
-                </td>
-                <td className="hidden px-4 py-3 text-xs text-slate-600 lg:table-cell">
-                  {formatDateTime(skill.updatedAt)}
-                </td>
-                <td className="px-4 py-3 text-right">
+                <td className="num">
                   <button
                     type="button"
+                    className="row-action"
                     disabled={busy === skill.slug}
                     onClick={() => remove(skill)}
                     title="Remover skill"
-                    className="rounded-lg p-2 text-slate-600 transition hover:bg-red-950/40 hover:text-red-400 disabled:opacity-40"
                   >
                     <TrashIcon />
                   </button>
@@ -165,11 +165,13 @@ export function SkillsPage() {
             ))}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-14 text-center text-sm text-slate-600">
-                  Nenhuma skill encontrada.
-                  <Link to="/skills/new" className="ml-1 text-purple-400 hover:text-purple-300">
-                    Criar a primeira?
-                  </Link>
+                <td colSpan={7}>
+                  <p className="list-empty">
+                    Nenhuma skill encontrada.{' '}
+                    <Link to="/skills/new" style={{ color: 'var(--brand)' }}>
+                      Criar a primeira?
+                    </Link>
+                  </p>
                 </td>
               </tr>
             )}

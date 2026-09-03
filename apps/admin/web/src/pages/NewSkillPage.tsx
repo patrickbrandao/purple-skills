@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createSkill, importZip } from '../api.js';
-import { Button, Card, inputClass, labelClass } from '../components/ui.js';
+import { Button, Field, Panel } from '../components/ui.js';
 import { UploadIcon } from '../components/Icons.js';
 import { useToast } from '../components/Toast.js';
 
@@ -43,7 +43,10 @@ export function NewSkillPage() {
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const tagList = tags.split(',').map((tag) => tag.trim()).filter(Boolean);
+  const tagList = tags
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -73,106 +76,104 @@ export function NewSkillPage() {
 
   return (
     <form onSubmit={submit} className="mx-auto max-w-3xl">
-      <h1 className="text-2xl font-semibold text-purple-50">Nova skill</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        Preencha o formulário ou importe um pacote .zip contendo um SKILL.md.
-      </p>
+      <div className="page-head">
+        <div>
+          <h1 className="display">Nova skill</h1>
+          <p className="sub">
+            Preencha o formulário ou importe um pacote .zip contendo um SKILL.md.
+          </p>
+        </div>
+      </div>
 
-      <div className="mt-5 inline-flex rounded-lg border border-purple-400/12 bg-ink-850 p-0.5">
+      <div className="segmented mb-4">
         {(['form', 'zip'] as const).map((option) => (
           <button
             key={option}
             type="button"
+            className={mode === option ? 'active' : ''}
             onClick={() => setMode(option)}
-            className={`rounded-md px-3.5 py-1.5 text-xs font-medium transition ${
-              mode === option ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-purple-200'
-            }`}
           >
             {option === 'form' ? 'Formulário' : 'Importar .zip'}
           </button>
         ))}
       </div>
 
-      <Card className="mt-4 space-y-4">
+      <Panel className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block">
-            <span className={labelClass}>Nome {mode === 'zip' && '(opcional)'}</span>
+          <Field label={mode === 'zip' ? 'Nome (opcional)' : 'Nome'}>
             <input
+              className="field"
               value={name}
               onChange={(event) => setName(event.target.value)}
               required={mode === 'form'}
               placeholder="Conventional Commits"
-              className={`${inputClass} mt-1.5`}
             />
-          </label>
+          </Field>
 
           {mode === 'form' && (
-            <label className="block">
-              <span className={labelClass}>Slug (opcional)</span>
+            <Field label="Slug (opcional)">
               <input
+                className="field"
                 value={slug}
                 onChange={(event) => setSlug(event.target.value)}
                 placeholder="gerado a partir do nome"
-                className={`${inputClass} mt-1.5`}
               />
-            </label>
+            </Field>
           )}
         </div>
 
-        <label className="block">
-          <span className={labelClass}>Descrição</span>
+        <Field label="Descrição">
           <textarea
+            className="field resize-y"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
             rows={2}
             placeholder="O que esta skill faz, em uma frase."
-            className={`${inputClass} mt-1.5 resize-y`}
           />
-        </label>
+        </Field>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block">
-            <span className={labelClass}>Tags (separadas por vírgula)</span>
+        <div className="grid items-end gap-4 sm:grid-cols-2">
+          <Field label="Tags (separadas por vírgula)">
             <input
+              className="field"
               value={tags}
               onChange={(event) => setTags(event.target.value)}
               placeholder="git, workflow, produtividade"
-              className={`${inputClass} mt-1.5`}
             />
-          </label>
+          </Field>
 
-          <label className="flex cursor-pointer items-center gap-3 self-end rounded-lg border border-purple-400/15 bg-ink-850 px-3.5 py-2.5">
+          <label
+            className="flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3"
+            style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+          >
             <input
               type="checkbox"
               checked={isPublic}
               onChange={(event) => setIsPublic(event.target.checked)}
-              className="h-4 w-4 accent-purple-500"
+              className="h-4 w-4"
             />
-            <span className="text-sm text-purple-100">
+            <span className="text-sm">
               Publicar no site agora (dá para publicar depois em Metadados)
             </span>
           </label>
         </div>
 
         {mode === 'form' ? (
-          <label className="block">
-            <span className={labelClass}>Conteúdo do SKILL.md</span>
+          <Field label="Conteúdo do SKILL.md">
             <textarea
+              className="field field-mono resize-y"
               value={skillMd}
               onChange={(event) => setSkillMd(event.target.value)}
               rows={20}
               required
               spellCheck={false}
-              className={`${inputClass} mt-1.5 resize-y font-mono text-[13px] leading-relaxed`}
             />
-          </label>
+          </Field>
         ) : (
-          <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border border-dashed border-purple-400/25 bg-ink-900/50 px-4 py-10 text-center transition hover:border-purple-400/50 hover:bg-ink-850">
-            <UploadIcon className="h-7 w-7 text-purple-400" />
-            <span className="text-sm text-purple-100">
-              {file ? file.name : 'Escolher um arquivo .zip'}
-            </span>
-            <span className="text-xs text-slate-600">
+          <label className="dropzone">
+            <UploadIcon />
+            <span className="t">{file ? file.name : 'Escolher um arquivo .zip'}</span>
+            <span className="h">
               A árvore de arquivos é preservada; o SKILL.md é obrigatório.
             </span>
             <input
@@ -183,7 +184,7 @@ export function NewSkillPage() {
             />
           </label>
         )}
-      </Card>
+      </Panel>
 
       <div className="mt-5 flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={() => navigate('/skills')}>

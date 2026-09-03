@@ -15,3 +15,6 @@ sync.sh
 run-rebuild.sh
 run-builder.sh
 docker-compose-builder.yml
+
+# Material de referência local (a página do LangWizard usada no redesign)
+tmp/

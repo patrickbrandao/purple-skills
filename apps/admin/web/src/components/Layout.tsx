@@ -1,11 +1,19 @@
 import type { ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { logout, type Session } from '../api.js';
-import { DashboardIcon, ExternalIcon, LogoutIcon, SparkIcon, StackIcon } from './Icons.js';
+import { useTheme } from '../useTheme.js';
+import {
+  DashboardIcon,
+  ExternalIcon,
+  LogoutIcon,
+  MoonIcon,
+  StackIcon,
+  SunIcon,
+} from './Icons.js';
 
-const links = [
-  { to: '/', label: 'Visão geral', icon: DashboardIcon, end: true },
-  { to: '/skills', label: 'Skills', icon: StackIcon, end: false },
+const LINKS = [
+  { to: '/', label: 'Visão geral', Icon: DashboardIcon, end: true },
+  { to: '/skills', label: 'Skills', Icon: StackIcon, end: false },
 ];
 
 export function Layout({
@@ -18,6 +26,7 @@ export function Layout({
   onLogout: () => void;
 }) {
   const navigate = useNavigate();
+  const [theme, toggleTheme] = useTheme();
 
   async function handleLogout() {
     await logout().catch(() => void 0);
@@ -26,60 +35,53 @@ export function Layout({
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 border-b border-purple-400/10 bg-ink-900/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center gap-6 px-5 py-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-fuchsia-400 to-purple-700 text-white shadow-md shadow-purple-950/50">
-              <SparkIcon className="h-4 w-4" />
-            </span>
-            <div className="leading-tight">
-              <p className="text-[15px] font-semibold text-purple-50">{session.siteName}</p>
-              <p className="text-[10px] tracking-wider text-slate-500 uppercase">Administração</p>
-            </div>
-          </div>
+    <div className="admin-shell">
+      <div className="atmos" aria-hidden />
 
-          <nav className="flex items-center gap-1">
-            {links.map((link) => (
-              <NavLink
-                key={link.to}
-                to={link.to}
-                end={link.end}
-                className={({ isActive }) =>
-                  `inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-                    isActive
-                      ? 'bg-purple-600/20 text-purple-200'
-                      : 'text-slate-400 hover:bg-ink-800 hover:text-purple-200'
-                  }`
-                }
-              >
-                <link.icon className="h-4 w-4" />
-                {link.label}
+      <header className="admin-nav">
+        <div className="admin-nav-inner">
+          <Link to="/" className="admin-brand">
+            <img src="/assets/images/purple-hat-256.png" alt="" width={30} height={30} />
+            <span>
+              <span className="nm">{session.siteName}</span>
+              <span className="sub">administração</span>
+            </span>
+          </Link>
+
+          <nav className="admin-tabs">
+            {LINKS.map(({ to, label, Icon, end }) => (
+              <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
+                <Icon />
+                <span>{label}</span>
               </NavLink>
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-1">
+          <div className="admin-nav-end">
             <a
               href={session.siteBaseUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-400 transition hover:bg-ink-800 hover:text-purple-200"
+              className="btn btn-ghost btn-sm"
             >
-              <ExternalIcon className="h-4 w-4" /> Ver site
+              <ExternalIcon /> <span className="lbl">Ver site</span>
             </a>
             <button
               type="button"
-              onClick={handleLogout}
-              className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-slate-400 transition hover:bg-ink-800 hover:text-red-300"
+              className="icon-btn"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Usar tema claro' : 'Usar tema escuro'}
             >
-              <LogoutIcon className="h-4 w-4" /> Sair
+              {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={handleLogout}>
+              <LogoutIcon /> <span className="lbl">Sair</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-5 py-8">{children}</main>
+      <main className="admin-main">{children}</main>
     </div>
   );
 }

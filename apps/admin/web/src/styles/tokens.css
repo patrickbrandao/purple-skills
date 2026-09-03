@@ -1,0 +1,158 @@
+/* ============================================================
+   PURPLE SKILLS — Paleta de cores & tokens de design
+   Variáveis CSS por tema (claro / escuro) + @font-face.
+
+   SISTEMA DE CORES
+   • Cor predominante: ROXO (--brand, --brand-soft, --brand-deep)
+     — a cor do MAGO ROXO, o mascote do projeto.
+   • Âmbar  (--gold, --gold-deep) : acento quente, downloads e destaques
+   • Vermelho (--ember)           : erros e ações destrutivas
+   • Verde  (--jade)              : sucesso, skills públicas
+   • Diagramas (--diag-*)         : fios e fluxos das ilustrações
+
+   Este arquivo é idêntico em apps/site e apps/admin — ao mudar um,
+   copie para o outro.
+   ============================================================ */
+
+@font-face {
+  font-family: 'Aeonik';
+  src: url('/assets/fonts/Aeonik-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Aeonik';
+  src: url('/assets/fonts/Aeonik-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---- Tema claro (padrão) ---- */
+:root,
+:root[data-theme='light'] {
+  /* fundos */
+  --bg: #faf8ff;
+  --bg-2: #f4efff;
+  --surface: #ffffff;
+  --surface-2: #f5efff;
+  --surface-3: #e7daff;
+
+  /* texto */
+  --text: #17082e;
+  --text-dim: #43356a;
+  --text-faint: #6a5f88;
+
+  /* bordas */
+  --border: rgba(23, 8, 46, 0.1);
+  --border-strong: rgba(23, 8, 46, 0.17);
+
+  /* ── ROXO — cor predominante ── */
+  --brand: #7c24b4;
+  --brand-soft: #a742ed;
+  --brand-deep: #470696;
+
+  /* acentos */
+  --gold: #ff8e30;
+  --gold-deep: #e6a704;
+  --ember: #f2545b;
+  --jade: #00a35f;
+
+  /* efeitos */
+  --glow: rgba(124, 36, 180, 0.2);
+  --atmos-1: rgba(167, 66, 237, 0.12);
+  --atmos-2: rgba(255, 142, 48, 0.07);
+  --code-bg: #170a2b;
+
+  /* sombras */
+  --shadow: 0 1px 3px rgba(71, 6, 150, 0.16), 0 0 0 1px rgba(71, 6, 150, 0.06);
+  --shadow-hover: 0 8px 28px rgba(167, 66, 237, 0.3), 0 1px 3px rgba(124, 36, 180, 0.35),
+    0 0 0 1px rgba(167, 66, 237, 0.06);
+  --code-glow: 0 0 120px rgba(167, 66, 237, 0.24), 0 0 5px rgba(167, 66, 237, 0.28);
+
+  /* ── DIAGRAMAS ── */
+  --diag-wire: #b6a3ca;
+  --diag-flow: #5b2a8e;
+  --diag-flow-out: #7c3fb0;
+
+  color-scheme: light;
+}
+
+/* ---- Tema escuro ---- */
+:root[data-theme='dark'] {
+  /* fundos */
+  --bg: #0a0418;
+  --bg-2: #100722;
+  --surface: #180c2e;
+  --surface-2: #21123d;
+  --surface-3: #2e1a52;
+
+  /* texto */
+  --text: #fdfbff;
+  --text-dim: #cfc4e2;
+  --text-faint: #a294bd;
+
+  /* bordas */
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  /* ── ROXO — cor predominante ── */
+  --brand: #c88ffb;
+  --brand-soft: #e0c7ff;
+  --brand-deep: #a742ed;
+
+  /* acentos */
+  --gold: #ffc976;
+  --gold-deep: #ff8e30;
+  --ember: #f6a8aa;
+  --jade: #34d399;
+
+  /* efeitos */
+  --glow: rgba(167, 66, 237, 0.42);
+  --atmos-1: rgba(167, 66, 237, 0.22);
+  --atmos-2: rgba(255, 142, 48, 0.09);
+  --code-bg: #0b0418;
+
+  /* sombras */
+  --shadow: 0 24px 70px -28px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-hover: 0 0 0 1px rgba(200, 143, 251, 0.45), 0 18px 50px -18px rgba(167, 66, 237, 0.5);
+  --code-glow: 0 0 120px rgba(167, 66, 237, 0.3), 0 0 5px rgba(167, 66, 237, 0.34);
+
+  /* ── DIAGRAMAS ── */
+  --diag-wire: #5a4a70;
+  --diag-flow: #b98ee0;
+  --diag-flow-out: #9b6fd0;
+
+  color-scheme: dark;
+}
+
+/* Tokens expostos ao Tailwind. `inline` faz as utilities emitirem
+   `var(--surface)` em vez de congelar o valor do tema claro. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-ink: var(--text);
+  --color-dim: var(--text-dim);
+  --color-faint: var(--text-faint);
+
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-deep: var(--brand-deep);
+
+  --color-gold: var(--gold);
+  --color-gold-deep: var(--gold-deep);
+  --color-ember: var(--ember);
+  --color-jade: var(--jade);
+
+  --font-display: 'Aeonik', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}

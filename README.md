@@ -99,6 +99,17 @@ packages/
 Cada app gera sua **própria imagem Docker** e fala **direto com o Postgres** —
 não há um serviço de API intermediário.
 
+## Identidade visual
+
+O mascote é **o Mago Roxo**, e o roxo é a cor de tudo. Site e painel
+compartilham o mesmo sistema de design — tokens de cor em CSS, tema claro e
+escuro, tipografia Aeonik + JetBrains Mono e os diagramas em SVG da home.
+
+Onde mexer em cada peça está em
+[`docs/04-design-system.md`](docs/04-design-system.md). Resumo do que importa:
+`tokens.css`, `base.css` e `markdown.css` são **idênticos** nos dois apps e
+precisam ser copiados juntos ao mudar um deles.
+
 ## Conectando um agente ao MCP
 
 Os dois servidores MCP expõem **os três transportes** do SDK TypeScript:
