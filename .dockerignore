@@ -17,3 +17,4 @@ run-builder.sh
 docker-compose-builder.yml
 .DS_Store
 **/.DS_Store
+tmp

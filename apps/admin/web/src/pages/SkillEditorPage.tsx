@@ -14,8 +14,15 @@ import {
   type Session,
   type SkillDetail,
 } from '../api.js';
-import { Badge, Button, Card, inputClass, labelClass } from '../components/ui.js';
-import { ExternalIcon, FileIcon, SaveIcon, TrashIcon, UploadIcon } from '../components/Icons.js';
+import { Badge, Button, Field, Panel } from '../components/ui.js';
+import {
+  ArrowLeftIcon,
+  ExternalIcon,
+  FileIcon,
+  SaveIcon,
+  TrashIcon,
+  UploadIcon,
+} from '../components/Icons.js';
 import { Markdown } from '../components/Markdown.js';
 import { useToast } from '../components/Toast.js';
 
@@ -76,7 +83,10 @@ export function SkillEditorPage({ session }: { session: Session }) {
         name,
         slug: newSlug !== skill.slug ? newSlug : undefined,
         description,
-        tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+        tags: tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
         isPublic,
         skillMd: skillMd !== skill.skillMd ? skillMd : undefined,
       });
@@ -160,7 +170,7 @@ export function SkillEditorPage({ session }: { session: Session }) {
   }
 
   if (!skill) {
-    return <div className="h-64 animate-pulse rounded-2xl bg-ink-850/60" />;
+    return <div className="skel-block" style={{ height: '18rem' }} />;
   }
 
   const attachments = skill.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
@@ -174,16 +184,16 @@ export function SkillEditorPage({ session }: { session: Session }) {
 
   return (
     <>
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="page-head">
         <div className="min-w-0">
-          <Link to="/skills" className="text-xs text-slate-500 transition hover:text-purple-300">
-            ← Skills
+          <Link to="/skills" className="back-link">
+            <ArrowLeftIcon /> Skills
           </Link>
-          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold text-purple-50">
+          <h1 className="display mt-1 flex flex-wrap items-center gap-3">
             <span className="truncate">{skill.name}</span>
             <Badge isPublic={skill.isPublic} />
           </h1>
-          <p className="mt-1 flex items-center gap-3 text-xs text-slate-600">
+          <p className="sub mono flex flex-wrap items-center gap-x-3">
             <span>{skill.slug}</span>
             <span>· {skill.viewCount} acessos</span>
             <span>· {skill.downloadCount} downloads</span>
@@ -192,7 +202,8 @@ export function SkillEditorPage({ session }: { session: Session }) {
                 href={`${session.siteBaseUrl}/skills/${skill.slug}`}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-purple-400 hover:text-purple-300"
+                className="inline-flex items-center gap-1"
+                style={{ color: 'var(--brand)' }}
               >
                 <ExternalIcon className="h-3 w-3" /> ver no site
               </a>
@@ -210,7 +221,7 @@ export function SkillEditorPage({ session }: { session: Session }) {
         </div>
       </div>
 
-      <div className="mt-6 flex gap-1 border-b border-purple-400/10">
+      <div className="tabs">
         {(
           [
             ['content', 'SKILL.md'],
@@ -221,12 +232,8 @@ export function SkillEditorPage({ session }: { session: Session }) {
           <button
             key={value}
             type="button"
+            className={tab === value ? 'active' : ''}
             onClick={() => setTab(value)}
-            className={`-mb-px border-b-2 px-4 py-2.5 text-sm font-medium transition ${
-              tab === value
-                ? 'border-purple-500 text-purple-200'
-                : 'border-transparent text-slate-500 hover:text-purple-300'
-            }`}
           >
             {label}
           </button>
@@ -235,153 +242,145 @@ export function SkillEditorPage({ session }: { session: Session }) {
 
       {tab === 'content' && (
         <div className="mt-5">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs text-slate-600">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs" style={{ color: 'var(--text-faint)' }}>
               Markdown com frontmatter YAML. O conteúdo alimenta a busca full-text.
             </p>
-            <button
-              type="button"
-              onClick={() => setPreview((current) => !current)}
-              className="rounded-lg border border-purple-400/15 px-3 py-1.5 text-xs text-slate-400 transition hover:border-purple-400/40 hover:text-purple-200"
-            >
+            <Button variant="ghost" size="sm" onClick={() => setPreview((current) => !current)}>
               {preview ? 'Editar' : 'Pré-visualizar'}
-            </button>
+            </Button>
           </div>
 
           {preview ? (
-            <Card className="min-h-[28rem]">
+            <Panel className="min-h-[28rem]">
               <Markdown>{skillMd}</Markdown>
-            </Card>
+            </Panel>
           ) : (
             <textarea
               value={skillMd}
               onChange={(event) => setSkillMd(event.target.value)}
               rows={28}
               spellCheck={false}
-              className={`${inputClass} resize-y font-mono text-[13px] leading-relaxed`}
+              className="field field-mono resize-y"
             />
           )}
         </div>
       )}
 
       {tab === 'settings' && (
-        <Card className="mt-5 max-w-2xl space-y-4">
+        <Panel className="mt-5 max-w-2xl space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block">
-              <span className={labelClass}>Nome</span>
+            <Field label="Nome">
               <input
+                className="field"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                className={`${inputClass} mt-1.5`}
               />
-            </label>
-            <label className="block">
-              <span className={labelClass}>Slug</span>
+            </Field>
+            <Field label="Slug">
               <input
+                className="field"
                 value={newSlug}
                 onChange={(event) => setNewSlug(event.target.value)}
-                className={`${inputClass} mt-1.5`}
               />
-            </label>
+            </Field>
           </div>
 
-          <label className="block">
-            <span className={labelClass}>Descrição</span>
+          <Field label="Descrição">
             <textarea
+              className="field resize-y"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               rows={3}
-              className={`${inputClass} mt-1.5 resize-y`}
             />
-          </label>
+          </Field>
 
-          <label className="block">
-            <span className={labelClass}>Tags (separadas por vírgula)</span>
+          <Field label="Tags (separadas por vírgula)">
             <input
+              className="field"
               value={tags}
               onChange={(event) => setTags(event.target.value)}
-              className={`${inputClass} mt-1.5`}
             />
-          </label>
+          </Field>
 
-          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-purple-400/15 bg-ink-900/60 px-3.5 py-3">
+          <label
+            className="flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3"
+            style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+          >
             <input
               type="checkbox"
               checked={isPublic}
               onChange={(event) => setIsPublic(event.target.checked)}
-              className="h-4 w-4 accent-purple-500"
+              className="h-4 w-4"
             />
-            <span className="text-sm text-purple-100">
+            <span className="text-sm">
               Skill pública — visível no site, na API e no MCP público
             </span>
           </label>
-        </Card>
+        </Panel>
       )}
 
       {tab === 'files' && (
-        <div className="mt-5 grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <Card className="lg:sticky lg:top-20 lg:self-start">
+        <div className="mt-5 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
+          <Panel className="lg:sticky lg:top-24 lg:self-start">
             <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold tracking-wider text-slate-500 uppercase">
-                Arquivos
+              <h2>
+                <FileIcon /> Arquivos
               </h2>
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => filesInput.current?.click()}
-                  title="Enviar arquivos"
-                  className="rounded-md p-1.5 text-slate-500 transition hover:bg-ink-800 hover:text-purple-300"
-                >
-                  <UploadIcon className="h-3.5 w-3.5" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => filesInput.current?.click()}
+                title="Enviar arquivos"
+                className="row-action"
+                style={{ color: 'var(--text-faint)' }}
+              >
+                <UploadIcon />
+              </button>
             </div>
 
-            <ul className="mt-3 space-y-0.5">
+            <div className="file-tree">
               {skill.files.map((file) => (
-                <li key={file.relativePath} className="group flex items-center gap-1">
+                <div className="file-row" key={file.relativePath}>
                   <button
                     type="button"
                     onClick={() => file.isText && openFile(file.relativePath)}
                     disabled={!file.isText}
-                    className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition ${
-                      selectedFile === file.relativePath
-                        ? 'bg-purple-600/20 text-purple-200'
-                        : file.isText
-                          ? 'text-slate-400 hover:bg-ink-800 hover:text-purple-200'
-                          : 'cursor-default text-slate-600'
-                    }`}
+                    className={`pick${selectedFile === file.relativePath ? ' active' : ''}`}
                   >
-                    <FileIcon className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{file.relativePath}</span>
-                    <span className="ml-auto shrink-0 text-[10px] text-slate-600">
-                      {formatBytes(file.sizeBytes)}
-                    </span>
+                    <FileIcon />
+                    <span className="name">{file.relativePath}</span>
+                    <span className="size">{formatBytes(file.sizeBytes)}</span>
                   </button>
                   {file.relativePath.toLowerCase() !== 'skill.md' && (
                     <button
                       type="button"
                       onClick={() => removeFile(file.relativePath)}
                       title="Remover arquivo"
-                      className="rounded p-1 text-slate-700 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+                      className="row-action del"
                     >
-                      <TrashIcon className="h-3.5 w-3.5" />
+                      <TrashIcon />
                     </button>
                   )}
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
 
-            <div className="mt-4 flex flex-col gap-2 border-t border-purple-400/10 pt-4">
-              <Button variant="ghost" className="!py-2 !text-xs" onClick={() => zipInput.current?.click()}>
-                <UploadIcon className="h-3.5 w-3.5" /> Importar .zip
+            <div
+              className="mt-4 flex flex-col gap-3 pt-4"
+              style={{ borderTop: '1px solid var(--border)' }}
+            >
+              <Button variant="ghost" size="sm" onClick={() => zipInput.current?.click()}>
+                <UploadIcon /> Importar .zip
               </Button>
-              <label className="flex cursor-pointer items-start gap-2 text-[11px] leading-relaxed text-slate-500">
+              <label
+                className="flex cursor-pointer items-start gap-2 text-[11px] leading-relaxed"
+                style={{ color: 'var(--text-faint)' }}
+              >
                 <input
                   type="checkbox"
                   checked={replaceTree}
                   onChange={(event) => setReplaceTree(event.target.checked)}
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-purple-500"
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0"
                 />
                 <span>
                   Substituir toda a árvore — arquivos ausentes no .zip são removidos (o SKILL.md é
@@ -411,29 +410,29 @@ export function SkillEditorPage({ session }: { session: Session }) {
                 event.target.value = '';
               }}
             />
-          </Card>
+          </Panel>
 
-          <Card>
+          <Panel>
             {!selectedFile && (
-              <p className="py-16 text-center text-sm text-slate-600">
-                Selecione um arquivo de texto à esquerda para editar.
-              </p>
+              <p className="list-empty">Selecione um arquivo de texto à esquerda para editar.</p>
             )}
 
             {selectedFile && (
               <>
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <code className="truncate font-mono text-xs text-purple-300">{selectedFile}</code>
+                  <code className="mono truncate text-xs" style={{ color: 'var(--brand)' }}>
+                    {selectedFile}
+                  </code>
                   <div className="flex shrink-0 gap-2">
                     <a
                       href={rawFileUrl(slug, selectedFile)}
                       target="_blank"
                       rel="noreferrer"
-                      className="rounded-lg border border-purple-400/15 px-3 py-1.5 text-xs text-slate-400 transition hover:text-purple-200"
+                      className="btn btn-ghost btn-sm"
                     >
                       Abrir cru
                     </a>
-                    <Button className="!py-1.5 !text-xs" onClick={saveFile} disabled={fileContent === null}>
+                    <Button size="sm" onClick={saveFile} disabled={fileContent === null}>
                       Salvar arquivo
                     </Button>
                   </div>
@@ -443,11 +442,11 @@ export function SkillEditorPage({ session }: { session: Session }) {
                   onChange={(event) => setFileContent(event.target.value)}
                   rows={24}
                   spellCheck={false}
-                  className={`${inputClass} resize-y font-mono text-[13px] leading-relaxed`}
+                  className="field field-mono resize-y"
                 />
               </>
             )}
-          </Card>
+          </Panel>
         </div>
       )}
     </>
