@@ -200,6 +200,15 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
 
+Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
+cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Os
+arquivos preenchidos (`.env`, `.env-builder`, `run-builder.sh`,
+`docker-compose-builder.yml`) são do ambiente de testes do mantenedor, ficam
+fora do Git e da imagem, e não fazem parte do projeto publicado. **Gere seus
+próprios segredos**: nenhum valor deste repositório — inclusive os que o commit
+inicial publicou antes de virarem placeholders — deve ser reaproveitado. Ver
+[`docs/02-architecture-decisions.md` §7.5](docs/02-architecture-decisions.md).
+
 ## Limitações assumidas no v1
 
 Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md):

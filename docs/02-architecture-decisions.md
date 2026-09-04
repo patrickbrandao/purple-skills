@@ -174,6 +174,29 @@ o arquivo se `<NOME>_FILE` estiver definido; senão usa `<NOME>` direto):
 - `MCP_ADMIN_TOKEN` / `MCP_ADMIN_TOKEN_FILE`
 - `MCP_PUBLIC_KEY` / `MCP_PUBLIC_KEY_FILE`
 
+### 7.5 Segredos do repositório e do ambiente de testes
+
+O projeto publicado versiona **apenas** o `.env.example`, com `CHANGE_ME` nos
+lugares dos segredos. Nenhum valor real é versionado, e o CI reprova qualquer
+`.env*` que apareça no índice (job `secrets-scan` + `.gitleaks.toml`).
+
+Os arquivos com valores preenchidos — `.env`, `.env-builder`, `run-builder.sh`
+e `docker-compose-builder.yml` — pertencem ao **ambiente de testes do
+mantenedor**, não ao projeto. Estão no `.gitignore` e no `.dockerignore`, nunca
+entraram no repositório nem na imagem, e não descrevem nenhuma implantação de
+produção do Purple Skills.
+
+O commit inicial `a01fdaf` publicou o `.env.example` com valores preenchidos em
+vez de placeholders; o `7fd36ca` os trocou por `CHANGE_ME`. São credenciais
+daquele mesmo ambiente de testes. Continuam no histórico — que é imutável — e
+por isso ficam dispensadas no `.gitleaks.toml`, com escopo fechado no commit
+**e** no arquivo, para que nenhum outro segredo do mesmo commit seja silenciado.
+
+> **Quem implanta o Purple Skills gera os próprios segredos.** Nenhum valor
+> deste repositório, atual ou histórico, serve como padrão: são exemplos de um
+> ambiente de testes, e reaproveitá-los deixa a instalação com credenciais
+> públicas.
+
 ## 8. Contrato das ferramentas MCP
 
 ### 8.1 MCP público (`apps/mcp-public`)
