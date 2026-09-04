@@ -31,8 +31,8 @@ x-app-env: &app-env
   # Em quais proxies confiar para X-Forwarded-*. Vazio = loopback + faixas privadas.
   TRUST_PROXY: ${TRUST_PROXY:-}
   # Defesa contra zip bomb. Valor inválido derruba o boot (não vira "sem limite").
-  ZIP_MAX_UNCOMPRESSED_BYTES: ${ZIP_MAX_UNCOMPRESSED_BYTES:-26214400}
-  ZIP_MAX_ENTRIES: ${ZIP_MAX_ENTRIES:-2000}
+  ZIP_MAX_UNCOMPRESSED_BYTES: ${ZIP_MAX_UNCOMPRESSED_BYTES:-268435456}
+  ZIP_MAX_ENTRIES: ${ZIP_MAX_ENTRIES:-512}
   # Sessões MCP mantidas em memória.
   MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
   MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}

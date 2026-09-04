@@ -215,8 +215,8 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 
 - Contadores sem deduplicação — infláveis por refresh-spam.
 - Sem limite por skill (soma dos arquivos). Existem tetos por requisição:
-  upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), zip de 25 MB descomprimidos e
-  2000 entradas (`ZIP_MAX_UNCOMPRESSED_BYTES`, `ZIP_MAX_ENTRIES`) e 32 MB de
+  upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), zip de 256 MB descomprimidos e
+  512 entradas (`ZIP_MAX_UNCOMPRESSED_BYTES`, `ZIP_MAX_ENTRIES`) e 32 MB de
   base64 no `set_files_bulk` (`MCP_MAX_ZIP_BASE64`).
 - Login do painel sem rate limiting.
 - Sem versionamento de arquivos (apenas um log de auditoria, sem restore).

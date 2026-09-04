@@ -73,12 +73,12 @@ export type ExtractedFile = {
  */
 export const DEFAULT_MAX_UNCOMPRESSED_BYTES = readIntEnv(
   'ZIP_MAX_UNCOMPRESSED_BYTES',
-  25 * 1024 * 1024,
+  256 * 1024 * 1024,
   { min: 1024 },
 );
 
 /** Teto padrão de entradas por ZIP. */
-export const DEFAULT_MAX_ZIP_ENTRIES = readIntEnv('ZIP_MAX_ENTRIES', 2000);
+export const DEFAULT_MAX_ZIP_ENTRIES = readIntEnv('ZIP_MAX_ENTRIES', 512);
 
 export type ExtractZipOptions = {
   /**
