@@ -32,14 +32,18 @@ regexes = [
 
 # --------------------------------------------------------------------------
 # O commit inicial publicou o .env.example com valores preenchidos em vez de
-# placeholders. São valores de exemplo, diferentes dos que estão em uso hoje, e
-# `7fd36ca` já os trocou por CHANGE_ME — mas continuam no histórico e fariam a
-# varredura falhar para sempre. A exceção é fechada: só aquele commit, só
-# aquele arquivo (`condition = "AND"`); qualquer outro segredo do mesmo commit
-# continua sendo apontado.
+# placeholders. O `7fd36ca` já os trocou por CHANGE_ME, mas eles continuam no
+# histórico e fariam a varredura falhar para sempre — daí a exceção, fechada
+# no commit E no arquivo (`condition = "AND"`), de modo que qualquer outro
+# segredo do mesmo commit continua sendo apontado.
+#
+# São credenciais do ambiente de testes do mantenedor, não do projeto
+# publicado — ver `docs/02-architecture-decisions.md` §7.5. Nenhum valor deste
+# repositório, atual ou histórico, serve de padrão para uma instalação: quem
+# implanta gera os próprios segredos.
 # --------------------------------------------------------------------------
 [[allowlists]]
-description = ".env.example de a01fdaf — valores de exemplo, aposentados em 7fd36ca"
+description = ".env.example de a01fdaf — histórico imutável; valores do ambiente de testes (docs §7.5)"
 condition = "AND"
 commits = ["a01fdaf4d1b7b941ad9ee75761daeb293cdfcfe3"]
 paths = ['''^\.env\.example$''']

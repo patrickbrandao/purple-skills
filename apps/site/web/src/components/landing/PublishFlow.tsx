@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react';
+import { PlugIcon, ServerIcon } from '../Icons.js';
 
 const AGENTS = [
   { file: 'icon-agent-hermes-64.png', alt: 'Hermes' },
@@ -9,9 +10,9 @@ const AGENTS = [
   { file: 'icon-lm-studio-app-64.png', alt: 'LM Studio' },
 ];
 
-function Wire({ tone }: { tone: 'purple' | 'gold' }) {
+function Wire({ tone, bridge }: { tone: 'purple' | 'gold'; bridge?: boolean }) {
   return (
-    <div className="dia2-cell dia2-wire" aria-hidden>
+    <div className={`dia2-cell dia2-wire${bridge ? ' dia2-wire--bridge' : ''}`} aria-hidden>
       <svg className="dia2-wire-svg" viewBox="0 0 200 26" preserveAspectRatio="none">
         <path className={`dia2-wtrack dia2-wtrack--${tone}`} d="M0 13 L200 13" />
         <path className={`dia2-wflow dia2-wflow--${tone}`} d="M0 13 L200 13" />
@@ -95,6 +96,20 @@ export function PublishFlow() {
         </div>
 
         <div className="dia2-board reveal" ref={boardRef}>
+          {/* quadros de fundo: os agentes de um lado, os serviços do outro */}
+          <div className="dia2-frame dia2-frame--agents" aria-hidden>
+            <span className="dia2-frame-title">
+              <PlugIcon />
+              Agentes
+            </span>
+          </div>
+          <div className="dia2-frame dia2-frame--services" aria-hidden>
+            <span className="dia2-frame-title">
+              <ServerIcon />
+              Purple Skills
+            </span>
+          </div>
+
           {/* ── cria: agente → mcp-admin → SKILL.md ── */}
           <div className="dia2-row dia2-row--create">
             <div className="dia2-cell dia2-cell--left">
@@ -105,19 +120,19 @@ export function PublishFlow() {
                 <span className="dia2-create-lbl">
                   criando nova skill
                   <br />
-                  <em>'Como abrir chamados'</em>
+                  <em>'como-abrir-chamados'</em>
                 </span>
               </div>
             </div>
 
-            <Wire tone="purple" />
+            <Wire tone="purple" bridge />
 
             <div className="dia2-cell dia2-cell--mcp">
               <div className="dia2-mcp">
                 <span className="dia2-mcp-orb">
                   <img src="/assets/images/icon-mcp-64.png" alt="Servidor MCP administrativo" />
                 </span>
-                <span className="dia2-mcp-lbl">mcp-admin</span>
+                <span className="dia2-mcp-lbl">Admin MCP</span>
               </div>
             </div>
 
@@ -148,14 +163,14 @@ export function PublishFlow() {
               </div>
             </div>
 
-            <Wire tone="gold" />
+            <Wire tone="gold" bridge />
 
             <div className="dia2-cell dia2-cell--mcp">
               <div className="dia2-mcp">
                 <span className="dia2-mcp-orb">
                   <img src="/assets/images/icon-mcp-64.png" alt="Servidor MCP público" />
                 </span>
-                <span className="dia2-mcp-lbl">mcp-public</span>
+                <span className="dia2-mcp-lbl">Agents MCP</span>
               </div>
             </div>
 
