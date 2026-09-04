@@ -101,12 +101,14 @@
    HERO
    ============================================================ */
 .hero {
-  min-height: 100svh;
+  /* teto para que a seção seguinte sempre apareça na dobra */
+  min-height: 880px;
   display: flex;
   align-items: center;
   position: relative;
   overflow: hidden;
-  padding-top: 92px;
+  padding-top: 150px;
+  padding-bottom: clamp(36px, 5vh, 56px);
   background: linear-gradient(var(--bg-2) 0, var(--bg) 640px);
 }
 .hero .wrap {
@@ -119,14 +121,14 @@
   margin-inline: auto;
 }
 .hero-fig {
-  width: clamp(96px, 12vw, 132px);
-  margin: 0 auto 22px;
+  width: clamp(88px, 10vw, 116px);
+  margin: 0 auto 18px;
   filter: drop-shadow(0 18px 34px rgba(124, 36, 180, 0.35));
   animation: floaty 6s ease-in-out infinite;
 }
 .hero h1 {
   font-size: clamp(2.6rem, 7.2vw, 5.4rem);
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 .hero h1 .line {
   display: block;
@@ -152,7 +154,7 @@
   font-size: clamp(1.05rem, 1.7vw, 1.24rem);
   color: var(--text-dim);
   max-width: 44em;
-  margin: 0 auto 32px;
+  margin: 0 auto 28px;
   opacity: 0;
   animation: fadeUp 0.8s ease 0.55s forwards;
 }
@@ -165,7 +167,7 @@
   animation: fadeUp 0.8s ease 0.7s forwards;
 }
 .hero-trust {
-  margin-top: 30px;
+  margin-top: 24px;
   display: flex;
   gap: 26px;
   flex-wrap: wrap;
@@ -269,7 +271,8 @@
 .diag-stage {
   position: relative;
   display: grid;
-  grid-template-columns: auto 1fr auto 1fr auto;
+  /* laterais simétricas: o hub /mcp fica no centro exato do palco */
+  grid-template-columns: 1fr 1fr auto 1fr 1fr;
   align-items: stretch;
   height: clamp(380px, 46vw, 470px);
   margin-top: 20px;
@@ -430,7 +433,7 @@
   border: 1px solid var(--accent);
   border-left: 3px solid var(--accent);
   box-shadow: var(--shadow);
-  min-width: clamp(160px, 21vw, 230px);
+  min-width: clamp(150px, 18vw, 230px);
   transition: transform 0.25s ease;
 }
 .diag-tool:hover {
@@ -526,15 +529,71 @@
    ============================================================ */
 .dia2-board {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: clamp(32px, 5vw, 56px);
+  display: grid;
+  isolation: isolate;
+  grid-template-columns: minmax(0, 200px) minmax(26px, 1fr) auto minmax(26px, 1fr) minmax(0, 216px);
+  grid-template-rows: auto auto;
+  row-gap: clamp(32px, 5vw, 56px);
   margin-top: 52px;
+  max-width: min(100%, 980px);
+  margin-inline: auto;
 }
 .dia2-row {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 200px) minmax(26px, 1fr) auto minmax(26px, 1fr) minmax(0, 216px);
+  grid-template-columns: subgrid;
   align-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+/* Os dois quadros de fundo, no mesmo traço do diagrama "Quatro serviços":
+   o laranja abraça os agentes, o roxo abraça o MCP e o que ele serve. */
+.dia2-frame {
+  grid-row: 1 / -1;
+  z-index: 0;
+  position: relative;
+  pointer-events: none;
+  border: 1.5px dashed var(--brand-soft);
+  border-radius: 24px;
+  background: linear-gradient(165deg, var(--surface-2), var(--surface) 70%);
+  box-shadow: 0 14px 40px -22px rgba(124, 36, 180, 0.5);
+  margin: -10px -26px -14px;
+}
+.dia2-frame--agents {
+  grid-column: 1;
+  border-color: var(--gold-deep);
+  box-shadow: 0 14px 40px -22px rgba(230, 167, 4, 0.5);
+}
+.dia2-frame--services {
+  grid-column: 3 / -1;
+}
+.dia2-frame-title {
+  position: absolute;
+  top: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 6px 18px -8px rgba(124, 36, 180, 0.7);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.dia2-frame--agents .dia2-frame-title {
+  background: var(--gold-deep);
+  box-shadow: 0 6px 18px -8px rgba(230, 167, 4, 0.7);
+}
+.dia2-frame-title svg {
+  width: 14px;
+  height: 14px;
 }
 .dia2-cell {
   display: flex;
@@ -607,7 +666,12 @@
   box-shadow: 0 0 0 3px rgba(230, 167, 4, 0.07);
 }
 .dia2-row--create {
-  padding-top: 56px;
+  grid-row: 1;
+  padding-top: 72px;
+}
+.dia2-row--fetch {
+  grid-row: 2;
+  padding-bottom: 40px;
 }
 .dia2-row--create .dia2-creator {
   position: relative;
@@ -621,7 +685,7 @@
   white-space: nowrap;
 }
 .dia2-row--create .dia2-cell--left {
-  justify-content: flex-end;
+  justify-content: center;
 }
 .dia2-target {
   position: relative;
@@ -645,6 +709,10 @@
 /* fios do diagrama 2 */
 .dia2-wire {
   width: 100%;
+}
+/* o fio que cruza o vão nasce na borda de um quadro e morre na do outro */
+.dia2-wire--bridge {
+  padding-inline: 26px;
 }
 .dia2-wire-svg {
   width: 100%;
@@ -727,9 +795,16 @@
   .dia2-vert-svg {
     display: none;
   }
+  /* empilhado, não há dois lados para emoldurar */
+  .dia2-frame {
+    display: none;
+  }
   .dia2-board {
+    display: flex;
+    flex-direction: column;
     gap: 30px;
     margin-top: 34px;
+    max-width: 100%;
   }
   .dia2-row {
     display: flex;
@@ -738,6 +813,9 @@
   }
   .dia2-row--create {
     padding-top: 34px;
+  }
+  .dia2-row--fetch {
+    padding-bottom: 0;
   }
   .dia2-row--fetch {
     flex-direction: column-reverse;
@@ -1016,16 +1094,6 @@
 }
 .tri-card.catalog {
   --accent: var(--ember);
-}
-.tri-card img.tri-fig {
-  position: absolute;
-  right: -14px;
-  bottom: -12px;
-  width: 40%;
-  max-width: 185px;
-  pointer-events: none;
-  filter: drop-shadow(0 16px 26px rgba(20, 13, 48, 0.26));
-  z-index: 0;
 }
 .tri-card > * {
   position: relative;

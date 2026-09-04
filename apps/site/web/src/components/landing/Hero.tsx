@@ -22,9 +22,9 @@ export function Hero() {
             </span>
           </h1>
           <p className="sub">
-            Um catálogo aberto de skills para agentes de IA: <b>SKILL.md</b> versionado, busca
-            full-text e dois servidores MCP. Publique no painel, e todos os agentes conectados
-            aprendem na mesma hora.
+            O Purple-MCP é um catalogo privado e centralizado de skills que seus agentes espalhados pelo mundo podem consultar.
+            Publique no painel, e todos os agentes conectados aprendem na mesma hora.
+            Seu agente orquestrador pode editar e criar novas skills que orientarão seus processos em tempo real.
           </p>
           <div className="hero-cta">
             <a href="#catalogo" className="btn btn-primary btn-lg">

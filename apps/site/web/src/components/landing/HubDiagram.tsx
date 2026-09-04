@@ -14,7 +14,7 @@ const TOOLS = [
   {
     cls: 't1',
     name: 'search_skills',
-    desc: 'Acha a skill pela tarefa, não pela palavra-chave',
+    desc: 'Acha a skill perfeita para a tarefa',
     Icon: SearchIcon,
   },
   {
@@ -26,7 +26,7 @@ const TOOLS = [
   {
     cls: 't3',
     name: 'download_skill',
-    desc: 'Empacota a skill inteira em um .zip',
+    desc: 'Empacota a skill em um .zip',
     Icon: DownloadIcon,
   },
 ];
@@ -62,6 +62,9 @@ function useHubWires(
       const hubBox = hub.getBoundingClientRect();
       const hx = hubBox.left + hubBox.width / 2 - stageBox.left;
       const hy = hubBox.top + hubBox.height / 2 - stageBox.top;
+      // Os fios morrem na borda esquerda do círculo — e não no centro dele —,
+      // espelhando os fios de saída, que partem da borda direita.
+      const edgeX = hx - hubBox.width / 2;
 
       const fragment = document.createDocumentFragment();
       const flows: SVGPathElement[] = [];
@@ -70,8 +73,8 @@ function useHubWires(
         const box = agent.getBoundingClientRect();
         const sx = box.left + box.width / 2 - stageBox.left;
         const sy = box.top + box.height / 2 - stageBox.top;
-        const midX = sx + (hx - sx) * 0.5;
-        const d = `M ${sx} ${sy} C ${midX} ${sy}, ${midX} ${hy}, ${hx} ${hy}`;
+        const midX = sx + (edgeX - sx) * 0.5;
+        const d = `M ${sx} ${sy} C ${midX} ${sy}, ${midX} ${hy}, ${edgeX} ${hy}`;
 
         const wire = document.createElementNS(NS, 'path');
         wire.setAttribute('class', 'wire');
@@ -121,11 +124,7 @@ export function HubDiagram() {
           </h2>
           <p>
             Seus agentes falam com um único endpoint MCP. De lá eles descobrem skills, leem o
-            SKILL.md renderizado, abrem os arquivos auxiliares e baixam o pacote completo.
-          </p>
-          <p>
-            São cinco ferramentas MCP no total — as três principais estão à direita, mais{' '}
-            <code className="mono">get_skill_file</code> e <code className="mono">list_tags</code>.
+            SKILL.md e abrem os arquivos auxiliares, com opção de baixar o pacote completo (ZIP).
           </p>
         </div>
 
