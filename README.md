@@ -2,7 +2,7 @@
 
 # 🟣 Purple Skills
 
-**Catálogo aberto de skills para agentes de IA — site público, painel administrativo e dois servidores MCP.**
+**Catálogo aberto de skills para agentes de IA — homepage, site do catálogo, painel administrativo e dois servidores MCP.**
 
 Software livre (MIT), em containers, pensado para ser simples, bonito e pontual.
 
@@ -13,15 +13,22 @@ Software livre (MIT), em containers, pensado para ser simples, bonito e pontual.
 ## O que é
 
 Purple Skills hospeda **skills** — pacotes de instruções reutilizáveis para
-agentes de IA, no formato `SKILL.md` + arquivos auxiliares. Ele entrega quatro
-superfícies sobre o mesmo catálogo:
+agentes de IA, no formato `SKILL.md` + arquivos auxiliares. Ele entrega cinco
+superfícies:
 
 | Serviço | O que faz | Porta padrão |
 |---------|-----------|--------------|
-| **site** | Site público: busca, leitura do SKILL.md renderizado e download | `3000` |
+| **homepage** | Apresentação do projeto, estática — não fala com o banco | `3004` |
+| **site** | Catálogo do usuário: busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
 | **admin** | Painel de administração protegido por senha | `3001` |
 | **mcp-public** | Servidor MCP para agentes descobrirem e baixarem skills | `3002` |
 | **mcp-admin** | Servidor MCP para administrar o catálogo (CRUD completo) | `3003` |
+
+**homepage e site são páginas diferentes de propósito.** A homepage explica o
+que é o Purple Skills e leva ao GitHub; ela não conhece instalação nenhuma e
+pode ir para o ar sozinha. O site é a página de quem já tem um catálogo no ar:
+lista as skills publicadas, ensina a configurar o `mcp.json` e mostra os
+endereços de acesso.
 
 O banco é **PostgreSQL 18** (imagem `pgvector/pgvector:pg18-trixie`). A busca do
 v1 usa **full-text search nativo** (`tsvector` + GIN); o `pgvector` já está
@@ -40,6 +47,7 @@ Os serviços `postgres`, `migrate` e `seed` vêm de
 [`database/docker-compose.yml`](database/docker-compose.yml), incluído pelo
 compose da raiz — rode sempre a partir da raiz do repositório.
 
+- Homepage: <http://localhost:3004>
 - Site: <http://localhost:3000>
 - Painel: <http://localhost:3001> (senha = `ADMIN_PASSWORD`)
 - MCP público: <http://localhost:3002>
@@ -67,6 +75,7 @@ npm run build -w @purple-skills/db
 npm run migrate            # aplica database/schema/*.sql em DATABASE_URL
 npm run seed               # opcional
 
+npm run dev:homepage       # http://localhost:5175 (Vite) + estático em :3004
 npm run dev:site           # http://localhost:5173 (Vite) + API em :3000
 npm run dev:admin          # http://localhost:5174 (Vite) + API em :3001
 npm run dev:mcp-public     # http://localhost:3002
@@ -96,7 +105,8 @@ database/        camada de dados — domínio do agente dba
   Dockerfile     imagem que aplica o schema e carrega os exemplos
   docker-compose.yml   containers postgres, migrate e seed
 apps/
-  site/          site público      — Express + React/Vite + Tailwind
+  homepage/      apresentação      — Express estático + React/Vite + Tailwind
+  site/          catálogo          — Express + React/Vite + Tailwind
   admin/         painel admin      — Express + React/Vite + Tailwind
   mcp-public/    MCP público       — @modelcontextprotocol/sdk
   mcp-admin/     MCP administrativo
@@ -104,8 +114,9 @@ packages/
   shared/        slug, ranking, mime, zip, secrets, sessão
 ```
 
-Cada app gera sua **própria imagem Docker** e fala **direto com o Postgres** —
-não há um serviço de API intermediário.
+Cada app gera sua **própria imagem Docker**. Os quatro que leem o catálogo
+falam **direto com o Postgres** — não há um serviço de API intermediário; a
+`homepage` não abre conexão com o banco.
 
 ### O banco fica em `database/`
 
@@ -121,14 +132,14 @@ os agentes, em [`AGENTS.md`](AGENTS.md).
 
 ## Identidade visual
 
-O mascote é **o Mago Roxo**, e o roxo é a cor de tudo. Site e painel
+O mascote é **o Mago Roxo**, e o roxo é a cor de tudo. Homepage, site e painel
 compartilham o mesmo sistema de design — tokens de cor em CSS, tema claro e
-escuro, tipografia Aeonik + JetBrains Mono e os diagramas em SVG da home.
+escuro, tipografia Aeonik + JetBrains Mono e os diagramas em SVG da homepage.
 
 Onde mexer em cada peça está em
 [`docs/04-design-system.md`](docs/04-design-system.md). Resumo do que importa:
-`tokens.css`, `base.css` e `markdown.css` são **idênticos** nos dois apps e
-precisam ser copiados juntos ao mudar um deles.
+`tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **idênticos** entre
+os apps que os usam e precisam ser copiados juntos ao mudar um deles.
 
 ## Conectando um agente ao MCP
 
@@ -219,6 +230,7 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some |
 
 Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
 cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Os

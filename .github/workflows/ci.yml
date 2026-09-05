@@ -65,10 +65,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # `database` tem Dockerfile próprio (migrations + seed); os 4 apps seguem
+      # `database` tem Dockerfile próprio (migrations + seed); os 5 apps seguem
       # o padrão apps/<nome>/Dockerfile.
       matrix:
         include:
+          - { app: homepage, file: apps/homepage/Dockerfile }
           - { app: site, file: apps/site/Dockerfile }
           - { app: admin, file: apps/admin/Dockerfile }
           - { app: mcp-public, file: apps/mcp-public/Dockerfile }

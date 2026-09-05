@@ -6,6 +6,17 @@
 # entrypoint `websecure` e um certresolver chamado `le` (ajuste se necessário).
 
 services:
+  homepage:
+    ports: !reset []
+    networks: [internal, traefik]
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik
+      traefik.http.routers.purple-homepage.rule: Host(`${HOMEPAGE_FQDN}`)
+      traefik.http.routers.purple-homepage.entrypoints: websecure
+      traefik.http.routers.purple-homepage.tls.certresolver: le
+      traefik.http.services.purple-homepage.loadbalancer.server.port: '3004'
+
   site:
     ports: !reset []
     networks: [internal, traefik]

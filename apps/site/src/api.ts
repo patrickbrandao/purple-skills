@@ -70,6 +70,8 @@ api.get(
       tagline: config.siteTagline,
       baseUrl: config.siteBaseUrl,
       mcpUrl: config.mcpPublicUrl || null,
+      mcpAdminUrl: config.mcpAdminUrl || null,
+      adminUrl: config.adminUrl || null,
     });
   }),
 );

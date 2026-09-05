@@ -37,6 +37,8 @@ export type SiteMeta = {
   tagline: string;
   baseUrl: string;
   mcpUrl: string | null;
+  mcpAdminUrl: string | null;
+  adminUrl: string | null;
 };
 
 async function get<T>(path: string): Promise<T> {

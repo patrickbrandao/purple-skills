@@ -19,7 +19,7 @@ const CARDS = [
   {
     Icon: DatabaseIcon,
     title: 'Seu servidor, seus dados',
-    text: 'Quatro containers, um Postgres e um docker compose. Licença MIT, sem telemetria, sem conta em nuvem nenhuma. Skills privadas ficam privadas.',
+    text: 'Cinco containers, um Postgres e um docker compose. Licença MIT, sem telemetria, sem conta em nuvem nenhuma. Skills privadas ficam privadas.',
   },
 ];
 

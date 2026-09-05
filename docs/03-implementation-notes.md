@@ -146,6 +146,27 @@ remover `a.md` levava junto um eventual `A.md`.
 - Zips com uma **única pasta raiz** (o padrão de `zip -r skill.zip skill/`) têm
   essa pasta removida; `__MACOSX`, `.DS_Store` e `Thumbs.db` são descartados.
 
+## Homepage separada do site
+
+A apresentação do projeto vive em `apps/homepage`, um app próprio:
+
+- **Sem banco e sem API.** O servidor é um Express que só serve `dist-web/` e
+  responde `/healthz` — não importa `@purple-skills/db`, não abre pool e não
+  chama rota nenhuma. Nada do que ela mostra depende de haver skills
+  cadastradas, o que a torna publicável sozinha (vitrine, CDN, outro domínio).
+- **O site perdeu as seções de apresentação.** Ele é a página de quem já usa a
+  instalação: cabeçalho curto, catálogo, o `mcp.json` para copiar e os
+  endereços de acesso. Quem quer entender o projeto vai para a homepage.
+- **Endereços vêm do ambiente, não do `Host`.** `MCP_PUBLIC_URL`,
+  `MCP_ADMIN_URL` e `ADMIN_URL` são devolvidos por `/api/meta`; cada um que
+  ficar vazio some da página, em vez de virar um endereço adivinhado que não
+  responde.
+- **CSS.** `chrome.css` (nav + rodapé) saiu do antigo `landing.css` e virou
+  cópia idêntica nos dois apps, junto de `tokens.css` e `base.css`. O que
+  sobrou de `landing.css` ficou só na homepage; o site levou o cabeçalho, a
+  seção de `mcp.json` e a de endereços para o seu `app.css`. As imagens de
+  agentes, IDEs e modelos também ficaram só na homepage.
+
 ## Frontend
 
 - **Dark mode fixo** com paleta roxa. Um tema claro dobraria a superfície de
@@ -213,6 +234,7 @@ slug pedido explicitamente, devolve 409.
 | admin | 3001 |
 | mcp-public | 3002 |
 | mcp-admin | 3003 |
+| homepage | 3004 |
 
 ## O que foi verificado
 

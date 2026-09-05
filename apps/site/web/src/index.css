@@ -3,6 +3,6 @@
 
 @import './styles/tokens.css';
 @import './styles/base.css';
+@import './styles/chrome.css';
 @import './styles/markdown.css';
-@import './styles/landing.css';
 @import './styles/app.css';

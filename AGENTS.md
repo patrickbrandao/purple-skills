@@ -8,11 +8,12 @@ Cursor, Gemini CLI, …). O arquivo `CLAUDE.md` aponta para cá.
 | Área | Pasta | Dono |
 |------|-------|------|
 | Banco de dados | `database/` | **agente dba** |
-| Site público | `apps/site/` | agente do site |
+| Homepage do projeto | `apps/homepage/` | agente da homepage |
+| Site do catálogo | `apps/site/` | agente do site |
 | Painel administrativo | `apps/admin/` | agente do admin |
 | MCP público | `apps/mcp-public/` | agente do mcp-public |
 | MCP administrativo | `apps/mcp-admin/` | agente do mcp-admin |
-| Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos cinco |
+| Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos cinco apps |
 
 ## Regra do banco de dados
 
@@ -38,6 +39,20 @@ O que todo agente **fora** de `database/` deve seguir:
 O agente dba, por sua vez, fica **confinado a `database/`**: ele não edita
 `apps/` nem `packages/`. Quando uma mudança de schema quebra um app, ele
 descreve o impacto e a correção fica com o agente daquele app.
+
+## Homepage e site são páginas diferentes
+
+`apps/homepage/` apresenta o **projeto** e leva o visitante ao GitHub. Ela é
+estática: não importa `@purple-skills/db`, não chama API nenhuma e não mostra
+skill cadastrada — o que estiver lá tem que valer para qualquer instalação.
+
+`apps/site/` é a página **do usuário** de uma instalação: lista as skills
+publicadas, ensina a configurar o `mcp.json` e mostra os endereços de acesso
+(MCP público, MCP administrativo e painel). Ela não explica o que é o projeto.
+
+Ao mexer no visual, lembre que `tokens.css`, `base.css` e `chrome.css` são
+cópias idênticas entre os apps — ver
+[`docs/04-design-system.md`](docs/04-design-system.md).
 
 ## Convenções gerais
 

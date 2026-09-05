@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { useCatalogSummary } from '../../useCatalogSummary.js';
 
 function Counter({ value, suffix = '' }: { value: number; suffix?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -54,21 +53,23 @@ function Counter({ value, suffix = '' }: { value: number; suffix?: string }) {
   );
 }
 
+/**
+ * Números do projeto, não do catálogo: a homepage não fala com banco nenhum,
+ * então tudo aqui é constante de código.
+ */
+const ITEMS = [
+  { value: 17, suffix: '', label: 'ferramentas MCP' },
+  { value: 3, suffix: '', label: 'transportes MCP' },
+  { value: 5, suffix: '', label: 'containers na pilha' },
+  { value: 100, suffix: '%', label: 'software livre' },
+];
+
 export function Stats() {
-  const summary = useCatalogSummary();
-
-  const items = [
-    { value: summary?.total ?? 0, suffix: '', label: 'skills no catálogo' },
-    { value: summary?.tags.length ?? 0, suffix: '', label: 'tags para navegar' },
-    { value: 17, suffix: '', label: 'ferramentas MCP' },
-    { value: 100, suffix: '%', label: 'software livre' },
-  ];
-
   return (
     <section className="stats">
       <div className="wrap">
         <div className="stat-grid">
-          {items.map((item, index) => (
+          {ITEMS.map((item, index) => (
             <div className={`stat reveal d${index + 1}`} key={item.label}>
               <Counter value={item.value} suffix={item.suffix} />
               <div className="l">{item.label}</div>

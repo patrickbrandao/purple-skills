@@ -1,6 +1,6 @@
 {
   "name": "purple-skills",
-  "version": "1.0.0-beta.6",
+  "version": "1.0.0-beta.7",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -14,13 +14,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "npm run build -w @purple-skills/shared && npm run build -w @purple-skills/db && npm run build -w @purple-skills/site && npm run build -w @purple-skills/admin && npm run build -w @purple-skills/mcp-public && npm run build -w @purple-skills/mcp-admin",
+    "build": "npm run build -w @purple-skills/shared && npm run build -w @purple-skills/db && npm run build -w @purple-skills/homepage && npm run build -w @purple-skills/site && npm run build -w @purple-skills/admin && npm run build -w @purple-skills/mcp-public && npm run build -w @purple-skills/mcp-admin",
     "typecheck": "npm run build:packages && npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "npm run typecheck",
     "migrate": "npm run migrate -w @purple-skills/db",
     "seed": "npm run seed -w @purple-skills/db",
+    "dev:homepage": "npm run dev -w @purple-skills/homepage",
     "dev:site": "npm run dev -w @purple-skills/site",
     "dev:admin": "npm run dev -w @purple-skills/admin",
     "dev:mcp-public": "npm run dev -w @purple-skills/mcp-public",

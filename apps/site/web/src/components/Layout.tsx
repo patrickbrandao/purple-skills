@@ -2,15 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useMeta } from '../useMeta.js';
 import { useTheme } from '../useTheme.js';
-import { GithubIcon, MoonIcon, SunIcon } from './Icons.js';
-
-const REPO = 'https://github.com/patrickbrandao/purple-skills';
+import { MoonIcon, SunIcon } from './Icons.js';
 
 const NAV = [
-  { hash: '#comecar', label: 'Começar' },
-  { hash: '#como-funciona', label: 'Como funciona' },
-  { hash: '#servicos', label: 'Serviços' },
   { hash: '#catalogo', label: 'Catálogo' },
+  { hash: '#comecar', label: 'mcp.json' },
+  { hash: '#enderecos', label: 'Endereços' },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -80,15 +77,6 @@ export function Layout({ children }: { children: ReactNode }) {
                 {item.label}
               </a>
             ))}
-            <a
-              href={REPO}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="gh btn btn-ghost"
-              aria-label="Repositório no GitHub"
-            >
-              <GithubIcon />
-            </a>
             <button
               type="button"
               className="icon-btn"
@@ -123,49 +111,47 @@ export function Layout({ children }: { children: ReactNode }) {
                 </span>
               </Link>
               <p>
-                Catálogo aberto de skills para agentes de IA. Escreva uma vez, publique no seu
-                servidor MCP e deixe que todos os seus agentes invoquem para sempre.
+                As skills deste catálogo, prontas para os seus agentes. Configure o mcp.json uma vez
+                e todos eles passam a enxergar tudo o que está publicado aqui.
               </p>
             </div>
 
             <div className="foot-col">
               <h5>Catálogo</h5>
               <a href={anchor('#catalogo')}>Explorar skills</a>
-              <a href={anchor('#comecar')}>Conectar um agente</a>
-              <a href={anchor('#servicos')}>Serviços</a>
-              {meta?.mcpUrl && (
-                <a href={meta.mcpUrl} target="_blank" rel="noreferrer">
-                  Endpoint MCP
-                </a>
-              )}
+              <a href={anchor('#comecar')}>Configurar o mcp.json</a>
+              <a href={anchor('#enderecos')}>Endereços de acesso</a>
             </div>
 
             <div className="foot-col">
-              <h5>Recursos</h5>
-              <a href={`${REPO}#readme`} target="_blank" rel="noreferrer">
-                Documentação
-              </a>
-              <a href="https://agentskills.io" target="_blank" rel="noreferrer">
-                Formato Agent Skills
-              </a>
-              <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">
-                Model Context Protocol
-              </a>
+              <h5>Acesso</h5>
+              {meta?.mcpUrl && (
+                <a href={meta.mcpUrl} target="_blank" rel="noreferrer">
+                  MCP público
+                </a>
+              )}
+              {meta?.mcpAdminUrl && (
+                <a href={meta.mcpAdminUrl} target="_blank" rel="noreferrer">
+                  MCP administrativo
+                </a>
+              )}
+              {meta?.adminUrl && (
+                <a href={meta.adminUrl} target="_blank" rel="noreferrer">
+                  Painel administrativo
+                </a>
+              )}
               <a href="/api/skills" target="_blank" rel="noreferrer">
                 API pública (JSON)
               </a>
             </div>
 
             <div className="foot-col">
-              <h5>Projeto</h5>
-              <a href={REPO} target="_blank" rel="noreferrer">
-                GitHub
+              <h5>Referências</h5>
+              <a href="https://agentskills.io" target="_blank" rel="noreferrer">
+                Formato Agent Skills
               </a>
-              <a href={`${REPO}/blob/main/LICENSE`} target="_blank" rel="noreferrer">
-                Licença MIT
-              </a>
-              <a href={`${REPO}/issues`} target="_blank" rel="noreferrer">
-                Reportar um problema
+              <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">
+                Model Context Protocol
               </a>
               <a href="/healthz" target="_blank" rel="noreferrer">
                 Status
