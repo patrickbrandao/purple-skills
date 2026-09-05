@@ -8,16 +8,23 @@ a implementação.
 
 - **Monorepo** usando **npm workspaces**.
 - Layout de pastas:
+  - `database` — **toda** a camada de dados: arquivos de schema
+    (`database/schema/nnn-nome.sql`), cliente e queries (`@purple-skills/db`),
+    e os containers `postgres`, `migrate` e `seed`
   - `apps/site` — site público (Express + React/Vite + Tailwind)
   - `apps/admin` — painel administrativo (Express + React/Vite + Tailwind)
   - `apps/mcp-public` — servidor MCP público
   - `apps/mcp-admin` — servidor MCP administrativo
-  - `packages/db` — schema Drizzle, queries, migrations (Postgres)
   - `packages/shared` — tipos e utilitários compartilhados (ex: geração de
     slug, cálculo de rating, geração de zip)
-- Cada `app` exporta sua própria imagem Docker (4 imagens no total), todas
-  conectando diretamente ao Postgres via `packages/db` — **sem** um serviço
-  de API interno intermediário.
+- Cada `app` exporta sua própria imagem Docker (4 imagens), todas conectando
+  diretamente ao Postgres via `@purple-skills/db` — **sem** um serviço de API
+  interno intermediário. `database` exporta uma quinta imagem, usada só pelos
+  passos `migrate` e `seed`.
+- `database` é uma **fronteira de responsabilidade**, não só uma pasta: é o
+  domínio do agente dba, e nenhum app escreve SQL, migration ou container de
+  banco. O contrato está em `database/README.md`; a divisão entre agentes, em
+  `AGENTS.md`.
 
 ## 2. Frontend (site + admin)
 
@@ -38,6 +45,9 @@ a implementação.
 - Migrations aplicadas por um **passo dedicado `migrate`** no
   docker-compose (`docker compose run migrate`), nunca pelos 4 serviços
   simultaneamente no boot.
+- Os arquivos de schema ficam em `database/schema/`, nomeados `nnn-nome.sql`
+  (3 dígitos, zeros à esquerda), aplicados em ordem lexicográfica. São a fonte
+  de verdade do banco: `database/src/schema.ts` é só tipagem.
 
 ### 3.1 Tabela `skills`
 
@@ -245,12 +255,12 @@ CRUD completo, espelhando o painel administrativo:
 - **Testes**: unitários (Vitest) cobrindo `packages/shared` (rating, slug,
   caminhos, zip, frontmatter, segredos, sessão, leitura de env) e os handlers
   das ferramentas MCP, com `@purple-skills/db` mockado. As queries de
-  `packages/db` não têm testes — dependem de um Postgres real, deixado para
-  uma etapa futura. Sem E2E no v1.
+  `database/` têm um teste de integração que exige um Postgres real e fica
+  desligado sem `TEST_DATABASE_URL`. Sem E2E no v1.
 - **CI/CD** (GitHub Actions):
   - Workflow de PR: lint + testes.
-  - Workflow de release: build e push das 4 imagens para o GitHub
-    Container Registry (ghcr.io).
+  - Workflow de release: build e push das 5 imagens (os 4 apps mais
+    `purple-skills-db`) para o GitHub Container Registry (ghcr.io).
 
 ## 12. Licença
 

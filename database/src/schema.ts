@@ -1,7 +1,7 @@
 /**
  * Schema Drizzle usado para **tipagem** e como query builder.
  *
- * A fonte de verdade do banco são as migrations SQL em `../migrations`: os
+ * A fonte de verdade do banco são os arquivos SQL de `database/schema/`: os
  * índices trigram e por expressão, os CHECKs de `files` e `audit_log`, as
  * funções e os triggers de busca **não** estão declarados aqui. Não gere
  * migrations a partir deste arquivo (`drizzle-kit generate`/`push`) — o diff

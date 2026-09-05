@@ -20,8 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # `database` publica purple-skills-db, a imagem que aplica o schema e o
+      # seed; os 4 apps seguem o padrão apps/<nome>/Dockerfile.
       matrix:
-        app: [site, admin, mcp-public, mcp-admin]
+        include:
+          - { app: site, file: apps/site/Dockerfile }
+          - { app: admin, file: apps/admin/Dockerfile }
+          - { app: mcp-public, file: apps/mcp-public/Dockerfile }
+          - { app: mcp-admin, file: apps/mcp-admin/Dockerfile }
+          - { app: db, file: database/Dockerfile }
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +57,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/${{ matrix.app }}/Dockerfile
+          file: ${{ matrix.file }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
