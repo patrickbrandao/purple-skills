@@ -14,7 +14,7 @@
   },
   "files": [
     "dist",
-    "migrations"
+    "schema"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

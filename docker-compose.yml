@@ -1,11 +1,15 @@
 # Purple Skills — orquestração local completa.
 #
-#   docker compose run --rm migrate     # aplica as migrations (uma vez)
+#   docker compose run --rm migrate     # aplica database/schema/*.sql (uma vez)
 #   docker compose up -d                # sobe site, admin e os dois MCPs
 #   docker compose run --rm seed        # (opcional) popula skills de exemplo
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
 # externo via DATABASE_URL.
+#
+# Os serviços `postgres`, `migrate` e `seed` NÃO moram aqui: são do agente DBA
+# e vêm de `database/docker-compose.yml` pelo `include` abaixo. Alterações no
+# banco (imagem, volume, schema, carga de exemplo) vão naquele arquivo.
 #
 # As portas são publicadas só no loopback por padrão. O Docker escreve regras
 # de iptables diretamente e um bind em 0.0.0.0 contorna o UFW na maioria das
@@ -14,13 +18,20 @@
 # testes remoto, por exemplo), defina BIND_ADDR=0.0.0.0 no .env, cientes de que
 # aí eles ficam acessíveis para quem chegar na rede.
 
+# `project_directory: .` faz os caminhos relativos do arquivo incluído (e o
+# `.env` lido pelo compose) resolverem a partir da raiz, e não de `database/`.
+include:
+  - path: database/docker-compose.yml
+    project_directory: .
+
 # O `.env` do compose serve para interpolar `${VAR}` NESTE arquivo; ele não
 # chega sozinho aos containers. Tudo o que a aplicação lê precisa estar listado
 # em `environment`, ou o ajuste do operador é ignorado em silêncio.
 x-app-env: &app-env
   NODE_ENV: production
   # Campos separados em vez de DATABASE_URL: a senha não passa por parse de URL,
-  # então `/`, `?`, `#` e `%` funcionam sem percent-encoding.
+  # então `/`, `?`, `#` e `%` funcionam sem percent-encoding. Os nomes e o
+  # significado destas cinco chaves são o contrato do DBA — ver database/README.md.
   PGHOST: postgres
   PGPORT: '5432'
   PGUSER: ${POSTGRES_USER:-postgres}
@@ -45,57 +56,6 @@ x-app-common: &app-common
   networks: [internal]
 
 services:
-  postgres:
-    image: pgvector/pgvector:pg18-trixie
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
-      POSTGRES_DB: ${POSTGRES_DB:-purple_skills}
-      # `trust` só valeria dentro do container; mantemos scram por padrão.
-      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256'
-    volumes:
-      - pgdata:/var/lib/postgresql
-    ports:
-      - '${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-purple_skills}']
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks: [internal]
-
-  # Passo dedicado de migrations — nunca roda junto com os 4 serviços.
-  migrate:
-    image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
-    build:
-      context: .
-      dockerfile: apps/site/Dockerfile
-    environment: *app-env
-    command: ['node', 'packages/db/dist/migrate.js']
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: 'no'
-    # Perfil próprio: `up -d` não sobe este serviço, só `compose run migrate`.
-    profiles: [migrate]
-    networks: [internal]
-
-  # Skills de exemplo para demonstração (perfil opcional).
-  seed:
-    image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
-    build:
-      context: .
-      dockerfile: apps/site/Dockerfile
-    environment: *app-env
-    command: ['node', 'packages/db/dist/seed.js']
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: 'no'
-    profiles: [seed]
-    networks: [internal]
-
   site:
     <<: *app-common
     image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
@@ -162,8 +122,7 @@ services:
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
 
-volumes:
-  pgdata:
+# O volume `pgdata` é declarado em database/docker-compose.yml.
 
 networks:
   internal:

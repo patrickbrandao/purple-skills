@@ -10,7 +10,7 @@ WORKDIR /app
 # Manifests primeiro: a camada de dependências fica em cache entre builds.
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
-COPY packages/db/package.json packages/db/
+COPY database/package.json database/
 COPY apps/site/package.json apps/site/
 COPY apps/admin/package.json apps/admin/
 COPY apps/mcp-public/package.json apps/mcp-public/
@@ -19,6 +19,8 @@ RUN npm ci
 
 COPY tsconfig.base.json ./
 COPY packages ./packages
+# Só o cliente do banco: o SQL de database/schema/ é aplicado pela imagem do DBA.
+COPY database ./database
 COPY apps/admin ./apps/admin
 
 RUN npm run build -w @purple-skills/shared \
@@ -40,9 +42,8 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build --chown=node:node /app/packages/shared/dist ./packages/shared/dist
-COPY --from=build --chown=node:node /app/packages/db/package.json ./packages/db/package.json
-COPY --from=build --chown=node:node /app/packages/db/dist ./packages/db/dist
-COPY --from=build --chown=node:node /app/packages/db/migrations ./packages/db/migrations
+COPY --from=build --chown=node:node /app/database/package.json ./database/package.json
+COPY --from=build --chown=node:node /app/database/dist ./database/dist
 COPY --from=build --chown=node:node /app/apps/admin/package.json ./apps/admin/package.json
 COPY --from=build --chown=node:node /app/apps/admin/dist ./apps/admin/dist
 COPY --from=build --chown=node:node /app/apps/admin/dist-web ./apps/admin/dist-web

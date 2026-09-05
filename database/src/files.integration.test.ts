@@ -5,7 +5,7 @@
  * então `npm test` continua rodando sem banco. Para rodar:
  *
  *   TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/purple_skills_test \
- *     npx vitest run packages/db/src/files.integration.test.ts
+ *     npx vitest run database/src/files.integration.test.ts
  *
  * O banco apontado é **recriado do zero** (DROP SCHEMA public CASCADE) a cada
  * execução: aponte para um banco descartável, nunca para o de desenvolvimento.

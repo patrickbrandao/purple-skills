@@ -6,6 +6,7 @@
   "license": "MIT",
   "description": "Catálogo open-source de skills para agentes de IA, com site público, painel admin e servidores MCP.",
   "workspaces": [
+    "database",
     "packages/*",
     "apps/*"
   ],

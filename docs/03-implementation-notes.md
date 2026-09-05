@@ -17,12 +17,32 @@ escolha teve de ser feita, mais os desvios conscientes.
 ## Migrations
 
 A spec pede "migrations em SQL" com um passo dedicado. Em vez de `drizzle-kit`,
-o projeto usa um **runner próprio** (`packages/db/src/migrate.ts`, ~60 linhas):
-lê `packages/db/migrations/*.sql` em ordem, aplica cada uma em transação e
-registra em `schema_migrations`. Motivo: zero dependência extra em runtime,
-arquivos SQL legíveis e revisáveis, e o mesmo binário serve para o passo
-`migrate` do compose. O Drizzle continua sendo usado como schema + query
-builder.
+o projeto usa um **runner próprio** (`database/src/migrate.ts`): lê
+`database/schema/*.sql` em ordem, aplica cada uma em transação e registra em
+`schema_migrations`. Motivo: zero dependência extra em runtime, arquivos SQL
+legíveis e revisáveis, e o mesmo binário serve para o passo `migrate` do
+compose. O Drizzle continua sendo usado como schema + query builder.
+
+## `database/` como fronteira
+
+A camada de dados saiu de `packages/db` para `database/`, na raiz, e passou a
+concentrar também os containers (`postgres`, `migrate`, `seed`) e um Dockerfile
+próprio. Três consequências práticas:
+
+- **Compose por `include`.** `database/docker-compose.yml` é a única definição
+  dos serviços de banco; a raiz o consome com
+  `include: [{ path: database/docker-compose.yml, project_directory: . }]`. O
+  `project_directory` explícito faz os caminhos relativos e o `.env` resolverem
+  a partir da raiz, e não de `database/` — sem ele o `${POSTGRES_PASSWORD}`
+  chegaria vazio.
+- **Imagem separada para o schema.** `migrate` e `seed` deixaram de reaproveitar
+  a imagem do site e passaram a usar `database/Dockerfile`, a única que carrega
+  os `.sql`. As imagens dos apps recebem só o `dist/` do cliente — nenhum app
+  chama `runMigrations`.
+- **Arquivos renomeados.** `nnnn_nome.sql` virou `nnn-nome.sql`. Como o runner
+  identifica cada migration pelo nome do arquivo, um banco já migrado veria os
+  arquivos renomeados como novos; a tabela `RENAMED` em `migrate.ts` atualiza o
+  histórico uma vez, antes de decidir o que aplicar.
 
 ## Busca full-text
 

@@ -1,0 +1,79 @@
+# Purple Skills — camada de dados (domínio do agente DBA).
+#
+# Este arquivo é a **única** definição dos containers de banco: o Postgres, o
+# passo de migrations e a carga de dados de exemplo. O `docker-compose.yml` da
+# raiz o consome via `include:` — não redeclare nenhum destes serviços lá.
+#
+# Sempre rode a partir da raiz do repositório (o `include` resolve os caminhos
+# relativos e o `.env` a partir dela):
+#
+#   docker compose run --rm migrate     # aplica database/schema/*.sql
+#   docker compose run --rm seed        # (opcional) skills de exemplo
+#   docker compose up -d postgres       # só o banco
+#
+# Contrato de conexão e regras de uso: database/README.md.
+
+# Variáveis de conexão dos containers do próprio banco. Os apps recebem as
+# mesmas chaves pelo `x-app-env` da raiz — database/README.md é a fonte de
+# verdade dos nomes; mudou aqui, mude lá.
+x-db-env: &db-env
+  PGHOST: postgres
+  PGPORT: '5432'
+  PGUSER: ${POSTGRES_USER:-postgres}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+  PGDATABASE: ${POSTGRES_DB:-purple_skills}
+
+# migrate e seed compartilham imagem, build e dependência do banco: são o mesmo
+# binário do DBA com comandos diferentes.
+x-db-job: &db-job
+  image: ghcr.io/patrickbrandao/purple-skills-db:${TAG:-latest}
+  build:
+    context: .
+    dockerfile: database/Dockerfile
+  environment: *db-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: 'no'
+  networks: [internal]
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-purple_skills}
+      # `trust` só valeria dentro do container; mantemos scram por padrão.
+      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256'
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-purple_skills}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  # Passo dedicado de migrations — nunca roda junto com os 4 serviços.
+  # Perfil próprio: `up -d` não sobe este serviço, só `compose run migrate`.
+  migrate:
+    <<: *db-job
+    command: ['node', 'database/dist/migrate.js']
+    profiles: [migrate]
+
+  # Skills de exemplo para demonstração (perfil opcional).
+  seed:
+    <<: *db-job
+    command: ['node', 'database/dist/seed.js']
+    profiles: [seed]
+
+volumes:
+  pgdata:
+
+networks:
+  internal:
+    driver: bridge

@@ -31,10 +31,14 @@ disponível para busca vetorial numa versão futura.
 
 ```bash
 cp .env.example .env      # ajuste ADMIN_PASSWORD e MCP_ADMIN_TOKEN
-docker compose run --rm migrate
+docker compose run --rm migrate   # aplica database/schema/*.sql
 docker compose up -d
-docker compose run --rm seed   # opcional: skills de exemplo
+docker compose run --rm seed      # opcional: skills de exemplo
 ```
+
+Os serviços `postgres`, `migrate` e `seed` vêm de
+[`database/docker-compose.yml`](database/docker-compose.yml), incluído pelo
+compose da raiz — rode sempre a partir da raiz do repositório.
 
 - Site: <http://localhost:3000>
 - Painel: <http://localhost:3001> (senha = `ADMIN_PASSWORD`)
@@ -60,7 +64,7 @@ Requer Node.js 22+ (LTS) e um Postgres 18 acessível.
 npm install
 npm run build -w @purple-skills/shared
 npm run build -w @purple-skills/db
-npm run migrate            # aplica as migrations em DATABASE_URL
+npm run migrate            # aplica database/schema/*.sql em DATABASE_URL
 npm run seed               # opcional
 
 npm run dev:site           # http://localhost:5173 (Vite) + API em :3000
@@ -72,13 +76,13 @@ npm test                   # testes unitários (Vitest)
 npm run typecheck          # TypeScript em todos os workspaces
 ```
 
-Os testes das queries do `packages/db` exigem um Postgres real e ficam
+Os testes das queries de `database/` exigem um Postgres real e ficam
 desligados por padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
 **descartável** — o schema é recriado do zero a cada execução:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
-  npx vitest run packages/db/src/files.integration.test.ts
+  npx vitest run database/src/files.integration.test.ts
 ```
 
 ## Estrutura do repositório
@@ -86,18 +90,34 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
 Monorepo com **npm workspaces**:
 
 ```
+database/        camada de dados — domínio do agente dba
+  schema/        nnn-nome.sql: tabelas, tipos, índices, funções e triggers
+  src/           cliente, queries e tipagem Drizzle (@purple-skills/db)
+  Dockerfile     imagem que aplica o schema e carrega os exemplos
+  docker-compose.yml   containers postgres, migrate e seed
 apps/
   site/          site público      — Express + React/Vite + Tailwind
   admin/         painel admin      — Express + React/Vite + Tailwind
   mcp-public/    MCP público       — @modelcontextprotocol/sdk
   mcp-admin/     MCP administrativo
 packages/
-  db/            schema Drizzle, migrations SQL e queries
   shared/        slug, ranking, mime, zip, secrets, sessão
 ```
 
 Cada app gera sua **própria imagem Docker** e fala **direto com o Postgres** —
 não há um serviço de API intermediário.
+
+### O banco fica em `database/`
+
+Tudo o que é banco de dados — os containers `postgres`, `migrate` e `seed`, os
+arquivos de schema e a biblioteca de acesso — está confinado em `database/` e é
+responsabilidade do **agente dba**. Os apps só consomem `@purple-skills/db`;
+nenhum deles escreve SQL ou abre conexão por conta própria.
+
+O contrato completo (arquivos de schema, tabelas, variáveis de conexão, API
+disponível e o que cada agente pode ou não fazer) está em
+[`database/README.md`](database/README.md); a divisão de responsabilidades entre
+os agentes, em [`AGENTS.md`](AGENTS.md).
 
 ## Identidade visual
 
