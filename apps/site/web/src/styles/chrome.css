@@ -1,0 +1,165 @@
+/* ============================================================
+   PURPLE SKILLS — Moldura comum às páginas
+   Barra de navegação flutuante e rodapé. Igual byte a byte na
+   homepage e no site: ao mexer aqui, copie para o outro app.
+   ============================================================ */
+
+/* ============================================================
+   NAV (pílula flutuante)
+   ============================================================ */
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 900;
+  pointer-events: none;
+  padding: 14px clamp(10px, 3vw, 18px);
+  transition: padding 0.35s ease;
+}
+.nav.scrolled {
+  padding-top: 10px;
+}
+.nav-inner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  max-width: 1080px;
+  margin-inline: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 9px 11px 9px 20px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.35s ease, padding 0.35s ease;
+}
+.nav.scrolled .nav-inner {
+  box-shadow: 0 6px 22px -6px rgba(124, 36, 180, 0.28), 0 0 0 1px rgba(71, 6, 150, 0.06);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1.18rem;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  object-fit: contain;
+}
+.brand b {
+  color: var(--brand);
+  font-weight: 500;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nav-links a:not(.btn):not(.gh) {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 8px 13px;
+  border-radius: 999px;
+  transition: color 0.25s ease, background 0.25s ease;
+}
+.nav-links a:not(.btn):not(.gh):hover {
+  color: var(--brand);
+  background: var(--surface-2);
+}
+.gh {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.gh svg {
+  width: 17px;
+  height: 17px;
+}
+@media (max-width: 980px) {
+  .nav-links a:not(.btn):not(.gh) {
+    display: none;
+  }
+}
+@media (max-width: 560px) {
+  .nav-links .btn-primary {
+    display: none;
+  }
+}
+
+/* ============================================================
+   RODAPÉ
+   ============================================================ */
+.site-foot {
+  --text: #fdfbff;
+  --text-dim: #cfc4e2;
+  --text-faint: #a294bd;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --brand: #c88ffb;
+  --brand-soft: #e0c7ff;
+  --surface: #180c2e;
+
+  color: var(--text);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 60px 0 40px;
+  background: #0a0418;
+  position: relative;
+  z-index: 1;
+}
+.foot-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 32px;
+}
+@media (max-width: 760px) {
+  .foot-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.foot-brand p {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  max-width: 24em;
+  margin-top: 14px;
+}
+.foot-col h5 {
+  font-size: 0.8rem;
+  color: var(--brand-soft);
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.foot-col a {
+  display: block;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.92rem;
+  margin-bottom: 11px;
+  transition: color 0.25s ease;
+}
+.foot-col a:hover {
+  color: var(--brand);
+}
+.foot-bottom {
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--text-faint);
+  font-size: 0.84rem;
+}

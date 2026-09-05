@@ -11,16 +11,22 @@ a implementação.
   - `database` — **toda** a camada de dados: arquivos de schema
     (`database/schema/nnn-nome.sql`), cliente e queries (`@purple-skills/db`),
     e os containers `postgres`, `migrate` e `seed`
-  - `apps/site` — site público (Express + React/Vite + Tailwind)
+  - `apps/homepage` — página de apresentação do projeto, estática (Express
+    servindo uma SPA React/Vite + Tailwind, **sem banco**)
+  - `apps/site` — catálogo do usuário (Express + React/Vite + Tailwind)
   - `apps/admin` — painel administrativo (Express + React/Vite + Tailwind)
   - `apps/mcp-public` — servidor MCP público
   - `apps/mcp-admin` — servidor MCP administrativo
   - `packages/shared` — tipos e utilitários compartilhados (ex: geração de
     slug, cálculo de rating, geração de zip)
-- Cada `app` exporta sua própria imagem Docker (4 imagens), todas conectando
-  diretamente ao Postgres via `@purple-skills/db` — **sem** um serviço de API
-  interno intermediário. `database` exporta uma quinta imagem, usada só pelos
-  passos `migrate` e `seed`.
+- Cada `app` exporta sua própria imagem Docker (5 imagens). Quatro delas
+  conectam diretamente ao Postgres via `@purple-skills/db` — **sem** um serviço
+  de API interno intermediário; a `homepage` não abre conexão nenhuma.
+  `database` exporta uma sexta imagem, usada só pelos passos `migrate` e `seed`.
+- **A homepage é separada do site de propósito.** A apresentação do projeto não
+  depende de banco nem de instalação: pode ir para o ar sozinha, num CDN ou num
+  domínio de vitrine, enquanto o `site` é a página de quem já tem um catálogo
+  rodando e só quer consultá-lo e conectar seus agentes.
 - `database` é uma **fronteira de responsabilidade**, não só uma pasta: é o
   domínio do agente dba, e nenhum app escreve SQL, migration ou container de
   banco. O contrato está em `database/README.md`; a divisão entre agentes, em
@@ -43,7 +49,7 @@ a implementação.
   recursos relacionais/full-text no v1 (busca vetorial fica para o futuro).
 - Acesso via **Drizzle ORM** (query builder + migrations em SQL).
 - Migrations aplicadas por um **passo dedicado `migrate`** no
-  docker-compose (`docker compose run migrate`), nunca pelos 4 serviços
+  docker-compose (`docker compose run migrate`), nunca pelos serviços
   simultaneamente no boot.
 - Os arquivos de schema ficam em `database/schema/`, nomeados `nnn-nome.sql`
   (3 dígitos, zeros à esquerda), aplicados em ordem lexicográfica. São a fonte

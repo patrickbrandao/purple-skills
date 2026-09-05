@@ -284,3 +284,252 @@
   color: var(--text-faint);
   flex: none;
 }
+
+/* ============================================================
+   CABEÇALHO DO CATÁLOGO
+   Versão compacta do hero da homepage: aqui a página já é a do
+   usuário, e o catálogo precisa aparecer na primeira dobra.
+   ============================================================ */
+.masthead {
+  position: relative;
+  overflow: hidden;
+  padding: calc(112px + clamp(28px, 6vh, 64px)) 0 clamp(38px, 7vh, 76px);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.masthead-grid {
+  display: flex;
+  align-items: center;
+  gap: clamp(20px, 5vw, 56px);
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.masthead-copy {
+  min-width: 0;
+  flex: 1 1 26rem;
+}
+.masthead h1 {
+  font-size: clamp(2.3rem, 5.6vw, 3.6rem);
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+}
+.masthead p.sub {
+  color: var(--text-dim);
+  font-size: clamp(1rem, 1.7vw, 1.14rem);
+  max-width: 34em;
+  margin-top: 16px;
+}
+.masthead-cta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 26px;
+}
+.masthead-fig {
+  width: clamp(96px, 13vw, 137px);
+  flex: none;
+  filter: drop-shadow(0 18px 34px rgba(124, 36, 180, 0.32));
+  animation: floaty 6s ease-in-out infinite;
+}
+@media (max-width: 700px) {
+  .masthead-fig {
+    display: none;
+  }
+}
+/* contadores do catálogo, logo abaixo da chamada */
+.masthead-facts {
+  display: flex;
+  gap: clamp(16px, 3vw, 34px);
+  flex-wrap: wrap;
+  margin-top: 26px;
+  font-size: 0.88rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+.masthead-facts b {
+  color: var(--brand);
+  font-size: 1.15rem;
+  margin-right: 6px;
+}
+
+/* ============================================================
+   COMECE A USAR AGORA
+   ============================================================ */
+.how-connect-sec {
+  padding: clamp(80px, 13vh, 150px) 0;
+  background: var(--bg-2);
+}
+.connect-diagram {
+  margin-top: clamp(34px, 6vh, 64px);
+  max-width: 850px;
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: clamp(18px, 3.5vw, 44px);
+}
+.connect-agent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin: 0;
+}
+.connect-agent img {
+  width: clamp(118px, 15vw, 172px);
+  height: auto;
+  filter: drop-shadow(0 18px 42px rgba(124, 36, 180, 0.32));
+}
+.connect-agent figcaption {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+.connect-link {
+  display: flex;
+  align-items: center;
+  color: var(--gold);
+}
+.connect-link .cl-line {
+  width: clamp(18px, 3.5vw, 56px);
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--brand), var(--gold));
+}
+.connect-link svg {
+  width: 24px;
+  height: 24px;
+  margin-left: -3px;
+}
+.connect-code {
+  min-width: 0;
+}
+@media (max-width: 820px) {
+  .connect-diagram {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 8px;
+  }
+  .connect-link {
+    transform: rotate(90deg);
+    margin: 6px 0;
+  }
+  .connect-code {
+    width: 100%;
+  }
+}
+
+
+/* ============================================================
+   ENDEREÇOS DE ACESSO
+   ============================================================ */
+.endpoints {
+  padding-block: clamp(70px, 11vw, 120px);
+  background: var(--bg);
+}
+.endpoint-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: 18px;
+  margin-top: clamp(28px, 5vh, 48px);
+}
+.endpoint-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  transition:
+    border-color 0.25s ease,
+    transform 0.25s ease;
+}
+.endpoint-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-3px);
+}
+.endpoint-card .ep-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.endpoint-card .ep-ico {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+}
+.endpoint-card .ep-ico svg,
+.endpoint-card .ep-ico img {
+  width: 20px;
+  height: 20px;
+}
+.endpoint-card h3 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.endpoint-card .ep-auth {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+.endpoint-card p {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  flex: 1;
+}
+.endpoint-card .ep-url {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.endpoint-card .ep-url.off {
+  color: var(--text-faint);
+}
+.endpoint-card .ep-foot {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   CATÁLOGO
+   ============================================================ */
+.market {
+  padding-block: clamp(90px, 13vw, 150px);
+  background: var(--bg);
+}
+.market-head-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 22px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.market-head-wrap .head {
+  margin-bottom: 0;
+}
+.market-fig {
+  width: 96px;
+  flex: none;
+  filter: drop-shadow(0 14px 24px rgba(124, 36, 180, 0.3));
+  animation: floaty 6s ease-in-out infinite;
+}
+@media (max-width: 600px) {
+  .market-fig {
+    display: none;
+  }
+}

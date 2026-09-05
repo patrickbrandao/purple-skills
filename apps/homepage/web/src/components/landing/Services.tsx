@@ -11,6 +11,12 @@ type Node = {
 
 const CLIENTS: Node[] = [
   {
+    id: 'visitante',
+    label: 'Visitante',
+    sub: 'quem conhece o projeto',
+    icon: <GlobeIcon />,
+  },
+  {
     id: 'browser',
     label: 'Navegador',
     sub: 'quem procura uma skill',
@@ -43,7 +49,8 @@ const CLIENTS: Node[] = [
 ];
 
 const SERVICES: Node[] = [
-  { id: 'site', label: 'site', sub: ':3000 — público', icon: <GlobeIcon /> },
+  { id: 'homepage', label: 'homepage', sub: ':3004 — estática', icon: <GlobeIcon /> },
+  { id: 'site', label: 'site', sub: ':3000 — catálogo', icon: <GlobeIcon /> },
   { id: 'admin', label: 'admin', sub: ':3001 — com senha', icon: <ShieldIcon />, featured: true },
   {
     id: 'mcp-public',
@@ -61,6 +68,7 @@ const SERVICES: Node[] = [
 ];
 
 const LINKS: [string, string, string][] = [
+  ['visitante', 'homepage', ''],
   ['browser', 'site', ''],
   ['voce', 'admin', 'f-gold'],
   ['claude', 'mcp-public', ''],
@@ -169,7 +177,7 @@ export function Services() {
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">
-            Quatro serviços, <span className="grad-text">um só catálogo.</span>
+            Cinco serviços, <span className="grad-text">um só catálogo.</span>
           </h2>
           <p>
             Cada superfície é um container com a sua própria imagem, falando direto com o Postgres —

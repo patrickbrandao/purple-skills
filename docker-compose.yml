@@ -1,7 +1,7 @@
 # Purple Skills — orquestração local completa.
 #
 #   docker compose run --rm migrate     # aplica database/schema/*.sql (uma vez)
-#   docker compose up -d                # sobe site, admin e os dois MCPs
+#   docker compose up -d                # sobe homepage, site, admin e os dois MCPs
 #   docker compose run --rm seed        # (opcional) popula skills de exemplo
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
@@ -56,6 +56,22 @@ x-app-common: &app-common
   networks: [internal]
 
 services:
+  # A homepage é estática: não usa banco nenhum, então fica fora de
+  # `app-common` (nada de `depends_on: postgres`) e de `app-env`.
+  homepage:
+    restart: unless-stopped
+    networks: [internal]
+    image: ghcr.io/patrickbrandao/purple-skills-homepage:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: apps/homepage/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3004
+      TRUST_PROXY: ${TRUST_PROXY:-}
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${HOMEPAGE_PORT:-3004}:3004'
+
   site:
     <<: *app-common
     image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
@@ -66,7 +82,10 @@ services:
       <<: *app-env
       PORT: 3000
       SITE_TAGLINE: ${SITE_TAGLINE:-}
+      # Endereços mostrados na seção "Endereços de acesso" do catálogo.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      MCP_ADMIN_URL: ${MCP_ADMIN_URL:-}
+      ADMIN_URL: ${ADMIN_URL:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${SITE_PORT:-3000}:3000'
 

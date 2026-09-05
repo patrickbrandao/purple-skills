@@ -1,10 +1,9 @@
-import { useMeta } from '../../useMeta.js';
 import { ArrowRightIcon } from '../Icons.js';
 
-export function QuickStart() {
-  const meta = useMeta();
-  const mcpUrl = meta?.mcpUrl ?? 'https://mcp.seu-dominio.dev/mcp';
+/** URL de exemplo: a homepage não conhece nenhuma instalação de verdade. */
+const MCP_URL = 'https://mcp.seu-dominio.dev/mcp';
 
+export function QuickStart() {
   return (
     <section className="how-connect-sec" id="comecar">
       <div className="wrap">
@@ -13,8 +12,8 @@ export function QuickStart() {
             Comece a usar <span className="grad-text">agora!</span>
           </h2>
           <p>
-            Aponte seu agente para o endpoint MCP do Purple Skills. Cole a configuração e pronto —
-            ele já enxerga o catálogo inteiro, busca pelo que precisa e lê o SKILL.md sozinho.
+            Aponte seu agente para o endpoint MCP do seu Purple Skills. Cole a configuração e pronto
+            — ele já enxerga o catálogo inteiro, busca pelo que precisa e lê o SKILL.md sozinho.
           </p>
         </div>
 
@@ -54,7 +53,7 @@ export function QuickStart() {
               {',\n            '}
               <span className="k">"url"</span>
               {': '}
-              <span className="s">{`"${mcpUrl}"`}</span>
+              <span className="s">{`"${MCP_URL}"`}</span>
               {'\n        }\n    }\n}'}
             </div>
           </div>

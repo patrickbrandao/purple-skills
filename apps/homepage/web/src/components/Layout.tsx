@@ -1,24 +1,19 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { useMeta } from '../useMeta.js';
 import { useTheme } from '../useTheme.js';
-import { MoonIcon, SunIcon } from './Icons.js';
+import { GithubIcon, MoonIcon, SunIcon } from './Icons.js';
+
+const REPO = 'https://github.com/patrickbrandao/purple-skills';
 
 const NAV = [
-  { hash: '#catalogo', label: 'Catálogo' },
-  { hash: '#comecar', label: 'mcp.json' },
-  { hash: '#enderecos', label: 'Endereços' },
+  { hash: '#comecar', label: 'Começar' },
+  { hash: '#como-funciona', label: 'Como funciona' },
+  { hash: '#servicos', label: 'Serviços' },
+  { hash: '#self-host', label: 'Instalar' },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const meta = useMeta();
-  const location = useLocation();
   const [theme, toggleTheme] = useTheme();
   const [scrolled, setScrolled] = useState(false);
-
-  // No topo da home os âncoras são locais; fora dela precisam recarregar a raiz.
-  const home = location.pathname === '/';
-  const anchor = (hash: string) => (home ? hash : `/${hash}`);
 
   useEffect(() => {
     const bar = document.querySelector<HTMLElement>('.progress');
@@ -49,8 +44,6 @@ export function Layout({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const name = meta?.name ?? 'Purple Skills';
-
   return (
     <>
       <div className="progress" aria-hidden />
@@ -58,7 +51,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <nav className={`nav${scrolled ? ' scrolled' : ''}`}>
         <div className="nav-inner">
-          <Link to="/" className="brand" aria-label={name}>
+          <a href="#top" className="brand" aria-label="Purple Skills">
             <img
               className="brand-mark wiz"
               src="/assets/images/purple-hat-256.png"
@@ -69,14 +62,23 @@ export function Layout({ children }: { children: ReactNode }) {
             <span>
               Purple<b>Skills</b>
             </span>
-          </Link>
+          </a>
 
           <div className="nav-links">
             {NAV.map((item) => (
-              <a key={item.hash} href={anchor(item.hash)}>
+              <a key={item.hash} href={item.hash}>
                 {item.label}
               </a>
             ))}
+            <a
+              href={REPO}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="gh btn btn-ghost"
+              aria-label="Repositório no GitHub"
+            >
+              <GithubIcon />
+            </a>
             <button
               type="button"
               className="icon-btn"
@@ -85,8 +87,13 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
             </button>
-            <a href={anchor('#catalogo')} className="btn btn-primary">
-              Explorar skills
+            <a
+              href={REPO}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-primary"
+            >
+              Ver no GitHub
             </a>
           </div>
         </div>
@@ -98,7 +105,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <div className="wrap">
           <div className="foot-grid">
             <div className="foot-brand">
-              <Link to="/" className="brand" style={{ fontSize: '1.4rem', color: 'var(--text)' }}>
+              <a href="#top" className="brand" style={{ fontSize: '1.4rem', color: 'var(--text)' }}>
                 <img
                   className="brand-mark wiz"
                   src="/assets/images/purple-hat-256.png"
@@ -109,58 +116,53 @@ export function Layout({ children }: { children: ReactNode }) {
                 <span>
                   Purple<b>Skills</b>
                 </span>
-              </Link>
+              </a>
               <p>
-                As skills deste catálogo, prontas para os seus agentes. Configure o mcp.json uma vez
-                e todos eles passam a enxergar tudo o que está publicado aqui.
+                Catálogo aberto de skills para agentes de IA. Escreva uma vez, publique no seu
+                servidor MCP e deixe que todos os seus agentes invoquem para sempre.
               </p>
             </div>
 
             <div className="foot-col">
-              <h5>Catálogo</h5>
-              <a href={anchor('#catalogo')}>Explorar skills</a>
-              <a href={anchor('#comecar')}>Configurar o mcp.json</a>
-              <a href={anchor('#enderecos')}>Endereços de acesso</a>
-            </div>
-
-            <div className="foot-col">
-              <h5>Acesso</h5>
-              {meta?.mcpUrl && (
-                <a href={meta.mcpUrl} target="_blank" rel="noreferrer">
-                  MCP público
-                </a>
-              )}
-              {meta?.mcpAdminUrl && (
-                <a href={meta.mcpAdminUrl} target="_blank" rel="noreferrer">
-                  MCP administrativo
-                </a>
-              )}
-              {meta?.adminUrl && (
-                <a href={meta.adminUrl} target="_blank" rel="noreferrer">
-                  Painel administrativo
-                </a>
-              )}
-              <a href="/api/skills" target="_blank" rel="noreferrer">
-                API pública (JSON)
-              </a>
+              <h5>O projeto</h5>
+              <a href="#como-funciona">Como funciona</a>
+              <a href="#pecas">As três peças</a>
+              <a href="#servicos">Serviços</a>
+              <a href="#recursos">Recursos</a>
             </div>
 
             <div className="foot-col">
               <h5>Referências</h5>
+              <a href={`${REPO}#readme`} target="_blank" rel="noreferrer">
+                Documentação
+              </a>
               <a href="https://agentskills.io" target="_blank" rel="noreferrer">
                 Formato Agent Skills
               </a>
               <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">
                 Model Context Protocol
               </a>
-              <a href="/healthz" target="_blank" rel="noreferrer">
-                Status
+            </div>
+
+            <div className="foot-col">
+              <h5>Código</h5>
+              <a href={REPO} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+              <a href={`${REPO}/releases`} target="_blank" rel="noreferrer">
+                Releases
+              </a>
+              <a href={`${REPO}/blob/main/LICENSE`} target="_blank" rel="noreferrer">
+                Licença MIT
+              </a>
+              <a href={`${REPO}/issues`} target="_blank" rel="noreferrer">
+                Reportar um problema
               </a>
             </div>
           </div>
 
           <div className="foot-bottom">
-            <span>© {new Date().getFullYear()} {name} — software livre sob licença MIT.</span>
+            <span>© {new Date().getFullYear()} Purple Skills — software livre sob licença MIT.</span>
             <span className="mono" style={{ fontSize: '.78rem' }}>
               MCP nativo · self-hosted · sem lock-in
             </span>

@@ -1,7 +1,7 @@
 # Sistema de design
 
-O site e o painel compartilham uma única linguagem visual, derivada da
-homepage do **LangWizard** e revestida na cor da casa: o roxo do **Mago
+A homepage, o site e o painel compartilham uma única linguagem visual, derivada
+da homepage do **LangWizard** e revestida na cor da casa: o roxo do **Mago
 Roxo**, mascote do Purple Skills.
 
 Este documento diz onde cada peça mora e como mexer nela sem quebrar as
@@ -13,9 +13,15 @@ outras superfícies.
 apps/site/web/src/styles/
   tokens.css     variáveis de cor por tema + @font-face + ponte com o Tailwind
   base.css       tipografia, botões, cartões, campos, blocos de código
+  chrome.css     nav flutuante e rodapé
   markdown.css   renderização do SKILL.md
-  landing.css    seções da home (nav, hero, diagramas, catálogo, rodapé)
-  app.css        catálogo e página da skill
+  app.css        cabeçalho, mcp.json, endereços, catálogo e página da skill
+
+apps/homepage/web/src/styles/
+  tokens.css     ← cópia idêntica à do site
+  base.css       ← cópia idêntica à do site
+  chrome.css     ← cópia idêntica à do site
+  landing.css    seções de apresentação (hero, diagramas, ecossistema, finale)
 
 apps/admin/web/src/styles/
   tokens.css     ← cópia idêntica à do site
@@ -24,13 +30,15 @@ apps/admin/web/src/styles/
   admin.css      barra, painéis, tabela, abas, dropzone, toasts, login
 ```
 
-`tokens.css`, `base.css` e `markdown.css` são **byte a byte iguais** nos dois
-apps. Cada app tem seu próprio root do Vite e não há um pacote de UI
-compartilhado, então a duplicação é deliberada — o mesmo padrão que o
-projeto já usava para o `index.css`. **Ao mudar um, copie para o outro:**
+`tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **byte a byte
+iguais** entre os apps que os usam. Cada app tem seu próprio root do Vite e não
+há um pacote de UI compartilhado, então a duplicação é deliberada — o mesmo
+padrão que o projeto já usava para o `index.css`. **Ao mudar um, copie para os
+outros:**
 
 ```bash
 cp apps/site/web/src/styles/{tokens,base,markdown}.css apps/admin/web/src/styles/
+cp apps/site/web/src/styles/{tokens,base,chrome}.css apps/homepage/web/src/styles/
 ```
 
 ## Cores
@@ -87,19 +95,19 @@ que grava a escolha de volta no `localStorage`.
   pixel-art, rotacionado no matiz para o roxo.
 - `icon-purple-left-64x92.png`, `icon-purple-right-137x158.png` — o Mago
   Roxo, usado no hero, nos cartões e nos estados vazios.
-- ícones de agentes, IDEs, modelos e do MCP — só no site, na seção de
-  ecossistema e nos diagramas.
+- ícones de agentes, IDEs, modelos e do MCP — só na homepage, na seção de
+  ecossistema e nos diagramas. O site guarda apenas os cinco que usa.
 
 ## Diagramas
 
-Três diagramas da home desenham seus fios em SVG a partir do layout real
+Três diagramas da homepage desenham seus fios em SVG a partir do layout real
 (`getBoundingClientRect`), e não com coordenadas fixas:
 
 | Componente | O que mostra |
 |------------|--------------|
 | `HubDiagram` | agentes → endpoint MCP → as três ferramentas principais |
 | `PublishFlow` | criar pelo `mcp-admin` → catálogo → servir pelo `mcp-public` |
-| `Services` | quem consome × os quatro serviços e o Postgres |
+| `Services` | quem consome × os cinco serviços e o Postgres |
 
 Cada um redesenha em `resize`, quando as fontes assentam e via
 `ResizeObserver`. Abaixo de 820px os fios somem e o layout vira uma pilha

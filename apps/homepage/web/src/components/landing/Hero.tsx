@@ -1,3 +1,7 @@
+import { GithubIcon } from '../Icons.js';
+
+const REPO = 'https://github.com/patrickbrandao/purple-skills';
+
 export function Hero() {
   return (
     <header className="hero" id="top">
@@ -27,11 +31,16 @@ export function Hero() {
             Seu agente orquestrador pode editar e criar novas skills que orientarão seus processos em tempo real.
           </p>
           <div className="hero-cta">
-            <a href="#catalogo" className="btn btn-primary btn-lg">
-              Explorar o catálogo →
+            <a
+              href={REPO}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-primary btn-lg"
+            >
+              <GithubIcon /> Ver no GitHub
             </a>
             <a href="#comecar" className="btn btn-ghost btn-lg">
-              Conectar um agente
+              Como funciona
             </a>
           </div>
           <div className="hero-trust">
