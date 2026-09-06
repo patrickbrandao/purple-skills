@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   downloadUrl,
+  skillPackageUrl,
   fetchSkill,
   formatCount,
   formatDate,
   type SkillDetail,
 } from '../api.js';
-import { Markdown } from '../components/Markdown.js';
+import { SkillDoc } from '../components/SkillDoc.js';
 import { CopyButton } from '../components/CopyButton.js';
 import { FileTree } from '../components/FileTree.js';
 import {
@@ -116,15 +117,22 @@ export function SkillPage() {
             <a href={downloadUrl(skill.slug)} className="btn btn-primary">
               <DownloadIcon /> Baixar pacote .zip
             </a>
+            <a href={skillPackageUrl(skill.slug)} className="btn btn-ghost">
+              <DownloadIcon /> Baixar pacote .skill
+            </a>
             <CopyButton value={publicUrl} />
           </div>
         </header>
 
         <div className="skill-body">
           <article className="min-w-0">
-            <Markdown>
-              {skill.skillMd || '_Esta skill ainda não tem conteúdo em SKILL.md._'}
-            </Markdown>
+            <SkillDoc
+              slug={skill.slug}
+              name={skill.name}
+              description={skill.description}
+              tags={skill.tags}
+              skillMd={skill.skillMd}
+            />
           </article>
 
           <aside className="skill-aside">

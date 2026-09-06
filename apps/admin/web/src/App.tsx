@@ -9,6 +9,7 @@ import { AccountPage } from './pages/AccountPage.js';
 import { UsersPage } from './pages/UsersPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { SkillsPage } from './pages/SkillsPage.js';
+import { SkillViewPage } from './pages/SkillViewPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
 
@@ -82,7 +83,13 @@ export default function App() {
             path="/skills/new"
             element={canWrite(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
           />
-          <Route path="/skills/:slug" element={<SkillEditorPage session={current} user={user} />} />
+          <Route path="/skills/:slug" element={<SkillViewPage session={current} user={user} />} />
+          {/* Sem trava de papel: o editor já esconde o que o papel não permite,
+              e é assim que ele se comporta desde antes da tela de leitura. */}
+          <Route
+            path="/skills/:slug/editar"
+            element={<SkillEditorPage session={current} user={user} />}
+          />
           <Route path="/account" element={<AccountPage user={user} onChanged={refresh} />} />
           <Route
             path="/users"

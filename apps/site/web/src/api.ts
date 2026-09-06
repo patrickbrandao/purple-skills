@@ -74,6 +74,10 @@ export const fetchMeta = () => get<SiteMeta>('/api/meta');
 
 export const downloadUrl = (slug: string) => `/skills/${encodeURIComponent(slug)}/download`;
 
+/** Mesmo ZIP do `downloadUrl`, servido com a extensão `.skill`. */
+export const skillPackageUrl = (slug: string) =>
+  `/skills/${encodeURIComponent(slug)}/download.skill`;
+
 export const fileUrl = (slug: string, path: string) =>
   `/api/skills/${encodeURIComponent(slug)}/files/${path
     .split('/')

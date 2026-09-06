@@ -333,6 +333,12 @@ CRUD completo, espelhando o painel administrativo:
   `files` (streaming, ex: lib `archiver`), preservando `relative_path`.
 - O `SKILL.md` do pacote é montado na hora: frontmatter vindo dos metadados
   da skill + corpo gravado (§3.5).
+- O mesmo ZIP é servido também com a extensão **`.skill`** (rota
+  `…/download.skill`), o formato aberto de Agent Skills — só muda o nome do
+  arquivo baixado, o conteúdo é idêntico.
+- O painel admin expõe as duas rotas em `/api/skills/:slug/download[.skill]`
+  (atrás de `requireAuth`, servindo também skills privadas); esse download não
+  incrementa `download_count`.
 
 ## 10. Infraestrutura / Docker
 

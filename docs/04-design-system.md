@@ -29,6 +29,9 @@ apps/admin/web/src/styles/
   base.css       ← cópia idêntica à do site
   markdown.css   ← cópia idêntica à do site
   admin.css      barra, painéis, tabela, abas, dropzone, toasts, login
+                 e a árvore de arquivos (bloco copiado do app.css do site,
+                 com a paleta por tipo de arquivo e um trecho a mais para
+                 escolher e remover arquivo)
 ```
 
 `tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **byte a byte
@@ -114,10 +117,49 @@ as três primeiras letras, então nenhum arquivo fica sem ícone.
 
 As cores desses ícones são a **única paleta que não mora no `tokens.css`**:
 elas ficam em `--ft-*`, declaradas no `.file-tree` dentro do `app.css`, com o
-bloco escuro logo abaixo. O motivo é que só esta tela usa essas cores e elas
-não são da marca — não faria sentido carregá-las para a homepage e o painel,
-que copiam o `tokens.css` byte a byte. O ícone recebe a classe `ft-<tipo>` e
-os traços herdam a cor por `currentColor`.
+bloco escuro logo abaixo. O motivo é que a homepage não tem essa tela e o
+`tokens.css` é copiado byte a byte para os três apps — carregar para lá uma
+paleta que ela nunca usa não se paga. O ícone recebe a classe `ft-<tipo>` e os
+traços herdam a cor por `currentColor`.
+
+O painel usa a mesma árvore, nas duas telas da skill: a de leitura e a aba
+"Arquivos" do editor. `fileTree.ts` e `FileTypeIcon.tsx` são **cópias
+idênticas** entre `apps/site` e `apps/admin`, e o bloco de CSS da árvore é o
+mesmo trecho do `app.css` colado no `admin.css` — ali com um pedaço a mais,
+para a linha que divide espaço com o botão de remover. Ao mexer num, mexa nos
+dois:
+
+```bash
+cp apps/site/web/src/fileTree.ts apps/admin/web/src/
+cp apps/site/web/src/components/FileTypeIcon.tsx apps/admin/web/src/components/
+```
+
+`FileTree.tsx` é o único que diverge de propósito: no site cada arquivo é um
+link de download, no painel ele também escolhe o arquivo a editar e oferece o
+botão de remover.
+
+### A caixa do prompt
+
+`SkillDoc.tsx` é a caixa de duas guias da visualização — "Skill" renderizado e
+"SKILL.md" cru — e é **cópia idêntica** entre os dois apps, assim como o
+`frontmatter.ts` que monta o arquivo e o `Markdown.tsx` que o renderiza. O CSS
+(`.doc-box`, `.doc-tabs`, `.doc-source`) é o mesmo bloco no `app.css` e no
+`admin.css`:
+
+```bash
+cp apps/site/web/src/frontmatter.ts apps/admin/web/src/
+cp apps/site/web/src/components/{SkillDoc,Markdown,FileTypeIcon}.tsx apps/admin/web/src/components/
+```
+
+### Camadas e o `Panel` grudento
+
+`base.css` traz `section { position: relative }` **fora de qualquer camada**, e
+estilo sem camada vence qualquer `@layer` — inclusive as utilities do Tailwind,
+que saem em `@layer utilities`. Como o `Panel` do painel é um `<section>`,
+`lg:sticky` nunca pegou nele: só o `top` valia, e a coluna nascia 96px abaixo
+da vizinha. Por isso a classe `.aside-sticky` do `admin.css`, e não as
+utilities. Vale a regra geral: **utility do Tailwind não vence seletor de
+elemento** nestes apps.
 
 ## Diagramas
 

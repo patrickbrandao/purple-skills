@@ -157,3 +157,10 @@ export const ChevronRightIcon = ({ className }: Props) => (
     <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+export const CopyIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M15 6.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h1.5" strokeLinecap="round" />
+  </svg>
+);

@@ -284,6 +284,14 @@ export const deleteFile = (slug: string, path: string) =>
 
 export const rawFileUrl = (slug: string, path: string) => `${filePath(slug, path)}?raw`;
 
+/** Download do pacote da skill (ZIP). Serve skills privadas — a sessão vai no cookie. */
+export const skillDownloadUrl = (slug: string) =>
+  `/api/skills/${encodeURIComponent(slug)}/download`;
+
+/** Mesmo ZIP do `skillDownloadUrl`, servido com a extensão `.skill`. */
+export const skillPackageUrl = (slug: string) =>
+  `/api/skills/${encodeURIComponent(slug)}/download.skill`;
+
 export function importZip(file: File, fields: { name?: string; description?: string; tags?: string[]; isPublic?: boolean }) {
   const form = new FormData();
   form.append('file', file);

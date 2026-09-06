@@ -38,7 +38,13 @@ describe('buildTree', () => {
     const lib = dir(dir(dir(tree, 'scripts').children, 'lib').children, 'util');
     expect(lib.path).toBe('scripts/lib/util');
     expect(lib.children).toEqual([
-      { kind: 'file', name: 'parse.py', path: 'scripts/lib/util/parse.py', sizeBytes: 42 },
+      {
+        kind: 'file',
+        name: 'parse.py',
+        path: 'scripts/lib/util/parse.py',
+        sizeBytes: 42,
+        isText: true,
+      },
     ]);
   });
 
@@ -69,6 +75,7 @@ describe('buildTree', () => {
       name: 'SKILL.md',
       path: 'SKILL.md',
       sizeBytes: null,
+      isText: true,
     });
   });
 

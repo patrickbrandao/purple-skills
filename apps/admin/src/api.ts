@@ -13,6 +13,7 @@ import {
   listAudit,
   listSkills,
   listTags,
+  readAllFiles,
   readFile,
   setFile,
   setFiles,
@@ -61,6 +62,7 @@ import {
 } from './accounts.js';
 import { config, oidcEnabled, panelBaseUrl, smtpEnabled } from './config.js';
 import { createRateLimiter } from './ratelimit.js';
+import { streamSkillZip } from './zip.js';
 
 const SOURCE = 'web-admin' as const;
 
@@ -678,6 +680,26 @@ api.delete(
 );
 
 // --------------------------------------------------------------- arquivos ---
+
+/**
+ * Download do pacote da skill. `.zip` e `.skill` são o mesmo ZIP — só muda a
+ * extensão do arquivo baixado (o `.skill` é o formato aberto de Agent Skills).
+ * Serve skills privadas: a rota já está atrás de `requireAuth`.
+ */
+const serveSkillPackage = (ext: 'zip' | 'skill') =>
+  route(async (req, res) => {
+    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: true });
+    if (!skill) {
+      res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
+      return;
+    }
+
+    const files = await readAllFiles(skill.uuid);
+    await streamSkillZip(res, skill.slug, files, skill, ext);
+  });
+
+api.get('/api/skills/:slug/download', serveSkillPackage('zip'));
+api.get('/api/skills/:slug/download.skill', serveSkillPackage('skill'));
 
 api.get(
   '/api/skills/:slug/files/*path',

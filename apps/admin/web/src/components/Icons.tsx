@@ -45,6 +45,13 @@ export const UploadIcon = ({ className }: Props) => (
   </svg>
 );
 
+export const DownloadIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M12 5v12m0 0-4-4m4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" />
+  </svg>
+);
+
 export const FileIcon = ({ className }: Props) => (
   <svg className={className} viewBox="0 0 24 24" {...stroke}>
     <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" strokeLinejoin="round" />
@@ -157,5 +164,31 @@ export const CopyIcon = ({ className }: Props) => (
   <svg className={className} viewBox="0 0 24 24" {...stroke}>
     <rect x="9" y="9" width="11" height="11" rx="2" />
     <path d="M15 6.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h1.5" strokeLinecap="round" />
+  </svg>
+);
+
+export const ChevronRightIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke} strokeWidth={2.4}>
+    <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const PencilIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z" strokeLinejoin="round" />
+    <path d="m13.5 6.5 4 4" strokeLinecap="round" />
+  </svg>
+);
+
+export const EyeIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z" />
+    <circle cx="12" cy="12" r="2.5" />
+  </svg>
+);
+
+export const CheckIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke} strokeWidth={2.2}>
+    <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
