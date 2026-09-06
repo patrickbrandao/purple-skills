@@ -139,3 +139,21 @@ export const GithubIcon = ({ className }: Props) => (
     <path d="M12 .5C5.4.5 0 5.9 0 12.6c0 5.3 3.4 9.8 8.2 11.4.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 24 12.6C24 5.9 18.6.5 12 .5Z" />
   </svg>
 );
+
+export const ExternalLinkIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M14 4h6v6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 4 11 13" strokeLinecap="round" />
+    <path
+      d="M18 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+export const ChevronRightIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke} strokeWidth={2.4}>
+    <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);

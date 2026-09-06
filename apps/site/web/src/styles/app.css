@@ -32,6 +32,8 @@
   gap: 13px;
   text-decoration: none;
   color: inherit;
+  /* Sem isto um slug comprido esticaria a coluna do grid em vez de ser cortado. */
+  min-width: 0;
 }
 .skill-card:hover {
   transform: translateY(-4px);
@@ -41,28 +43,38 @@
 .skill-card .sk-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
+  min-width: 0;
 }
-.skill-card .sk-ico {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  display: grid;
-  place-items: center;
+/* Selo do slug: chapéu do mago à esquerda e o nome técnico logo ao lado. */
+.skill-card .sk-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 6px 11px 6px 8px;
+  border-radius: 10px;
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  flex: none;
+  border: 1px solid var(--border-strong);
+  transition: border-color 0.3s ease, background 0.3s ease;
 }
-.skill-card .sk-ico img {
-  width: 24px;
-  height: 28px;
+.skill-card:hover .sk-id {
+  border-color: var(--brand-soft);
+  background: var(--surface-3);
+}
+.skill-card .sk-id img {
+  width: 22px;
+  height: 22px;
   object-fit: contain;
+  flex: none;
 }
 .skill-card .slug {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-faint);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--brand-deep);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -241,48 +253,204 @@
   width: 14px;
   height: 14px;
 }
-.file-list {
+/* ============================================================
+   ÁRVORE DE ARQUIVOS DA SKILL
+   Explorador do pacote: a raiz é a pasta do slug, e cada arquivo
+   ganha o ícone da sua extensão. As cores dos ícones vivem aqui
+   (e não em tokens.css) porque só esta tela usa essa paleta.
+   ============================================================ */
+.file-tree {
   margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+
+  --ft-default: var(--text-faint);
+  --ft-folder: var(--brand);
+  --ft-python: #3776ab;
+  --ft-python-alt: #f2c53d;
+  --ft-js: #b8860b;
+  --ft-ts: #3178c6;
+  --ft-json: #b8860b;
+  --ft-markdown: var(--brand);
+  --ft-html: #d4501e;
+  --ft-css: #2f74c0;
+  --ft-shell: #17864d;
+  --ft-config: #7d6ca3;
+  --ft-image: #c04a86;
+  --ft-pdf: #c0392f;
+  --ft-archive: #b3781b;
+  --ft-table: #17864d;
+  --ft-database: #4a6fbd;
+  --ft-container: #2492c8;
+  --ft-badge: var(--text-faint);
 }
-.file-list a {
+:root[data-theme='dark'] .file-tree {
+  --ft-python: #6fb3e8;
+  --ft-python-alt: #ffd85e;
+  --ft-js: #f0d94a;
+  --ft-ts: #7cb3f0;
+  --ft-json: #f0d94a;
+  --ft-html: #ff9166;
+  --ft-css: #86b8ef;
+  --ft-shell: #4fd18d;
+  --ft-config: #b6a6d8;
+  --ft-image: #f291c0;
+  --ft-pdf: #ff8f88;
+  --ft-archive: #e8b45c;
+  --ft-table: #4fd18d;
+  --ft-database: #93aef0;
+  --ft-container: #6ec9f0;
+}
+
+.ft-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* Cada nível recua e ganha o fio vertical que liga os irmãos. */
+.ft-list .ft-list {
+  margin-left: 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.ft-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-radius: 9px;
-  padding: 7px 9px;
-  font-size: 0.86rem;
+  gap: 7px;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 0.83rem;
   color: var(--text-dim);
   text-decoration: none;
   transition: background 0.2s ease, color 0.2s ease;
 }
-.file-list a:hover {
+a.ft-row:hover,
+button.ft-row:hover {
   background: var(--surface-2);
   color: var(--brand);
 }
-.file-list a.primary {
+button.ft-row {
+  cursor: pointer;
+}
+.ft-row:focus-visible {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 1px;
+}
+.ft-row.primary .ft-name {
   color: var(--brand);
   font-weight: 500;
 }
-.file-list svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  opacity: 0.7;
+.ft-root-row .ft-name {
+  color: var(--brand-deep);
+  font-weight: 500;
+  font-size: 0.8rem;
 }
-.file-list .name {
+
+.ft-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.file-list .size {
+.ft-size,
+.ft-count {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--text-faint);
   flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-faint);
+}
+.ft-count {
+  min-width: 1.2rem;
+  text-align: center;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.ft-row:hover .ft-count {
+  background: var(--surface-3);
+}
+
+/* Seta de abrir/fechar; nos arquivos vira só o espaço equivalente. */
+.ft-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.2s ease;
+}
+button.ft-row[aria-expanded='true'] .ft-chevron {
+  transform: rotate(90deg);
+}
+
+.ft-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ft-default);
+}
+.ft-icon.ft-folder {
+  color: var(--ft-folder);
+}
+.ft-icon.ft-python {
+  color: var(--ft-python);
+}
+.ft-icon.ft-python .alt {
+  color: var(--ft-python-alt);
+}
+.ft-icon.ft-js {
+  color: var(--ft-js);
+}
+.ft-icon.ft-ts {
+  color: var(--ft-ts);
+}
+.ft-icon.ft-json {
+  color: var(--ft-json);
+}
+.ft-icon.ft-markdown {
+  color: var(--ft-markdown);
+}
+.ft-icon.ft-html {
+  color: var(--ft-html);
+}
+.ft-icon.ft-css {
+  color: var(--ft-css);
+}
+.ft-icon.ft-shell {
+  color: var(--ft-shell);
+}
+.ft-icon.ft-config {
+  color: var(--ft-config);
+}
+.ft-icon.ft-image {
+  color: var(--ft-image);
+}
+.ft-icon.ft-pdf {
+  color: var(--ft-pdf);
+}
+.ft-icon.ft-archive {
+  color: var(--ft-archive);
+}
+.ft-icon.ft-table {
+  color: var(--ft-table);
+}
+.ft-icon.ft-database {
+  color: var(--ft-database);
+}
+.ft-icon.ft-container {
+  color: var(--ft-container);
+}
+.ft-icon.ft-badge {
+  color: var(--ft-badge);
+}
+
+.ft-hint {
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: var(--text-faint);
 }
 
 /* ============================================================

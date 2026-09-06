@@ -15,7 +15,8 @@ apps/site/web/src/styles/
   base.css       tipografia, botões, cartões, campos, blocos de código
   chrome.css     nav flutuante e rodapé
   markdown.css   renderização do SKILL.md
-  app.css        cabeçalho, mcp.json, endereços, catálogo e página da skill
+  app.css        cabeçalho, mcp.json, endereços, catálogo, página da skill
+                 e a árvore de arquivos (com a paleta por tipo de arquivo)
 
 apps/homepage/web/src/styles/
   tokens.css     ← cópia idêntica à do site
@@ -91,12 +92,32 @@ que grava a escolha de volta no `localStorage`.
 
 `web/public/assets/images/` guarda:
 
-- `purple-hat-256.png` — favicon e marca da navegação. Derivado do chapéu
-  pixel-art, rotacionado no matiz para o roxo.
+- `purple-hat-256.png` — favicon, marca da navegação e selo do slug nos
+  cartões do catálogo. Derivado do chapéu pixel-art, rotacionado no matiz
+  para o roxo.
 - `icon-purple-left-64x92.png`, `icon-purple-right-137x158.png` — o Mago
-  Roxo, usado no hero, nos cartões e nos estados vazios.
+  Roxo, usado no hero e nos estados vazios.
 - ícones de agentes, IDEs, modelos e do MCP — só na homepage, na seção de
   ecossistema e nos diagramas. O site guarda apenas os cinco que usa.
+
+## Árvore de arquivos da skill
+
+A caixa **Arquivos** da página da skill (`FileTree`) desenha o pacote como
+explorador: a raiz é a pasta com o slug — a mesma que aparece ao descompactar
+o `.zip` — e dentro dela vêm o `SKILL.md`, as subpastas e os anexos. Cada
+pasta abre e fecha; o estado vive só no componente.
+
+Cada arquivo ganha um ícone conforme a extensão (`FileTypeIcon`): logotipo do
+Python para `.py`, selo `JS`/`TS`, chaves para `.json`, a marca do Markdown,
+baleia para `Dockerfile` e por aí vai. Extensão desconhecida cai num selo com
+as três primeiras letras, então nenhum arquivo fica sem ícone.
+
+As cores desses ícones são a **única paleta que não mora no `tokens.css`**:
+elas ficam em `--ft-*`, declaradas no `.file-tree` dentro do `app.css`, com o
+bloco escuro logo abaixo. O motivo é que só esta tela usa essas cores e elas
+não são da marca — não faria sentido carregá-las para a homepage e o painel,
+que copiam o `tokens.css` byte a byte. O ícone recebe a classe `ft-<tipo>` e
+os traços herdam a cor por `currentColor`.
 
 ## Diagramas
 
