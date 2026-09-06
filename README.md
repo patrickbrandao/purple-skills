@@ -20,7 +20,7 @@ superfícies:
 |---------|-----------|--------------|
 | **homepage** | Apresentação do projeto, estática — não fala com o banco | `3004` |
 | **site** | Catálogo do usuário: busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
-| **admin** | Painel de administração protegido por senha | `3001` |
+| **admin** | Painel de administração com contas e papéis | `3001` |
 | **mcp-public** | Servidor MCP para agentes descobrirem e baixarem skills | `3002` |
 | **mcp-admin** | Servidor MCP para administrar o catálogo (CRUD completo) | `3003` |
 
@@ -49,7 +49,7 @@ compose da raiz — rode sempre a partir da raiz do repositório.
 
 - Homepage: <http://localhost:3004>
 - Site: <http://localhost:3000>
-- Painel: <http://localhost:3001> (senha = `ADMIN_PASSWORD`)
+- Painel: <http://localhost:3001> (na primeira vez, a `ADMIN_PASSWORD` cria o administrador)
 - MCP público: <http://localhost:3002>
 - MCP admin: <http://localhost:3003>
 
@@ -179,7 +179,11 @@ exige `Authorization: Bearer <MCP_PUBLIC_KEY>`.
 
 ### Ferramentas do MCP administrativo
 
-Exige sempre `Authorization: Bearer <MCP_ADMIN_TOKEN>`.
+Exige sempre `Authorization: Bearer <credencial>`, que pode ser o
+`MCP_ADMIN_TOKEN` (papel `admin`, ator `token-global` na auditoria) ou uma
+chave `psk_…` emitida por um usuário no painel — nesse caso valem o **papel** e
+o **nome** do dono: uma chave de `leitor` só executa as ferramentas de leitura,
+e `delete_skill` exige `admin`.
 
 | Ferramenta | Descrição |
 |-----------|-----------|
@@ -217,6 +221,51 @@ O incremento é atômico e acontece em **qualquer superfície de acesso** — p�
 do site, API REST e `get_skill` do MCP. Acesso direto a arquivos auxiliares
 **não** conta; apenas o `SKILL.md` e o download do pacote.
 
+## Contas, papéis e acesso
+
+O painel usa **contas**. Numa instalação nova a tabela nasce vazia: a
+`ADMIN_PASSWORD` ainda entra sozinha e o painel oferece criar o primeiro
+administrador. A partir da primeira conta, ela fica **inerte** — o acesso passa
+a ser sempre por e-mail e senha.
+
+| Ação | admin | editor | leitor |
+|------|:-----:|:------:|:------:|
+| Ver skills, inclusive privadas | ✅ | ✅ | ✅ |
+| Criar / editar skill e arquivos | ✅ | ✅ | ❌ |
+| Publicar / despublicar | ✅ | ✅ | ❌ |
+| Apagar skill | ✅ | ❌ | ❌ |
+| Gerenciar contas e papéis | ✅ | ❌ | ❌ |
+| Emitir chaves de API para si | ✅ | ✅ | ✅ |
+
+Os papéis são **globais**: não há dono por skill. O papel limita a ação, nunca
+o escopo.
+
+- **Chaves de API** (`psk_<prefixo>_<segredo>`) substituem o token global ao
+  configurar um agente: carregam o papel do dono e aparecem na auditoria com o
+  nome dele. O texto completo é mostrado **uma única vez**, na emissão.
+- **Revogação** é individual: trocar senha, mudar papel ou desativar a conta
+  invalida na hora todos os cookies e sessões daquela pessoa. Contas não são
+  apagadas — são desativadas, para a auditoria continuar fazendo sentido.
+- **Login por SSO** (OIDC) é opcional. Ligue com `OIDC_ISSUER` +
+  `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` e registre no provedor o
+  `redirect_uri` `<ADMIN_PUBLIC_URL>/api/auth/oidc/callback`. **Defina
+  `OIDC_ALLOWED_DOMAINS`**: com a lista vazia, o auto-provisionamento fica
+  desligado de propósito — um `leitor` enxerga as skills privadas, e sem
+  allowlist qualquer conta do provedor entraria.
+- **Redefinição de senha por e-mail** exige `SMTP_URL` + `SMTP_FROM`. Sem SMTP
+  o painel continua completo: o administrador gera uma senha temporária, e a
+  pessoa é obrigada a trocá-la no primeiro acesso.
+- **Rate limiting no login** em duas camadas: janela em memória por IP e trava
+  da conta (`LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS`).
+
+O desenho completo, com as decisões e o que ficou de fora, está em
+[`docs/05-accounts-and-roles.md`](docs/05-accounts-and-roles.md).
+
+> **Mudança de comportamento na série beta.** A `ADMIN_PASSWORD` deixa de
+> logar assim que existir a primeira conta. Instalações existentes sobem sem
+> intervenção — quem não passar pelo setup continua entrando com ela
+> indefinidamente.
+
 ## Configuração
 
 Todas as variáveis estão documentadas em [`.env.example`](.env.example). Todo
@@ -225,12 +274,17 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
 | `DATABASE_URL` | sim* | Conexão com o Postgres (senha percent-encodada). *Alternativa sem escape: `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` — é o que o compose usa |
-| `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha do painel |
+| `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
 | `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some |
+| `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
+| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
+| `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
+| `SMTP_URL` / `_FILE`, `SMTP_FROM` | não | Ligam a redefinição de senha por e-mail |
+| `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS` | não | Trava da conta após tentativas erradas (padrão: 8 / 900s) |
 
 Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
 cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Os
@@ -250,9 +304,11 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
   upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), zip de 256 MB descomprimidos e
   512 entradas (`ZIP_MAX_UNCOMPRESSED_BYTES`, `ZIP_MAX_ENTRIES`) e 32 MB de
   base64 no `set_files_bulk` (`MCP_MAX_ZIP_BASE64`).
-- Login do painel sem rate limiting.
 - Sem versionamento de arquivos (apenas um log de auditoria, sem restore).
+- `audit_log` sem política de retenção.
 - Busca vetorial deixada para uma versão futura.
+- Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
+  no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.
 
 ## Licença
 

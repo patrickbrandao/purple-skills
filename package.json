@@ -1,10 +1,10 @@
 {
   "name": "purple-skills",
-  "version": "1.0.0-beta.7",
+  "version": "1.0.0-beta.8",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Catálogo open-source de skills para agentes de IA, com site público, painel admin e servidores MCP.",
+  "description": "Cat\u00e1logo open-source de skills para agentes de IA, com site p\u00fablico, painel admin e servidores MCP.",
   "workspaces": [
     "database",
     "packages/*",

@@ -1,13 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { getSession, type Session } from './api.js';
+import { canManageUsers, canWrite, getSession, type Session } from './api.js';
 import { ToastProvider } from './components/Toast.js';
 import { Layout } from './components/Layout.js';
 import { LoginPage } from './pages/LoginPage.js';
+import { ChangePasswordPage } from './pages/ChangePasswordPage.js';
+import { AccountPage } from './pages/AccountPage.js';
+import { UsersPage } from './pages/UsersPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { SkillsPage } from './pages/SkillsPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
+
+/** Estado assumido quando `/api/session` não responde — só serve ao login. */
+const OFFLINE: Session = {
+  authenticated: false,
+  user: null,
+  needsSetup: false,
+  legacyLogin: false,
+  oidc: { enabled: false },
+  passwordResetByEmail: false,
+  siteName: 'Purple Skills',
+  siteBaseUrl: '/',
+};
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -17,7 +32,7 @@ export default function App() {
     try {
       setSession(await getSession());
     } catch {
-      setSession(null);
+      setSession(OFFLINE);
     } finally {
       setLoading(false);
     }
@@ -35,21 +50,47 @@ export default function App() {
     );
   }
 
+  const current = session ?? OFFLINE;
+
+  if (!current.authenticated || !current.user) {
+    return (
+      <ToastProvider>
+        <LoginPage session={current} onSuccess={refresh} />
+      </ToastProvider>
+    );
+  }
+
+  // Senha temporária: nenhuma outra tela abre antes da troca — o servidor
+  // recusa as demais rotas de qualquer forma.
+  if (current.user.mustChangePassword) {
+    return (
+      <ToastProvider>
+        <ChangePasswordPage onDone={refresh} />
+      </ToastProvider>
+    );
+  }
+
+  const user = current.user;
+
   return (
     <ToastProvider>
-      {!session?.authenticated ? (
-        <LoginPage onSuccess={refresh} />
-      ) : (
-        <Layout session={session} onLogout={refresh}>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/skills" element={<SkillsPage />} />
-            <Route path="/skills/new" element={<NewSkillPage />} />
-            <Route path="/skills/:slug" element={<SkillEditorPage session={session} />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Layout>
-      )}
+      <Layout session={current} user={user} onLogout={refresh}>
+        <Routes>
+          <Route path="/" element={<DashboardPage user={user} />} />
+          <Route path="/skills" element={<SkillsPage user={user} />} />
+          <Route
+            path="/skills/new"
+            element={canWrite(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
+          />
+          <Route path="/skills/:slug" element={<SkillEditorPage session={current} user={user} />} />
+          <Route path="/account" element={<AccountPage user={user} onChanged={refresh} />} />
+          <Route
+            path="/users"
+            element={canManageUsers(user.role) ? <UsersPage me={user} /> : <Navigate to="/" replace />}
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Layout>
     </ToastProvider>
   );
 }

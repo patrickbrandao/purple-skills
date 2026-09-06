@@ -37,19 +37,91 @@ export type Stats = {
   totalViews: number;
   totalDownloads: number;
   totalTags: number;
+  totalUsers: number;
+  activeUsers: number;
 };
+
+export type AuditAction =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'user.create'
+  | 'user.role'
+  | 'user.deactivate'
+  | 'key.create'
+  | 'key.revoke';
 
 export type AuditEntry = {
   id: string;
   skillUuid: string | null;
   skillSlug: string | null;
   filePath: string | null;
-  action: 'create' | 'update' | 'delete';
+  action: AuditAction;
   source: 'web-admin' | 'mcp-admin';
+  actorUserUuid: string | null;
+  actorLabel: string | null;
+  targetLabel: string | null;
   createdAt: string;
 };
 
-export type Session = { authenticated: boolean; siteName: string; siteBaseUrl: string };
+export type Role = 'admin' | 'editor' | 'leitor';
+
+export const ROLE_LABEL: Record<Role, string> = {
+  admin: 'administrador',
+  editor: 'editor',
+  leitor: 'leitor',
+};
+
+/** Espelha `packages/shared/src/roles.ts` — a decisão real é do servidor. */
+export const canWrite = (role: Role) => role === 'admin' || role === 'editor';
+export const canDelete = (role: Role) => role === 'admin';
+export const canManageUsers = (role: Role) => role === 'admin';
+
+export type SessionUser = {
+  uuid: string | null;
+  email: string;
+  name: string;
+  role: Role;
+  mustChangePassword: boolean;
+  /** Sessão aberta com a ADMIN_PASSWORD, antes de existir qualquer conta. */
+  legacy: boolean;
+};
+
+export type Session = {
+  authenticated: boolean;
+  user: SessionUser | null;
+  needsSetup: boolean;
+  legacyLogin: boolean;
+  oidc: { enabled: boolean; name?: string };
+  passwordResetByEmail: boolean;
+  siteName: string;
+  siteBaseUrl: string;
+};
+
+export type UserSummary = {
+  uuid: string;
+  email: string;
+  name: string;
+  role: Role;
+  isActive: boolean;
+  hasPassword: boolean;
+  mustChangePassword: boolean;
+  oidcIssuer: string | null;
+  lockedUntil: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ApiKeySummary = {
+  id: string;
+  userUuid: string;
+  name: string;
+  prefix: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -79,9 +151,78 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown) => JSON.stringify(body);
 
 export const getSession = () => request<Session>('/api/session');
-export const login = (password: string) =>
-  request<{ authenticated: boolean }>('/api/login', { method: 'POST', body: json({ password }) });
+
+export const login = (credentials: { email?: string; password: string }) =>
+  request<{ authenticated: boolean }>('/api/login', { method: 'POST', body: json(credentials) });
+
 export const logout = () => request<unknown>('/api/logout', { method: 'POST' });
+
+export const setup = (body: {
+  adminPassword: string;
+  email: string;
+  name: string;
+  password: string;
+}) => request<{ authenticated: boolean; user: UserSummary }>('/api/setup', {
+  method: 'POST',
+  body: json(body),
+});
+
+// ------------------------------------------------------------ minha conta ---
+
+export const changePassword = (body: { currentPassword?: string; newPassword: string }) =>
+  request<{ changed: boolean }>('/api/me/password', { method: 'POST', body: json(body) });
+
+export const getKeys = () => request<{ items: ApiKeySummary[] }>('/api/me/keys');
+
+/** O campo `token` chega uma única vez, na resposta desta chamada. */
+export const createKey = (name: string) =>
+  request<{ key: ApiKeySummary; token: string }>('/api/me/keys', {
+    method: 'POST',
+    body: json({ name }),
+  });
+
+export const revokeKey = (id: string) =>
+  request<unknown>(`/api/me/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+// ----------------------------------------------------------------- contas ---
+
+export const getUsers = () => request<{ items: UserSummary[] }>('/api/users');
+
+export const createUser = (body: {
+  email: string;
+  name: string;
+  role: Role;
+  password?: string;
+}) => request<{ user: UserSummary; temporaryPassword: string | null }>('/api/users', {
+  method: 'POST',
+  body: json(body),
+});
+
+export const updateUser = (uuid: string, body: { name?: string; role?: Role; isActive?: boolean }) =>
+  request<UserSummary>(`/api/users/${encodeURIComponent(uuid)}`, {
+    method: 'PATCH',
+    body: json(body),
+  });
+
+export const resetUserPassword = (uuid: string) =>
+  request<{ user: UserSummary; temporaryPassword: string }>(
+    `/api/users/${encodeURIComponent(uuid)}/reset-password`,
+    { method: 'POST' },
+  );
+
+// ------------------------------------------------- redefinição de senha -----
+
+export const requestPasswordReset = (email: string) =>
+  request<{ requested: boolean }>('/api/password-reset/request', {
+    method: 'POST',
+    body: json({ email }),
+  });
+
+export const confirmPasswordReset = (token: string, password: string) =>
+  request<{ reset: boolean }>('/api/password-reset/confirm', {
+    method: 'POST',
+    body: json({ token, password }),
+  });
 
 export const getStats = () => request<Stats>('/api/stats');
 export const getAudit = () => request<{ items: AuditEntry[] }>('/api/audit');

@@ -16,11 +16,14 @@ import {
 import {
   SKILL_MD,
   ZipError,
+  canDelete,
+  canWrite,
   extractZip,
   isSkillMd,
   normalizeRelativePath,
   readIntEnv,
 } from '@purple-skills/shared';
+import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
 
 /** Teto do payload base64 do `set_files_bulk` (~32 MB codificados). */
@@ -56,209 +59,262 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
 
 const pageUrl = (slug: string) => `${config.siteBaseUrl}/skills/${slug}`;
 
-/** Handlers das ferramentas administrativas, testáveis sem transporte HTTP. */
-export const handlers = {
-  async list_skills(args: {
-    includePrivate?: boolean;
-    query?: string;
-    tag?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<ToolResult> {
-    const result = await listSkills({
-      query: args.query ?? null,
-      tag: args.tag ?? null,
-      limit: args.limit ?? 50,
-      offset: args.offset ?? 0,
-      includePrivate: args.includePrivate !== false,
-      sort: args.query ? undefined : 'recent',
-    });
+/**
+ * Handlers das ferramentas administrativas, testáveis sem transporte HTTP.
+ *
+ * São criados **por chamador**: o papel decide o que ele pode executar e o
+ * ator vai junto para o `audit_log`. Uma chave de `leitor` enxerga o catálogo
+ * inteiro, inclusive as skills privadas, mas não escreve nada.
+ */
+export function createHandlers(caller: Caller = TOKEN_CALLER) {
+  const actor = caller.actor;
 
-    return asJson({
-      total: result.total,
-      // O teto real de `limit` é aplicado na query; devolvê-lo evita que o
-      // agente calcule a paginação com um valor que não foi o usado.
-      limit: result.limit,
-      offset: result.offset,
-      skills: result.items.map((skill) => ({
-        slug: skill.slug,
-        name: skill.name,
-        description: skill.description,
-        visibility: skill.isPublic ? 'public' : 'private',
-        tags: skill.tags,
-        files: skill.fileCount,
-        views: skill.viewCount,
-        downloads: skill.downloadCount,
-        updatedAt: skill.updatedAt,
-      })),
-    });
-  },
+  /** `null` quando pode; um `ToolResult` de recusa quando não. */
+  const denyWrite = (): ToolResult | null =>
+    canWrite(caller.role)
+      ? null
+      : fail(
+          `Sua credencial tem papel "${caller.role}", que só permite leitura. ` +
+            'Peça a um administrador para mudar seu papel.',
+        );
 
-  async get_skill(args: { slug: string }): Promise<ToolResult> {
-    const detail = await getSkillDetail(args.slug, { includePrivate: true });
-    if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
+  const denyDelete = (): ToolResult | null =>
+    canDelete(caller.role)
+      ? null
+      : fail(`Apagar skill exige papel "admin"; sua credencial é "${caller.role}".`);
 
-    return asJson({
-      slug: detail.slug,
-      name: detail.name,
-      description: detail.description,
-      visibility: detail.isPublic ? 'public' : 'private',
-      tags: detail.tags,
-      views: detail.viewCount,
-      downloads: detail.downloadCount,
-      url: pageUrl(detail.slug),
-      files: detail.files.map((file) => ({
-        path: file.relativePath,
-        mimeType: file.mimeType,
-        sizeBytes: file.sizeBytes,
-        isText: file.isText,
-      })),
-      skillMd: detail.skillMd,
-    });
-  },
+  return {
+    async list_skills(args: {
+      includePrivate?: boolean;
+      query?: string;
+      tag?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<ToolResult> {
+      const result = await listSkills({
+        query: args.query ?? null,
+        tag: args.tag ?? null,
+        limit: args.limit ?? 50,
+        offset: args.offset ?? 0,
+        includePrivate: args.includePrivate !== false,
+        sort: args.query ? undefined : 'recent',
+      });
 
-  async get_file(args: { slug: string; path: string }): Promise<ToolResult> {
-    const detail = await getSkillDetail(args.slug, { includePrivate: true });
-    if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
+      return asJson({
+        total: result.total,
+        // O teto real de `limit` é aplicado na query; devolvê-lo evita que o
+        // agente calcule a paginação com um valor que não foi o usado.
+        limit: result.limit,
+        offset: result.offset,
+        skills: result.items.map((skill) => ({
+          slug: skill.slug,
+          name: skill.name,
+          description: skill.description,
+          visibility: skill.isPublic ? 'public' : 'private',
+          tags: skill.tags,
+          files: skill.fileCount,
+          views: skill.viewCount,
+          downloads: skill.downloadCount,
+          updatedAt: skill.updatedAt,
+        })),
+      });
+    },
 
-    const path = normalizeRelativePath(args.path);
-    if (!path) return fail(`Caminho inválido: "${args.path}"`);
+    async get_skill(args: { slug: string }): Promise<ToolResult> {
+      const detail = await getSkillDetail(args.slug, { includePrivate: true });
+      if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
-    const file = await readFile(detail.uuid, path);
-    if (!file) return fail(`Arquivo não encontrado em "${args.slug}": ${path}`);
-    if (!file.isText) {
-      return fail(`"${path}" é binário (${file.mimeType}, ${file.sizeBytes} bytes) e não pode ser lido como texto.`);
-    }
+      return asJson({
+        slug: detail.slug,
+        name: detail.name,
+        description: detail.description,
+        visibility: detail.isPublic ? 'public' : 'private',
+        tags: detail.tags,
+        views: detail.viewCount,
+        downloads: detail.downloadCount,
+        url: pageUrl(detail.slug),
+        files: detail.files.map((file) => ({
+          path: file.relativePath,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          isText: file.isText,
+        })),
+        skillMd: detail.skillMd,
+      });
+    },
 
-    return text(file.buffer.toString('utf8'));
-  },
+    async get_file(args: { slug: string; path: string }): Promise<ToolResult> {
+      const detail = await getSkillDetail(args.slug, { includePrivate: true });
+      if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
-  async create_skill(args: {
-    name: string;
-    description?: string;
-    skill_md_content: string;
-    tags?: string[];
-    slug?: string;
-    is_public?: boolean;
-  }): Promise<ToolResult> {
-    const detail = await createSkill(
-      {
-        name: args.name,
-        slug: args.slug,
-        description: args.description,
-        skillMd: args.skill_md_content,
-        tags: args.tags,
-        isPublic: args.is_public === true,
-      },
-      SOURCE,
-    );
+      const path = normalizeRelativePath(args.path);
+      if (!path) return fail(`Caminho inválido: "${args.path}"`);
 
-    return text(
-      `Skill criada: "${detail.name}" (slug: ${detail.slug}, ${
-        detail.isPublic ? 'pública' : 'privada'
-      }).\n${pageUrl(detail.slug)}`,
-    );
-  },
+      const file = await readFile(detail.uuid, path);
+      if (!file) return fail(`Arquivo não encontrado em "${args.slug}": ${path}`);
+      if (!file.isText) {
+        return fail(`"${path}" é binário (${file.mimeType}, ${file.sizeBytes} bytes) e não pode ser lido como texto.`);
+      }
 
-  async edit_skill(args: {
-    slug: string;
-    name?: string;
-    description?: string;
-    tags?: string[];
-    new_slug?: string;
-  }): Promise<ToolResult> {
-    const detail = await updateSkill(
-      args.slug,
-      {
-        name: args.name,
-        description: args.description,
-        tags: args.tags,
-        slug: args.new_slug,
-      },
-      SOURCE,
-    );
+      return text(file.buffer.toString('utf8'));
+    },
 
-    return text(`Skill atualizada: "${detail.name}" (slug: ${detail.slug}).`);
-  },
+    async create_skill(args: {
+      name: string;
+      description?: string;
+      skill_md_content: string;
+      tags?: string[];
+      slug?: string;
+      is_public?: boolean;
+    }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
 
-  async set_visibility(args: { slug: string; visibility: 'public' | 'private' }): Promise<ToolResult> {
-    const summary = await setVisibility(args.slug, args.visibility === 'public', SOURCE);
-    return text(`"${summary.name}" agora é ${summary.isPublic ? 'pública' : 'privada'}.`);
-  },
-
-  async set_file(args: { slug: string; path: string; content: string }): Promise<ToolResult> {
-    const file = await setFile(args.slug, args.path, args.content, SOURCE);
-    return text(`Arquivo gravado em "${args.slug}": ${file.relativePath} (${file.sizeBytes} bytes).`);
-  },
-
-  async set_files_bulk(args: {
-    slug: string;
-    zip_base64: string;
-    replace?: boolean;
-  }): Promise<ToolResult> {
-    // Recusa antes de decodificar: o único teto até aqui era o limite do corpo
-    // JSON (64 MB), e um .zip desse tamanho descomprime para muito mais.
-    if (args.zip_base64.length > MAX_ZIP_BASE64_CHARS) {
-      return fail(
-        `zip_base64 grande demais (limite de ~${Math.round(MAX_ZIP_BASE64_CHARS / (1024 * 1024))} MB codificados).`,
+      const detail = await createSkill(
+        {
+          name: args.name,
+          slug: args.slug,
+          description: args.description,
+          skillMd: args.skill_md_content,
+          tags: args.tags,
+          isPublic: args.is_public === true,
+        },
+        SOURCE,
+        actor,
       );
-    }
 
-    // `Buffer.from(..., 'base64')` nunca lança: bytes inválidos simplesmente
-    // produzem um ZIP ilegível, tratado logo abaixo como erro de formato.
-    const buffer = Buffer.from(args.zip_base64, 'base64');
+      return text(
+        `Skill criada: "${detail.name}" (slug: ${detail.slug}, ${
+          detail.isPublic ? 'pública' : 'privada'
+        }).\n${pageUrl(detail.slug)}`,
+      );
+    },
 
-    let extracted: ReturnType<typeof extractZip>;
-    try {
-      extracted = extractZip(buffer);
-    } catch (err) {
-      // Limite estourado ou arquivo ilegível são erros do payload enviado pelo
-      // agente, não falhas do servidor: devolvemos a mensagem para ele corrigir.
-      if (err instanceof ZipError) return fail(err.message);
-      throw err;
-    }
-    if (extracted.length === 0) return fail('O .zip não contém nenhum arquivo aproveitável.');
+    async edit_skill(args: {
+      slug: string;
+      name?: string;
+      description?: string;
+      tags?: string[];
+      new_slug?: string;
+    }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
 
-    const files = await setFiles(
-      args.slug,
-      extracted.map((file) => ({
-        relativePath: file.relativePath,
-        content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
-      })),
-      SOURCE,
-      // O zip representa o estado desejado completo da árvore (seção 4 das
-      // decisões de arquitetura); passe replace: false para só adicionar.
-      { replace: args.replace !== false },
-    );
+      const detail = await updateSkill(
+        args.slug,
+        {
+          name: args.name,
+          description: args.description,
+          tags: args.tags,
+          slug: args.new_slug,
+        },
+        SOURCE,
+        actor,
+      );
 
-    return text(
-      `${extracted.length} arquivo(s) importado(s) para "${args.slug}".\n` +
-        `Árvore final (${files.length} arquivos):\n` +
-        files.map((file) => `- ${file.relativePath}`).join('\n'),
-    );
-  },
+      return text(`Skill atualizada: "${detail.name}" (slug: ${detail.slug}).`);
+    },
 
-  async delete_file(args: { slug: string; path: string }): Promise<ToolResult> {
-    if (isSkillMd(args.path)) {
-      return fail(`O arquivo ${SKILL_MD} não pode ser removido — use set_file para sobrescrevê-lo.`);
-    }
-    await deleteFile(args.slug, args.path, SOURCE);
-    return text(`Arquivo removido de "${args.slug}": ${args.path}`);
-  },
+    async set_visibility(args: {
+      slug: string;
+      visibility: 'public' | 'private';
+    }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
 
-  async delete_skill(args: { slug: string; confirm: boolean }): Promise<ToolResult> {
-    if (args.confirm !== true) {
-      return fail('Passe confirm: true para confirmar a remoção definitiva da skill.');
-    }
-    await deleteSkill(args.slug, SOURCE);
-    return text(`Skill "${args.slug}" removida, junto com todos os seus arquivos.`);
-  },
+      const summary = await setVisibility(args.slug, args.visibility === 'public', SOURCE, actor);
+      return text(`"${summary.name}" agora é ${summary.isPublic ? 'pública' : 'privada'}.`);
+    },
 
-  async list_tags(): Promise<ToolResult> {
-    return asJson({ tags: await listTags({ includePrivate: true }) });
-  },
+    async set_file(args: { slug: string; path: string; content: string }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
 
-  async get_stats(): Promise<ToolResult> {
-    return asJson(await stats());
-  },
-};
+      const file = await setFile(args.slug, args.path, args.content, SOURCE, actor);
+      return text(`Arquivo gravado em "${args.slug}": ${file.relativePath} (${file.sizeBytes} bytes).`);
+    },
+
+    async set_files_bulk(args: {
+      slug: string;
+      zip_base64: string;
+      replace?: boolean;
+    }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
+
+      // Recusa antes de decodificar: o único teto até aqui era o limite do corpo
+      // JSON (64 MB), e um .zip desse tamanho descomprime para muito mais.
+      if (args.zip_base64.length > MAX_ZIP_BASE64_CHARS) {
+        return fail(
+          `zip_base64 grande demais (limite de ~${Math.round(MAX_ZIP_BASE64_CHARS / (1024 * 1024))} MB codificados).`,
+        );
+      }
+
+      // `Buffer.from(..., 'base64')` nunca lança: bytes inválidos simplesmente
+      // produzem um ZIP ilegível, tratado logo abaixo como erro de formato.
+      const buffer = Buffer.from(args.zip_base64, 'base64');
+
+      let extracted: ReturnType<typeof extractZip>;
+      try {
+        extracted = extractZip(buffer);
+      } catch (err) {
+        // Limite estourado ou arquivo ilegível são erros do payload enviado pelo
+        // agente, não falhas do servidor: devolvemos a mensagem para ele corrigir.
+        if (err instanceof ZipError) return fail(err.message);
+        throw err;
+      }
+      if (extracted.length === 0) return fail('O .zip não contém nenhum arquivo aproveitável.');
+
+      const files = await setFiles(
+        args.slug,
+        extracted.map((file) => ({
+          relativePath: file.relativePath,
+          content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+        })),
+        SOURCE,
+        // O zip representa o estado desejado completo da árvore (seção 4 das
+        // decisões de arquitetura); passe replace: false para só adicionar.
+        { replace: args.replace !== false },
+        actor,
+      );
+
+      return text(
+        `${extracted.length} arquivo(s) importado(s) para "${args.slug}".\n` +
+          `Árvore final (${files.length} arquivos):\n` +
+          files.map((file) => `- ${file.relativePath}`).join('\n'),
+      );
+    },
+
+    async delete_file(args: { slug: string; path: string }): Promise<ToolResult> {
+      const denied = denyWrite();
+      if (denied) return denied;
+
+      if (isSkillMd(args.path)) {
+        return fail(`O arquivo ${SKILL_MD} não pode ser removido — use set_file para sobrescrevê-lo.`);
+      }
+      await deleteFile(args.slug, args.path, SOURCE, actor);
+      return text(`Arquivo removido de "${args.slug}": ${args.path}`);
+    },
+
+    async delete_skill(args: { slug: string; confirm: boolean }): Promise<ToolResult> {
+      const denied = denyDelete();
+      if (denied) return denied;
+
+      if (args.confirm !== true) {
+        return fail('Passe confirm: true para confirmar a remoção definitiva da skill.');
+      }
+      await deleteSkill(args.slug, SOURCE, actor);
+      return text(`Skill "${args.slug}" removida, junto com todos os seus arquivos.`);
+    },
+
+    async list_tags(): Promise<ToolResult> {
+      return asJson({ tags: await listTags({ includePrivate: true }) });
+    },
+
+    async get_stats(): Promise<ToolResult> {
+      return asJson(await stats());
+    },
+  };
+}
+
+export type Handlers = ReturnType<typeof createHandlers>;

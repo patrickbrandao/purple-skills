@@ -156,19 +156,57 @@ a implementação.
 
 ### 7.1 Painel administrativo (web)
 
-- Senha única definida via env var ou arquivo (padrão de secrets — seção
-  7.4).
-- Comparação **timing-safe** direta (sem hashing — é um segredo único
-  fornecido pelo operador, não uma senha de usuário armazenada em banco).
-- Sessão mantida via **cookie assinado, httpOnly, stateless** (sem session
-  store no banco).
-- **Sem rate limiting** no login no v1 (risco aceito).
+O painel usa **contas com papéis**. O desenho completo, com as doze decisões
+que o produziram, está em [`05-accounts-and-roles.md`](05-accounts-and-roles.md);
+o que segue é o resumo do que está no ar.
+
+- **Contas locais** em `users`, com senha guardada como hash **scrypt**
+  (`packages/shared/src/password.ts`, custo e salt embutidos no próprio hash).
+- Três papéis **globais** — `admin`, `editor`, `leitor`. O papel limita a
+  ação, nunca o escopo: não há ownership por skill. Um `leitor` enxerga as
+  skills privadas mas não escreve; um `editor` escreve em todas mas não apaga
+  skill nem gerencia contas.
+- Sessão em **cookie assinado, httpOnly, stateless**, agora com
+  `{ sub, role, ver, exp }`. `ver` é uma cópia de `users.token_version`: o
+  middleware relê a conta a cada requisição e recusa a sessão quando a versão
+  mudou ou a conta foi desativada. Trocar senha, mudar papel ou desativar
+  incrementa a versão — é a revogação individual, sem tabela de sessões.
+- **`ADMIN_PASSWORD` virou senha de bootstrap.** Enquanto `users` está vazia
+  ela ainda entra sozinha e habilita `POST /api/setup`, que cria o primeiro
+  administrador. Depois da primeira conta, `/setup` responde 404 e o login sem
+  e-mail é recusado.
+- **Rate limiting no login em duas camadas**: janela em memória por IP
+  (`LOGIN_IP_*`, absorve a rajada sem tocar o banco) e `users.locked_until`
+  (`LOGIN_MAX_ATTEMPTS`/`LOGIN_LOCK_SECONDS`, sobrevive a restart e vale para
+  vários containers).
+- **OIDC opcional** (`OIDC_ISSUER`), authorization code + PKCE via
+  `openid-client`. O papel nunca vem do provedor; conta nova nasce `leitor` e
+  conta existente mantém o papel que tem. `OIDC_ALLOWED_DOMAINS` vazia
+  **desliga** o auto-provisionamento, de propósito — ver §13.
+- **SMTP opcional** (`SMTP_URL` + `SMTP_FROM`) para o link de redefinição de
+  senha. Sem ele, o admin gera uma senha temporária no painel e a conta entra
+  com `must_change_password`.
 
 ### 7.2 MCP administrativo
 
-- Autenticação obrigatória via header `Authorization: Bearer <token>`,
-  token definido via env var/arquivo, comparação em tempo constante
-  (`safeEqual`).
+Duas credenciais valem, ambas por `Authorization: Bearer`:
+
+| Credencial | Ator no `audit_log` | Papel |
+|------------|---------------------|-------|
+| `MCP_ADMIN_TOKEN` | `token-global` | `admin` |
+| `psk_<prefixo>_<segredo>` | o usuário dono | o papel do dono |
+
+- O token global **continua valendo**, comparado em tempo constante
+  (`safeEqual`): torná-lo inerte ao criar o primeiro usuário derrubaria todo
+  agente já configurado.
+- A chave de usuário é encontrada pelo **prefixo** (8 caracteres, indexado) e
+  conferida por hash scrypt do segredo. O texto completo aparece uma única vez,
+  na emissão. Chave revogada ou de conta desativada não autentica.
+- As ferramentas de escrita recusam papel `leitor`; `delete_skill` exige
+  `admin`.
+- Uma sessão Streamable HTTP fica **presa à credencial que a abriu**: reusar um
+  `mcp-session-id` com outra credencial responde 403, senão o papel gravado na
+  sessão valeria para quem descobrisse o identificador.
 
 ### 7.3 MCP público
 
@@ -185,10 +223,12 @@ a implementação.
 Todos os segredos seguem o padrão `<NOME>` / `<NOME>_FILE` (a aplicação lê
 o arquivo se `<NOME>_FILE` estiver definido; senão usa `<NOME>` direto):
 
-- `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE`
+- `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE` (bootstrap — §7.1)
 - `ADMIN_SESSION_SECRET` / `ADMIN_SESSION_SECRET_FILE`
 - `MCP_ADMIN_TOKEN` / `MCP_ADMIN_TOKEN_FILE`
 - `MCP_PUBLIC_KEY` / `MCP_PUBLIC_KEY_FILE`
+- `OIDC_CLIENT_SECRET` / `OIDC_CLIENT_SECRET_FILE`
+- `SMTP_URL` / `SMTP_URL_FILE`
 
 ### 7.5 Segredos do repositório e do ambiente de testes
 
@@ -212,6 +252,29 @@ por isso ficam dispensadas no `.gitleaks.toml`, com escopo fechado no commit
 > deste repositório, atual ou histórico, serve como padrão: são exemplos de um
 > ambiente de testes, e reaproveitá-los deixa a instalação com credenciais
 > públicas.
+
+### 7.6 O que a entrega de contas revogou
+
+Contas e papéis mudaram três decisões que valiam antes desta seção:
+
+| Antes | Agora |
+|-------|-------|
+| Senha única, comparada sem hashing | Senha por conta, hash scrypt em `users.password_hash` |
+| Sessão stateless **autossuficiente** | Continua stateless, mas o middleware lê a conta a cada requisição para conferir `token_version` e `is_active` |
+| Sem rate limiting no login | Janela por IP + `users.locked_until` |
+
+A segunda troca é um custo assumido: o painel passa a tocar o banco em rotas
+que antes não tocavam. É um `SELECT` por chave primária num app de baixo
+volume, e em troca não há linha de sessão para expirar nem limpar.
+
+O que **não** mudou: o `MCP_ADMIN_TOKEN` segue válido como credencial de
+máquina, e uma instalação que nunca passe pelo `/setup` continua funcionando
+com a senha única indefinidamente (§4.1 da spec).
+
+Ficaram deliberadamente de fora: ownership por skill, fluxo de revisão, RBAC
+com permissões compostas, tabela de sessões, auditoria de login e papel vindo
+de grupo do IdP. Os motivos estão na §5 de
+[`05-accounts-and-roles.md`](05-accounts-and-roles.md).
 
 ## 8. Contrato das ferramentas MCP
 
@@ -282,6 +345,22 @@ endereçadas em versões futuras:
   dedup, sem rate limiting).
 - Sem limite por skill (soma dos arquivos) — possível abuso de armazenamento
   no Postgres, dentro dos tetos de cada requisição.
-- Login do admin sem rate limiting contra brute-force.
 - Sem histórico/versionamento de arquivos — edições sobrescrevem o estado
   atual (apenas um log de auditoria simples, sem restore).
+- `audit_log` cresce sem política de retenção. Os eventos de conta acrescentam
+  pouco volume (login e falha de login **não** são auditados, §2.8 da spec),
+  mas a decisão de quando podar continua em aberto.
+
+**Endereçados pela entrega de contas e papéis** (§7.1): o login ganhou rate
+limiting, e o `audit_log` passou a registrar o ator (`actor_user_uuid` /
+`actor_label`) além da superfície, com revogação individual por
+`token_version`.
+
+**Risco residual introduzido por ela**, documentado na §2.4 da spec: a
+vinculação de um login OIDC a uma conta local é sempre **pelo e-mail**. Um
+provedor que permita a alguém declarar um endereço arbitrário dentro de um
+domínio autorizado consegue assumir a conta correspondente, inclusive a de um
+administrador. A mitigação é operacional — aponte `OIDC_ISSUER` para um
+provedor que você controla e mantenha `OIDC_ALLOWED_DOMAINS` restrita a
+domínios sob sua administração. Com a lista vazia, o auto-provisionamento fica
+desligado e a instalação falha fechada.

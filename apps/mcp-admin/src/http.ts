@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ErrorRequestHandler, RequestHandler } from 'express';
+import type { ErrorRequestHandler, Request, RequestHandler } from 'express';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -9,8 +9,20 @@ import { healthCheck } from '@purple-skills/db';
 import { readIntEnv, trustProxySetting } from '@purple-skills/shared';
 
 export type McpHttpOptions = {
-  /** Fábrica do servidor MCP — chamada uma vez por sessão/requisição. */
-  createServer: () => McpServer;
+  /**
+   * Fábrica do servidor MCP — chamada uma vez por sessão/requisição, já com a
+   * requisição autenticada, para que o servidor conheça quem está chamando.
+   */
+  createServer: (req: Request) => McpServer;
+  /**
+   * Identidade estável da credencial, quando o serviço tem mais de uma.
+   *
+   * Uma sessão Streamable HTTP guarda o servidor criado no `initialize`, com o
+   * papel e o ator daquele momento. Sem esta amarração, quem descobrisse um
+   * `mcp-session-id` alheio continuaria falando por ele — inclusive com um
+   * papel maior que o da própria chave.
+   */
+  identityOf?: (req: Request) => string | undefined;
   /** Middleware de autenticação aplicado às rotas MCP. */
   auth: RequestHandler;
   /**
@@ -57,10 +69,15 @@ const MAX_SESSIONS = readIntEnv('MCP_MAX_SESSIONS', 500);
 const SESSION_TTL_MS = readIntEnv('MCP_SESSION_TTL_MS', 30 * 60_000, { min: 1000 });
 const SESSION_SWEEP_MS = readIntEnv('MCP_SESSION_SWEEP_MS', 60_000, { min: 1000 });
 
-type TrackedStreamable = { transport: StreamableHTTPServerTransport; lastSeen: number };
+type TrackedStreamable = {
+  transport: StreamableHTTPServerTransport;
+  lastSeen: number;
+  identity?: string;
+};
 
 export function createHttpApp(options: McpHttpOptions): Express {
   const app = express();
+  const identity = (req: Request): string | undefined => options.identityOf?.(req);
   const streamableSessions = new Map<string, TrackedStreamable>();
   const sseSessions = new Map<string, SSEServerTransport>();
 
@@ -117,6 +134,10 @@ export function createHttpApp(options: McpHttpOptions): Express {
       const existing = sessionId ? streamableSessions.get(sessionId) : undefined;
 
       if (existing) {
+        if (existing.identity !== identity(req)) {
+          res.status(403).json(jsonRpcError(-32001, 'Sessão pertence a outra credencial'));
+          return;
+        }
         existing.lastSeen = Date.now();
         await existing.transport.handleRequest(req, res, req.body);
         return;
@@ -135,7 +156,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
-          streamableSessions.set(id, { transport, lastSeen: Date.now() });
+          streamableSessions.set(id, { transport, lastSeen: Date.now(), identity: identity(req) });
         },
         onsessionclosed: (id) => {
           streamableSessions.delete(id);
@@ -146,7 +167,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
         if (transport.sessionId) streamableSessions.delete(transport.sessionId);
       };
 
-      const server = options.createServer();
+      const server = options.createServer(req);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
@@ -163,6 +184,10 @@ export function createHttpApp(options: McpHttpOptions): Express {
       res.status(404).json(jsonRpcError(-32001, 'Sessão desconhecida ou expirada'));
       return;
     }
+    if (tracked.identity !== identity(req)) {
+      res.status(403).json(jsonRpcError(-32001, 'Sessão pertence a outra credencial'));
+      return;
+    }
 
     tracked.lastSeen = Date.now();
     await tracked.transport.handleRequest(req, res);
@@ -174,7 +199,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
   // ------------------------------------------------ Streamable HTTP stateless ---
 
   app.post('/mcp/stateless', options.auth, json, async (req, res) => {
-    const server = options.createServer();
+    const server = options.createServer(req);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -196,7 +221,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
   // ---------------------------------------------------------- SSE legado ---
 
-  app.get('/sse', options.auth, async (_req, res) => {
+  app.get('/sse', options.auth, async (req, res) => {
     if (sseSessions.size >= MAX_SESSIONS) {
       res.status(503).json(jsonRpcError(-32000, 'Limite de sessões atingido, tente mais tarde'));
       return;
@@ -212,7 +237,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       sseSessions.delete(transport.sessionId);
     });
 
-    const server = options.createServer();
+    const server = options.createServer(req);
     await server.connect(transport);
   });
 

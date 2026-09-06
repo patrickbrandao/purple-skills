@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  canDelete,
+  canWrite,
   deleteSkill,
   formatDateTime,
   listSkills,
   setVisibility,
+  type SessionUser,
   type SkillSummary,
 } from '../api.js';
 import { PlusIcon, SearchIcon, TrashIcon } from '../components/Icons.js';
 import { useToast } from '../components/Toast.js';
 
-export function SkillsPage() {
+export function SkillsPage({ user }: { user: SessionUser }) {
   const toast = useToast();
+  const podeEscrever = canWrite(user.role);
+  const podeApagar = canDelete(user.role);
   const [items, setItems] = useState<SkillSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -85,9 +90,11 @@ export function SkillsPage() {
             {loading ? 'Carregando…' : `${total} skill${total === 1 ? '' : 's'} no catálogo`}
           </p>
         </div>
-        <Link to="/skills/new" className="btn btn-primary">
-          <PlusIcon /> Nova skill
-        </Link>
+        {podeEscrever && (
+          <Link to="/skills/new" className="btn btn-primary">
+            <PlusIcon /> Nova skill
+          </Link>
+        )}
       </div>
 
       <label className="search-bar mb-5 block max-w-md">
@@ -136,9 +143,13 @@ export function SkillsPage() {
                 <td>
                   <button
                     type="button"
-                    disabled={busy === skill.slug}
+                    disabled={busy === skill.slug || !podeEscrever}
                     onClick={() => toggleVisibility(skill)}
-                    title="Alternar visibilidade"
+                    title={
+                      podeEscrever
+                        ? 'Alternar visibilidade'
+                        : 'Seu papel não permite publicar ou despublicar'
+                    }
                     className={`badge ${skill.isPublic ? 'public' : 'private'}`}
                   >
                     <span className="dot" />
@@ -151,15 +162,17 @@ export function SkillsPage() {
                   <span className="row-sub">{formatDateTime(skill.updatedAt)}</span>
                 </td>
                 <td className="num">
-                  <button
-                    type="button"
-                    className="row-action"
-                    disabled={busy === skill.slug}
-                    onClick={() => remove(skill)}
-                    title="Remover skill"
-                  >
-                    <TrashIcon />
-                  </button>
+                  {podeApagar && (
+                    <button
+                      type="button"
+                      className="row-action"
+                      disabled={busy === skill.slug}
+                      onClick={() => remove(skill)}
+                      title="Remover skill"
+                    >
+                      <TrashIcon />
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -168,9 +181,11 @@ export function SkillsPage() {
                 <td colSpan={7}>
                   <p className="list-empty">
                     Nenhuma skill encontrada.{' '}
-                    <Link to="/skills/new" style={{ color: 'var(--brand)' }}>
-                      Criar a primeira?
-                    </Link>
+                    {podeEscrever && (
+                      <Link to="/skills/new" style={{ color: 'var(--brand)' }}>
+                        Criar a primeira?
+                      </Link>
+                    )}
                   </p>
                 </td>
               </tr>
