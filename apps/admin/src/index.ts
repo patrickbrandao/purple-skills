@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import express from 'express';
-import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
+import { closeDb, countUsers, getDb, waitForDatabase } from '@purple-skills/db';
 import { trustProxySetting } from '@purple-skills/shared';
 import { api } from './api.js';
-import { config, getAdminPassword } from './config.js';
+import { config, getAdminPassword, getSessionSecret, oidcEnabled, smtpEnabled } from './config.js';
 import { onError } from './errors.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,11 +51,28 @@ app.use((req, res) => {
 app.use(onError);
 
 async function main() {
-  // Falha rápido se a senha do admin não estiver configurada.
-  getAdminPassword();
+  // Falha rápido se não houver como assinar o cookie de sessão (segredo
+  // próprio ou, na falta dele, a senha de bootstrap para derivar).
+  getSessionSecret();
 
   const { pool } = getDb();
   await waitForDatabase(pool);
+
+  // A ADMIN_PASSWORD deixou de ser obrigatória: ela só cria o primeiro
+  // administrador. Sem conta nenhuma e sem senha, porém, não há como entrar —
+  // isso é erro de configuração, não uma instalação vazia legítima.
+  const users = await countUsers();
+  if (users === 0 && !getAdminPassword()) {
+    throw new Error(
+      'Nenhuma conta cadastrada e ADMIN_PASSWORD ausente: não há como criar o ' +
+        'primeiro administrador. Defina ADMIN_PASSWORD (ou ADMIN_PASSWORD_FILE) e suba de novo.',
+    );
+  }
+  if (users === 0) {
+    console.log('[admin] nenhuma conta ainda — abra o painel e crie o primeiro administrador');
+  }
+  console.log(`[admin] SSO: ${oidcEnabled() ? 'ligado' : 'desligado'}; ` +
+    `redefinição de senha por e-mail: ${smtpEnabled() ? 'ligada' : 'desligada'}`);
 
   const server = app.listen(config.port, config.host, () => {
     console.log(`[admin] painel ouvindo em http://${config.host}:${config.port}`);

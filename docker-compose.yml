@@ -98,8 +98,9 @@ services:
     environment:
       <<: *app-env
       PORT: 3001
-      # A senha é obrigatória, mas pode vir por arquivo (Docker secrets): quem
-      # valida é a aplicação, que aceita ADMIN_PASSWORD ou ADMIN_PASSWORD_FILE.
+      # A senha de bootstrap cria o PRIMEIRO administrador e depois fica
+      # inerte; pode vir por arquivo (Docker secrets). Ver
+      # docs/05-accounts-and-roles.md §2.3.
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_PASSWORD_FILE: ${ADMIN_PASSWORD_FILE:-}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
@@ -108,6 +109,29 @@ services:
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
       ADMIN_ALLOWED_ORIGINS: ${ADMIN_ALLOWED_ORIGINS:-}
       ADMIN_MAX_UPLOAD_BYTES: ${ADMIN_MAX_UPLOAD_BYTES:-}
+      # Endereço público do painel: base do redirect_uri do SSO e do link de
+      # redefinição de senha. Vazio = deduzido do Host da requisição.
+      ADMIN_PUBLIC_URL: ${ADMIN_PUBLIC_URL:-}
+      # Rate limiting do login (janela por IP + trava por conta).
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-}
+      LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-}
+      LOGIN_IP_MAX_ATTEMPTS: ${LOGIN_IP_MAX_ATTEMPTS:-}
+      LOGIN_IP_WINDOW_SECONDS: ${LOGIN_IP_WINDOW_SECONDS:-}
+      # Login por OIDC — opcional. Sem OIDC_ALLOWED_DOMAINS o
+      # auto-provisionamento fica desligado, de propósito.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_CLIENT_SECRET_FILE: ${OIDC_CLIENT_SECRET_FILE:-}
+      OIDC_ALLOWED_DOMAINS: ${OIDC_ALLOWED_DOMAINS:-}
+      OIDC_AUTO_PROVISION: ${OIDC_AUTO_PROVISION:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-}
+      # SMTP — opcional. Sem ele, o reset de senha é feito pelo administrador.
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_URL_FILE: ${SMTP_URL_FILE:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      PASSWORD_RESET_TTL: ${PASSWORD_RESET_TTL:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${ADMIN_PORT:-3001}:3001'
 

@@ -1,6 +1,7 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   SKILL_MD,
+  isRole,
   isSkillMd,
   isTextualMime,
   mimeTypeFor,
@@ -8,15 +9,26 @@ import {
   skillScore,
   slugify,
   uniqueSlug,
+  type ApiKeySummary,
+  type AuditAction,
+  type AuditActor,
   type AuditEntry,
   type AuditSource,
+  type Role,
   type SkillDetail,
   type SkillFileMeta,
   type SkillSummary,
   type SearchResult,
+  type UserSummary,
 } from '@purple-skills/shared';
 import { getDb, type Database } from './client.js';
-import { badRequest, conflict, isUniqueViolation, notFound } from './errors.js';
+import {
+  badRequest,
+  conflict,
+  isForeignKeyViolation,
+  isUniqueViolation,
+  notFound,
+} from './errors.js';
 
 type Row = Record<string, any>;
 
@@ -286,6 +298,7 @@ const SLUG_ATTEMPTS = 3;
 export async function createSkill(
   input: CreateSkillInput,
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<SkillDetail> {
   const name = (input.name ?? '').trim();
   if (!name) throw badRequest('O campo "name" é obrigatório');
@@ -320,8 +333,9 @@ export async function createSkill(
     try {
       await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, is_public)
-          VALUES (${slug}, ${name}, ${input.description?.trim() ?? ''}, ${input.isPublic === true})
+          INSERT INTO skills (slug, name, description, is_public, created_by_user_uuid)
+          VALUES (${slug}, ${name}, ${input.description?.trim() ?? ''}, ${input.isPublic === true},
+                  ${actor?.userUuid ?? null})
           RETURNING uuid
         `);
         const uuid = (inserted.rows as Row[])[0].uuid as string;
@@ -337,6 +351,7 @@ export async function createSkill(
           filePath: null,
           action: 'create',
           source,
+          actor,
           previousContent: null,
         });
       });
@@ -366,6 +381,7 @@ export async function updateSkill(
   slug: string,
   input: UpdateSkillInput,
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
 
@@ -399,6 +415,7 @@ export async function updateSkill(
         filePath: null,
         action: 'update',
         source,
+        actor,
         previousContent: null,
       });
     });
@@ -426,6 +443,7 @@ export async function updateSkillWithContent(
   slug: string,
   input: UpdateSkillInput & { skillMd?: string },
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
 
@@ -464,6 +482,7 @@ export async function updateSkillWithContent(
           filePath: SKILL_MD,
           action: 'update',
           source,
+          actor,
           previousContent: previousSkillMd,
         });
       }
@@ -474,6 +493,7 @@ export async function updateSkillWithContent(
         filePath: null,
         action: 'update',
         source,
+        actor,
         previousContent: null,
       });
     });
@@ -491,6 +511,7 @@ export async function setVisibility(
   slug: string,
   isPublic: boolean,
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<SkillSummary> {
   const existing = await requireSkill(slug);
 
@@ -504,6 +525,7 @@ export async function setVisibility(
       filePath: null,
       action: 'update',
       source,
+      actor,
       previousContent: existing.isPublic ? 'public' : 'private',
     });
   });
@@ -513,7 +535,11 @@ export async function setVisibility(
   return summary;
 }
 
-export async function deleteSkill(slug: string, source: AuditSource): Promise<void> {
+export async function deleteSkill(
+  slug: string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<void> {
   const existing = await requireSkill(slug);
 
   await db().transaction(async (tx) => {
@@ -524,6 +550,7 @@ export async function deleteSkill(slug: string, source: AuditSource): Promise<vo
       filePath: null,
       action: 'delete',
       source,
+      actor,
       previousContent: null,
     });
   });
@@ -537,6 +564,7 @@ export async function setFile(
   relativePath: string,
   content: Buffer | string,
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<SkillFileMeta> {
   const existing = await requireSkill(slug);
   const path = normalizeRelativePath(relativePath);
@@ -553,6 +581,7 @@ export async function setFile(
       filePath: path,
       action: previous ? 'update' : 'create',
       source,
+      actor,
       previousContent: previous?.isText ? previous.buffer.toString('utf8') : null,
     });
   });
@@ -570,6 +599,7 @@ export async function deleteFile(
   slug: string,
   relativePath: string,
   source: AuditSource,
+  actor?: AuditActor | null,
 ): Promise<void> {
   const existing = await requireSkill(slug);
   const path = normalizeRelativePath(relativePath);
@@ -591,6 +621,7 @@ export async function deleteFile(
       filePath: path,
       action: 'delete',
       source,
+      actor,
       previousContent: previous.isText ? previous.buffer.toString('utf8') : null,
     });
   });
@@ -609,6 +640,7 @@ export async function setFiles(
   inputs: readonly FileInput[],
   source: AuditSource,
   options: SetFilesOptions = {},
+  actor?: AuditActor | null,
 ): Promise<SkillFileMeta[]> {
   const existing = await requireSkill(slug);
   const replace = options.replace !== false;
@@ -647,6 +679,7 @@ export async function setFiles(
       filePath: null,
       action: 'update',
       source,
+      actor,
       previousContent: null,
     });
   });
@@ -654,11 +687,469 @@ export async function setFiles(
   return listFiles(existing.uuid);
 }
 
+// ----------------------------------------------------------------- contas ---
+
+/**
+ * Conta com os campos que nunca saem do servidor.
+ *
+ * `UserSummary` é o que a API devolve ao navegador; `UserRecord` acrescenta o
+ * hash da senha, a versão do token, o contador de falhas e o subject OIDC —
+ * material de autenticação, que fica entre o banco e o middleware.
+ */
+export type UserRecord = UserSummary & {
+  passwordHash: string | null;
+  tokenVersion: number;
+  failedAttempts: number;
+  oidcSubject: string | null;
+};
+
+const USER_COLUMNS = sql`
+  uuid, email, name, password_hash, role, is_active, token_version,
+  must_change_password, oidc_issuer, oidc_subject, locked_until, failed_attempts,
+  last_login_at, created_at, updated_at
+`;
+
+function toUserRecord(row: Row): UserRecord {
+  return {
+    uuid: row.uuid,
+    email: row.email,
+    name: row.name,
+    role: row.role as Role,
+    isActive: Boolean(row.is_active),
+    hasPassword: row.password_hash !== null && row.password_hash !== undefined,
+    mustChangePassword: Boolean(row.must_change_password),
+    oidcIssuer: row.oidc_issuer ?? null,
+    lockedUntil: iso(row.locked_until),
+    lastLoginAt: iso(row.last_login_at),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    passwordHash: row.password_hash ?? null,
+    tokenVersion: Number(row.token_version ?? 0),
+    failedAttempts: Number(row.failed_attempts ?? 0),
+    oidcSubject: row.oidc_subject ?? null,
+  };
+}
+
+// Derivado do record por remoção: acrescentar um campo sensível a `UserRecord`
+// não o faz vazar para a listagem por esquecimento.
+function toUserSummary(row: Row): UserSummary {
+  const {
+    passwordHash: _passwordHash,
+    tokenVersion: _tokenVersion,
+    failedAttempts: _failedAttempts,
+    oidcSubject: _oidcSubject,
+    ...summary
+  } = toUserRecord(row);
+  return summary;
+}
+
+/** Zero libera a rota `/setup` do painel (`docs/05-accounts-and-roles.md` §2.3). */
+export async function countUsers(): Promise<number> {
+  const result = await db().execute(sql`SELECT count(*)::int AS total FROM users`);
+  return Number((result.rows as Row[])[0]?.total ?? 0);
+}
+
+export async function listUsers(): Promise<UserSummary[]> {
+  const result = await db().execute(sql`
+    SELECT ${USER_COLUMNS} FROM users ORDER BY created_at
+  `);
+  return (result.rows as Row[]).map(toUserSummary);
+}
+
+/** UUID malformado devolve `null` — é "não existe", não erro de servidor. */
+export async function getUserByUuid(uuid: string): Promise<UserRecord | null> {
+  if (!isUuid(uuid)) return null;
+
+  const result = await db().execute(sql`
+    SELECT ${USER_COLUMNS} FROM users WHERE uuid = ${uuid} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? toUserRecord(row) : null;
+}
+
+/** Busca por `lower(email)`, que é como a unicidade é garantida no banco. */
+export async function getUserByEmail(email: string): Promise<UserRecord | null> {
+  const wanted = (email ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT ${USER_COLUMNS} FROM users WHERE lower(email) = lower(${wanted}) LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? toUserRecord(row) : null;
+}
+
+export async function getUserByOidc(issuer: string, subject: string): Promise<UserRecord | null> {
+  if (!issuer?.trim() || !subject?.trim()) return null;
+
+  const result = await db().execute(sql`
+    SELECT ${USER_COLUMNS} FROM users
+    WHERE oidc_issuer = ${issuer.trim()} AND oidc_subject = ${subject.trim()}
+    LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? toUserRecord(row) : null;
+}
+
+export type CreateUserInput = {
+  email: string;
+  name: string;
+  role: Role;
+  /** Ausente ou `null` cria conta sem senha local — só entra por OIDC. */
+  passwordHash?: string | null;
+  mustChangePassword?: boolean;
+  oidcIssuer?: string | null;
+  oidcSubject?: string | null;
+  isActive?: boolean;
+};
+
+export async function createUser(input: CreateUserInput): Promise<UserRecord> {
+  // O e-mail é gravado como veio (apenas aparado): a unicidade é por
+  // `lower(email)` no índice, então preservar a caixa não duplica ninguém e
+  // mantém a grafia que a pessoa usa.
+  const email = (input.email ?? '').trim();
+  if (!email) throw badRequest('O campo "email" é obrigatório');
+
+  const name = (input.name ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+
+  if (!isRole(input.role)) throw badRequest(`Papel inválido: ${String(input.role)}`);
+
+  try {
+    const result = await db().execute(sql`
+      INSERT INTO users (
+        email, name, password_hash, role, is_active, must_change_password,
+        oidc_issuer, oidc_subject
+      )
+      VALUES (
+        ${email}, ${name}, ${input.passwordHash ?? null}, ${input.role},
+        ${input.isActive !== false}, ${input.mustChangePassword === true},
+        ${input.oidcIssuer ?? null}, ${input.oidcSubject ?? null}
+      )
+      RETURNING ${USER_COLUMNS}
+    `);
+    return toUserRecord((result.rows as Row[])[0]);
+  } catch (err) {
+    if (isUniqueViolation(err, 'users_oidc_uniq')) {
+      throw conflict('Já existe uma conta vinculada a essa identidade OIDC');
+    }
+    if (isUniqueViolation(err)) {
+      throw conflict(`Já existe uma conta com o e-mail "${email}"`);
+    }
+    throw err;
+  }
+}
+
+export type UpdateUserInput = {
+  name?: string;
+  role?: Role;
+  isActive?: boolean;
+  passwordHash?: string | null;
+  mustChangePassword?: boolean;
+  oidcIssuer?: string | null;
+  oidcSubject?: string | null;
+  /** true incrementa token_version — derruba todo cookie já emitido. */
+  bumpTokenVersion?: boolean;
+};
+
+/**
+ * Atualização parcial: campo ausente fica como está.
+ *
+ * `undefined` significa "não mexe" e `null` significa "apaga" — é o que separa
+ * "não estou trocando a senha" de "esta conta passa a ser só-OIDC".
+ */
+export async function updateUser(uuid: string, input: UpdateUserInput): Promise<UserRecord> {
+  if (!isUuid(uuid)) throw notFound(`Conta não encontrada: ${uuid}`);
+
+  const sets: SQL[] = [];
+
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) throw badRequest('O campo "name" não pode ficar vazio');
+    sets.push(sql`name = ${name}`);
+  }
+  if (input.role !== undefined) {
+    if (!isRole(input.role)) throw badRequest(`Papel inválido: ${String(input.role)}`);
+    sets.push(sql`role = ${input.role}`);
+  }
+  if (input.isActive !== undefined) sets.push(sql`is_active = ${input.isActive}`);
+  if (input.passwordHash !== undefined) sets.push(sql`password_hash = ${input.passwordHash}`);
+  if (input.mustChangePassword !== undefined) {
+    sets.push(sql`must_change_password = ${input.mustChangePassword}`);
+  }
+  if (input.oidcIssuer !== undefined) sets.push(sql`oidc_issuer = ${input.oidcIssuer}`);
+  if (input.oidcSubject !== undefined) sets.push(sql`oidc_subject = ${input.oidcSubject}`);
+  // Incremento no próprio UPDATE: ler-e-somar no app perderia uma revogação
+  // concorrente, que é justamente o que não pode falhar aqui.
+  if (input.bumpTokenVersion === true) sets.push(sql`token_version = token_version + 1`);
+
+  sets.push(sql`updated_at = now()`);
+
+  try {
+    const result = await db().execute(sql`
+      UPDATE users SET ${sql.join(sets, sql`, `)}
+      WHERE uuid = ${uuid}
+      RETURNING ${USER_COLUMNS}
+    `);
+    const row = (result.rows as Row[])[0];
+    if (!row) throw notFound(`Conta não encontrada: ${uuid}`);
+    return toUserRecord(row);
+  } catch (err) {
+    if (isUniqueViolation(err, 'users_oidc_uniq')) {
+      throw conflict('Já existe uma conta vinculada a essa identidade OIDC');
+    }
+    throw err;
+  }
+}
+
+/**
+ * Contabiliza uma tentativa de login falha (§2.7).
+ *
+ * Tudo num UPDATE só: duas tentativas simultâneas não podem ler o mesmo
+ * contador e gravar o mesmo valor. Ao atingir o teto, o contador **volta a
+ * zero** e o bloqueio passa a ser `locked_until` — quem errar de novo depois
+ * que o bloqueio vencer recomeça a contagem em vez de ser travado de imediato.
+ *
+ * `updated_at` não é tocado de propósito: ele descreve alteração
+ * administrativa da conta, não movimento de login.
+ */
+export async function registerFailedLogin(
+  uuid: string,
+  options: { maxAttempts: number; lockSeconds: number },
+): Promise<{ failedAttempts: number; lockedUntil: string | null }> {
+  if (!isUuid(uuid)) throw notFound(`Conta não encontrada: ${uuid}`);
+
+  const maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
+  const lockSeconds = Math.max(1, Math.trunc(options.lockSeconds));
+
+  const result = await db().execute(sql`
+    UPDATE users SET
+      failed_attempts = CASE
+        WHEN failed_attempts + 1 >= ${maxAttempts} THEN 0
+        ELSE failed_attempts + 1
+      END,
+      locked_until = CASE
+        WHEN failed_attempts + 1 >= ${maxAttempts}
+          THEN now() + make_interval(secs => ${lockSeconds})
+        ELSE locked_until
+      END
+    WHERE uuid = ${uuid}
+    RETURNING failed_attempts, locked_until
+  `);
+
+  const row = (result.rows as Row[])[0];
+  if (!row) throw notFound(`Conta não encontrada: ${uuid}`);
+
+  return {
+    failedAttempts: Number(row.failed_attempts ?? 0),
+    lockedUntil: iso(row.locked_until),
+  };
+}
+
+/** Login aceito: zera o contador, libera o bloqueio e marca o acesso. */
+export async function registerSuccessfulLogin(uuid: string): Promise<void> {
+  if (!isUuid(uuid)) return;
+
+  await db().execute(sql`
+    UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = now()
+    WHERE uuid = ${uuid}
+  `);
+}
+
+// ------------------------------------------------------------ chaves de API --
+
+function toApiKeySummary(row: Row): ApiKeySummary {
+  return {
+    id: row.id,
+    userUuid: row.user_uuid,
+    name: row.name,
+    prefix: row.prefix,
+    lastUsedAt: iso(row.last_used_at),
+    revokedAt: iso(row.revoked_at),
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/** Inclui as revogadas: elas explicam as linhas de auditoria que produziram. */
+export async function listApiKeys(userUuid: string): Promise<ApiKeySummary[]> {
+  if (!isUuid(userUuid)) return [];
+
+  const result = await db().execute(sql`
+    SELECT id, user_uuid, name, prefix, last_used_at, revoked_at, created_at
+    FROM api_keys WHERE user_uuid = ${userUuid}
+    ORDER BY created_at DESC
+  `);
+  return (result.rows as Row[]).map(toApiKeySummary);
+}
+
+/**
+ * Grava a chave emitida. O segredo em texto **não** passa por aqui: quem o
+ * gera e o mostra uma única vez é o app, com `generateApiKey()` de shared.
+ */
+export async function createApiKey(input: {
+  userUuid: string;
+  name: string;
+  prefix: string;
+  keyHash: string;
+}): Promise<ApiKeySummary> {
+  if (!isUuid(input.userUuid)) throw notFound(`Conta não encontrada: ${input.userUuid}`);
+
+  const name = (input.name ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+  if (!input.prefix?.trim() || !input.keyHash?.trim()) {
+    throw badRequest('Prefixo e hash da chave são obrigatórios');
+  }
+
+  try {
+    const result = await db().execute(sql`
+      INSERT INTO api_keys (user_uuid, name, prefix, key_hash)
+      VALUES (${input.userUuid}, ${name}, ${input.prefix.trim()}, ${input.keyHash})
+      RETURNING id, user_uuid, name, prefix, last_used_at, revoked_at, created_at
+    `);
+    return toApiKeySummary((result.rows as Row[])[0]);
+  } catch (err) {
+    if (isUniqueViolation(err)) throw conflict('Prefixo de chave já em uso; tente novamente');
+    // A conta sumiu entre a sessão e a emissão.
+    if (isForeignKeyViolation(err)) throw notFound(`Conta não encontrada: ${input.userUuid}`);
+    throw err;
+  }
+}
+
+/**
+ * Revoga. `userUuid` presente restringe ao dono (usuário revogando a própria
+ * chave); ausente é o admin revogando qualquer uma.
+ *
+ * `false` quando não achou **ou** já estava revogada — a operação é
+ * idempotente e nunca reescreve o `revoked_at` original, que é o que datou a
+ * revogação na auditoria.
+ */
+export async function revokeApiKey(id: string, userUuid?: string | null): Promise<boolean> {
+  if (!isUuid(id)) return false;
+
+  const owner = userUuid ?? null;
+  if (owner !== null && !isUuid(owner)) return false;
+
+  const result = await db().execute(sql`
+    UPDATE api_keys SET revoked_at = now()
+    WHERE id = ${id}
+      AND revoked_at IS NULL
+      AND (${owner}::uuid IS NULL OR user_uuid = ${owner}::uuid)
+    RETURNING id
+  `);
+  return (result.rows as Row[]).length > 0;
+}
+
+export type ApiKeyRecord = {
+  id: string;
+  userUuid: string;
+  name: string;
+  prefix: string;
+  keyHash: string;
+  revokedAt: string | null;
+};
+
+/**
+ * Primeiro passo da autenticação por chave: acha a linha pelo prefixo público.
+ * A conferência do segredo contra `keyHash` é do app — comparação de hash não
+ * é trabalho do banco.
+ */
+export async function getApiKeyByPrefix(prefix: string): Promise<ApiKeyRecord | null> {
+  const wanted = (prefix ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT id, user_uuid, name, prefix, key_hash, revoked_at
+    FROM api_keys WHERE prefix = ${wanted} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    userUuid: row.user_uuid,
+    name: row.name,
+    prefix: row.prefix,
+    keyHash: row.key_hash,
+    revokedAt: iso(row.revoked_at),
+  };
+}
+
+/** Marca o uso. Falha silenciosa de propósito: não é para derrubar a chamada. */
+export async function touchApiKey(id: string): Promise<void> {
+  if (!isUuid(id)) return;
+  await db().execute(sql`UPDATE api_keys SET last_used_at = now() WHERE id = ${id}`);
+}
+
+// ------------------------------------------------------ tokens de reset -----
+
+export async function createResetToken(input: {
+  userUuid: string;
+  tokenHash: string;
+  expiresAt: Date;
+}): Promise<void> {
+  if (!isUuid(input.userUuid)) throw notFound(`Conta não encontrada: ${input.userUuid}`);
+  if (!input.tokenHash?.trim()) throw badRequest('O hash do token é obrigatório');
+
+  await db().execute(sql`
+    INSERT INTO reset_tokens (user_uuid, token_hash, expires_at)
+    VALUES (${input.userUuid}, ${input.tokenHash}, ${input.expiresAt})
+  `);
+}
+
+/**
+ * Queima o token e devolve o dono, ou `null` se não existe, já foi usado ou
+ * expirou.
+ *
+ * Um único UPDATE condicional: é ele que garante que dois cliques no mesmo
+ * link não redefinam a senha duas vezes. Ler e depois marcar abriria a janela
+ * entre as duas consultas.
+ */
+export async function consumeResetToken(tokenHash: string): Promise<{ userUuid: string } | null> {
+  const wanted = (tokenHash ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    UPDATE reset_tokens SET used_at = now()
+    WHERE token_hash = ${wanted} AND used_at IS NULL AND expires_at > now()
+    RETURNING user_uuid
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? { userUuid: row.user_uuid } : null;
+}
+
 // -------------------------------------------------------------- auditoria ---
+
+/**
+ * Auditoria de eventos de conta — linhas sem skill.
+ *
+ * `targetLabel` é quem sofreu a ação (e-mail da conta, nome da chave),
+ * congelado no momento do evento: sem ele a linha não diz sobre quem foi, já
+ * que `skill_slug`/`file_path` são nulos e a conta pode nem existir mais.
+ */
+export async function recordAccountAudit(entry: {
+  action: 'user.create' | 'user.role' | 'user.deactivate' | 'key.create' | 'key.revoke';
+  source: AuditSource;
+  actor: AuditActor;
+  targetLabel: string | null;
+}): Promise<void> {
+  await db().execute(
+    auditInsert({
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: entry.action,
+      source: entry.source,
+      previousContent: null,
+      actor: entry.actor,
+      targetLabel: entry.targetLabel,
+    }),
+  );
+}
 
 export async function listAudit(limit = 100): Promise<AuditEntry[]> {
   const result = await db().execute(sql`
-    SELECT id, skill_uuid, skill_slug, file_path, action, source, created_at
+    SELECT id, skill_uuid, skill_slug, file_path, action, source,
+           actor_user_uuid, actor_label, target_label, created_at
     FROM audit_log ORDER BY created_at DESC LIMIT ${clamp(limit, 1, 500)}
   `);
 
@@ -669,6 +1160,9 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
     filePath: row.file_path,
     action: row.action,
     source: row.source,
+    actorUserUuid: row.actor_user_uuid ?? null,
+    actorLabel: row.actor_label ?? null,
+    targetLabel: row.target_label ?? null,
     createdAt: new Date(row.created_at).toISOString(),
   }));
 }
@@ -681,6 +1175,8 @@ export type Stats = {
   totalViews: number;
   totalDownloads: number;
   totalTags: number;
+  totalUsers: number;
+  activeUsers: number;
 };
 
 export async function stats(): Promise<Stats> {
@@ -691,7 +1187,9 @@ export async function stats(): Promise<Stats> {
       (SELECT count(*) FROM files)::int AS total_files,
       (SELECT COALESCE(sum(view_count), 0) FROM skills)::bigint AS total_views,
       (SELECT COALESCE(sum(download_count), 0) FROM skills)::bigint AS total_downloads,
-      (SELECT count(*) FROM tags)::int AS total_tags
+      (SELECT count(*) FROM tags)::int AS total_tags,
+      (SELECT count(*) FROM users)::int AS total_users,
+      (SELECT count(*) FROM users WHERE is_active)::int AS active_users
   `);
 
   const row = (result.rows as Row[])[0];
@@ -706,6 +1204,8 @@ export async function stats(): Promise<Stats> {
     totalViews: Number(row.total_views),
     totalDownloads: Number(row.total_downloads),
     totalTags: Number(row.total_tags),
+    totalUsers: Number(row.total_users),
+    activeUsers: Number(row.active_users),
   };
 }
 
@@ -792,17 +1292,47 @@ type AuditInput = {
   skillUuid: string | null;
   skillSlug: string | null;
   filePath: string | null;
-  action: 'create' | 'update' | 'delete';
+  action: AuditAction;
   source: AuditSource;
   previousContent: string | null;
+  /**
+   * Quem executou. Opcional porque a origem (`web-admin`/`mcp-admin`) sempre
+   * existiu e o ator só passou a existir com as contas: chamada antiga grava
+   * a linha sem ator, exatamente como antes.
+   */
+  actor?: AuditActor | null;
+  /** Alvo de um evento de conta; nulo nas linhas de skill. */
+  targetLabel?: string | null;
 };
 
-async function auditTx(tx: Tx, entry: AuditInput) {
-  await tx.execute(sql`
-    INSERT INTO audit_log (skill_uuid, skill_slug, file_path, action, source, previous_content)
+/** Monta o INSERT — compartilhado pelas escritas de skill e por `recordAccountAudit`. */
+function auditInsert(entry: AuditInput): SQL {
+  return sql`
+    INSERT INTO audit_log (
+      skill_uuid, skill_slug, file_path, action, source, previous_content,
+      actor_user_uuid, actor_label, target_label
+    )
     VALUES (${entry.skillUuid}, ${entry.skillSlug}, ${entry.filePath}, ${entry.action},
-            ${entry.source}, ${truncate(entry.previousContent, 200_000)})
-  `);
+            ${entry.source}, ${truncate(entry.previousContent, 200_000)},
+            ${entry.actor?.userUuid ?? null}, ${entry.actor?.label ?? null},
+            ${entry.targetLabel ?? null})
+  `;
+}
+
+async function auditTx(tx: Tx, entry: AuditInput) {
+  await tx.execute(auditInsert(entry));
+}
+
+/** UUID canônico. Serve para não deixar um identificador torto virar erro 500. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+/** Timestamp opcional em ISO — o padrão de saída de datas do módulo. */
+function iso(value: unknown): string | null {
+  return value === null || value === undefined ? null : new Date(value as string).toISOString();
 }
 
 function truncate(value: string | null, max: number): string | null {

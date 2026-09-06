@@ -117,3 +117,45 @@ export const ArrowLeftIcon = ({ className }: Props) => (
     <path d="M19 12H5m0 0 6-6m-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+export const UsersIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <circle cx="9" cy="8" r="3.2" />
+    <path d="M3.5 20a5.5 5.5 0 0 1 11 0" strokeLinecap="round" />
+    <path d="M16 5.5a3.2 3.2 0 0 1 0 5M17.5 14.6A5.5 5.5 0 0 1 20.5 20" strokeLinecap="round" />
+  </svg>
+);
+
+export const KeyIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <circle cx="8" cy="12" r="3.6" />
+    <path d="M11.6 12H21M18 12v3M15 12v2.2" strokeLinecap="round" />
+  </svg>
+);
+
+export const ShieldIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6z" strokeLinejoin="round" />
+  </svg>
+);
+
+export const MailIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <rect x="3" y="5" width="18" height="14" rx="2.5" />
+    <path d="m4 7 8 6 8-6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const UserIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <circle cx="12" cy="8" r="3.4" />
+    <path d="M5.5 20a6.5 6.5 0 0 1 13 0" strokeLinecap="round" />
+  </svg>
+);
+
+export const CopyIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M15 6.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h1.5" strokeLinecap="round" />
+  </svg>
+);

@@ -1,6 +1,6 @@
 {
   "name": "@purple-skills/admin",
-  "version": "1.0.0-beta.7",
+  "version": "1.0.0-beta.8",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -17,9 +17,11 @@
     "@purple-skills/db": "*",
     "@purple-skills/shared": "*",
     "compression": "^1.7.5",
-    "express": "^5.2.1",
     "cookie-parser": "^1.4.7",
-    "multer": "^2.0.2"
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.9",
+    "openid-client": "^6.8.4"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
@@ -39,6 +41,7 @@
     "tailwindcss": "^4.1.13",
     "vite": "^7.1.5",
     "@types/cookie-parser": "^1.4.8",
-    "@types/multer": "^2.0.0"
+    "@types/multer": "^2.0.0",
+    "@types/nodemailer": "^7.0.4"
   }
 }

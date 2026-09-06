@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { logout, type Session } from '../api.js';
+import { ROLE_LABEL, canManageUsers, logout, type Session, type SessionUser } from '../api.js';
 import { useTheme } from '../useTheme.js';
 import {
   DashboardIcon,
@@ -9,24 +9,34 @@ import {
   MoonIcon,
   StackIcon,
   SunIcon,
+  UserIcon,
+  UsersIcon,
 } from './Icons.js';
-
-const LINKS = [
-  { to: '/', label: 'Visão geral', Icon: DashboardIcon, end: true },
-  { to: '/skills', label: 'Skills', Icon: StackIcon, end: false },
-];
 
 export function Layout({
   children,
   session,
+  user,
   onLogout,
 }: {
   children: ReactNode;
   session: Session;
+  user: SessionUser;
   onLogout: () => void;
 }) {
   const navigate = useNavigate();
   const [theme, toggleTheme] = useTheme();
+
+  // A tela de contas só existe para admin. Fica de fora na sessão de
+  // bootstrap: criar uma conta por ali invalidaria a própria sessão na
+  // requisição seguinte — o caminho certo é sair e passar pelo setup.
+  const links = [
+    { to: '/', label: 'Visão geral', Icon: DashboardIcon, end: true },
+    { to: '/skills', label: 'Skills', Icon: StackIcon, end: false },
+    ...(canManageUsers(user.role) && !user.legacy
+      ? [{ to: '/users', label: 'Contas', Icon: UsersIcon, end: false }]
+      : []),
+  ];
 
   async function handleLogout() {
     await logout().catch(() => void 0);
@@ -49,7 +59,7 @@ export function Layout({
           </Link>
 
           <nav className="admin-tabs">
-            {LINKS.map(({ to, label, Icon, end }) => (
+            {links.map(({ to, label, Icon, end }) => (
               <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
                 <Icon />
                 <span>{label}</span>
@@ -58,6 +68,27 @@ export function Layout({
           </nav>
 
           <div className="admin-nav-end">
+            {user.legacy ? (
+              <span className="who" title="Sessão de bootstrap (ADMIN_PASSWORD)">
+                <UserIcon />
+                <span className="lbl">
+                  <span className="nm">{user.name}</span>
+                  <span className="role role-admin">bootstrap</span>
+                </span>
+              </span>
+            ) : (
+              <NavLink
+                to="/account"
+                className={({ isActive }) => `who${isActive ? ' active' : ''}`}
+                title={user.email}
+              >
+                <UserIcon />
+                <span className="lbl">
+                  <span className="nm">{user.name}</span>
+                  <span className={`role role-${user.role}`}>{ROLE_LABEL[user.role]}</span>
+                </span>
+              </NavLink>
+            )}
             <a
               href={session.siteBaseUrl}
               target="_blank"
@@ -80,6 +111,19 @@ export function Layout({
           </div>
         </div>
       </header>
+
+      {user.legacy && (
+        <div className="legacy-banner">
+          <span>
+            Você entrou com a <code>ADMIN_PASSWORD</code>, e a auditoria não sabe{' '}
+            <strong>quem</strong> é você. Crie o primeiro administrador para ganhar contas
+            nomeadas, papéis e revogação individual.
+          </span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={handleLogout}>
+            Criar o primeiro administrador
+          </button>
+        </div>
+      )}
 
       <main className="admin-main">{children}</main>
     </div>

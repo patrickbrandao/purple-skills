@@ -11,7 +11,10 @@ import {
   updateSkill,
   uploadFiles,
   uploadZip,
+  canDelete,
+  canWrite,
   type Session,
+  type SessionUser,
   type SkillDetail,
 } from '../api.js';
 import { Badge, Button, Field, Panel } from '../components/ui.js';
@@ -28,7 +31,11 @@ import { useToast } from '../components/Toast.js';
 
 type Tab = 'content' | 'settings' | 'files';
 
-export function SkillEditorPage({ session }: { session: Session }) {
+export function SkillEditorPage({ session, user }: { session: Session; user: SessionUser }) {
+  // O servidor recusa a escrita de qualquer forma; esconder aqui evita
+  // oferecer um botão que só devolve 403.
+  const podeEscrever = canWrite(user.role);
+  const podeApagar = canDelete(user.role);
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
@@ -212,12 +219,16 @@ export function SkillEditorPage({ session }: { session: Session }) {
         </div>
 
         <div className="flex gap-2">
-          <Button variant="danger" onClick={removeSkill}>
-            <TrashIcon /> Remover
-          </Button>
-          <Button onClick={save} disabled={saving || !dirty}>
-            <SaveIcon /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
-          </Button>
+          {podeApagar && (
+            <Button variant="danger" onClick={removeSkill}>
+              <TrashIcon /> Remover
+            </Button>
+          )}
+          {podeEscrever && (
+            <Button onClick={save} disabled={saving || !dirty}>
+              <SaveIcon /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -327,15 +338,17 @@ export function SkillEditorPage({ session }: { session: Session }) {
               <h2>
                 <FileIcon /> Arquivos
               </h2>
-              <button
-                type="button"
-                onClick={() => filesInput.current?.click()}
-                title="Enviar arquivos"
-                className="row-action"
-                style={{ color: 'var(--text-faint)' }}
-              >
-                <UploadIcon />
-              </button>
+              {podeEscrever && (
+                <button
+                  type="button"
+                  onClick={() => filesInput.current?.click()}
+                  title="Enviar arquivos"
+                  className="row-action"
+                  style={{ color: 'var(--text-faint)' }}
+                >
+                  <UploadIcon />
+                </button>
+              )}
             </div>
 
             <div className="file-tree">
@@ -351,7 +364,7 @@ export function SkillEditorPage({ session }: { session: Session }) {
                     <span className="name">{file.relativePath}</span>
                     <span className="size">{formatBytes(file.sizeBytes)}</span>
                   </button>
-                  {file.relativePath.toLowerCase() !== 'skill.md' && (
+                  {podeEscrever && file.relativePath.toLowerCase() !== 'skill.md' && (
                     <button
                       type="button"
                       onClick={() => removeFile(file.relativePath)}
@@ -432,9 +445,11 @@ export function SkillEditorPage({ session }: { session: Session }) {
                     >
                       Abrir cru
                     </a>
-                    <Button size="sm" onClick={saveFile} disabled={fileContent === null}>
-                      Salvar arquivo
-                    </Button>
+                    {podeEscrever && (
+                      <Button size="sm" onClick={saveFile} disabled={fileContent === null}>
+                        Salvar arquivo
+                      </Button>
+                    )}
                   </div>
                 </div>
                 <textarea

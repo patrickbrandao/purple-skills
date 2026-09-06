@@ -125,6 +125,12 @@ remover `a.md` levava junto um eventual `A.md`.
 
 - Cookie assinado com HMAC-SHA256, `httpOnly`, `SameSite=Lax`, TTL de 12h
   (configurável por `ADMIN_SESSION_TTL`). Sem session store, como pedido.
+- O payload passou a ser `{ sub, role, ver, exp }` com a entrega de contas
+  (§7.1 das decisões). `role` e `ver` são **opcionais no tipo**: a sessão da
+  senha única não os tem, e o middleware trata a ausência como "sessão legada",
+  válida só enquanto `users` estiver vazia. `packages/shared` continua sem
+  falar com o banco — ele assina e valida o formato; quem decide se a sessão
+  ainda vale é `apps/admin/src/auth.ts`.
 - `ADMIN_SESSION_SECRET` é **opcional**: se ausente, é derivado da senha com
   **scrypt** (`N=2^15`), uma vez por processo. O serviço sobe sem configuração
   extra e trocar a senha invalida as sessões antigas — que é o comportamento
@@ -135,6 +141,43 @@ remover `a.md` levava junto um eventual `A.md`.
   `X-Forwarded-Proto` via `trust proxy`) em vez de `NODE_ENV`. Fixá-la em
   produção quebraria qualquer deploy HTTP interno; `ADMIN_COOKIE_SECURE`
   permite forçar.
+
+## Contas, papéis e credenciais
+
+Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
+
+- **`audit_log.target_label`.** A §3 previa só `actor_user_uuid` e
+  `actor_label`. Sem um terceiro campo, um evento de conta não diz *sobre quem*
+  foi — `skill_slug` e `file_path` são nulos nessas linhas. A coluna guarda o
+  e-mail do alvo, o `email → papel` de uma troca ou o nome da chave.
+- **Dois custos de scrypt.** A spec diz "hash de senha e de chave por scrypt".
+  Senha de pessoa usa `N=2^15` (~32 MB, ~100 ms); segredo de chave de API usa
+  `N=2^12`. O segredo tem 32 bytes aleatórios: não há busca offline a
+  encarecer, e o custo alto só somaria latência a cada requisição do MCP. Os
+  parâmetros ficam gravados no próprio hash (`scrypt$N$r$p$salt$hash`), então
+  aumentá-los depois não invalida o que já está no banco.
+- **Prefixo da chave lido por posição, não por `split('_')`.** O alfabeto
+  base64url inclui `_`, então o segredo quase sempre tem underscores e a
+  divisão ingênua recusaria uma chave legítima. Como o prefixo tem comprimento
+  fixo, a posição do separador é determinística.
+- **Sessão MCP presa à credencial.** O servidor MCP é criado uma vez por
+  sessão, com o papel e o ator daquele momento. Sem amarrar, quem descobrisse
+  um `mcp-session-id` alheio herdaria o papel dele — daí o 403 quando a
+  identidade da requisição não bate com a que abriu a sessão.
+- **Reemissão do cookie na troca de senha.** Trocar a senha incrementa
+  `token_version`, o que derrubaria a sessão de quem acabou de trocá-la. A rota
+  reemite o cookie com a versão nova.
+- **Nada de auto-desativação nem último admin.** Um admin não muda o próprio
+  papel nem se desativa, e a última conta de administrador ativa não pode ser
+  rebaixada ou desligada: o caminho de volta seria editar o banco à mão.
+- **A tela de contas some na sessão de bootstrap.** Criar uma conta por ali
+  invalidaria a própria sessão na requisição seguinte (a legada só vale com
+  `users` vazia). O caminho oferecido é sair e passar pelo `/setup`.
+- **Token de redefinição em SHA-256, não scrypt.** São 32 bytes aleatórios e a
+  busca é por igualdade exata do hash; não há entropia baixa a compensar.
+- **`registerFailedLogin`/`registerSuccessfulLogin` não tocam `updated_at`**
+  (decisão do DBA): o campo continua significando "última alteração
+  administrativa da conta", não "última tentativa de login".
 
 ## Armazenamento de arquivos
 
@@ -248,3 +291,9 @@ slug pedido explicitamente, devolve 409.
   MCP, CRUD completo pelo MCP admin, propagação de visibilidade para o site,
   reindexação da busca por trigger, contadores, download `.zip` com binários
   preservados, autenticação do painel e do MCP admin.
+- Testes de integração com Postgres real (`TEST_DATABASE_URL`, desligados por
+  padrão) cobrindo `users`, `api_keys` e `reset_tokens`.
+- Smoke test do fluxo de contas contra o stack em Docker: bootstrap do primeiro
+  admin, senha única ficando inerte depois dele, matriz de papéis nas rotas do
+  painel, revogação por `token_version`, trava do login por tentativas, e chave
+  `psk_` autenticando no MCP administrativo com o papel do dono.

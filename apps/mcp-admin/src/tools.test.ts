@@ -30,7 +30,18 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
-const { guard, handlers } = await import('./tools.js');
+const { guard, createHandlers } = await import('./tools.js');
+
+const caller = (role: 'admin' | 'editor' | 'leitor') => ({
+  actor: { userUuid: role === 'admin' ? null : `uuid-${role}`, label: `${role}@exemplo.com` },
+  role,
+  identity: `teste:${role}`,
+});
+
+/** Chamador padrão dos testes: o token global, com papel admin. */
+const handlers = createHandlers(caller('admin'));
+/** Ator gravado no audit quando quem chama é o token global. */
+const ADMIN_ACTOR = { userUuid: null, label: 'admin@exemplo.com' };
 
 const detail = {
   uuid: 'uuid-1',
@@ -75,6 +86,7 @@ describe('create_skill', () => {
     expect(db.createSkill).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'Minha Skill', skillMd: '# Minha Skill', isPublic: true }),
       'mcp-admin',
+      ADMIN_ACTOR,
     );
     expect(result.content[0].text).toContain('Skill criada');
   });
@@ -87,6 +99,7 @@ describe('create_skill', () => {
     expect(db.createSkill).toHaveBeenCalledWith(
       expect.objectContaining({ isPublic: false }),
       'mcp-admin',
+      ADMIN_ACTOR,
     );
   });
 });
@@ -96,11 +109,11 @@ describe('set_visibility', () => {
     db.setVisibility.mockResolvedValue({ ...detail, isPublic: true });
 
     await handlers.set_visibility({ slug: 'minha-skill', visibility: 'public' });
-    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', true, 'mcp-admin');
+    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', true, 'mcp-admin', ADMIN_ACTOR);
 
     db.setVisibility.mockResolvedValue({ ...detail, isPublic: false });
     await handlers.set_visibility({ slug: 'minha-skill', visibility: 'private' });
-    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', false, 'mcp-admin');
+    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', false, 'mcp-admin', ADMIN_ACTOR);
   });
 });
 
@@ -118,7 +131,12 @@ describe('delete_file', () => {
 
     const result = await handlers.delete_file({ slug: 'minha-skill', path: 'ref/extra.md' });
 
-    expect(db.deleteFile).toHaveBeenCalledWith('minha-skill', 'ref/extra.md', 'mcp-admin');
+    expect(db.deleteFile).toHaveBeenCalledWith(
+      'minha-skill',
+      'ref/extra.md',
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
     expect(result.isError).toBeUndefined();
   });
 });
@@ -136,7 +154,7 @@ describe('delete_skill', () => {
 
     await handlers.delete_skill({ slug: 'minha-skill', confirm: true });
 
-    expect(db.deleteSkill).toHaveBeenCalledWith('minha-skill', 'mcp-admin');
+    expect(db.deleteSkill).toHaveBeenCalledWith('minha-skill', 'mcp-admin', ADMIN_ACTOR);
   });
 });
 
@@ -232,5 +250,57 @@ describe('guard', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('conexão perdida');
+  });
+});
+
+// ---------------------------------------------------------------- papéis ---
+
+describe('papel da credencial', () => {
+  it('leitor lê o catálogo inteiro, inclusive privadas', async () => {
+    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    await createHandlers(caller('leitor')).list_skills({});
+    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ includePrivate: true }));
+  });
+
+  it('leitor não escreve nada', async () => {
+    const leitor = createHandlers(caller('leitor'));
+
+    for (const result of [
+      await leitor.create_skill({ name: 'X', skill_md_content: '# X' }),
+      await leitor.edit_skill({ slug: 'minha-skill', name: 'Y' }),
+      await leitor.set_visibility({ slug: 'minha-skill', visibility: 'public' }),
+      await leitor.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' }),
+      await leitor.set_files_bulk({ slug: 'minha-skill', zip_base64: makeZip({ 'a.md': 'a' }) }),
+      await leitor.delete_file({ slug: 'minha-skill', path: 'a.md' }),
+      await leitor.delete_skill({ slug: 'minha-skill', confirm: true }),
+    ]) {
+      expect(result.isError).toBe(true);
+    }
+
+    expect(db.createSkill).not.toHaveBeenCalled();
+    expect(db.setFile).not.toHaveBeenCalled();
+    expect(db.deleteSkill).not.toHaveBeenCalled();
+  });
+
+  it('editor escreve mas não apaga skill', async () => {
+    db.createSkill.mockResolvedValue(detail);
+    const editor = createHandlers(caller('editor'));
+
+    expect((await editor.create_skill({ name: 'X', skill_md_content: '# X' })).isError).toBeUndefined();
+
+    const denied = await editor.delete_skill({ slug: 'minha-skill', confirm: true });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain('admin');
+    expect(db.deleteSkill).not.toHaveBeenCalled();
+  });
+
+  it('o ator do chamador vai junto para a auditoria', async () => {
+    db.createSkill.mockResolvedValue(detail);
+    await createHandlers(caller('editor')).create_skill({ name: 'X', skill_md_content: '# X' });
+
+    expect(db.createSkill).toHaveBeenCalledWith(expect.anything(), 'mcp-admin', {
+      userUuid: 'uuid-editor',
+      label: 'editor@exemplo.com',
+    });
   });
 });

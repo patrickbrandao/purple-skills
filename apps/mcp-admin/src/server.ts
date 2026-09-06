@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
-import { guard, handlers } from './tools.js';
+import { createHandlers, guard } from './tools.js';
 
 const INSTRUCTIONS = `Servidor MCP administrativo do Purple Skills.
 
@@ -14,10 +15,20 @@ Regras importantes:
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
   arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
 - Skills recém-criadas nascem privadas, a menos que is_public=true.
-- delete_skill é irreversível e exige confirm=true.`;
+- delete_skill é irreversível e exige confirm=true.
+- As ferramentas de escrita dependem do papel da credencial: uma chave de
+  usuário "leitor" só lê, e apagar skill exige papel "admin".`;
 
-/** Cria uma instância do servidor MCP administrativo. */
-export function createMcpServer(): McpServer {
+/**
+ * Cria uma instância do servidor MCP administrativo para um chamador.
+ *
+ * O `caller` chega da autenticação (token global ou chave `psk_`) e viaja com
+ * os handlers: é ele que decide quais ferramentas podem ser executadas e quem
+ * aparece no `audit_log`.
+ */
+export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
+  const handlers = createHandlers(caller);
+
   const server = new McpServer(
     { name: config.serverName, version: config.version },
     { instructions: INSTRUCTIONS },

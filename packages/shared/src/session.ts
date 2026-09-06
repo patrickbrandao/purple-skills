@@ -1,9 +1,21 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import type { Role } from './roles.js';
 
 export type SessionPayload = {
   /** Epoch em segundos de quando a sessão expira. */
   exp: number;
+  /** UUID do usuário. `'admin'` numa sessão legada de `ADMIN_PASSWORD`. */
   sub: string;
+  /**
+   * Papel e versão do token são **opcionais no formato** porque a sessão da
+   * senha única não os tem. Quem decide se uma sessão sem eles ainda vale é o
+   * middleware do painel — este pacote não fala com o banco, e essa fronteira
+   * é o que mantém `shared` livre de `@purple-skills/db`
+   * (`docs/05-accounts-and-roles.md` §2.2).
+   */
+  role?: Role;
+  /** Cópia de `users.token_version` no momento da emissão. */
+  ver?: number;
 };
 
 /**

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  canWrite,
   formatDateTime,
   getAudit,
   getStats,
   listSkills,
   type AuditEntry,
+  type SessionUser,
   type SkillSummary,
   type Stats,
 } from '../api.js';
@@ -16,9 +18,26 @@ const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   create: 'criou',
   update: 'atualizou',
   delete: 'removeu',
+  'user.create': 'criou conta',
+  'user.role': 'mudou papel',
+  'user.deactivate': 'desativou',
+  'key.create': 'emitiu chave',
+  'key.revoke': 'revogou chave',
 };
 
-export function DashboardPage() {
+/** Eventos de conta não têm skill: o alvo é a própria pessoa ou a chave. */
+const ACTION_CLASS: Record<AuditEntry['action'], string> = {
+  create: 'create',
+  update: 'update',
+  delete: 'delete',
+  'user.create': 'create',
+  'user.role': 'update',
+  'user.deactivate': 'delete',
+  'key.create': 'create',
+  'key.revoke': 'delete',
+};
+
+export function DashboardPage({ user }: { user: SessionUser }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [top, setTop] = useState<SkillSummary[]>([]);
@@ -42,6 +61,7 @@ export function DashboardPage() {
     { k: 'Arquivos', v: num(stats?.totalFiles), h: `${stats?.totalTags ?? 0} tags` },
     { k: 'Acessos', v: num(stats?.totalViews), h: 'SKILL.md visualizado' },
     { k: 'Downloads', v: num(stats?.totalDownloads), h: 'pacotes .zip' },
+    { k: 'Contas', v: num(stats?.totalUsers), h: `${stats?.activeUsers ?? 0} ativas` },
   ];
 
   return (
@@ -51,9 +71,11 @@ export function DashboardPage() {
           <h1 className="display">Visão geral</h1>
           <p className="sub">Estado do catálogo e atividade recente.</p>
         </div>
-        <Link to="/skills/new" className="btn btn-primary">
-          <PlusIcon /> Nova skill
-        </Link>
+        {canWrite(user.role) && (
+          <Link to="/skills/new" className="btn btn-primary">
+            <PlusIcon /> Nova skill
+          </Link>
+        )}
       </div>
 
       <div className="stat-grid">
@@ -88,9 +110,14 @@ export function DashboardPage() {
             {audit.map((entry) => (
               <div className="audit-row" key={entry.id}>
                 <span className="when">{formatDateTime(entry.createdAt)}</span>
-                <span className={`act ${entry.action}`}>{ACTION_LABEL[entry.action]}</span>
+                <span className="who" title={entry.actorLabel ?? 'ator desconhecido'}>
+                  {entry.actorLabel ?? '—'}
+                </span>
+                <span className={`act ${ACTION_CLASS[entry.action]}`}>
+                  {ACTION_LABEL[entry.action]}
+                </span>
                 <span className="what">
-                  {entry.skillSlug ?? '—'}
+                  {entry.skillSlug ?? entry.targetLabel ?? '—'}
                   {entry.filePath && ` / ${entry.filePath}`}
                 </span>
                 <span className="src">{entry.source}</span>

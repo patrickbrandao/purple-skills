@@ -10,8 +10,9 @@ async function main() {
   adminToken();
 
   const app = createHttpApp({
-    createServer: createMcpServer,
+    createServer: (req) => createMcpServer(req.caller),
     auth: requireBearer,
+    identityOf: (req) => req.caller?.identity,
     // `set_files_bulk` manda ~32 MB de base64; o resto é o envelope JSON-RPC.
     jsonLimit: readTextEnv('MCP_JSON_LIMIT', '48mb'),
     openCors: false,
@@ -28,7 +29,7 @@ async function main() {
 
   const server = app.listen(config.port, config.host, () => {
     console.log(`[mcp-admin] ouvindo em http://${config.host}:${config.port}`);
-    console.log('[mcp-admin] autenticação: Bearer obrigatório (MCP_ADMIN_TOKEN)');
+    console.log('[mcp-admin] autenticação: Bearer obrigatório (MCP_ADMIN_TOKEN ou chave psk_ de usuário)');
     console.log('[mcp-admin] transportes: /mcp, /mcp/stateless, /sse + /messages');
   });
 
