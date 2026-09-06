@@ -1,6 +1,6 @@
 import { useMeta } from '../../useMeta.js';
 import { CopyButton } from '../CopyButton.js';
-import { GlobeIcon, ShieldIcon } from '../Icons.js';
+import { ExternalLinkIcon, GlobeIcon, ShieldIcon } from '../Icons.js';
 import type { ReactNode } from 'react';
 
 type Endpoint = {
@@ -10,8 +10,6 @@ type Endpoint = {
   text: string;
   url: string | null;
   icon: ReactNode;
-  /** Endereço para abrir no navegador; os MCPs só respondem a clientes MCP. */
-  open?: boolean;
 };
 
 const McpIcon = () => <img src="/assets/images/icon-mcp-64.png" alt="" />;
@@ -43,7 +41,6 @@ export function Endpoints() {
       text: 'A mesma administração pelo navegador, para quando é você — e não o agente — quem vai mexer no catálogo.',
       url: meta?.adminUrl ?? null,
       icon: <ShieldIcon />,
-      open: true,
     },
     {
       id: 'api',
@@ -52,7 +49,6 @@ export function Endpoints() {
       text: 'Alternativa ao MCP para scripts e integrações: a mesma busca e os mesmos downloads, em JSON.',
       url: `${meta?.baseUrl ?? ''}/api/skills`,
       icon: <GlobeIcon />,
-      open: true,
     },
   ];
 
@@ -93,16 +89,15 @@ export function Endpoints() {
                     label="Copiar URL"
                     className="btn btn-ghost btn-sm"
                   />
-                  {endpoint.open && (
-                    <a
-                      href={endpoint.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-ghost btn-sm"
-                    >
-                      Abrir
-                    </a>
-                  )}
+                  <a
+                    href={endpoint.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-ghost btn-sm"
+                    title={`Abrir ${endpoint.url} em uma nova guia`}
+                  >
+                    <ExternalLinkIcon /> Abrir
+                  </a>
                 </div>
               )}
             </article>

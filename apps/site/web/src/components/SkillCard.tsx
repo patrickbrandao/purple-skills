@@ -6,10 +6,11 @@ export function SkillCard({ skill, className = '' }: { skill: SkillSummary; clas
   return (
     <Link to={`/skills/${skill.slug}`} className={`skill-card ${className}`.trim()}>
       <div className="sk-top">
-        <span className="sk-ico">
-          <img src="/assets/images/icon-purple-left-64x92.png" alt="" />
+        {/* Chapéu do mago + slug no mesmo selo: é o nome técnico que o agente usa. */}
+        <span className="sk-id">
+          <img src="/assets/images/purple-hat-256.png" alt="" />
+          <span className="slug mono">{skill.slug}</span>
         </span>
-        <span className="slug mono">{skill.slug}</span>
       </div>
 
       <h4>{skill.name}</h4>

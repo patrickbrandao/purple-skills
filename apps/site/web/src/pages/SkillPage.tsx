@@ -3,14 +3,13 @@ import { Link, useParams } from 'react-router-dom';
 import {
   downloadUrl,
   fetchSkill,
-  fileUrl,
-  formatBytes,
   formatCount,
   formatDate,
   type SkillDetail,
 } from '../api.js';
 import { Markdown } from '../components/Markdown.js';
 import { CopyButton } from '../components/CopyButton.js';
+import { FileTree } from '../components/FileTree.js';
 import {
   ArrowLeftIcon,
   DownloadIcon,
@@ -77,7 +76,6 @@ export function SkillPage() {
   }
 
   const publicUrl = `${meta?.baseUrl ?? window.location.origin}/skills/${skill.slug}`;
-  const attachments = skill.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
 
   return (
     <section className="skill-page">
@@ -134,29 +132,10 @@ export function SkillPage() {
               <h2>
                 <FileIcon /> Arquivos
               </h2>
-              <div className="file-list">
-                <a href={fileUrl(skill.slug, 'SKILL.md')} className="primary" download>
-                  <FileIcon />
-                  <span className="name">SKILL.md</span>
-                </a>
-                {attachments.map((file) => (
-                  <a
-                    key={file.relativePath}
-                    href={fileUrl(skill.slug, file.relativePath)}
-                    title={`${file.relativePath} — ${formatBytes(file.sizeBytes)}`}
-                    download
-                  >
-                    <FileIcon />
-                    <span className="name">{file.relativePath}</span>
-                    <span className="size">{formatBytes(file.sizeBytes)}</span>
-                  </a>
-                ))}
-              </div>
-              {attachments.length === 0 && (
-                <p className="mt-2 text-xs" style={{ color: 'var(--text-faint)' }}>
-                  Sem arquivos adicionais.
-                </p>
-              )}
+              <FileTree slug={skill.slug} files={skill.files} />
+              <p className="ft-hint">
+                É esta a pasta que aparece ao descompactar o .zip.
+              </p>
             </section>
 
             {meta?.mcpUrl && (
