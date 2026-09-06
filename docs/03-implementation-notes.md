@@ -240,6 +240,30 @@ pré-visualização renderizada ao lado, em tempo real.
   `packages/shared`: o pacote é Node (zip, streams, `Buffer`) e não entra no
   bundle do navegador. O servidor continua sendo quem decide.
 
+### Rolagem sincronizada
+
+Rolar um painel move o outro, nos dois sentidos. O que se espelha é a **fração
+rolada**, não a posição: fonte e render não têm a mesma altura — um `##`
+renderizado ocupa o triplo da linha que o gerou, um bloco de código ocupa o
+mesmo. A conta está isolada em `scrollsync.ts`, testada sem DOM.
+
+- Só o painel com que o operador interagiu por último comanda (`leader`).
+  Espelhar os dois sentidos ao mesmo tempo faria um puxar o outro em laço: a
+  rolagem que o handler provoca no seguidor volta como evento. Digitar também
+  reivindica o comando para o markdown, mesmo com o ponteiro parado do lado.
+- A sincronia na rolagem é **síncrona**, sem `requestAnimationFrame`: esperar
+  um quadro deixaria o seguidor visivelmente atrasado.
+- O realinhamento depois de digitar e ao voltar de "Escrever"/"Visualizar"
+  roda em `useLayoutEffect` — ler as alturas ali força o cálculo do layout já
+  atualizado e o ajuste entra antes do desenho.
+- Limite conhecido: a fração acerta começo, meio e fim, e escorrega no meio
+  conforme a mistura de títulos, listas e código muda ao longo do documento.
+  Medido no painel: num prompt de mistura uniforme o desvio máximo foi 21px
+  (~3% da altura do painel); num caso construído para ser desfavorável — 60
+  linhas de código seguidas de 20 títulos — chegou a 351px, 0,58 de uma tela.
+  Ancorar cada bloco renderizado na linha que o gerou resolveria, ao custo de
+  um plugin rehype e de um espelho do textarea para achar a linha visível.
+
 ## Conexão com o banco
 
 O compose passa `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`, lidos
