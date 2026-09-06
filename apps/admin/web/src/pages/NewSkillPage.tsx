@@ -1,16 +1,20 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createSkill, importZip } from '../api.js';
-import { Button, Field, Panel } from '../components/ui.js';
+import { Button, Panel } from '../components/ui.js';
 import { UploadIcon } from '../components/Icons.js';
+import {
+  FrontmatterPreview,
+  SkillMetaForm,
+  type SkillMetaValues,
+} from '../components/SkillMetaForm.js';
+import { PromptEditor } from '../components/PromptEditor.js';
+import { parseTags, stripFrontmatter } from '../frontmatter.js';
+import { slugify } from '../slug.js';
 import { useToast } from '../components/Toast.js';
 
-const TEMPLATE = `---
-name: Minha Skill
-description: O que esta skill faz, em uma frase.
----
-
-# Minha Skill
+/** Só o corpo: o frontmatter é gerado a partir dos campos do formulário. */
+const TEMPLATE = `# Minha Skill
 
 ## Quando usar
 
@@ -33,36 +37,53 @@ export function NewSkillPage() {
   const toast = useToast();
 
   const [mode, setMode] = useState<'form' | 'zip'>('form');
-  const [name, setName] = useState('');
-  const [slug, setSlug] = useState('');
-  const [description, setDescription] = useState('');
-  const [tags, setTags] = useState('');
-  // Nasce privada, como o default do schema, do MCP admin e da documentação.
-  const [isPublic, setIsPublic] = useState(false);
+  const [meta, setMeta] = useState<SkillMetaValues>({
+    name: '',
+    slug: '',
+    description: '',
+    tags: '',
+    // Nasce privada, como o default do schema, do MCP admin e da documentação.
+    isPublic: false,
+  });
+  // Enquanto o slug não for editado à mão, ele acompanha o nome.
+  const [slugTocado, setSlugTocado] = useState(false);
   const [skillMd, setSkillMd] = useState(TEMPLATE);
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const tagList = tags
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter(Boolean);
+  function patchMeta(patch: Partial<SkillMetaValues>) {
+    if (patch.slug !== undefined) setSlugTocado(true);
+    const seguirNome = patch.name !== undefined && patch.slug === undefined && !slugTocado;
+
+    setMeta((current) => ({
+      ...current,
+      ...patch,
+      ...(seguirNome ? { slug: slugify(patch.name ?? '') } : {}),
+    }));
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
 
     try {
+      const tags = parseTags(meta.tags);
       const detail =
         mode === 'zip' && file
-          ? await importZip(file, { name: name || undefined, description, tags: tagList, isPublic })
+          ? await importZip(file, {
+              name: meta.name || undefined,
+              description: meta.description,
+              tags,
+              isPublic: meta.isPublic,
+            })
           : await createSkill({
-              name,
-              slug: slug || undefined,
-              description,
-              skillMd,
-              tags: tagList,
-              isPublic,
+              name: meta.name,
+              slug: meta.slug || undefined,
+              description: meta.description,
+              // Nunca sai daqui com frontmatter: o formulário é a fonte da verdade.
+              skillMd: stripFrontmatter(skillMd),
+              tags,
+              isPublic: meta.isPublic,
             });
 
       toast.success(`Skill "${detail.name}" criada.`);
@@ -75,7 +96,7 @@ export function NewSkillPage() {
   }
 
   return (
-    <form onSubmit={submit} className="mx-auto max-w-3xl">
+    <form onSubmit={submit} className="mx-auto max-w-5xl">
       <div className="page-head">
         <div>
           <h1 className="display">Nova skill</h1>
@@ -98,83 +119,28 @@ export function NewSkillPage() {
         ))}
       </div>
 
-      <Panel className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={mode === 'zip' ? 'Nome (opcional)' : 'Nome'}>
-            <input
-              className="field"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required={mode === 'form'}
-              placeholder="Conventional Commits"
-            />
-          </Field>
-
-          {mode === 'form' && (
-            <Field label="Slug (opcional)">
-              <input
-                className="field"
-                value={slug}
-                onChange={(event) => setSlug(event.target.value)}
-                placeholder="gerado a partir do nome"
-              />
-            </Field>
-          )}
-        </div>
-
-        <Field label="Descrição">
-          <textarea
-            className="field resize-y"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            rows={2}
-            placeholder="O que esta skill faz, em uma frase."
-          />
-        </Field>
-
-        <div className="grid items-end gap-4 sm:grid-cols-2">
-          <Field label="Tags (separadas por vírgula)">
-            <input
-              className="field"
-              value={tags}
-              onChange={(event) => setTags(event.target.value)}
-              placeholder="git, workflow, produtividade"
-            />
-          </Field>
-
-          <label
-            className="flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3"
-            style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
-          >
-            <input
-              type="checkbox"
-              checked={isPublic}
-              onChange={(event) => setIsPublic(event.target.checked)}
-              className="h-4 w-4"
-            />
-            <span className="text-sm">
-              Publicar no site agora (dá para publicar depois em Metadados)
-            </span>
-          </label>
-        </div>
+      <Panel>
+        <SkillMetaForm
+          values={meta}
+          onChange={patchMeta}
+          slugPlaceholder="gerado a partir do nome"
+          slugRequired={false}
+          nameRequired={mode === 'form'}
+          publicLabel="Publicar no site agora (dá para publicar depois, aqui mesmo)"
+        />
 
         {mode === 'form' ? (
-          <Field label="Conteúdo do SKILL.md">
-            <textarea
-              className="field field-mono resize-y"
-              value={skillMd}
-              onChange={(event) => setSkillMd(event.target.value)}
-              rows={20}
-              required
-              spellCheck={false}
-            />
-          </Field>
+          <>
+            <FrontmatterPreview values={meta} />
+            <PromptEditor value={skillMd} onChange={setSkillMd} rows={22} />
+          </>
         ) : (
-          <label className="dropzone">
+          <label className="dropzone mt-5">
             <UploadIcon />
             <span className="t">{file ? file.name : 'Escolher um arquivo .zip'}</span>
             <span className="h">
-              A árvore de arquivos é preservada; o SKILL.md é obrigatório.
+              A árvore de arquivos é preservada; o SKILL.md é obrigatório. Os metadados do
+              frontmatter dele preenchem os campos acima que ficarem em branco.
             </span>
             <input
               type="file"

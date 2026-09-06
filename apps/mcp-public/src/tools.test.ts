@@ -83,6 +83,18 @@ describe('get_skill', () => {
     expect(result.content[0].text).toContain('ref/extra.md');
   });
 
+  it('não repete o frontmatter — o cabeçalho já traz os metadados', async () => {
+    db.getSkillDetail.mockResolvedValue({
+      ...detail,
+      skillMd: '---\nname: legado\ndescription: metadados velhos\n---\n# Minha Skill\n',
+    });
+
+    const result = await handlers.get_skill({ slug: 'minha-skill' });
+
+    expect(result.content[0].text).not.toContain('metadados velhos');
+    expect(result.content[0].text).toContain('# Minha Skill');
+  });
+
   it('sinaliza erro sem incrementar quando a skill não existe', async () => {
     db.getSkillDetail.mockResolvedValue(null);
 
@@ -132,6 +144,24 @@ describe('get_skill_file', () => {
 
     expect(result.isError).toBe(true);
     expect(db.readFile).not.toHaveBeenCalled();
+  });
+
+  it('monta o frontmatter do SKILL.md a partir dos metadados da skill', async () => {
+    db.getSkillSummary.mockResolvedValue(summary);
+    db.readFile.mockResolvedValue({
+      relativePath: 'SKILL.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 24,
+      isText: true,
+      buffer: Buffer.from('# Minha Skill\n\nConteúdo.'),
+    });
+
+    const result = await handlers.get_skill_file({ slug: 'minha-skill', path: 'SKILL.md' });
+
+    expect(result.content[0].text).toBe(
+      '---\nname: minha-skill\ndescription: Faz coisas\nmetadata:\n  title: Minha Skill\n' +
+        '  tags: git\n---\n\n# Minha Skill\n\nConteúdo.',
+    );
   });
 });
 

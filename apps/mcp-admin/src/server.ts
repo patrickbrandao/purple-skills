@@ -12,6 +12,11 @@ remover skills, além de gravar e apagar arquivos.
 Regras importantes:
 - Toda skill tem obrigatoriamente um SKILL.md; ele não pode ser apagado,
   apenas sobrescrito com set_file.
+- Os metadados (slug, nome, descrição, tags) moram em campos próprios e são a
+  fonte da verdade: o frontmatter das primeiras linhas do SKILL.md é gerado a
+  partir deles na leitura. Não escreva frontmatter no conteúdo — ele é
+  descartado. Para mudar metadados use create_skill/edit_skill.
+- O slug é o nome oficial da skill: é ele que vai no campo name: do frontmatter.
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
   arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
 - Skills recém-criadas nascem privadas, a menos que is_public=true.
@@ -60,7 +65,9 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     'get_skill',
     {
       title: 'Ler skill',
-      description: 'Retorna metadados, lista de arquivos e o conteúdo do SKILL.md.',
+      description:
+        'Retorna metadados, lista de arquivos e o corpo do SKILL.md (sem o frontmatter, que é ' +
+        'gerado a partir dos metadados).',
       inputSchema: { slug: z.string().describe('Slug da skill.') },
     },
     (args) => guard(() => handlers.get_skill(args)),
@@ -85,13 +92,18 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       title: 'Criar skill',
       description:
         'Cria uma skill nova. O conteúdo do SKILL.md é obrigatório. A skill nasce privada ' +
-        'a menos que is_public seja true.',
+        'a menos que is_public seja true. O frontmatter é gerado a partir dos campos abaixo.',
       inputSchema: {
         name: z.string().describe('Nome legível da skill.'),
         description: z.string().describe('Resumo de uma linha.').optional(),
-        skill_md_content: z.string().describe('Conteúdo completo do SKILL.md (markdown).'),
+        skill_md_content: z
+          .string()
+          .describe('Corpo do SKILL.md (markdown), sem frontmatter — ele é gerado dos metadados.'),
         tags: z.array(z.string()).describe('Tags livres para navegação/filtro.').optional(),
-        slug: z.string().describe('Slug desejado. Gerado a partir do nome se omitido.').optional(),
+        slug: z
+          .string()
+          .describe('Nome oficial da skill (a-z, 0-9 e hífen). Gerado a partir do nome se omitido.')
+          .optional(),
         is_public: z.boolean().describe('Publicar imediatamente (padrão false).').optional(),
       },
     },
@@ -102,13 +114,18 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     'edit_skill',
     {
       title: 'Editar metadados',
-      description: 'Altera nome, descrição, tags ou slug de uma skill existente.',
+      description:
+        'Altera nome, descrição, tags ou slug de uma skill existente. É por aqui que se muda ' +
+        'o frontmatter do SKILL.md, gerado a partir destes campos.',
       inputSchema: {
         slug: z.string().describe('Slug atual da skill.'),
         name: z.string().optional(),
         description: z.string().optional(),
         tags: z.array(z.string()).describe('Substitui a lista de tags inteira.').optional(),
-        new_slug: z.string().describe('Novo slug (muda a URL pública).').optional(),
+        new_slug: z
+          .string()
+          .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
+          .optional(),
       },
     },
     (args) => guard(() => handlers.edit_skill(args)),
@@ -132,7 +149,8 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Gravar arquivo',
       description:
-        'Cria ou sobrescreve um arquivo da skill. Use path="SKILL.md" para trocar o conteúdo principal.',
+        'Cria ou sobrescreve um arquivo da skill. Use path="SKILL.md" para trocar o conteúdo ' +
+        'principal — só o corpo: o frontmatter enviado é descartado.',
       inputSchema: {
         slug: z.string(),
         path: z.string().describe('Caminho relativo dentro da skill.'),

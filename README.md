@@ -189,10 +189,10 @@ e `delete_skill` exige `admin`.
 |-----------|-----------|
 | `list_skills(includePrivate?, query?, tag?, limit?, offset?)` | Lista tudo, inclusive privadas |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?)` | Cria a skill e o SKILL.md na mesma transação |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados — é por aqui que muda o frontmatter |
 | `set_visibility(slug, "public" \| "private")` | Publica/despublica |
-| `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo |
+| `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`) |
@@ -204,12 +204,32 @@ A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
 
 ```
 GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (só públicas)
-GET  /api/skills/:slug                          detalhe + SKILL.md  (conta acesso)
+GET  /api/skills/:slug                          detalhe + corpo do SKILL.md (conta acesso)
 GET  /api/skills/:slug/files/<caminho>          arquivo avulso
 GET  /api/tags                                  tags com contagem
 GET  /skills/:slug/download                     pacote .zip        (conta download)
 GET  /healthz                                   saúde do serviço
 ```
+
+## Metadados e o `SKILL.md`
+
+Slug, nome, descrição e tags são **campos da skill**, não texto do arquivo. O
+frontmatter é gerado a partir deles toda vez que o `SKILL.md` é entregue — no
+download `.zip`, na leitura crua do arquivo e nas ferramentas MCP:
+
+```yaml
+---
+name: revisao-de-codigo          # o slug: nome oficial da skill
+description: Revisa PRs pequenos: foco em risco, teste e legibilidade.
+metadata:
+  title: Revisão de Código       # nome de exibição no catálogo
+  tags: code-review, qa
+---
+```
+
+O que fica gravado é só o corpo do prompt: qualquer frontmatter enviado no
+conteúdo é descartado na escrita, e o formulário do painel é a fonte da
+verdade. Renomear a skill atualiza o arquivo sozinho, sem reescrever o texto.
 
 ## Contadores e ranking
 

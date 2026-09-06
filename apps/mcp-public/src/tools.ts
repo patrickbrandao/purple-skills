@@ -6,7 +6,12 @@ import {
   listTags,
   readFile,
 } from '@purple-skills/db';
-import { normalizeRelativePath } from '@purple-skills/shared';
+import {
+  composeSkillMd,
+  isSkillMd,
+  normalizeRelativePath,
+  stripFrontmatter,
+} from '@purple-skills/shared';
 import { config } from './config.js';
 
 export type ToolResult = {
@@ -100,7 +105,7 @@ export const handlers = {
       .filter(Boolean)
       .join('\n');
 
-    return text(`${header}\n${detail.skillMd}`);
+    return text(`${header}\n${stripFrontmatter(detail.skillMd)}`);
   },
 
   /** Lê um arquivo anexado da skill. Não conta acesso (só o SKILL.md conta). */
@@ -121,7 +126,9 @@ export const handlers = {
       );
     }
 
-    return text(file.buffer.toString('utf8'));
+    // O SKILL.md é montado na hora: o frontmatter sai dos metadados da skill.
+    const content = file.buffer.toString('utf8');
+    return text(isSkillMd(path) ? composeSkillMd(skill, content) : content);
   },
 
   /** Devolve a URL de download; o zip é gerado pelo site quando ela é seguida. */

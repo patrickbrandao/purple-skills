@@ -18,10 +18,12 @@ import {
   ZipError,
   canDelete,
   canWrite,
+  composeSkillMd,
   extractZip,
   isSkillMd,
   normalizeRelativePath,
   readIntEnv,
+  stripFrontmatter,
 } from '@purple-skills/shared';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
@@ -139,7 +141,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           sizeBytes: file.sizeBytes,
           isText: file.isText,
         })),
-        skillMd: detail.skillMd,
+        // Os metadados estão nos campos acima; aqui vai só o corpo do prompt.
+        skillMd: stripFrontmatter(detail.skillMd),
       });
     },
 
@@ -156,7 +159,9 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         return fail(`"${path}" é binário (${file.mimeType}, ${file.sizeBytes} bytes) e não pode ser lido como texto.`);
       }
 
-      return text(file.buffer.toString('utf8'));
+      // O SKILL.md é montado na hora: o frontmatter sai dos metadados da skill.
+      const content = file.buffer.toString('utf8');
+      return text(isSkillMd(path) ? composeSkillMd(detail, content) : content);
     },
 
     async create_skill(args: {
@@ -175,7 +180,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           name: args.name,
           slug: args.slug,
           description: args.description,
-          skillMd: args.skill_md_content,
+          // Os metadados vêm dos campos; um frontmatter no corpo é descartado.
+          skillMd: stripFrontmatter(args.skill_md_content),
           tags: args.tags,
           isPublic: args.is_public === true,
         },
@@ -230,7 +236,10 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       const denied = denyWrite();
       if (denied) return denied;
 
-      const file = await setFile(args.slug, args.path, args.content, SOURCE, actor);
+      // Gravar o SKILL.md não redefine os metadados da skill (isso é
+      // edit_skill): o frontmatter enviado é descartado.
+      const content = isSkillMd(args.path) ? stripFrontmatter(args.content) : args.content;
+      const file = await setFile(args.slug, args.path, content, SOURCE, actor);
       return text(`Arquivo gravado em "${args.slug}": ${file.relativePath} (${file.sizeBytes} bytes).`);
     },
 
@@ -269,7 +278,11 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         args.slug,
         extracted.map((file) => ({
           relativePath: file.relativePath,
-          content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+          // Um SKILL.md vindo do .zip entra só com o corpo: os metadados da
+          // skill já cadastrada mandam.
+          content: isSkillMd(file.relativePath)
+            ? Buffer.from(stripFrontmatter(file.textContent ?? ''), 'utf8')
+            : (file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8')),
         })),
         SOURCE,
         // O zip representa o estado desejado completo da árvore (seção 4 das

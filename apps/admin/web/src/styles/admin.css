@@ -927,3 +927,117 @@ tr.is-off {
 .login-note code {
   font-family: var(--font-mono);
 }
+
+/* ============================================================
+   EDITOR DA SKILL — metadados + prompt lado a lado
+   ============================================================ */
+
+/* ---- primeiras linhas geradas a partir do formulário ---- */
+.fm-preview {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-2);
+}
+.fm-preview .t {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+.fm-preview pre {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.65;
+  color: var(--text-dim);
+  white-space: pre;
+}
+
+/* ---- markdown de um lado, render do outro ---- */
+.prompt-editor {
+  margin-top: 20px;
+}
+.prompt-editor > .head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.prompt-editor > .head .label {
+  margin-bottom: 0;
+}
+.segmented-sm button {
+  padding: 4px 11px;
+  font-size: 0.74rem;
+}
+
+.prompt-editor .panes {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+.prompt-editor .pane {
+  min-width: 0;
+}
+.prompt-editor .pane .cap {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.prompt-editor textarea {
+  display: block;
+}
+
+/*
+ * A altura do render acompanha a do textarea (mesma fonte, mesma entrelinha,
+ * mesmo padding) em vez de crescer com o conteúdo: os dois lados começam
+ * alinhados e o excedente rola dentro do painel.
+ */
+.prompt-editor .render {
+  height: calc(var(--prompt-rows, 26) * 0.82rem * 1.7 + 24px);
+  overflow-y: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 14px 16px;
+}
+.prompt-editor .render .markdown > :first-child {
+  margin-top: 0;
+}
+.prompt-editor .render .list-empty {
+  padding: 0;
+  text-align: left;
+}
+
+/* Empilhado quando não cabem duas colunas legíveis. */
+@media (max-width: 900px) {
+  .prompt-editor .panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .prompt-editor.pane-split .pane.preview .render {
+    height: calc(var(--prompt-rows, 26) * 0.82rem * 0.7 + 24px);
+  }
+}
+
+/* Um painel só: "Escrever" ou "Visualizar". */
+.prompt-editor.pane-edit .panes,
+.prompt-editor.pane-preview .panes {
+  grid-template-columns: minmax(0, 1fr);
+}
+.prompt-editor.pane-edit .pane.preview,
+.prompt-editor.pane-preview .pane.edit {
+  display: none;
+}

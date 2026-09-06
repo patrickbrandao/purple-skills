@@ -115,6 +115,28 @@ a implementação.
     `source` (`web-admin` / `mcp-admin`), `previous_content` (snapshot do
     conteúdo anterior, quando aplicável), `created_at`.
 
+## 3.5 Metadados fora do `SKILL.md`
+
+Slug, nome, descrição e tags moram em **colunas de `skills`** e são a única
+fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
+**corpo do prompt**, sem frontmatter.
+
+- O frontmatter é **gerado na leitura**, sempre que o arquivo é materializado:
+  download do `.zip`, leitura crua em `/files/SKILL.md`, `get_skill_file` do
+  MCP público e `get_file` do MCP admin.
+- Formato Agent Skills: `name` é o **slug** (o nome oficial, `a-z0-9-`);
+  `description` é a descrição; o nome de exibição e as tags — que a spec não
+  define — vão em `metadata.title` e `metadata.tags`.
+- Toda escrita de conteúdo (`POST/PATCH /api/skills`, `PUT .../files/SKILL.md`,
+  upload de `.zip`, `create_skill`/`set_file`/`set_files_bulk` do MCP admin)
+  **descarta** o frontmatter que venha no corpo.
+- Motivo: com o frontmatter gravado, renomear a skill deixava o arquivo
+  mentindo sobre ela, e o painel oferecia duas telas para o mesmo dado —
+  campo e texto — que divergiam em silêncio. Gerar na leitura torna o
+  desencontro impossível.
+- Como tirar o frontmatter também vale na leitura, skills gravadas antes desta
+  decisão são limpas sem migração de dados.
+
 ## 4. Upload/gestão de arquivos
 
 - Painel admin: upload de **.zip** (extraído no servidor, preservando
@@ -309,6 +331,8 @@ CRUD completo, espelhando o painel administrativo:
 
 - Formato **ZIP**, gerado on-the-fly a partir das linhas da tabela
   `files` (streaming, ex: lib `archiver`), preservando `relative_path`.
+- O `SKILL.md` do pacote é montado na hora: frontmatter vindo dos metadados
+  da skill + corpo gravado (§3.5).
 
 ## 10. Infraestrutura / Docker
 
