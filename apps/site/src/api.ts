@@ -12,10 +12,12 @@ import {
   healthCheck,
 } from '@purple-skills/db';
 import {
+  composeSkillMd,
   contentDisposition,
   isSkillMd,
   normalizeRelativePath,
   safeContentType,
+  stripFrontmatter,
 } from '@purple-skills/shared';
 import { config } from './config.js';
 import { streamSkillZip } from './zip.js';
@@ -110,7 +112,14 @@ api.get(
     }
 
     await incrementViewCount(detail.uuid);
-    res.json({ ...detail, viewCount: detail.viewCount + 1, score: detail.score + 1 });
+    res.json({
+      ...detail,
+      // Os metadados estão nos campos do próprio JSON; `skillMd` traz só o
+      // corpo do prompt. O SKILL.md completo sai em /files/SKILL.md e no zip.
+      skillMd: stripFrontmatter(detail.skillMd),
+      viewCount: detail.viewCount + 1,
+      score: detail.score + 1,
+    });
   }),
 );
 
@@ -137,7 +146,11 @@ const serveFile = asyncRoute(async (req, res) => {
     return;
   }
 
+  // O SKILL.md é montado na hora: metadados da skill nas primeiras linhas,
+  // prompt gravado logo abaixo.
+  let buffer = file.buffer;
   if (isSkillMd(file.relativePath)) {
+    buffer = Buffer.from(composeSkillMd(skill, file.buffer.toString('utf8')), 'utf8');
     await incrementViewCount(skill.uuid);
   }
 
@@ -147,10 +160,10 @@ const serveFile = asyncRoute(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
-  res.setHeader('Content-Length', String(file.buffer.byteLength));
+  res.setHeader('Content-Length', String(buffer.byteLength));
   res.setHeader('Cache-Control', 'public, max-age=60');
   res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'attachment'));
-  res.send(file.buffer);
+  res.send(buffer);
 });
 
 api.get('/api/skills/:slug/files/*path', serveFile);
@@ -166,7 +179,7 @@ const serveZip = asyncRoute(async (req, res) => {
 
   const files = await readAllFiles(skill.uuid);
   await incrementDownloadCount(skill.uuid);
-  streamSkillZip(res, skill.slug, files);
+  streamSkillZip(res, skill.slug, files, skill);
 });
 
 api.get('/skills/:slug/download', serveZip);

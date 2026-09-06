@@ -2,16 +2,7 @@ import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-
-const FRONTMATTER = /^﻿?---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/;
-
-/**
- * Remove o frontmatter YAML antes de renderizar — nome, descrição e tags já
- * aparecem no cabeçalho da página, e o bloco cru poluiria a leitura.
- */
-export function stripFrontmatter(source: string): string {
-  return source.replace(FRONTMATTER, '').trimStart();
-}
+import { stripFrontmatter } from '../frontmatter.js';
 
 /**
  * SKILL.md renderizado no frontend. HTML cru fica desativado (padrão do

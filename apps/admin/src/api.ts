@@ -22,11 +22,14 @@ import {
 } from '@purple-skills/db';
 import {
   ZipError,
+  composeSkillMd,
   contentDisposition,
   extractZip,
+  isSkillMd,
   normalizeRelativePath,
   safeContentType,
   skillMetaFromMarkdown,
+  stripFrontmatter,
 } from '@purple-skills/shared';
 import {
   actorFrom,
@@ -504,6 +507,17 @@ api.get(
 
 // ---------------------------------------------------------------- skills ---
 
+/**
+ * O SKILL.md guardado é só o corpo do prompt: os metadados moram em colunas do
+ * banco e são a fonte da verdade. Skills gravadas antes desta regra ainda têm
+ * o frontmatter no arquivo — tirá-lo na saída evita que ele volte para o
+ * editor e seja salvo de novo.
+ */
+const bodyOnly = <T extends { skillMd: string }>(detail: T): T => ({
+  ...detail,
+  skillMd: stripFrontmatter(detail.skillMd),
+});
+
 api.get(
   '/api/skills',
   route(async (req, res) => {
@@ -538,14 +552,16 @@ api.post(
         name: body.name ?? '',
         slug: body.slug,
         description: body.description,
-        skillMd: body.skillMd ?? '',
+        // Os metadados vêm do formulário; o frontmatter é gerado na leitura.
+        // Um bloco `---` colado no início do prompt é descartado aqui.
+        skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
         isPublic: body.isPublic,
       },
       SOURCE,
       actorFrom(req),
     );
-    res.status(201).json(detail);
+    res.status(201).json(bodyOnly(detail));
   }),
 );
 
@@ -570,6 +586,7 @@ api.post(
     const body = req.body as { name?: string; description?: string; tags?: string; isPublic?: string };
     const meta = skillMetaFromMarkdown(skillMd.textContent);
     const fallbackName = req.file.originalname.replace(/\.zip$/i, '');
+    const tags = parseTags(body.tags);
     const attachments = files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
 
     // Skill, SKILL.md e anexos numa transação só: gravar os anexos depois
@@ -578,9 +595,12 @@ api.post(
     const detail = await createSkill(
       {
         name: body.name?.trim() || meta.name || fallbackName,
+        // O `name:` do frontmatter é o nome oficial da skill: vira o slug
+        // quando já vem em forma de slug.
+        slug: meta.slug ?? undefined,
         description: body.description?.trim() || meta.description || '',
-        skillMd: skillMd.textContent,
-        tags: parseTags(body.tags),
+        skillMd: stripFrontmatter(skillMd.textContent),
+        tags: tags.length > 0 ? tags : meta.tags,
         isPublic: body.isPublic === 'true',
         files: attachments.map((file) => ({
           relativePath: file.relativePath,
@@ -591,7 +611,7 @@ api.post(
       actorFrom(req),
     );
 
-    res.status(201).json(detail);
+    res.status(201).json(bodyOnly(detail));
   }),
 );
 
@@ -603,7 +623,7 @@ api.get(
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
     }
-    res.json(detail);
+    res.json(bodyOnly(detail));
   }),
 );
 
@@ -630,12 +650,12 @@ api.patch(
         description: body.description,
         tags: body.tags,
         isPublic: body.isPublic,
-        skillMd: body.skillMd,
+        skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,
       },
       SOURCE,
       actorFrom(req),
     );
-    res.json(detail);
+    res.json(bodyOnly(detail));
   }),
 );
 
@@ -675,22 +695,28 @@ api.get(
       return;
     }
 
+    // O SKILL.md é montado na hora: metadados do formulário nas primeiras
+    // linhas, prompt gravado logo abaixo.
+    const buffer = isSkillMd(file.relativePath)
+      ? Buffer.from(composeSkillMd(skill, file.buffer.toString('utf8')), 'utf8')
+      : file.buffer;
+
     if (req.query.raw !== undefined) {
       // "Abrir cru" na origem do painel: um .html/.svg anexado rodaria JS
       // autenticado como o operador. Tipos executáveis descem como texto.
       res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
       res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
       res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'inline'));
-      res.send(file.buffer);
+      res.send(buffer);
       return;
     }
 
     res.json({
       relativePath: file.relativePath,
       mimeType: file.mimeType,
-      sizeBytes: file.sizeBytes,
+      sizeBytes: buffer.byteLength,
       isText: file.isText,
-      content: file.isText ? file.buffer.toString('utf8') : null,
+      content: file.isText ? buffer.toString('utf8') : null,
     });
   }),
 );
@@ -704,7 +730,12 @@ api.put(
       res.status(400).json({ error: 'bad_request', message: 'O campo "content" é obrigatório' });
       return;
     }
-    res.json(await setFile(param(req, 'slug'), param(req, 'path'), content, SOURCE, actorFrom(req)));
+
+    // Gravar o SKILL.md por aqui não redefine os metadados da skill: eles
+    // continuam vindo do formulário, e o frontmatter enviado é descartado.
+    const path = param(req, 'path');
+    const stored = isSkillMd(path) ? stripFrontmatter(content) : content;
+    res.json(await setFile(param(req, 'slug'), path, stored, SOURCE, actorFrom(req)));
   }),
 );
 
@@ -738,7 +769,11 @@ api.post(
       param(req, 'slug'),
       extracted.map((file) => ({
         relativePath: file.relativePath,
-        content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+        // Um SKILL.md vindo do .zip entra só com o corpo: os metadados da
+        // skill já cadastrada mandam.
+        content: isSkillMd(file.relativePath)
+          ? Buffer.from(stripFrontmatter(file.textContent ?? ''), 'utf8')
+          : (file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8')),
       })),
       SOURCE,
       { replace: req.query.replace === '1' },

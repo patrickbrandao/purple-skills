@@ -219,6 +219,27 @@ A apresentação do projeto vive em `apps/homepage`, um app próprio:
 - `react-markdown` sem `rehype-raw`: HTML cru no `SKILL.md` não é renderizado,
   então conteúdo vindo do painel não injeta script.
 
+## Editor de skill no painel
+
+A tela do `SKILL.md` traz, numa aba só, o formulário de metadados (slug, nome,
+descrição, tags, visibilidade) e, abaixo dele, o prompt em markdown com a
+pré-visualização renderizada ao lado, em tempo real.
+
+- O rótulo do slug diz o que ele é: **nome oficial da skill** — vai no `name:`
+  do frontmatter, na URL e nas ferramentas MCP. O outro campo é o nome de
+  exibição do catálogo.
+- Entre o formulário e o prompt fica um bloco somente-leitura com as
+  **primeiras linhas que serão geradas**, para o operador ver o efeito dos
+  campos sem precisar baixar o arquivo.
+- O prompt é enviado por `stripFrontmatter` antes de sair do navegador e de
+  novo no servidor: as duas pontas garantem o que a §3.5 das decisões exige.
+- O `SKILL.md` **não** aparece na aba "Arquivos". Ali a edição é crua e não
+  passa pelo formulário — deixá-lo na lista convidava a gravar metadados que
+  seriam descartados na primeira leitura.
+- `apps/admin/web/src/frontmatter.ts` e `slug.ts` espelham
+  `packages/shared`: o pacote é Node (zip, streams, `Buffer`) e não entra no
+  bundle do navegador. O servidor continua sendo quem decide.
+
 ## Conexão com o banco
 
 O compose passa `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`, lidos
@@ -293,6 +314,12 @@ slug pedido explicitamente, devolve 409.
   preservados, autenticação do painel e do MCP admin.
 - Testes de integração com Postgres real (`TEST_DATABASE_URL`, desligados por
   padrão) cobrindo `users`, `api_keys` e `reset_tokens`.
+- Smoke test do frontmatter gerado contra um banco de testes: criar/salvar pelo
+  painel e pela API com um bloco `---` colado no prompt (descartado nas duas
+  pontas), `PUT` direto em `/files/SKILL.md`, importação de `.zip` no padrão
+  Agent Skills (slug vindo do `name:`), troca de slug refletida no arquivo sem
+  reescrever o corpo, e `Content-Length` do arquivo servido batendo com o
+  documento montado.
 - Smoke test do fluxo de contas contra o stack em Docker: bootstrap do primeiro
   admin, senha única ficando inerte depois dele, matriz de papéis nas rotas do
   painel, revogação por `token_version`, trava do login por tentativas, e chave

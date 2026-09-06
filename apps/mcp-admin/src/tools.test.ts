@@ -91,6 +91,23 @@ describe('create_skill', () => {
     expect(result.content[0].text).toContain('Skill criada');
   });
 
+  it('descarta o frontmatter enviado no conteúdo — os campos mandam', async () => {
+    db.createSkill.mockResolvedValue(detail);
+
+    await handlers.create_skill({
+      name: 'Minha Skill',
+      slug: 'minha-skill',
+      description: 'Faz coisas',
+      skill_md_content: '---\nname: outra\ndescription: mentira\n---\n# Minha Skill\n',
+    });
+
+    expect(db.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ skillMd: '# Minha Skill\n' }),
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+
   it('cria como privada quando is_public é omitido', async () => {
     db.createSkill.mockResolvedValue(detail);
 
@@ -158,6 +175,50 @@ describe('delete_skill', () => {
   });
 });
 
+describe('set_file', () => {
+  it('grava anexos como vieram', async () => {
+    db.setFile.mockResolvedValue({
+      relativePath: 'ref/a.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 3,
+      isText: true,
+    });
+
+    await handlers.set_file({ slug: 'minha-skill', path: 'ref/a.md', content: '---\na: b\n---\nx' });
+
+    expect(db.setFile).toHaveBeenCalledWith(
+      'minha-skill',
+      'ref/a.md',
+      '---\na: b\n---\nx',
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+
+  it('tira o frontmatter do SKILL.md — metadados só por edit_skill', async () => {
+    db.setFile.mockResolvedValue({
+      relativePath: 'SKILL.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 3,
+      isText: true,
+    });
+
+    await handlers.set_file({
+      slug: 'minha-skill',
+      path: 'SKILL.md',
+      content: '---\nname: outra\n---\n# Corpo\n',
+    });
+
+    expect(db.setFile).toHaveBeenCalledWith(
+      'minha-skill',
+      'SKILL.md',
+      '# Corpo\n',
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+});
+
 describe('set_files_bulk', () => {
   it('extrai o zip e trata a árvore como estado completo por padrão', async () => {
     db.setFiles.mockResolvedValue([
@@ -190,6 +251,19 @@ describe('set_files_bulk', () => {
     expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: false });
   });
 
+  it('tira o frontmatter do SKILL.md que vem no zip', async () => {
+    db.setFiles.mockResolvedValue([]);
+
+    await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'SKILL.md': '---\nname: outra\n---\n# Corpo\n', 'ref/a.md': '# b' }),
+    });
+
+    const files = db.setFiles.mock.calls[0][1] as { relativePath: string; content: Buffer }[];
+    const skillMd = files.find((file) => file.relativePath === 'SKILL.md');
+    expect(skillMd?.content.toString('utf8')).toBe('# Corpo\n');
+  });
+
   it('recusa um zip vazio', async () => {
     const result = await handlers.set_files_bulk({ slug: 'minha-skill', zip_base64: makeZip({}) });
 
@@ -212,6 +286,38 @@ describe('get_file', () => {
     expect((await handlers.get_file({ slug: 'minha-skill', path: 'img/logo.png' })).isError).toBe(
       true,
     );
+  });
+
+  it('monta o frontmatter do SKILL.md a partir dos metadados da skill', async () => {
+    db.getSkillDetail.mockResolvedValue(detail);
+    db.readFile.mockResolvedValue({
+      relativePath: 'SKILL.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 14,
+      isText: true,
+      buffer: Buffer.from('# Minha Skill'),
+    });
+
+    const result = await handlers.get_file({ slug: 'minha-skill', path: 'SKILL.md' });
+
+    expect(result.content[0].text).toBe(
+      '---\nname: minha-skill\ndescription: Faz coisas\nmetadata:\n  title: Minha Skill\n' +
+        '  tags: git\n---\n\n# Minha Skill',
+    );
+  });
+});
+
+describe('get_skill', () => {
+  it('devolve o corpo do SKILL.md, sem o frontmatter gravado', async () => {
+    db.getSkillDetail.mockResolvedValue({
+      ...detail,
+      skillMd: '---\nname: legado\ndescription: metadados velhos\n---\n# Minha Skill\n',
+    });
+
+    const payload = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
+
+    expect(payload.skillMd).toBe('# Minha Skill\n');
+    expect(payload.slug).toBe('minha-skill');
   });
 });
 

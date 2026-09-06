@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   deleteFile,
@@ -17,7 +17,7 @@ import {
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { Badge, Button, Field, Panel } from '../components/ui.js';
+import { Badge, Button, Panel } from '../components/ui.js';
 import {
   ArrowLeftIcon,
   ExternalIcon,
@@ -26,10 +26,16 @@ import {
   TrashIcon,
   UploadIcon,
 } from '../components/Icons.js';
-import { Markdown } from '../components/Markdown.js';
+import {
+  FrontmatterPreview,
+  SkillMetaForm,
+  type SkillMetaValues,
+} from '../components/SkillMetaForm.js';
+import { PromptEditor } from '../components/PromptEditor.js';
+import { parseTags, stripFrontmatter } from '../frontmatter.js';
 import { useToast } from '../components/Toast.js';
 
-type Tab = 'content' | 'settings' | 'files';
+type Tab = 'skill' | 'files';
 
 export function SkillEditorPage({ session, user }: { session: Session; user: SessionUser }) {
   // O servidor recusa a escrita de qualquer forma; esconder aqui evita
@@ -41,15 +47,16 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   const toast = useToast();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
-  const [tab, setTab] = useState<Tab>('content');
-  const [preview, setPreview] = useState(false);
+  const [tab, setTab] = useState<Tab>('skill');
   const [saving, setSaving] = useState(false);
 
-  const [name, setName] = useState('');
-  const [newSlug, setNewSlug] = useState('');
-  const [description, setDescription] = useState('');
-  const [tags, setTags] = useState('');
-  const [isPublic, setIsPublic] = useState(false);
+  const [meta, setMeta] = useState<SkillMetaValues>({
+    name: '',
+    slug: '',
+    description: '',
+    tags: '',
+    isPublic: false,
+  });
   const [skillMd, setSkillMd] = useState('');
 
   const [replaceTree, setReplaceTree] = useState(false);
@@ -60,12 +67,16 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
   const hydrate = useCallback((detail: SkillDetail) => {
     setSkill(detail);
-    setName(detail.name);
-    setNewSlug(detail.slug);
-    setDescription(detail.description);
-    setTags(detail.tags.join(', '));
-    setIsPublic(detail.isPublic);
-    setSkillMd(detail.skillMd);
+    setMeta({
+      name: detail.name,
+      slug: detail.slug,
+      description: detail.description,
+      tags: detail.tags.join(', '),
+      isPublic: detail.isPublic,
+    });
+    // Skills gravadas antes desta regra ainda podem trazer frontmatter no
+    // arquivo: o editor mostra só o corpo, e o formulário manda nos metadados.
+    setSkillMd(stripFrontmatter(detail.skillMd));
   }, []);
 
   const reload = useCallback(async () => {
@@ -81,21 +92,28 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     void reload();
   }, [reload]);
 
+  const patchMeta = useCallback(
+    (patch: Partial<SkillMetaValues>) => setMeta((current) => ({ ...current, ...patch })),
+    [],
+  );
+
   async function save() {
     if (!skill) return;
     setSaving(true);
 
+    // Nunca sai daqui com frontmatter: os metadados são os do formulário.
+    // Só vai no payload quando muda, para não gravar o arquivo (e uma linha de
+    // auditoria) a cada ajuste de metadado.
+    const prompt = stripFrontmatter(skillMd);
+
     try {
       const updated = await updateSkill(skill.slug, {
-        name,
-        slug: newSlug !== skill.slug ? newSlug : undefined,
-        description,
-        tags: tags
-          .split(',')
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-        isPublic,
-        skillMd: skillMd !== skill.skillMd ? skillMd : undefined,
+        name: meta.name,
+        slug: meta.slug !== skill.slug ? meta.slug : undefined,
+        description: meta.description,
+        tags: parseTags(meta.tags),
+        isPublic: meta.isPublic,
+        skillMd: prompt !== skill.skillMd ? prompt : undefined,
       });
 
       hydrate(updated);
@@ -176,18 +194,24 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }
 
+  // O SKILL.md fica fora da aba de arquivos: ali a edição é crua, e o conteúdo
+  // dele é montado a partir do formulário desta mesma tela.
+  const attachments = useMemo(
+    () => skill?.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md') ?? [],
+    [skill],
+  );
+
   if (!skill) {
     return <div className="skel-block" style={{ height: '18rem' }} />;
   }
 
-  const attachments = skill.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
   const dirty =
-    name !== skill.name ||
-    newSlug !== skill.slug ||
-    description !== skill.description ||
-    tags !== skill.tags.join(', ') ||
-    isPublic !== skill.isPublic ||
-    skillMd !== skill.skillMd;
+    meta.name !== skill.name ||
+    meta.slug !== skill.slug ||
+    meta.description !== skill.description ||
+    meta.tags !== skill.tags.join(', ') ||
+    meta.isPublic !== skill.isPublic ||
+    skillMd !== stripFrontmatter(skill.skillMd);
 
   return (
     <>
@@ -235,8 +259,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       <div className="tabs">
         {(
           [
-            ['content', 'SKILL.md'],
-            ['settings', 'Metadados'],
+            ['skill', 'SKILL.md'],
             ['files', `Arquivos (${attachments.length})`],
           ] as const
         ).map(([value, label]) => (
@@ -251,83 +274,11 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         ))}
       </div>
 
-      {tab === 'content' && (
-        <div className="mt-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs" style={{ color: 'var(--text-faint)' }}>
-              Markdown com frontmatter YAML. O conteúdo alimenta a busca full-text.
-            </p>
-            <Button variant="ghost" size="sm" onClick={() => setPreview((current) => !current)}>
-              {preview ? 'Editar' : 'Pré-visualizar'}
-            </Button>
-          </div>
-
-          {preview ? (
-            <Panel className="min-h-[28rem]">
-              <Markdown>{skillMd}</Markdown>
-            </Panel>
-          ) : (
-            <textarea
-              value={skillMd}
-              onChange={(event) => setSkillMd(event.target.value)}
-              rows={28}
-              spellCheck={false}
-              className="field field-mono resize-y"
-            />
-          )}
-        </div>
-      )}
-
-      {tab === 'settings' && (
-        <Panel className="mt-5 max-w-2xl space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Nome">
-              <input
-                className="field"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </Field>
-            <Field label="Slug">
-              <input
-                className="field"
-                value={newSlug}
-                onChange={(event) => setNewSlug(event.target.value)}
-              />
-            </Field>
-          </div>
-
-          <Field label="Descrição">
-            <textarea
-              className="field resize-y"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              rows={3}
-            />
-          </Field>
-
-          <Field label="Tags (separadas por vírgula)">
-            <input
-              className="field"
-              value={tags}
-              onChange={(event) => setTags(event.target.value)}
-            />
-          </Field>
-
-          <label
-            className="flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3"
-            style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
-          >
-            <input
-              type="checkbox"
-              checked={isPublic}
-              onChange={(event) => setIsPublic(event.target.checked)}
-              className="h-4 w-4"
-            />
-            <span className="text-sm">
-              Skill pública — visível no site, na API e no MCP público
-            </span>
-          </label>
+      {tab === 'skill' && (
+        <Panel className="mt-5">
+          <SkillMetaForm values={meta} onChange={patchMeta} />
+          <FrontmatterPreview values={meta} />
+          <PromptEditor value={skillMd} onChange={setSkillMd} />
         </Panel>
       )}
 
@@ -351,8 +302,16 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
               )}
             </div>
 
+            <p className="panel-hint">
+              Anexos da skill. O <code>SKILL.md</code> é editado na aba ao lado, com os metadados
+              que geram as suas primeiras linhas.
+            </p>
+
             <div className="file-tree">
-              {skill.files.map((file) => (
+              {attachments.length === 0 && (
+                <p className="list-empty">Nenhum arquivo além do SKILL.md.</p>
+              )}
+              {attachments.map((file) => (
                 <div className="file-row" key={file.relativePath}>
                   <button
                     type="button"
@@ -364,7 +323,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
                     <span className="name">{file.relativePath}</span>
                     <span className="size">{formatBytes(file.sizeBytes)}</span>
                   </button>
-                  {podeEscrever && file.relativePath.toLowerCase() !== 'skill.md' && (
+                  {podeEscrever && (
                     <button
                       type="button"
                       onClick={() => removeFile(file.relativePath)}
