@@ -254,6 +254,83 @@
   height: 14px;
 }
 /* ============================================================
+   PROMPT DA SKILL EM DUAS GUIAS
+   "Skill" renderizado e "SKILL.md" cru, com o frontmatter que o
+   download materializa. Bloco igual no app.css do site e no
+   admin.css do painel — ao mexer, mexa nos dois.
+   ============================================================ */
+.doc-box {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.doc-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.doc-tabs button {
+  border: 0;
+  background: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 12px 14px;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.doc-tabs button:hover {
+  color: var(--brand);
+}
+.doc-tabs button.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+/* O copiar fica na ponta da tira e não é guia: sem sublinhado ativo. */
+.doc-tabs .doc-copy {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 12px;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  border-bottom-color: transparent;
+}
+.doc-tabs .doc-copy svg {
+  width: 14px;
+  height: 14px;
+}
+.doc-body {
+  padding: 22px 24px;
+}
+.doc-source {
+  margin: 0;
+  padding: 22px 24px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: pre;
+  tab-size: 2;
+}
+@media (max-width: 600px) {
+  .doc-body,
+  .doc-source {
+    padding: 18px 16px;
+  }
+}
+
+/* ============================================================
    ÁRVORE DE ARQUIVOS DA SKILL
    Explorador do pacote: a raiz é a pasta do slug, e cada arquivo
    ganha o ícone da sua extensão. As cores dos ícones vivem aqui

@@ -151,7 +151,11 @@
   box-shadow: var(--shadow);
   padding: 20px;
 }
-.panel > h2 {
+/* `>` de propósito: dentro do painel de leitura o SKILL.md renderizado também
+   tem `h2`, e ele não pode virar rótulo de painel. `.panel-head` é a saída
+   para quando o título divide a linha com um botão. */
+.panel > h2,
+.panel > .panel-head h2 {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -162,9 +166,17 @@
   color: var(--text-faint);
   font-weight: 500;
 }
-.panel > h2 svg {
+.panel > h2 svg,
+.panel > .panel-head h2 svg {
   width: 15px;
   height: 15px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .stat-grid {
@@ -470,72 +482,342 @@ table.data td.num {
 }
 
 /* ============================================================
-   ARQUIVOS
+   PROMPT DA SKILL EM DUAS GUIAS
+   "Skill" renderizado e "SKILL.md" cru, com o frontmatter que o
+   download materializa. Bloco igual no app.css do site e no
+   admin.css do painel — ao mexer, mexa nos dois.
+   ============================================================ */
+.doc-box {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.doc-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding-inline: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.doc-tabs button {
+  border: 0;
+  background: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 12px 14px;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.doc-tabs button:hover {
+  color: var(--brand);
+}
+.doc-tabs button.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+/* O copiar fica na ponta da tira e não é guia: sem sublinhado ativo. */
+.doc-tabs .doc-copy {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 12px;
+  font-family: var(--font-display);
+  font-size: 0.78rem;
+  border-bottom-color: transparent;
+}
+.doc-tabs .doc-copy svg {
+  width: 14px;
+  height: 14px;
+}
+.doc-body {
+  padding: 22px 24px;
+}
+.doc-source {
+  margin: 0;
+  padding: 22px 24px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+  white-space: pre;
+  tab-size: 2;
+}
+@media (max-width: 600px) {
+  .doc-body,
+  .doc-source {
+    padding: 18px 16px;
+  }
+}
+
+/* ============================================================
+   ARQUIVOS — ÁRVORE DA SKILL
+   Explorador do pacote: a raiz é a pasta do slug, e cada arquivo
+   ganha o ícone da sua extensão. Bloco copiado do app.css do site;
+   as cores dos ícones vivem aqui (e não em tokens.css) porque só
+   estas telas usam essa paleta. Ao mexer, mexa nos dois.
    ============================================================ */
 .file-tree {
   margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+
+  --ft-default: var(--text-faint);
+  --ft-folder: var(--brand);
+  --ft-python: #3776ab;
+  --ft-python-alt: #f2c53d;
+  --ft-js: #b8860b;
+  --ft-ts: #3178c6;
+  --ft-json: #b8860b;
+  --ft-markdown: var(--brand);
+  --ft-html: #d4501e;
+  --ft-css: #2f74c0;
+  --ft-shell: #17864d;
+  --ft-config: #7d6ca3;
+  --ft-image: #c04a86;
+  --ft-pdf: #c0392f;
+  --ft-archive: #b3781b;
+  --ft-table: #17864d;
+  --ft-database: #4a6fbd;
+  --ft-container: #2492c8;
+  --ft-badge: var(--text-faint);
 }
-.file-row {
+:root[data-theme='dark'] .file-tree {
+  --ft-python: #6fb3e8;
+  --ft-python-alt: #ffd85e;
+  --ft-js: #f0d94a;
+  --ft-ts: #7cb3f0;
+  --ft-json: #f0d94a;
+  --ft-html: #ff9166;
+  --ft-css: #86b8ef;
+  --ft-shell: #4fd18d;
+  --ft-config: #b6a6d8;
+  --ft-image: #f291c0;
+  --ft-pdf: #ff8f88;
+  --ft-archive: #e8b45c;
+  --ft-table: #4fd18d;
+  --ft-database: #93aef0;
+  --ft-container: #6ec9f0;
+}
+
+.ft-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* Cada nível recua e ganha o fio vertical que liga os irmãos. */
+.ft-list .ft-list {
+  margin-left: 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.ft-row {
   display: flex;
   align-items: center;
-  gap: 2px;
-}
-.file-row > button.pick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
+  gap: 7px;
+  width: 100%;
   border: 0;
-  background: transparent;
-  border-radius: 9px;
-  padding: 7px 9px;
-  font-size: 0.85rem;
+  background: none;
   text-align: left;
+  font: inherit;
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 0.83rem;
   color: var(--text-dim);
-  cursor: pointer;
+  text-decoration: none;
   transition: background 0.2s ease, color 0.2s ease;
 }
-.file-row > button.pick svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  opacity: 0.7;
+a.ft-row:hover,
+button.ft-row:hover {
+  background: var(--surface-2);
+  color: var(--brand);
 }
-.file-row > button.pick .name {
+button.ft-row {
+  cursor: pointer;
+}
+.ft-row:focus-visible {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 1px;
+}
+.ft-row.primary .ft-name {
+  color: var(--brand);
+  font-weight: 500;
+}
+.ft-root-row .ft-name {
+  color: var(--brand-deep);
+  font-weight: 500;
+  font-size: 0.8rem;
+}
+
+.ft-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.file-row > button.pick .size {
+.ft-size,
+.ft-count {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 0.67rem;
-  color: var(--text-faint);
   flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-faint);
 }
-.file-row > button.pick:hover:not(:disabled) {
+.ft-count {
+  min-width: 1.2rem;
+  text-align: center;
+  padding: 1px 5px;
+  border-radius: 999px;
   background: var(--surface-2);
-  color: var(--brand);
 }
-.file-row > button.pick:disabled {
+.ft-row:hover .ft-count {
+  background: var(--surface-3);
+}
+
+/* Seta de abrir/fechar; nos arquivos vira só o espaço equivalente. */
+.ft-chevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.2s ease;
+}
+button.ft-row[aria-expanded='true'] .ft-chevron {
+  transform: rotate(90deg);
+}
+
+.ft-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ft-default);
+}
+.ft-icon.ft-folder {
+  color: var(--ft-folder);
+}
+.ft-icon.ft-python {
+  color: var(--ft-python);
+}
+.ft-icon.ft-python .alt {
+  color: var(--ft-python-alt);
+}
+.ft-icon.ft-js {
+  color: var(--ft-js);
+}
+.ft-icon.ft-ts {
+  color: var(--ft-ts);
+}
+.ft-icon.ft-json {
+  color: var(--ft-json);
+}
+.ft-icon.ft-markdown {
+  color: var(--ft-markdown);
+}
+.ft-icon.ft-html {
+  color: var(--ft-html);
+}
+.ft-icon.ft-css {
+  color: var(--ft-css);
+}
+.ft-icon.ft-shell {
+  color: var(--ft-shell);
+}
+.ft-icon.ft-config {
+  color: var(--ft-config);
+}
+.ft-icon.ft-image {
+  color: var(--ft-image);
+}
+.ft-icon.ft-pdf {
+  color: var(--ft-pdf);
+}
+.ft-icon.ft-archive {
+  color: var(--ft-archive);
+}
+.ft-icon.ft-table {
+  color: var(--ft-table);
+}
+.ft-icon.ft-database {
+  color: var(--ft-database);
+}
+.ft-icon.ft-container {
+  color: var(--ft-container);
+}
+.ft-icon.ft-badge {
+  color: var(--ft-badge);
+}
+
+.ft-hint {
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+/* No painel cada linha divide espaço com o botão de remover. */
+.ft-line {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.ft-line .ft-row {
+  flex: 1;
+  min-width: 0;
+}
+.ft-row:disabled {
   cursor: default;
-  opacity: 0.55;
+  opacity: 0.5;
 }
-.file-row > button.pick.active {
+.ft-row:disabled:hover {
+  background: none;
+  color: var(--text-dim);
+}
+.ft-row.active {
   background: color-mix(in srgb, var(--brand) 14%, transparent);
   color: var(--brand);
 }
-.file-row .del {
+.ft-line .del {
   opacity: 0;
+  flex: none;
   transition: opacity 0.2s ease;
 }
-.file-row:hover .del,
-.file-row:focus-within .del {
+.ft-line:hover .del,
+.ft-line:focus-within .del {
   opacity: 1;
+}
+
+/* `section { position: relative }` do base.css fica fora de camada, e estilo
+   sem camada vence qualquer `@layer` — inclusive as utilities do Tailwind.
+   Por isso `lg:sticky` nunca pegou num `Panel` (que é um `<section>`): só o
+   `top` valia, e a coluna nascia 96px mais baixa. Aqui a regra é do painel. */
+@media (min-width: 1024px) {
+  .aside-sticky {
+    position: sticky;
+    top: 96px;
+    align-self: start;
+  }
+}
+
+/* Leitura da skill: o SKILL.md renderizado com a árvore ao lado. */
+.skill-read {
+  display: grid;
+  gap: 20px;
+  align-items: start;
+}
+@media (min-width: 1024px) {
+  .skill-read {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+.skill-lead {
+  margin-top: 14px;
+  max-width: 62ch;
+  color: var(--text-dim);
 }
 
 .dropzone {

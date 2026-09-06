@@ -70,7 +70,8 @@ A regra "só o SKILL.md conta" foi aplicada de forma literal:
 | `GET /api/skills/:slug` (página/detalhe) | `view_count` +1 |
 | `GET /skills/:slug/files/SKILL.md` | `view_count` +1 |
 | `GET /skills/:slug/files/<outro>` | não conta |
-| `GET /skills/:slug/download` | `download_count` +1 |
+| `GET /skills/:slug/download` e `…/download.skill` | `download_count` +1 |
+| admin `GET /api/skills/:slug/download` e `…/download.skill` | não conta (operador baixando a própria skill) |
 | MCP `get_skill` | `view_count` +1 |
 | MCP `get_skill_file` | não conta |
 | MCP `download_skill` | não conta (só devolve a URL; quem seguir o link conta) |
@@ -219,6 +220,41 @@ A apresentação do projeto vive em `apps/homepage`, um app próprio:
 - `react-markdown` sem `rehype-raw`: HTML cru no `SKILL.md` não é renderizado,
   então conteúdo vindo do painel não injeta script.
 
+## O prompt em duas guias
+
+Na visualização — no site e no painel — o prompt fica numa caixa com duas
+guias. **"Skill"** é a leitura: o markdown renderizado, sem o bloco de
+metadados, que já aparece no cabeçalho. **"SKILL.md"** é o arquivo inteiro,
+frontmatter e corpo, do jeito que o download materializa — para quem quer
+copiar e colar num `SKILL.md` próprio. Um botão "Copiar" acompanha a segunda.
+
+O frontmatter é montado **no navegador**, porque o que trafega no JSON é só o
+corpo: os metadados moram em colunas do banco. Isso significa duas
+implementações do mesmo formato — `packages/shared/src/frontmatter.ts`, que
+serve o download, a leitura crua e o MCP, e o espelho
+`apps/*/web/src/frontmatter.ts`, que serve a guia. Se as duas divergirem, o
+usuário copia uma coisa e baixa outra, então `apps/site/web/src/frontmatter.test.ts`
+compara as duas saídas caso a caso, incluindo o que o YAML leria errado sem
+aspas, o BOM e o CRLF. O pacote não entra no bundle do navegador (é Node: zip,
+streams, `Buffer`), só no teste.
+
+## Leitura antes da edição no painel
+
+Clicar numa skill na lista abre `/skills/:slug`, a **tela de leitura**: o
+`SKILL.md` renderizado com a árvore de arquivos ao lado, como o visitante vê no
+site. O editor mora em `/skills/:slug/editar` e só se chega nele pelo botão
+"Editar" — abrir uma skill deixou de significar estar prestes a mudá-la, e o
+caminho de volta é o botão "Visualizar" ou o link do cabeçalho.
+
+A rota do editor **não** tem trava de papel, como antes: quem não pode escrever
+já não recebe os botões de salvar e remover, e é assim que a tela se comporta
+desde que existe. O que muda é que o botão "Editar" só aparece para quem pode.
+
+A árvore e os ícones por extensão são os mesmos do site — `fileTree.ts` e
+`FileTypeIcon.tsx` são cópias idênticas nos dois apps, no mesmo espírito do
+`useTheme.ts`. O `FileTree.tsx` é que difere: no painel ele também escolhe o
+arquivo a editar e oferece o botão de remover.
+
 ## Editor de skill no painel
 
 A tela do `SKILL.md` traz, numa aba só, o formulário de metadados (slug, nome,
@@ -233,9 +269,12 @@ pré-visualização renderizada ao lado, em tempo real.
   campos sem precisar baixar o arquivo.
 - O prompt é enviado por `stripFrontmatter` antes de sair do navegador e de
   novo no servidor: as duas pontas garantem o que a §3.5 das decisões exige.
-- O `SKILL.md` **não** aparece na aba "Arquivos". Ali a edição é crua e não
-  passa pelo formulário — deixá-lo na lista convidava a gravar metadados que
-  seriam descartados na primeira leitura.
+- O `SKILL.md` **aparece** na árvore da aba "Arquivos", porque escondê-lo
+  deixava a árvore mentindo sobre o pacote — mas clicar nele leva para a aba do
+  formulário, não para o editor cru. Ali a edição não passaria pelo formulário,
+  e gravar metadados por lá seria gravar o que a primeira leitura descarta. A
+  contagem da aba segue sendo só a dos anexos, e o botão de remover não existe
+  para ele.
 - `apps/admin/web/src/frontmatter.ts` e `slug.ts` espelham
   `packages/shared`: o pacote é Node (zip, streams, `Buffer`) e não entra no
   bundle do navegador. O servidor continua sendo quem decide.

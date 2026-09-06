@@ -3,10 +3,11 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   deleteFile,
   deleteSkill,
-  formatBytes,
   getFile,
   getSkill,
   rawFileUrl,
+  skillDownloadUrl,
+  skillPackageUrl,
   setFile as putFile,
   updateSkill,
   uploadFiles,
@@ -18,9 +19,12 @@ import {
   type SkillDetail,
 } from '../api.js';
 import { Badge, Button, Panel } from '../components/ui.js';
+import { FileTree } from '../components/FileTree.js';
 import {
   ArrowLeftIcon,
+  DownloadIcon,
   ExternalIcon,
+  EyeIcon,
   FileIcon,
   SaveIcon,
   TrashIcon,
@@ -126,6 +130,15 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }
 
+  /** O SKILL.md não abre no editor cru: ele é feito na aba ao lado. */
+  function pickFile(path: string) {
+    if (path.toLowerCase() === 'skill.md') {
+      setTab('skill');
+      return;
+    }
+    void openFile(path);
+  }
+
   async function openFile(path: string) {
     setSelectedFile(path);
     setFileContent(null);
@@ -194,8 +207,9 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }
 
-  // O SKILL.md fica fora da aba de arquivos: ali a edição é crua, e o conteúdo
-  // dele é montado a partir do formulário desta mesma tela.
+  // A aba conta só os anexos: o SKILL.md aparece na árvore, mas clicar nele
+  // leva para a aba ao lado — ali a edição é crua, e o conteúdo dele é montado
+  // a partir do formulário desta mesma tela.
   const attachments = useMemo(
     () => skill?.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md') ?? [],
     [skill],
@@ -217,8 +231,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     <>
       <div className="page-head">
         <div className="min-w-0">
-          <Link to="/skills" className="back-link">
-            <ArrowLeftIcon /> Skills
+          <Link to={`/skills/${skill.slug}`} className="back-link">
+            <ArrowLeftIcon /> {skill.name}
           </Link>
           <h1 className="display mt-1 flex flex-wrap items-center gap-3">
             <span className="truncate">{skill.name}</span>
@@ -243,6 +257,9 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         </div>
 
         <div className="flex gap-2">
+          <Link to={`/skills/${skill.slug}`} className="btn btn-ghost">
+            <EyeIcon /> Visualizar
+          </Link>
           {podeApagar && (
             <Button variant="danger" onClick={removeSkill}>
               <TrashIcon /> Remover
@@ -284,8 +301,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
       {tab === 'files' && (
         <div className="mt-5 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <Panel className="lg:sticky lg:top-24 lg:self-start">
-            <div className="flex items-center justify-between">
+          <Panel className="aside-sticky">
+            <div className="panel-head">
               <h2>
                 <FileIcon /> Arquivos
               </h2>
@@ -303,44 +320,39 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
             </div>
 
             <p className="panel-hint">
-              Anexos da skill. O <code>SKILL.md</code> é editado na aba ao lado, com os metadados
-              que geram as suas primeiras linhas.
+              A pasta da skill como ela sai do <code>.zip</code>. Clique em um arquivo de texto
+              para editá-lo aqui; o <code>SKILL.md</code> leva para a aba ao lado, com os
+              metadados que geram as suas primeiras linhas.
             </p>
 
-            <div className="file-tree">
-              {attachments.length === 0 && (
-                <p className="list-empty">Nenhum arquivo além do SKILL.md.</p>
-              )}
-              {attachments.map((file) => (
-                <div className="file-row" key={file.relativePath}>
-                  <button
-                    type="button"
-                    onClick={() => file.isText && openFile(file.relativePath)}
-                    disabled={!file.isText}
-                    className={`pick${selectedFile === file.relativePath ? ' active' : ''}`}
-                  >
-                    <FileIcon />
-                    <span className="name">{file.relativePath}</span>
-                    <span className="size">{formatBytes(file.sizeBytes)}</span>
-                  </button>
-                  {podeEscrever && (
-                    <button
-                      type="button"
-                      onClick={() => removeFile(file.relativePath)}
-                      title="Remover arquivo"
-                      className="row-action del"
-                    >
-                      <TrashIcon />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+            <FileTree
+              slug={skill.slug}
+              files={skill.files}
+              selected={selectedFile}
+              onPick={pickFile}
+              onDelete={podeEscrever ? removeFile : undefined}
+            />
 
             <div
               className="mt-4 flex flex-col gap-3 pt-4"
               style={{ borderTop: '1px solid var(--border)' }}
             >
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={skillDownloadUrl(skill.slug)}
+                  className="btn btn-ghost btn-sm"
+                  download
+                >
+                  <DownloadIcon /> Baixar .zip
+                </a>
+                <a
+                  href={skillPackageUrl(skill.slug)}
+                  className="btn btn-ghost btn-sm"
+                  download
+                >
+                  <DownloadIcon /> Baixar .skill
+                </a>
+              </div>
               <Button variant="ghost" size="sm" onClick={() => zipInput.current?.click()}>
                 <UploadIcon /> Importar .zip
               </Button>

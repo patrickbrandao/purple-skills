@@ -3,17 +3,21 @@ import archiver from 'archiver';
 import type { FileContent } from '@purple-skills/db';
 import { composeSkillMd, isSkillMd, type SkillMeta } from '@purple-skills/shared';
 
-/** Envia os arquivos da skill como um ZIP gerado on-the-fly (streaming). */
+/**
+ * Envia os arquivos da skill como um ZIP gerado on-the-fly (streaming). O
+ * pacote `.skill` é o mesmo ZIP — só muda a extensão do arquivo baixado.
+ */
 export function streamSkillZip(
   res: Response,
   slug: string,
   files: readonly FileContent[],
   meta: SkillMeta,
+  ext: 'zip' | 'skill' = 'zip',
 ): void {
   const archive = archiver('zip', { zlib: { level: 9 } });
 
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${slug}.zip"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}.${ext}"`);
   res.setHeader('Cache-Control', 'no-store');
 
   archive.on('error', (err) => {

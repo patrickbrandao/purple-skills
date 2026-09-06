@@ -169,18 +169,24 @@ const serveFile = asyncRoute(async (req, res) => {
 api.get('/api/skills/:slug/files/*path', serveFile);
 api.get('/skills/:slug/files/*path', serveFile);
 
-/** Download do pacote ZIP — conta um download. */
-const serveZip = asyncRoute(async (req, res) => {
-  const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
-  if (!skill) {
-    res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
-    return;
-  }
+/**
+ * Download do pacote — conta um download. O `.skill` é o mesmo ZIP servido com
+ * outra extensão (o formato aberto de Agent Skills).
+ */
+const serveZip = (ext: 'zip' | 'skill') =>
+  asyncRoute(async (req, res) => {
+    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
+    if (!skill) {
+      res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
+      return;
+    }
 
-  const files = await readAllFiles(skill.uuid);
-  await incrementDownloadCount(skill.uuid);
-  streamSkillZip(res, skill.slug, files, skill);
-});
+    const files = await readAllFiles(skill.uuid);
+    await incrementDownloadCount(skill.uuid);
+    streamSkillZip(res, skill.slug, files, skill, ext);
+  });
 
-api.get('/skills/:slug/download', serveZip);
-api.get('/api/skills/:slug/download', serveZip);
+api.get('/skills/:slug/download', serveZip('zip'));
+api.get('/api/skills/:slug/download', serveZip('zip'));
+api.get('/skills/:slug/download.skill', serveZip('skill'));
+api.get('/api/skills/:slug/download.skill', serveZip('skill'));
