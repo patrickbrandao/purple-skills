@@ -767,14 +767,3 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
 .market-head-wrap .head {
   margin-bottom: 0;
 }
-.market-fig {
-  width: 96px;
-  flex: none;
-  filter: drop-shadow(0 14px 24px rgba(124, 36, 180, 0.3));
-  animation: floaty 6s ease-in-out infinite;
-}
-@media (max-width: 600px) {
-  .market-fig {
-    display: none;
-  }
-}
