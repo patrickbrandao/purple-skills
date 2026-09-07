@@ -52,7 +52,7 @@ export function SkillPage() {
       <section className="skill-page">
         <div className="wrap">
           <div className="empty" style={{ maxWidth: '30rem', margin: '40px auto' }}>
-            <img className="wiz" src="/assets/images/icon-purple-right-137x158.png" alt="" />
+            <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
             <h3>Skill não encontrada</h3>
             <p>{error}</p>
             <Link to="/#catalogo" className="btn btn-primary" style={{ marginTop: '22px' }}>

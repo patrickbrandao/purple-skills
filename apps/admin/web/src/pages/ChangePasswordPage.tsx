@@ -34,7 +34,7 @@ export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
       <div className="atmos" aria-hidden />
 
       <form onSubmit={submit} className="login-card">
-        <img className="wiz" src="/assets/images/icon-purple-right-137x158.png" alt="" />
+        <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
         <h1 className="display">Escolha uma senha</h1>
         <p className="sub">Você entrou com uma senha temporária.</p>
 
