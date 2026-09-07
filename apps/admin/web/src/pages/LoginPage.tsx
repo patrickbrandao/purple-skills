@@ -104,7 +104,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
       <div className="atmos" aria-hidden />
 
       <form onSubmit={submit} className="login-card">
-        <img className="wiz" src="/assets/images/icon-purple-right-137x158.png" alt="" />
+        <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
         <h1 className="display">
           Purple<span style={{ color: 'var(--brand)' }}>Skills</span>
         </h1>

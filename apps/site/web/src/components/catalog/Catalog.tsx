@@ -95,7 +95,7 @@ export function Catalog() {
           </div>
           <img
             className="market-fig wiz"
-            src="/assets/images/icon-purple-right-137x158.png"
+            src="/assets/images/icon-purple-right-279x400.png"
             alt=""
           />
         </div>
@@ -184,7 +184,7 @@ export function Catalog() {
 
         {result && result.items.length === 0 && !loading && (
           <div className="empty mt-6">
-            <img className="wiz" src="/assets/images/icon-purple-left-64x92.png" alt="" />
+            <img className="wiz" src="/assets/images/icon-purple-left-156x224.png" alt="" />
             <h3>Nenhuma skill encontrada.</h3>
             <p>Tente outros termos, ou limpe o filtro de tag.</p>
           </div>

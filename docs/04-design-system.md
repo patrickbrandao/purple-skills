@@ -96,10 +96,14 @@ que grava a escolha de volta no `localStorage`.
 `web/public/assets/images/` guarda:
 
 - `purple-hat-256.png` — favicon, marca da navegação e selo do slug nos
-  cartões do catálogo. Derivado do chapéu pixel-art, rotacionado no matiz
-  para o roxo.
-- `icon-purple-left-64x92.png`, `icon-purple-right-137x158.png` — o Mago
-  Roxo, usado no hero e nos estados vazios.
+  cartões do catálogo. É o chapéu do Mago Roxo isolado, em quadrado de 256
+  para servir também de `og:image` e `apple-touch-icon`.
+- `icon-purple-right-279x400.png`, `icon-purple-left-156x224.png` — o Mago
+  Roxo, usado no hero, no masthead, no login e nos estados vazios. O `right`
+  tem o bico do chapéu virado para a direita e é o que aparece grande (até
+  137px de largura, por isso 2x); o `left` é o espelho, só usado pequeno —
+  no diagrama de publicação e no catálogo vazio. Os dois são recortados na
+  moldura da figura, então a largura do CSS vale como tamanho real.
 - ícones de agentes, IDEs, modelos e do MCP — só na homepage, na seção de
   ecossistema e nos diagramas. O site guarda apenas os cinco que usa.
 

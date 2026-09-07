@@ -6,7 +6,7 @@ export function NotFoundPage() {
     <section className="skill-page">
       <div className="wrap">
         <div className="empty" style={{ maxWidth: '30rem', margin: '40px auto' }}>
-          <img className="wiz" src="/assets/images/icon-purple-right-137x158.png" alt="" />
+          <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
           <p
             className="display grad-text"
             style={{ fontSize: '3.4rem', lineHeight: 1, marginBottom: '10px' }}

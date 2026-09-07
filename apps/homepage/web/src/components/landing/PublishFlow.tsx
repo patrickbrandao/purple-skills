@@ -141,7 +141,7 @@ export function PublishFlow() {
             <div className="dia2-cell dia2-cell--right">
               <div className="dia2-target">
                 <div className="diag-tool t1" ref={topCardRef}>
-                  <img src="/assets/images/icon-purple-left-64x92.png" alt="" />
+                  <img src="/assets/images/icon-purple-left-156x224.png" alt="" />
                   <span className="wz">
                     SKILL.md
                     <small>frontmatter + markdown + anexos</small>

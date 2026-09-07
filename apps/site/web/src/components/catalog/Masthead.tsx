@@ -47,10 +47,10 @@ export function Masthead() {
 
         <img
           className="masthead-fig wiz"
-          src="/assets/images/icon-purple-right-137x158.png"
+          src="/assets/images/icon-purple-right-279x400.png"
           alt="O Mago Roxo, mascote do Purple Skills"
-          width={137}
-          height={158}
+          width={279}
+          height={400}
         />
       </div>
     </header>
