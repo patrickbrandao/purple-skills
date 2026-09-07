@@ -274,6 +274,23 @@
 .badge.private .dot {
   background: var(--text-faint);
 }
+/* Como a skill é oferecida no MCP público, ao lado do distintivo de
+   visibilidade. Sem ponto: não é um estado que se alterna aqui — é só o que a
+   skill oferece. */
+.badge.surface {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 32%, transparent);
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+/* Numa skill privada a flag está guardada, não valendo: fica apagada. */
+.badge.surface.idle {
+  color: var(--text-faint);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
 button.badge {
   cursor: pointer;
   transition: opacity 0.2s ease;

@@ -11,6 +11,19 @@ export function SkillCard({ skill, className = '' }: { skill: SkillSummary; clas
           <img src="/assets/images/purple-hat-256.png" alt="" />
           <span className="slug mono">{skill.slug}</span>
         </span>
+
+        {/* Diz que a skill não chega só pelas ferramentas: o cliente também a
+            vê como slash-command e como endereço skill://. */}
+        {skill.useAsPrompt && (
+          <span className="sk-surface" title="Disponível como prompt do MCP — o slug vira um comando no seu agente">
+            prompt
+          </span>
+        )}
+        {skill.useAsResource && (
+          <span className="sk-surface" title={`Disponível como resource do MCP: skill://${skill.slug}`}>
+            resource
+          </span>
+        )}
       </div>
 
       <h4>{skill.name}</h4>

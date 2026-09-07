@@ -42,8 +42,11 @@ export function NewSkillPage() {
     slug: '',
     description: '',
     tags: '',
-    // Nasce privada, como o default do schema, do MCP admin e da documentação.
+    // Nasce privada e sem nenhuma publicação extra, como o default do schema,
+    // do MCP admin e da documentação.
     isPublic: false,
+    useAsPrompt: false,
+    useAsResource: false,
   });
   // Enquanto o slug não for editado à mão, ele acompanha o nome.
   const [slugTocado, setSlugTocado] = useState(false);
@@ -75,6 +78,8 @@ export function NewSkillPage() {
               description: meta.description,
               tags,
               isPublic: meta.isPublic,
+              useAsPrompt: meta.useAsPrompt,
+              useAsResource: meta.useAsResource,
             })
           : await createSkill({
               name: meta.name,
@@ -84,6 +89,8 @@ export function NewSkillPage() {
               skillMd: stripFrontmatter(skillMd),
               tags,
               isPublic: meta.isPublic,
+              useAsPrompt: meta.useAsPrompt,
+              useAsResource: meta.useAsResource,
             });
 
       toast.success(`Skill "${detail.name}" criada.`);

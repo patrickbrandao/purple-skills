@@ -113,6 +113,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           name: skill.name,
           description: skill.description,
           visibility: skill.isPublic ? 'public' : 'private',
+          useAsPrompt: skill.useAsPrompt,
+          useAsResource: skill.useAsResource,
           tags: skill.tags,
           files: skill.fileCount,
           views: skill.viewCount,
@@ -131,6 +133,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         name: detail.name,
         description: detail.description,
         visibility: detail.isPublic ? 'public' : 'private',
+        useAsPrompt: detail.useAsPrompt,
+        useAsResource: detail.useAsResource,
         tags: detail.tags,
         views: detail.viewCount,
         downloads: detail.downloadCount,
@@ -171,6 +175,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       tags?: string[];
       slug?: string;
       is_public?: boolean;
+      use_as_prompt?: boolean;
+      use_as_resource?: boolean;
     }): Promise<ToolResult> {
       const denied = denyWrite();
       if (denied) return denied;
@@ -184,6 +190,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           skillMd: stripFrontmatter(args.skill_md_content),
           tags: args.tags,
           isPublic: args.is_public === true,
+          useAsPrompt: args.use_as_prompt === true,
+          useAsResource: args.use_as_resource === true,
         },
         SOURCE,
         actor,
@@ -202,6 +210,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       description?: string;
       tags?: string[];
       new_slug?: string;
+      use_as_prompt?: boolean;
+      use_as_resource?: boolean;
     }): Promise<ToolResult> {
       const denied = denyWrite();
       if (denied) return denied;
@@ -213,6 +223,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           description: args.description,
           tags: args.tags,
           slug: args.new_slug,
+          useAsPrompt: args.use_as_prompt,
+          useAsResource: args.use_as_resource,
         },
         SOURCE,
         actor,

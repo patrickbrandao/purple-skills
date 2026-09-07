@@ -164,6 +164,24 @@ Exemplo de configuração em um cliente MCP:
 }
 ```
 
+### Prompts e resources do MCP público
+
+Além das ferramentas, uma skill pública pode ser oferecida em mais duas
+superfícies do protocolo — cada uma ligada por sua flag, uma skill de cada vez:
+
+| Superfície | Como aparece no cliente |
+|------------|-------------------------|
+| `use_as_prompt` | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
+| `use_as_resource` | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
+
+As duas **contam acesso** (`view_count`), como `get_skill`. Elas dependem de
+`is_public`: numa skill privada as flags ficam guardadas e nada aparece —
+`resources/read` responde o mesmo "não encontrada" de um slug inexistente. As
+listas são montadas por requisição, então publicar uma skill a faz aparecer sem
+reiniciar o servidor nem reabrir a sessão; não há `listChanged`, o cliente
+re-lista quando quiser. O desenho está em
+[`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md).
+
 ### Ferramentas do MCP público
 
 | Ferramenta | Descrição |
@@ -189,8 +207,8 @@ e `delete_skill` exige `admin`.
 |-----------|-----------|
 | `list_skills(includePrivate?, query?, tag?, limit?, offset?)` | Lista tudo, inclusive privadas |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados — é por aqui que muda o frontmatter |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?, use_as_prompt?, use_as_resource?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?, use_as_prompt?, use_as_resource?})` | Edita metadados — é por aqui que muda o frontmatter e as duas flags de publicação |
 | `set_visibility(slug, "public" \| "private")` | Publica/despublica |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
@@ -238,8 +256,9 @@ simples** dos dois (`ORDER BY view_count + download_count DESC`), calculada em
 tempo de query.
 
 O incremento é atômico e acontece em **qualquer superfície de acesso** — página
-do site, API REST e `get_skill` do MCP. Acesso direto a arquivos auxiliares
-**não** conta; apenas o `SKILL.md` e o download do pacote.
+do site, API REST e, no MCP, `get_skill`, `resources/read` e `prompts/get`.
+Acesso direto a arquivos auxiliares **não** conta; apenas o `SKILL.md` e o
+download do pacote.
 
 ## Contas, papéis e acesso
 
@@ -255,6 +274,7 @@ a ser sempre por e-mail e senha.
 | Publicar / despublicar | ✅ | ✅ | ❌ |
 | Apagar skill | ✅ | ❌ | ❌ |
 | Gerenciar contas e papéis | ✅ | ❌ | ❌ |
+| Ver a trilha de auditoria | ✅ | ❌ | ❌ |
 | Emitir chaves de API para si | ✅ | ✅ | ✅ |
 
 Os papéis são **globais**: não há dono por skill. O papel limita a ação, nunca

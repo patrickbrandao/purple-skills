@@ -803,6 +803,7 @@
 }
 .svc-wires .flow.f-ember {
   stroke: var(--ember);
+  animation-direction: reverse;
 }
 @media (max-width: 820px) {
   .svc-wires {

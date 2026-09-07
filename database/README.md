@@ -45,6 +45,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `004-contas.sql` | `users`, `skills.created_by_user_uuid`, ator e alvo no `audit_log`, `CHECK` de `action` ampliado |
 | `005-api-keys.sql` | `api_keys` — credenciais `psk_` por usuário para o MCP administrativo |
 | `006-reset-tokens.sql` | `reset_tokens` — link de uso único para redefinir senha |
+| `007-publicacao-mcp.sql` | `skills.use_as_prompt` / `use_as_resource` e os índices parciais das listagens do MCP público |
 
 Regras:
 
@@ -64,7 +65,7 @@ Regras:
 
 | Tabela | Papel |
 |--------|-------|
-| `skills` | catálogo: `slug`, `name`, `description`, `is_public`, contadores e `search_vector` |
+| `skills` | catálogo: `slug`, `name`, `description`, `is_public`, `use_as_prompt`, `use_as_resource`, contadores e `search_vector` |
 | `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
@@ -84,6 +85,18 @@ O desenho de contas, papéis e credenciais está em
   limita a ação, nunca o escopo;
 - **o ator pode não ser uma conta.** `audit_log.actor_user_uuid` é nulo para o
   `MCP_ADMIN_TOKEN` e para o bootstrap; quem sempre existe é `actor_label`.
+
+### Publicação no MCP
+
+`is_public` diz **se** a skill sai do painel; `use_as_prompt` e
+`use_as_resource` dizem **como**, além das ferramentas: prompt com o nome do
+slug e resource `skill://<slug>`. As três colunas são independentes — nenhum
+CHECK amarra as duas últimas à primeira, para que despublicar e republicar não
+apague a configuração. O efeito, porém, é sempre conjunto:
+`listPublishedSkills` filtra `is_public AND use_as_prompt` (ou
+`use_as_resource`), então **a flag sozinha não publica nada**. Desenho em
+[`docs/06-publicacao-mcp.md`](../docs/06-publicacao-mcp.md); `007` é a parte
+dele que vive aqui.
 
 ## Containers
 
@@ -138,7 +151,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Grupo | Exportações |
 |-------|-------------|
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
-| Leitura | `listSkills`, `getSkillSummary`, `getSkillDetail`, `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
+| Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail`, `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
 | Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent`, `setVisibility`, `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
 | Contadores | `incrementViewCount`, `incrementDownloadCount` |
 | Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
@@ -147,7 +160,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Auditoria de conta | `recordAccountAudit` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
 | Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `FileInput`, `FileContent`, `SetFilesOptions` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem

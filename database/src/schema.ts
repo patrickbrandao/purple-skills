@@ -17,7 +17,6 @@ import {
   primaryKey,
   text,
   timestamp,
-  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -38,6 +37,13 @@ export const skills = pgTable(
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
     isPublic: boolean('is_public').notNull().default(false),
+    /**
+     * Superfícies do MCP público além das ferramentas: prompt (pelo slug) e
+     * resource (`skill://<slug>`). Ortogonais a `is_public` — sozinhas não
+     * publicam nada. Ver `schema/007-publicacao-mcp.sql`.
+     */
+    useAsPrompt: boolean('use_as_prompt').notNull().default(false),
+    useAsResource: boolean('use_as_resource').notNull().default(false),
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
     downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
     searchVector: tsvector('search_vector'),
@@ -66,7 +72,11 @@ export const files = pgTable(
   },
   (table) => [
     index('files_skill_uuid_idx').on(table.skillUuid),
-    unique('files_skill_path_uniq').on(table.skillUuid, table.relativePath),
+    // A unicidade de `relative_path` é case-insensitive e não cabe aqui: vive na
+    // migration 003-case-insensitive-file-paths.sql, no índice funcional
+    // `files_skill_path_lower_uniq` sobre (skill_uuid, lower(relative_path)).
+    // A constraint antiga `files_skill_path_uniq`, que comparava byte a byte,
+    // foi derrubada por ela — declará-la aqui faria acreditar que ainda vale.
   ],
 );
 

@@ -73,6 +73,8 @@ A regra "só o SKILL.md conta" foi aplicada de forma literal:
 | `GET /skills/:slug/download` e `…/download.skill` | `download_count` +1 |
 | admin `GET /api/skills/:slug/download` e `…/download.skill` | não conta (operador baixando a própria skill) |
 | MCP `get_skill` | `view_count` +1 |
+| MCP `resources/read` de `skill://<slug>` | `view_count` +1 |
+| MCP `prompts/get` | `view_count` +1 |
 | MCP `get_skill_file` | não conta |
 | MCP `download_skill` | não conta (só devolve a URL; quem seguir o link conta) |
 
@@ -90,6 +92,19 @@ práticas evidentes:
 `delete_skill` ganhou um parâmetro **`confirm: true` obrigatório**: é a única
 operação irreversível do conjunto e um agente não deveria conseguir disparar
 por engano.
+
+## As flags de publicação no import de `.zip`
+
+A `§6.4` de [`06-publicacao-mcp.md`](06-publicacao-mcp.md) decide que
+`skillMetaFromMarkdown` **lê** `use_as_prompt` e `use_as_resource` de um
+`.zip` externo, mas não diz como isso se combina com o formulário do import.
+Ficou `campo do formulário || frontmatter do .zip` — a mesma forma que nome,
+descrição e tags já usavam, com o formulário ganhando quando preenchido.
+
+`isPublic` continua fora dessa regra: vem **só** do formulário. É o que impede
+um `.zip` de terceiro de se autopublicar, e é o que torna a leitura das flags
+segura — no máximo elas chegam pré-configuradas e inertes, até um admin
+publicar a skill.
 
 ## Semântica de `set_files_bulk`
 
@@ -164,7 +179,19 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
 - **Sessão MCP presa à credencial.** O servidor MCP é criado uma vez por
   sessão, com o papel e o ator daquele momento. Sem amarrar, quem descobrisse
   um `mcp-session-id` alheio herdaria o papel dele — daí o 403 quando a
-  identidade da requisição não bate com a que abriu a sessão.
+  identidade da requisição não bate com a que abriu a sessão. Vale para os dois
+  transportes com sessão: o Streamable HTTP (`mcp-session-id` no header) e o
+  SSE legado (`?sessionId=` na query do `POST /messages`), que por ficar fora do
+  header é ainda mais fácil de vazar em log e histórico de proxy.
+- **Trilha de auditoria só para admin.** `GET /api/audit` devolve `actor_label`
+  e `target_label`, que são e-mails — a mesma classe de dado de `/api/users*`.
+  O painel esconde o cartão de auditoria para quem não é admin em vez de
+  mostrá-lo vazio.
+- **Teto de upload é por requisição, não por arquivo.** `limits.fileSize` do
+  multer vale por arquivo; com `upload.array('files', 50)` uma requisição
+  bufferizava até 50 × o teto em memória. A recusa vem do `Content-Length`,
+  antes do multer, com folga para o envelope multipart; quem envia sem
+  `Content-Length` ainda esbarra na soma conferida depois do upload.
 - **Reemissão do cookie na troca de senha.** Trocar a senha incrementa
   `token_version`, o que derrubaria a sessão de quem acabou de trocá-la. A rota
   reemite o cookie com a versão nova.

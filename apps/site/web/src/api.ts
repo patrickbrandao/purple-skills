@@ -1,9 +1,13 @@
+/** Cópia manual do tipo de `@purple-skills/shared` — este bundle é de browser. */
 export type SkillSummary = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
   isPublic: boolean;
+  /** Também oferecida como prompt e como `skill://<slug>` no MCP público. */
+  useAsPrompt: boolean;
+  useAsResource: boolean;
   viewCount: number;
   downloadCount: number;
   score: number;

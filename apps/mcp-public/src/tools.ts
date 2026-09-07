@@ -1,7 +1,9 @@
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   getSkillDetail,
   getSkillSummary,
   incrementViewCount,
+  listPublishedSkills,
   listSkills,
   listTags,
   readFile,
@@ -11,6 +13,7 @@ import {
   isSkillMd,
   normalizeRelativePath,
   stripFrontmatter,
+  type SkillDetail,
 } from '@purple-skills/shared';
 import { config } from './config.js';
 
@@ -150,5 +153,131 @@ export const handlers = {
     const tags = await listTags({ includePrivate: false });
     if (tags.length === 0) return text('Nenhuma tag cadastrada.');
     return asJson({ tags });
+  },
+};
+
+// ------------------------------------------- prompts e resources -----------
+
+/**
+ * Esquema das URIs de resource. `skill://<slug>` analisa limpo: o slug é o
+ * host, o caminho fica vazio e nada é normalizado — por isso o match é um
+ * `startsWith` e o resto é o slug, sem `new URL`.
+ */
+const RESOURCE_SCHEME = 'skill://';
+
+export const resourceUriFor = (slug: string) => `${RESOURCE_SCHEME}${slug}`;
+
+/**
+ * Mesma recusa para skill privada, inexistente e pública sem a flag.
+ *
+ * Distingui-las entregaria os slugs privados a quem sonda um servidor que, por
+ * padrão, roda sem autenticação.
+ */
+const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams, mensagem);
+
+/** A skill pública flagada para a superfície, ou nada. */
+async function skillPublicada(
+  slug: string,
+  flag: 'useAsPrompt' | 'useAsResource',
+): Promise<SkillDetail | null> {
+  const detail = await getSkillDetail(slug, { includePrivate: false });
+  return detail?.[flag] ? detail : null;
+}
+
+/**
+ * As duas superfícies em que uma skill pública flagada é oferecida além das
+ * ferramentas: *prompt* (pelo slug) e *resource* (`skill://<slug>`).
+ *
+ * As listas saem do banco a **cada requisição**. Não há `listChanged` para
+ * avisar o cliente, então uma skill publicada agora precisa aparecer na
+ * listagem seguinte, mesmo numa sessão aberta antes dela existir.
+ */
+export const surfaces = {
+  async listPrompts() {
+    const skills = await listPublishedSkills('prompt');
+
+    return {
+      prompts: skills.map((skill) => ({
+        // O slug já é o nome oficial da skill e já é validado como `a-z0-9-`,
+        // que é a forma de que um nome de prompt precisa. Prefixar seria
+        // redundante: os clientes qualificam os prompts pelo nome do servidor.
+        name: skill.slug,
+        title: skill.name,
+        // A coluna é `NOT NULL DEFAULT ''`: skill sem descrição vira campo
+        // ausente, não uma descrição vazia.
+        description: skill.description || undefined,
+      })),
+    };
+  },
+
+  /**
+   * O corpo do SKILL.md como uma única mensagem do usuário. Conta um acesso.
+   *
+   * Sem frontmatter: nome e descrição já viajam nos metadados do
+   * `prompts/list`, e repeti-los no texto é ruído que o modelo lê como
+   * instrução. Sem argumentos: uma skill é instrução estática.
+   */
+  async getPrompt(name: string) {
+    const detail = await skillPublicada(name, 'useAsPrompt');
+    if (!detail) throw naoEncontrado(`Prompt não encontrado: "${name}"`);
+
+    await incrementViewCount(detail.uuid);
+
+    return {
+      description: detail.description || undefined,
+      messages: [
+        {
+          role: 'user' as const,
+          content: { type: 'text' as const, text: stripFrontmatter(detail.skillMd) },
+        },
+      ],
+    };
+  },
+
+  async listResources() {
+    const skills = await listPublishedSkills('resource');
+
+    return {
+      resources: skills.map((skill) => ({
+        uri: resourceUriFor(skill.slug),
+        name: skill.slug,
+        title: skill.name,
+        description: skill.description || undefined,
+        mimeType: 'text/markdown',
+      })),
+    };
+  },
+
+  /**
+   * O SKILL.md canônico — o mesmo byte a byte que o `.zip` e o
+   * `/files/SKILL.md` entregam, com o frontmatter gerado dos metadados. Conta
+   * um acesso.
+   */
+  async readResource(uri: string) {
+    const slug = uri.startsWith(RESOURCE_SCHEME) ? uri.slice(RESOURCE_SCHEME.length) : '';
+    const detail = slug ? await skillPublicada(slug, 'useAsResource') : null;
+    if (!detail) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+
+    await incrementViewCount(detail.uuid);
+
+    return {
+      contents: [
+        {
+          uri,
+          mimeType: 'text/markdown',
+          text: composeSkillMd(detail, detail.skillMd),
+        },
+      ],
+    };
+  },
+
+  /**
+   * Vazia de propósito. Responde ao método — nada de *method not found* para o
+   * cliente que sonda na inicialização — sem anunciar que `skill://` qualquer
+   * é legível: só as flagadas são, e essas já saem uma a uma em
+   * `resources/list`.
+   */
+  listResourceTemplates() {
+    return { resourceTemplates: [] };
   },
 };

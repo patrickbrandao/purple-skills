@@ -54,6 +54,41 @@ export function Badge({ isPublic }: { isPublic: boolean }) {
   );
 }
 
+/**
+ * As superfícies extras do MCP público, ao lado da visibilidade. Só leitura:
+ * quem liga e desliga é o formulário de edição — aqui elas apenas informam,
+ * e numa skill privada aparecem apagadas, porque a flag está guardada e não
+ * valendo (`docs/06-publicacao-mcp.md` §3.1).
+ */
+export function PublicationBadges({
+  skill,
+}: {
+  skill: { isPublic: boolean; useAsPrompt: boolean; useAsResource: boolean };
+}) {
+  const surfaces = [
+    skill.useAsPrompt && 'prompt',
+    skill.useAsResource && 'resource',
+  ].filter((surface): surface is string => Boolean(surface));
+
+  return (
+    <>
+      {surfaces.map((surface) => (
+        <span
+          key={surface}
+          className={`badge surface ${skill.isPublic ? '' : 'idle'}`.trim()}
+          title={
+            skill.isPublic
+              ? `Publicada no MCP como ${surface}`
+              : `Será publicada como ${surface} quando a skill for tornada pública`
+          }
+        >
+          {surface}
+        </span>
+      ))}
+    </>
+  );
+}
+
 export function Field({
   label,
   hint,

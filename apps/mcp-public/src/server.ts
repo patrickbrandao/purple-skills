@@ -1,7 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { config } from './config.js';
-import { handlers } from './tools.js';
+import { handlers, surfaces } from './tools.js';
 
 const INSTRUCTIONS = `Servidor MCP do Purple Skills — um catálogo de skills (instruções
 reutilizáveis) para agentes de IA.
@@ -12,6 +19,10 @@ Fluxo recomendado:
 3. get_skill_file("<slug>", "<caminho>") para ler arquivos auxiliares.
 4. download_skill("<slug>") quando o usuário quiser o pacote .zip.
 
+Algumas skills também estão publicadas como prompt — pelo próprio slug — e como
+resource, na URI skill://<slug>. As ferramentas acima não dizem quais: quem
+mostra são prompts/list e resources/list.
+
 Somente skills marcadas como públicas são expostas aqui.`;
 
 /** Cria uma instância do servidor MCP público com as ferramentas registradas. */
@@ -20,6 +31,8 @@ export function createMcpServer(): McpServer {
     { name: config.serverName, version: config.version },
     { instructions: INSTRUCTIONS },
   );
+
+  registrarSuperficies(server);
 
   server.registerTool(
     'search_skills',
@@ -86,4 +99,41 @@ export function createMcpServer(): McpServer {
   );
 
   return server;
+}
+
+/**
+ * Prompts e resources em handlers de baixo nível.
+ *
+ * `prompts/list` do `McpServer` é montado de um registro estático: uma lista
+ * vinda do banco exigiria um `registerPrompt` por skill na criação do servidor,
+ * o que tornaria esta fábrica assíncrona — três call sites em cada `http.ts` —
+ * e congelaria a lista pelo tempo da sessão (`MCP_SESSION_TTL_MS`, 30 min por
+ * padrão). Aqui ela é computada por requisição, e uma skill flagada agora
+ * aparece na chamada seguinte, mesmo em sessão antiga. Resources vão pelo mesmo
+ * caminho por simetria: um estilo só no arquivo.
+ *
+ * **Não registre prompt nem resource por `registerPrompt`/`registerResource`
+ * neste servidor**: o SDK lança quando um handler do mesmo método já existe, e
+ * o processo cairia no boot.
+ */
+function registrarSuperficies(server: McpServer) {
+  // Na mão e sem `listChanged`: o SDK o declara fixo como `true` ao registrar
+  // resources, mas admin e mcp-public são containers separados — não há evento
+  // em processo para disparar a notificação, e um cliente que confiasse na
+  // promessa cacharia a lista pela sessão inteira. Precisa vir antes do
+  // `connect`, depois do qual o SDK recusa. Vale mesmo sem nenhuma skill
+  // flagada: a fábrica é síncrona e não consulta o banco.
+  server.server.registerCapabilities({ prompts: {}, resources: {} });
+
+  server.server.setRequestHandler(ListPromptsRequestSchema, () => surfaces.listPrompts());
+  server.server.setRequestHandler(GetPromptRequestSchema, (request) =>
+    surfaces.getPrompt(request.params.name),
+  );
+  server.server.setRequestHandler(ListResourcesRequestSchema, () => surfaces.listResources());
+  server.server.setRequestHandler(ReadResourceRequestSchema, (request) =>
+    surfaces.readResource(request.params.uri),
+  );
+  server.server.setRequestHandler(ListResourceTemplatesRequestSchema, () =>
+    surfaces.listResourceTemplates(),
+  );
 }
