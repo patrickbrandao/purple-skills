@@ -93,11 +93,6 @@ export function Catalog() {
               ou baixe o pacote .zip. Seu agente faz o mesmo pelo MCP, sem passar por esta página.
             </p>
           </div>
-          <img
-            className="market-fig wiz"
-            src="/assets/images/icon-purple-right-279x400.png"
-            alt=""
-          />
         </div>
 
         <div className="mt-8 flex flex-wrap items-center gap-3 reveal d1">
