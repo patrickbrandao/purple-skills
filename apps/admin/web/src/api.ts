@@ -1,9 +1,12 @@
+/** Cópia manual do tipo de `@purple-skills/shared` — este bundle é de browser. */
 export type SkillSummary = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
   isPublic: boolean;
+  useAsPrompt: boolean;
+  useAsResource: boolean;
   viewCount: number;
   downloadCount: number;
   score: number;
@@ -246,6 +249,8 @@ export type CreateSkillBody = {
   skillMd: string;
   tags?: string[];
   isPublic?: boolean;
+  useAsPrompt?: boolean;
+  useAsResource?: boolean;
 };
 
 export const createSkill = (body: CreateSkillBody) =>
@@ -292,13 +297,25 @@ export const skillDownloadUrl = (slug: string) =>
 export const skillPackageUrl = (slug: string) =>
   `/api/skills/${encodeURIComponent(slug)}/download.skill`;
 
-export function importZip(file: File, fields: { name?: string; description?: string; tags?: string[]; isPublic?: boolean }) {
+export function importZip(
+  file: File,
+  fields: {
+    name?: string;
+    description?: string;
+    tags?: string[];
+    isPublic?: boolean;
+    useAsPrompt?: boolean;
+    useAsResource?: boolean;
+  },
+) {
   const form = new FormData();
   form.append('file', file);
   if (fields.name) form.append('name', fields.name);
   if (fields.description) form.append('description', fields.description);
   if (fields.tags?.length) form.append('tags', JSON.stringify(fields.tags));
   form.append('isPublic', String(fields.isPublic === true));
+  form.append('useAsPrompt', String(fields.useAsPrompt === true));
+  form.append('useAsResource', String(fields.useAsResource === true));
   return request<SkillDetail>('/api/skills/import', { method: 'POST', body: form });
 }
 

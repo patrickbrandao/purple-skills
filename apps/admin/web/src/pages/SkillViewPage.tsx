@@ -12,7 +12,7 @@ import {
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { Badge, Button, Panel } from '../components/ui.js';
+import { Badge, Button, Panel, PublicationBadges } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
 import {
@@ -79,6 +79,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
           <h1 className="display mt-1 flex flex-wrap items-center gap-3">
             <span className="truncate">{skill.name}</span>
             <Badge isPublic={skill.isPublic} />
+            <PublicationBadges skill={skill} />
           </h1>
           <p className="sub mono flex flex-wrap items-center gap-x-3">
             <span>{skill.slug}</span>

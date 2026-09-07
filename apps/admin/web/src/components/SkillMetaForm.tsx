@@ -7,6 +7,8 @@ export type SkillMetaValues = {
   description: string;
   tags: string;
   isPublic: boolean;
+  useAsPrompt: boolean;
+  useAsResource: boolean;
 };
 
 /**
@@ -92,6 +94,82 @@ export function SkillMetaForm({
           <span className="text-sm">{publicLabel}</span>
         </label>
       </div>
+
+      <PublicationFlags values={values} onChange={onChange} />
+    </div>
+  );
+}
+
+/**
+ * Como a skill é oferecida no MCP público, além das ferramentas.
+ *
+ * Continuam editáveis numa skill privada de propósito: desabilitá-los obrigaria
+ * a salvar duas vezes — publicar e depois flagar — e apagaria da tela a
+ * intenção de quem está preparando uma skill para lançar. O aviso abaixo diz
+ * que, sem "pública", nada disso aparece.
+ */
+function PublicationFlags({
+  values,
+  onChange,
+}: {
+  values: SkillMetaValues;
+  onChange: (patch: Partial<SkillMetaValues>) => void;
+}) {
+  const opcoes = [
+    {
+      key: 'useAsPrompt' as const,
+      titulo: 'Publicar como prompt',
+      hint: (
+        <>
+          O cliente lista a skill em <code>prompts/list</code> pelo slug — na maioria deles, um
+          slash-command que o usuário invoca direto.
+        </>
+      ),
+    },
+    {
+      key: 'useAsResource' as const,
+      titulo: 'Publicar como resource',
+      hint: (
+        <>
+          A skill ganha um endereço estável, <code>skill://{values.slug || '<slug>'}</code>, que o
+          agente lê e referencia como qualquer outro documento.
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <span className="label">Publicação no MCP público</span>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {opcoes.map((opcao) => (
+          <label
+            key={opcao.key}
+            className="flex cursor-pointer items-start gap-3 rounded-xl px-3.5 py-3"
+            style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-2)' }}
+          >
+            <input
+              type="checkbox"
+              checked={values[opcao.key]}
+              onChange={(event) => onChange({ [opcao.key]: event.target.checked })}
+              className="mt-0.5 h-4 w-4 shrink-0"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm">{opcao.titulo}</span>
+              <span className="mt-0.5 block text-[11px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+                {opcao.hint}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {!values.isPublic && (values.useAsPrompt || values.useAsResource) && (
+        <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+          A skill está privada: nada disso aparece no MCP até que ela seja publicada. A
+          configuração fica guardada para quando isso acontecer.
+        </p>
+      )}
     </div>
   );
 }

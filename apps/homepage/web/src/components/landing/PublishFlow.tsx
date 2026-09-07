@@ -87,7 +87,7 @@ export function PublishFlow() {
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">
-            Publique uma vez. <span className="grad-text">Todos os agentes aprendem.</span>
+            Publique uma vez. <br /><span className="grad-text">Todos os agentes aprendem.</span>
           </h2>
           <p>
             Seu agente orquestrador escreve a skill e salva pelo MCP administrativo. No instante

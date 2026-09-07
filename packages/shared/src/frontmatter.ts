@@ -117,6 +117,8 @@ export type MarkdownSkillMeta = {
   /** `name` do frontmatter, quando já é um slug válido. */
   slug: string | null;
   tags: string[];
+  useAsPrompt: boolean;
+  useAsResource: boolean;
 };
 
 /** Deriva os metadados de um SKILL.md, com heurísticas de fallback. */
@@ -142,6 +144,11 @@ export function skillMetaFromMarkdown(source: string): MarkdownSkillMeta {
     description: description?.trim().slice(0, 500) || null,
     slug,
     tags: splitTags(data.tags),
+    // Um `.zip` de terceiro pré-configura as flags, mas nunca se autopublica:
+    // `is_public` vem só do formulário do import, e sem ele nada aparece no MCP.
+    // O valor chega como texto e liga só com `true`, como o `isPublic` de lá.
+    useAsPrompt: data.use_as_prompt === 'true',
+    useAsResource: data.use_as_resource === 'true',
   };
 }
 

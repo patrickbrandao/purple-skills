@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { composeSkillMd } from '@purple-skills/shared';
 
 const db = vi.hoisted(() => ({
   listSkills: vi.fn(),
+  listPublishedSkills: vi.fn(),
   getSkillDetail: vi.fn(),
   getSkillSummary: vi.fn(),
   incrementViewCount: vi.fn(),
@@ -11,7 +13,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@purple-skills/db', () => db);
 
-const { handlers } = await import('./tools.js');
+const { handlers, surfaces } = await import('./tools.js');
 
 const summary = {
   uuid: 'uuid-1',
@@ -19,6 +21,8 @@ const summary = {
   name: 'Minha Skill',
   description: 'Faz coisas',
   isPublic: true,
+  useAsPrompt: false,
+  useAsResource: false,
   viewCount: 10,
   downloadCount: 3,
   score: 13,
@@ -191,5 +195,124 @@ describe('list_tags', () => {
 
     expect(db.listTags).toHaveBeenCalledWith({ includePrivate: false });
     expect(JSON.parse(result.content[0].text).tags).toEqual([{ name: 'git', count: 2 }]);
+  });
+});
+
+// ------------------------------------------- prompts e resources -----------
+
+/** O que a query enxuta da listagem devolve — só três colunas. */
+const publicada = { slug: 'minha-skill', name: 'Minha Skill', description: 'Faz coisas' };
+
+describe('prompts/list e resources/list', () => {
+  it('listam pelo slug, cada uma pedindo a sua superfície', async () => {
+    db.listPublishedSkills.mockResolvedValue([publicada]);
+
+    const prompts = await surfaces.listPrompts();
+    const resources = await surfaces.listResources();
+
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt');
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource');
+    expect(prompts.prompts).toEqual([
+      { name: 'minha-skill', title: 'Minha Skill', description: 'Faz coisas' },
+    ]);
+    expect(resources.resources).toEqual([
+      {
+        uri: 'skill://minha-skill',
+        name: 'minha-skill',
+        title: 'Minha Skill',
+        description: 'Faz coisas',
+        mimeType: 'text/markdown',
+      },
+    ]);
+  });
+
+  it('não declaram argumentos: a skill é instrução estática', async () => {
+    db.listPublishedSkills.mockResolvedValue([publicada]);
+
+    const [prompt] = (await surfaces.listPrompts()).prompts;
+
+    expect(prompt).not.toHaveProperty('arguments');
+  });
+
+  // A skill privada e a pública sem a flag são recortadas na query — o que se
+  // garante aqui é que a lista não é montada de outra fonte, mais frouxa.
+  it('ficam vazias quando nenhuma skill está flagada', async () => {
+    db.listPublishedSkills.mockResolvedValue([]);
+
+    expect((await surfaces.listPrompts()).prompts).toEqual([]);
+    expect((await surfaces.listResources()).resources).toEqual([]);
+    expect(db.listSkills).not.toHaveBeenCalled();
+  });
+});
+
+describe('resources/read', () => {
+  it('devolve o SKILL.md canônico e conta um acesso', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, useAsResource: true });
+
+    const result = await surfaces.readResource('skill://minha-skill');
+
+    expect(db.getSkillDetail).toHaveBeenCalledWith('minha-skill', { includePrivate: false });
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1');
+    expect(result.contents[0].uri).toBe('skill://minha-skill');
+    expect(result.contents[0].mimeType).toBe('text/markdown');
+    // Byte a byte o mesmo do .zip e do /files/SKILL.md.
+    expect(result.contents[0].text).toBe(composeSkillMd(detail, detail.skillMd));
+  });
+
+  it('recusa skill inexistente, privada e pública sem a flag com o mesmo erro', async () => {
+    // Privada e inexistente chegam iguais: `includePrivate: false` devolve nulo.
+    db.getSkillDetail.mockResolvedValue(null);
+    const ausente = await surfaces.readResource('skill://minha-skill').catch((err: Error) => err);
+
+    db.getSkillDetail.mockResolvedValue({ ...detail, useAsResource: false });
+    const semFlag = await surfaces.readResource('skill://minha-skill').catch((err: Error) => err);
+
+    expect(ausente).toBeInstanceOf(Error);
+    expect((semFlag as Error).message).toBe((ausente as Error).message);
+    expect(db.incrementViewCount).not.toHaveBeenCalled();
+  });
+
+  it('recusa uma URI de outro esquema sem nem consultar o banco', async () => {
+    await expect(surfaces.readResource('https://exemplo.dev/minha-skill')).rejects.toThrow();
+
+    expect(db.getSkillDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe('prompts/get', () => {
+  it('devolve o corpo sem frontmatter numa mensagem do usuário, e conta um acesso', async () => {
+    db.getSkillDetail.mockResolvedValue({
+      ...detail,
+      useAsPrompt: true,
+      skillMd: '---\nname: legado\ndescription: metadados velhos\n---\n# Minha Skill\n',
+    });
+
+    const result = await surfaces.getPrompt('minha-skill');
+
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1');
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe('user');
+    expect(result.messages[0].content.text).toBe('# Minha Skill\n');
+    expect(result.messages[0].content.text).not.toContain('---');
+  });
+
+  it('recusa skill inexistente, privada e pública sem a flag com o mesmo erro', async () => {
+    db.getSkillDetail.mockResolvedValue(null);
+    const ausente = await surfaces.getPrompt('minha-skill').catch((err: Error) => err);
+
+    db.getSkillDetail.mockResolvedValue({ ...detail, useAsPrompt: false });
+    const semFlag = await surfaces.getPrompt('minha-skill').catch((err: Error) => err);
+
+    expect(ausente).toBeInstanceOf(Error);
+    expect((semFlag as Error).message).toBe((ausente as Error).message);
+    expect(db.incrementViewCount).not.toHaveBeenCalled();
+  });
+});
+
+describe('resources/templates/list', () => {
+  // Responder vazio é diferente de não responder: um cliente que sonda o método
+  // na inicialização não leva "method not found".
+  it('responde com lista vazia', () => {
+    expect(surfaces.listResourceTemplates()).toEqual({ resourceTemplates: [] });
   });
 });

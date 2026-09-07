@@ -20,6 +20,9 @@ Regras importantes:
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
   arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
 - Skills recém-criadas nascem privadas, a menos que is_public=true.
+- use_as_prompt e use_as_resource oferecem a skill também como prompt e como
+  resource skill://<slug> do MCP público. São independentes de is_public: sem
+  a skill pública, nenhuma das duas aparece para ninguém.
 - delete_skill é irreversível e exige confirm=true.
 - As ferramentas de escrita dependem do papel da credencial: uma chave de
   usuário "leitor" só lê, e apagar skill exige papel "admin".`;
@@ -105,6 +108,14 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .describe('Nome oficial da skill (a-z, 0-9 e hífen). Gerado a partir do nome se omitido.')
           .optional(),
         is_public: z.boolean().describe('Publicar imediatamente (padrão false).').optional(),
+        use_as_prompt: z
+          .boolean()
+          .describe('Oferece a skill como prompt do MCP público, pelo slug (padrão false).')
+          .optional(),
+        use_as_resource: z
+          .boolean()
+          .describe('Oferece a skill como resource skill://<slug> do MCP público (padrão false).')
+          .optional(),
       },
     },
     (args) => guard(() => handlers.create_skill(args)),
@@ -125,6 +136,14 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         new_slug: z
           .string()
           .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
+          .optional(),
+        use_as_prompt: z
+          .boolean()
+          .describe('Oferece a skill como prompt do MCP público, pelo slug.')
+          .optional(),
+        use_as_resource: z
+          .boolean()
+          .describe('Oferece a skill como resource skill://<slug> do MCP público.')
           .optional(),
       },
     },

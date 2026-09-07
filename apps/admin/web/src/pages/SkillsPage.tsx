@@ -11,6 +11,7 @@ import {
   type SkillSummary,
 } from '../api.js';
 import { PlusIcon, SearchIcon, TrashIcon } from '../components/Icons.js';
+import { PublicationBadges } from '../components/ui.js';
 import { useToast } from '../components/Toast.js';
 
 export function SkillsPage({ user }: { user: SessionUser }) {
@@ -141,20 +142,25 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                   </div>
                 </td>
                 <td>
-                  <button
-                    type="button"
-                    disabled={busy === skill.slug || !podeEscrever}
-                    onClick={() => toggleVisibility(skill)}
-                    title={
-                      podeEscrever
-                        ? 'Alternar visibilidade'
-                        : 'Seu papel não permite publicar ou despublicar'
-                    }
-                    className={`badge ${skill.isPublic ? 'public' : 'private'}`}
-                  >
-                    <span className="dot" />
-                    {skill.isPublic ? 'pública' : 'privada'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={busy === skill.slug || !podeEscrever}
+                      onClick={() => toggleVisibility(skill)}
+                      title={
+                        podeEscrever
+                          ? 'Alternar visibilidade'
+                          : 'Seu papel não permite publicar ou despublicar'
+                      }
+                      className={`badge ${skill.isPublic ? 'public' : 'private'}`}
+                    >
+                      <span className="dot" />
+                      {skill.isPublic ? 'pública' : 'privada'}
+                    </button>
+                    {/* Prompt e resource são configuração secundária: mudam no
+                        formulário de edição, aqui só informam. */}
+                    <PublicationBadges skill={skill} />
+                  </div>
                 </td>
                 <td className="num hidden sm:table-cell">{skill.viewCount}</td>
                 <td className="num hidden sm:table-cell">{skill.downloadCount}</td>

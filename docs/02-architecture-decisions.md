@@ -64,6 +64,8 @@ a implementação.
 | `name`           | text                    |                                          |
 | `description`    | text                    |                                          |
 | `is_public`      | boolean                 | público/privado                          |
+| `use_as_prompt`  | boolean, default false  | oferece a skill pública como *prompt* do MCP |
+| `use_as_resource`| boolean, default false  | oferece a skill pública como *resource* `skill://<slug>` |
 | `view_count`     | bigint, default 0       | incrementado a cada acesso ao SKILL.md   |
 | `download_count` | bigint, default 0       | incrementado a cada download do pacote   |
 | `search_vector`  | tsvector                | mantido por trigger (ver seção 5)        |
@@ -123,7 +125,10 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 
 - O frontmatter é **gerado na leitura**, sempre que o arquivo é materializado:
   download do `.zip`, leitura crua em `/files/SKILL.md`, `get_skill_file` do
-  MCP público e `get_file` do MCP admin.
+  MCP público, `get_file` do MCP admin e o `resources/read` de `skill://<slug>`.
+  O `prompts/get`, ao contrário, entrega **só o corpo**: nome e descrição já
+  viajam nos metadados do `prompts/list`, e repeti-los no texto é ruído que o
+  modelo lê como instrução.
 - Formato Agent Skills: `name` é o **slug** (o nome oficial, `a-z0-9-`);
   `description` é a descrição; o nome de exibição e as tags — que a spec não
   define — vão em `metadata.title` e `metadata.tags`.
@@ -168,11 +173,13 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 - **Incremento simples e atômico, sem deduplicação** por IP/sessão (sem
   Redis/cache extra) — risco de inflação por refresh-spam aceito no v1.
 - **A mesma lógica incrementa os contadores em qualquer superfície de
-  acesso**: página do site, API REST pública do site, e MCP público
-  (`get_skill` incrementa `view_count`; seguir a URL de download do
-  `download_skill` incrementa `download_count`). Não há tentativa de
-  distinguir "SPA" de "chamada de API/script" — tecnicamente
-  indistinguíveis sem autenticação, então a distinção não é implementada.
+  acesso**: página do site, API REST pública do site, e MCP público —
+  `get_skill`, `resources/read` de `skill://<slug>` e `prompts/get` incrementam
+  `view_count`; seguir a URL de download do `download_skill` incrementa
+  `download_count`. Ler a skill por resource ou invocá-la por prompt é acesso
+  do mesmo jeito que chamar a ferramenta. Não há tentativa de distinguir "SPA"
+  de "chamada de API/script" — tecnicamente indistinguíveis sem autenticação,
+  então a distinção não é implementada.
 
 ## 7. Autenticação e autorização
 

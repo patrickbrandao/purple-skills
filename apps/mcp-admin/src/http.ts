@@ -17,10 +17,11 @@ export type McpHttpOptions = {
   /**
    * Identidade estável da credencial, quando o serviço tem mais de uma.
    *
-   * Uma sessão Streamable HTTP guarda o servidor criado no `initialize`, com o
-   * papel e o ator daquele momento. Sem esta amarração, quem descobrisse um
-   * `mcp-session-id` alheio continuaria falando por ele — inclusive com um
-   * papel maior que o da própria chave.
+   * Uma sessão MCP guarda o servidor criado no `initialize`, com o papel e o
+   * ator daquele momento. Sem esta amarração, quem descobrisse um
+   * `mcp-session-id` (ou o `sessionId` do SSE) alheio continuaria falando por
+   * ele — inclusive com um papel maior que o da própria chave. Vale para os
+   * dois transportes com sessão: Streamable HTTP e SSE legado.
    */
   identityOf?: (req: Request) => string | undefined;
   /** Middleware de autenticação aplicado às rotas MCP. */
@@ -75,11 +76,22 @@ type TrackedStreamable = {
   identity?: string;
 };
 
+/**
+ * O SSE legado precisa da mesma amarração do Streamable HTTP: o `sessionId`
+ * viaja na query string do `POST /messages`, então validar só o Bearer deixaria
+ * qualquer credencial válida falar por uma sessão alheia — inclusive com papel
+ * maior que o da própria chave.
+ */
+type TrackedSse = {
+  transport: SSEServerTransport;
+  identity?: string;
+};
+
 export function createHttpApp(options: McpHttpOptions): Express {
   const app = express();
   const identity = (req: Request): string | undefined => options.identityOf?.(req);
   const streamableSessions = new Map<string, TrackedStreamable>();
-  const sseSessions = new Map<string, SSEServerTransport>();
+  const sseSessions = new Map<string, TrackedSse>();
 
   // Varredura periódica: fecha o que passou do TTL sem atividade.
   const sweep = setInterval(() => {
@@ -228,7 +240,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     }
 
     const transport = new SSEServerTransport('/messages', res);
-    sseSessions.set(transport.sessionId, transport);
+    sseSessions.set(transport.sessionId, { transport, identity: identity(req) });
 
     transport.onclose = () => {
       sseSessions.delete(transport.sessionId);
@@ -243,14 +255,18 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
   app.post('/messages', options.auth, json, async (req, res) => {
     const sessionId = String(req.query.sessionId ?? '');
-    const transport = sseSessions.get(sessionId);
+    const tracked = sseSessions.get(sessionId);
 
-    if (!transport) {
+    if (!tracked) {
       res.status(404).json(jsonRpcError(-32001, 'Sessão SSE desconhecida ou expirada'));
       return;
     }
+    if (tracked.identity !== identity(req)) {
+      res.status(403).json(jsonRpcError(-32001, 'Sessão pertence a outra credencial'));
+      return;
+    }
 
-    await transport.handlePostMessage(req, res, req.body);
+    await tracked.transport.handlePostMessage(req, res, req.body);
   });
 
   app.use((req, res) => {
@@ -288,7 +304,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     clearInterval(sweep);
     await Promise.allSettled([
       ...[...streamableSessions.values()].map((tracked) => tracked.transport.close()),
-      ...[...sseSessions.values()].map((transport) => transport.close()),
+      ...[...sseSessions.values()].map((tracked) => tracked.transport.close()),
     ]);
     streamableSessions.clear();
     sseSessions.clear();

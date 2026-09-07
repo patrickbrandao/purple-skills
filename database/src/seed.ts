@@ -9,6 +9,14 @@ type Seed = {
   description: string;
   tags: string[];
   isPublic: boolean;
+  /**
+   * Obrigatórios e falsos em todo exemplo: uma demo que já nasce com cinco
+   * slash-commands e cinco `skill://` no cliente ensina o contrário do que a
+   * feature quer (`docs/06-publicacao-mcp.md` §3.2). Sendo obrigatórios, o
+   * exemplo novo é forçado a decidir em vez de herdar o padrão em silêncio.
+   */
+  useAsPrompt: boolean;
+  useAsResource: boolean;
   skillMd: string;
   extraFiles?: { path: string; content: string }[];
 };
@@ -21,6 +29,8 @@ const SEEDS: Seed[] = [
       'Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.',
     tags: ['git', 'workflow', 'produtividade'],
     isPublic: true,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `---
 name: Conventional Commits
 description: Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.
@@ -91,6 +101,8 @@ fix(db): corrige contador de downloads em transações concorrentes
       'Revisa um diff procurando bugs de correção, casos de borda e simplificações possíveis.',
     tags: ['review', 'qualidade', 'workflow'],
     isPublic: true,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `---
 name: Code Review Checklist
 description: Revisa um diff procurando bugs de correção, casos de borda e simplificações.
@@ -130,6 +142,8 @@ description: Revisa um diff procurando bugs de correção, casos de borda e simp
       'Modela busca textual em PostgreSQL com tsvector, pesos por coluna, índices GIN e ranking.',
     tags: ['postgres', 'banco-de-dados', 'busca'],
     isPublic: true,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `---
 name: Busca Full-Text no PostgreSQL
 description: Modela busca textual com tsvector, pesos por coluna, índices GIN e ranking.
@@ -183,6 +197,8 @@ LIMIT 20;
       'Escreve Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.',
     tags: ['docker', 'nodejs', 'deploy'],
     isPublic: true,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `---
 name: Dockerfile Node.js multi-stage
 description: Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.
@@ -227,6 +243,8 @@ CMD ["node", "dist/index.js"]
       'Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.',
     tags: ['mcp', 'typescript', 'agentes'],
     isPublic: true,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `---
 name: Servidor MCP em TypeScript
 description: Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.
@@ -278,6 +296,8 @@ exceções para falhas realmente inesperadas.
     description: 'Exemplo de skill privada — visível apenas no painel administrativo.',
     tags: ['interno'],
     isPublic: false,
+    useAsPrompt: false,
+    useAsResource: false,
     skillMd: `# Rascunho interno
 
 Esta skill está marcada como **privada**: não aparece no site público, na API
@@ -303,6 +323,8 @@ async function main() {
         skillMd: seed.skillMd,
         tags: seed.tags,
         isPublic: seed.isPublic,
+        useAsPrompt: seed.useAsPrompt,
+        useAsResource: seed.useAsResource,
       },
       'web-admin',
     );

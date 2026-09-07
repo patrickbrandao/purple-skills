@@ -2,6 +2,7 @@ import { Layout } from './components/Layout.js';
 import { useReveal } from './useReveal.js';
 import { Hero } from './components/landing/Hero.js';
 import { QuickStart } from './components/landing/QuickStart.js';
+import { QuickStartAdmin } from './components/landing/QuickStartAdmin.js';
 import { HubDiagram } from './components/landing/HubDiagram.js';
 import { Trinity } from './components/landing/Trinity.js';
 import { PublishFlow } from './components/landing/PublishFlow.js';
@@ -24,6 +25,7 @@ export default function App() {
     <Layout>
       <Hero />
       <QuickStart />
+      <QuickStartAdmin />
       <HubDiagram />
       <Trinity />
       <PublishFlow />

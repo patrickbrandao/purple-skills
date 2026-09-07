@@ -50,6 +50,7 @@ qualquer skill. O que separa os três é a ação permitida.
 | Publicar / despublicar | ✅ | ✅ | ❌ |
 | Apagar skill | ✅ | ❌ | ❌ |
 | Gerenciar usuários e papéis | ✅ | ❌ | ❌ |
+| Ver a trilha de auditoria | ✅ | ❌ | ❌ |
 | Emitir chaves de API para si | ✅ | ✅ | ✅ |
 
 A ausência de ownership é o que mantém a mudança barata: sem
@@ -179,6 +180,10 @@ têm `skill_uuid` — a coluna já é nula.
 Login e falha de login **não** são auditados: o rate limiting já os trata, e
 incluí-los faria o log crescer numa ordem de grandeza diferente da atual, o que
 traria uma discussão de retenção que este projeto ainda não tem.
+
+Ler a trilha é privilégio de `admin`. `actor_label` e `target_label` guardam
+e-mails de contas, então `GET /api/audit` fica atrás do mesmo guarda de
+`/api/users*`; o painel esconde o cartão de auditoria para os demais papéis.
 
 ## 3. Modelo de dados
 

@@ -1,5 +1,4 @@
 import express, { Router, type Request, type Response } from 'express';
-import multer from 'multer';
 import {
   AppError,
   countUsers,
@@ -62,14 +61,10 @@ import {
 } from './accounts.js';
 import { config, oidcEnabled, panelBaseUrl, smtpEnabled } from './config.js';
 import { createRateLimiter } from './ratelimit.js';
+import { limitRequestBytes, rejectOversizedBatch, upload } from './uploads.js';
 import { streamSkillZip } from './zip.js';
 
 const SOURCE = 'web-admin' as const;
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.maxUploadBytes },
-});
 
 /** Corpo pequeno das rotas de credencial — lido antes de haver sessão. */
 const smallJson = express.json({ limit: '4kb' });
@@ -493,8 +488,12 @@ api.get(
   }),
 );
 
+// A trilha carrega e-mail de quem agiu e de quem sofreu a ação (`actor_label`
+// e `target_label`), incluindo eventos de conta. É a mesma classe de dado de
+// `/api/users*` — logo, o mesmo papel: admin.
 api.get(
   '/api/audit',
+  requireAdmin,
   route(async (req, res) => {
     res.json({ items: await listAudit(Number(req.query.limit ?? 60)) });
   }),
@@ -544,10 +543,22 @@ api.post(
       name?: string;
       slug?: string;
       description?: string;
-      skillMd?: string;
+      // Cru de propósito: o corpo não passa por schema e o `stripFrontmatter`
+      // abaixo é o primeiro a tocar o valor.
+      skillMd?: unknown;
       tags?: string[];
       isPublic?: boolean;
+      useAsPrompt?: boolean;
+      useAsResource?: boolean;
     };
+
+    // `stripFrontmatter` roda antes da validação da `@purple-skills/db`, então
+    // um `skillMd` de outro tipo estouraria aqui como 500. Os demais campos
+    // são conferidos lá, que é onde todos os chamadores passam.
+    if (body.skillMd !== undefined && typeof body.skillMd !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'O campo "skillMd" deve ser uma string' });
+      return;
+    }
 
     const detail = await createSkill(
       {
@@ -559,6 +570,8 @@ api.post(
         skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
         isPublic: body.isPublic,
+        useAsPrompt: body.useAsPrompt,
+        useAsResource: body.useAsResource,
       },
       SOURCE,
       actorFrom(req),
@@ -571,6 +584,7 @@ api.post(
 api.post(
   '/api/skills/import',
   requireWrite,
+  limitRequestBytes,
   upload.single('file'),
   route(async (req, res) => {
     if (!req.file) {
@@ -585,7 +599,14 @@ api.post(
       return;
     }
 
-    const body = req.body as { name?: string; description?: string; tags?: string; isPublic?: string };
+    const body = req.body as {
+      name?: string;
+      description?: string;
+      tags?: string;
+      isPublic?: string;
+      useAsPrompt?: string;
+      useAsResource?: string;
+    };
     const meta = skillMetaFromMarkdown(skillMd.textContent);
     const fallbackName = req.file.originalname.replace(/\.zip$/i, '');
     const tags = parseTags(body.tags);
@@ -604,6 +625,12 @@ api.post(
         skillMd: stripFrontmatter(skillMd.textContent),
         tags: tags.length > 0 ? tags : meta.tags,
         isPublic: body.isPublic === 'true',
+        // Ao contrário de `isPublic`, estas o .zip pode ligar: o formulário
+        // continua sendo a única porta da visibilidade, então uma skill
+        // importada de terceiro nasce privada e as flags ficam inertes até
+        // alguém publicá-la.
+        useAsPrompt: body.useAsPrompt === 'true' || meta.useAsPrompt,
+        useAsResource: body.useAsResource === 'true' || meta.useAsResource,
         files: attachments.map((file) => ({
           relativePath: file.relativePath,
           content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
@@ -639,6 +666,8 @@ api.patch(
       description?: string;
       tags?: string[];
       isPublic?: boolean;
+      useAsPrompt?: boolean;
+      useAsResource?: boolean;
       skillMd?: string;
     };
 
@@ -652,6 +681,8 @@ api.patch(
         description: body.description,
         tags: body.tags,
         isPublic: body.isPublic,
+        useAsPrompt: body.useAsPrompt,
+        useAsResource: body.useAsResource,
         skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,
       },
       SOURCE,
@@ -774,6 +805,7 @@ api.delete(
 api.post(
   '/api/skills/:slug/upload',
   requireWrite,
+  limitRequestBytes,
   upload.single('file'),
   route(async (req, res) => {
     if (!req.file) {
@@ -810,6 +842,7 @@ api.post(
 api.post(
   '/api/skills/:slug/files',
   requireWrite,
+  limitRequestBytes,
   upload.array('files', 50),
   route(async (req, res) => {
     const uploaded = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -817,6 +850,10 @@ api.post(
       res.status(400).json({ error: 'bad_request', message: 'Nenhum arquivo enviado' });
       return;
     }
+
+    // Quem não mandou `Content-Length` escapa da pré-checagem: a soma dos
+    // arquivos ainda é conferida aqui, antes de virar escrita no banco.
+    if (rejectOversizedBatch(uploaded, res)) return;
 
     const prefix = normalizeRelativePath(String((req.body as { prefix?: string })?.prefix ?? '')) ?? '';
     const files = await setFiles(

@@ -49,6 +49,8 @@ const detail = {
   name: 'Minha Skill',
   description: 'Faz coisas',
   isPublic: false,
+  useAsPrompt: false,
+  useAsResource: false,
   viewCount: 0,
   downloadCount: 0,
   score: 0,

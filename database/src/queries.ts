@@ -46,7 +46,8 @@ export type ListOptions = {
 };
 
 const SKILL_COLUMNS = sql`
-  s.uuid, s.slug, s.name, s.description, s.is_public, s.view_count, s.download_count,
+  s.uuid, s.slug, s.name, s.description, s.is_public, s.use_as_prompt, s.use_as_resource,
+  s.view_count, s.download_count,
   s.created_at, s.updated_at,
   COALESCE((
     SELECT array_agg(t.name ORDER BY t.name)
@@ -66,6 +67,8 @@ function toSummary(row: Row): SkillSummary {
     name: row.name,
     description: row.description ?? '',
     isPublic: Boolean(row.is_public),
+    useAsPrompt: Boolean(row.use_as_prompt),
+    useAsResource: Boolean(row.use_as_resource),
     viewCount,
     downloadCount,
     score: skillScore(viewCount, downloadCount),
@@ -142,6 +145,47 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
     limit,
     offset,
   };
+}
+
+/** Superfície do MCP público em que a skill é oferecida além das ferramentas. */
+export type PublicationSurface = 'prompt' | 'resource';
+
+/** O que `prompts/list` e `resources/list` precisam de cada skill, e nada mais. */
+export type PublishedSkill = {
+  slug: string;
+  name: string;
+  description: string;
+};
+
+/**
+ * Skills públicas flagadas para uma das superfícies (`use_as_prompt` /
+ * `use_as_resource`), na forma exata dos índices parciais de `007`.
+ *
+ * Não reusa `listSkills` por dois motivos: aquela limita o resultado a 100, o
+ * que esconderia skills em silêncio numa listagem que o protocolo entrega
+ * inteira, sem cursor nem teto; e carrega por linha uma agregação de tags e
+ * uma contagem de arquivos que as duas listagens descartam. Como não há teto,
+ * a linha precisa ser barata — daí só três colunas.
+ *
+ * A ordem por slug é estável entre chamadas. A lista é recomputada a cada
+ * requisição (nada notifica o cliente sobre mudança), e um catálogo que chega
+ * embaralhado a cada listagem seria ruído para quem o mostra ao usuário.
+ */
+export async function listPublishedSkills(surface: PublicationSurface): Promise<PublishedSkill[]> {
+  const flag = surface === 'prompt' ? sql`s.use_as_prompt` : sql`s.use_as_resource`;
+
+  const result = await db().execute(sql`
+    SELECT s.slug, s.name, s.description
+    FROM skills s
+    WHERE s.is_public AND ${flag}
+    ORDER BY s.slug ASC
+  `);
+
+  return (result.rows as Row[]).map((row) => ({
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+  }));
 }
 
 export async function getSkillSummary(
@@ -277,12 +321,45 @@ export async function listTags(
 
 // -------------------------------------------------------------- escrita ----
 
+/**
+ * Texto vindo de JSON que ninguém validou.
+ *
+ * O MCP valida a entrada com zod antes de chegar aqui, mas a rota REST do
+ * painel entrega o corpo cru: `{"slug": 123}` fazia `(123).trim()` estourar
+ * `TypeError` e virar HTTP 500, quando tipo errado é erro do cliente (400).
+ * `null` é tratado como ausente — cada chamador decide o que fazer com isso,
+ * como já fazia com `undefined`.
+ */
+function optionalText(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw badRequest(`O campo "${field}" deve ser uma string`);
+  return value;
+}
+
+/**
+ * Mesma história de `optionalText`, para a lista de tags: `{"tags": "abc"}`
+ * fazia `.map` estourar. Só o container é conferido — os itens seguem
+ * tolerantes em `replaceTagsTx`, que já normaliza qualquer coisa com
+ * `String(tag ?? '')`.
+ */
+function optionalTextList(value: unknown, field: string): readonly string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw badRequest(`O campo "${field}" deve ser uma lista`);
+  return value as readonly string[];
+}
+
 export type CreateSkillInput = {
   name: string;
   description?: string;
   skillMd: string;
   tags?: string[];
   isPublic?: boolean;
+  /**
+   * Superfícies do MCP público (prompt e `skill://<slug>`). Independentes de
+   * `isPublic`: sem ela nada aparece, mas a configuração fica guardada.
+   */
+  useAsPrompt?: boolean;
+  useAsResource?: boolean;
   slug?: string;
   /**
    * Anexos gravados na mesma transação da criação (importação de `.zip`).
@@ -300,11 +377,15 @@ export async function createSkill(
   source: AuditSource,
   actor?: AuditActor | null,
 ): Promise<SkillDetail> {
-  const name = (input.name ?? '').trim();
+  const name = (optionalText(input.name, 'name') ?? '').trim();
   if (!name) throw badRequest('O campo "name" é obrigatório');
   if (typeof input.skillMd !== 'string' || !input.skillMd.trim()) {
     throw badRequest('O conteúdo do SKILL.md é obrigatório');
   }
+
+  const requestedSlug = optionalText(input.slug, 'slug');
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const tags = optionalTextList(input.tags, 'tags') ?? [];
 
   // Validado antes de abrir a transação: um caminho recusado no meio da
   // gravação deixaria a skill criada sem parte dos anexos.
@@ -320,7 +401,7 @@ export async function createSkill(
     // O SKILL.md vem por `skillMd`; um homônimo entre os anexos é ignorado.
     .filter((file) => !isSkillMd(file.path));
 
-  const explicitSlug = Boolean(input.slug?.trim());
+  const explicitSlug = Boolean(requestedSlug?.trim());
   let slug = '';
 
   // `resolveSlug` consulta os slugs ocupados e o INSERT acontece depois: duas
@@ -328,13 +409,15 @@ export async function createSkill(
   // nome, a intenção é "qualquer slug livre" e vale tentar de novo; com slug
   // pedido explicitamente, o conflito é a resposta correta.
   for (let attempt = 1; ; attempt += 1) {
-    slug = await resolveSlug(input.slug, name);
+    slug = await resolveSlug(requestedSlug, name);
 
     try {
       await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, is_public, created_by_user_uuid)
-          VALUES (${slug}, ${name}, ${input.description?.trim() ?? ''}, ${input.isPublic === true},
+          INSERT INTO skills (slug, name, description, is_public, use_as_prompt, use_as_resource,
+                              created_by_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${input.isPublic === true},
+                  ${input.useAsPrompt === true}, ${input.useAsResource === true},
                   ${actor?.userUuid ?? null})
           RETURNING uuid
         `);
@@ -344,7 +427,7 @@ export async function createSkill(
         for (const file of attachments) {
           await upsertFileTx(tx, uuid, file.path, file.buffer);
         }
-        await replaceTagsTx(tx, uuid, input.tags ?? []);
+        await replaceTagsTx(tx, uuid, tags);
         await auditTx(tx, {
           skillUuid: uuid,
           skillSlug: slug,
@@ -374,6 +457,9 @@ export type UpdateSkillInput = {
   description?: string;
   tags?: string[];
   isPublic?: boolean;
+  /** Como em `CreateSkillInput`: `undefined` mantém o que já está gravado. */
+  useAsPrompt?: boolean;
+  useAsResource?: boolean;
   slug?: string;
 };
 
@@ -385,12 +471,22 @@ export async function updateSkill(
 ): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
 
-  const name = input.name?.trim();
+  const name = optionalText(input.name, 'name')?.trim();
   if (input.name !== undefined && !name) throw badRequest('O campo "name" não pode ficar vazio');
 
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const tags = optionalTextList(input.tags, 'tags') ?? [];
+
+  // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
+  const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
+  const useAsResource = input.useAsResource ?? existing.useAsResource;
+
+  // Slug vazio continua significando "mantém o atual", como antes de haver
+  // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim();
   const newSlug =
-    input.slug !== undefined && input.slug.trim() && input.slug.trim() !== existing.slug
-      ? await resolveSlug(input.slug, input.slug)
+    requestedSlug && requestedSlug !== existing.slug
+      ? await resolveSlug(requestedSlug, requestedSlug)
       : existing.slug;
 
   try {
@@ -398,15 +494,17 @@ export async function updateSkill(
       await tx.execute(sql`
         UPDATE skills SET
           name = ${name ?? existing.name},
-          description = ${input.description !== undefined ? input.description.trim() : existing.description},
+          description = ${input.description !== undefined ? description : existing.description},
           is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          use_as_prompt = ${useAsPrompt},
+          use_as_resource = ${useAsResource},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
       `);
 
       if (input.tags !== undefined) {
-        await replaceTagsTx(tx, existing.uuid, input.tags);
+        await replaceTagsTx(tx, existing.uuid, tags);
       }
 
       await auditTx(tx, {
@@ -447,12 +545,22 @@ export async function updateSkillWithContent(
 ): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
 
-  const name = input.name?.trim();
+  const name = optionalText(input.name, 'name')?.trim();
   if (input.name !== undefined && !name) throw badRequest('O campo "name" não pode ficar vazio');
 
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const tags = optionalTextList(input.tags, 'tags') ?? [];
+
+  // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
+  const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
+  const useAsResource = input.useAsResource ?? existing.useAsResource;
+
+  // Slug vazio continua significando "mantém o atual", como antes de haver
+  // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim();
   const newSlug =
-    input.slug !== undefined && input.slug.trim() && input.slug.trim() !== existing.slug
-      ? await resolveSlug(input.slug, input.slug)
+    requestedSlug && requestedSlug !== existing.slug
+      ? await resolveSlug(requestedSlug, requestedSlug)
       : existing.slug;
 
   const previousSkillMd =
@@ -463,15 +571,17 @@ export async function updateSkillWithContent(
       await tx.execute(sql`
         UPDATE skills SET
           name = ${name ?? existing.name},
-          description = ${input.description !== undefined ? input.description.trim() : existing.description},
+          description = ${input.description !== undefined ? description : existing.description},
           is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          use_as_prompt = ${useAsPrompt},
+          use_as_resource = ${useAsResource},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
       `);
 
       if (input.tags !== undefined) {
-        await replaceTagsTx(tx, existing.uuid, input.tags);
+        await replaceTagsTx(tx, existing.uuid, tags);
       }
 
       if (typeof input.skillMd === 'string') {
@@ -1265,6 +1375,11 @@ async function upsertFileTx(tx: Tx, skillUuid: string, path: string, buffer: Buf
   `);
 }
 
+/**
+ * Os chamadores garantem que `rawTags` é um array (`optionalTextList`); aqui os
+ * itens seguem tolerantes de propósito: número ou `null` numa lista de tags
+ * vira texto e é descartado se ficar vazio, sem derrubar a gravação inteira.
+ */
 async function replaceTagsTx(tx: Tx, skillUuid: string, rawTags: readonly string[]) {
   const names = Array.from(
     new Set(

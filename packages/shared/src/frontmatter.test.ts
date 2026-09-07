@@ -143,6 +143,8 @@ describe('skillMetaFromMarkdown', () => {
       description: 'Faz X',
       slug: 'minha-skill',
       tags: ['git', 'ci'],
+      useAsPrompt: false,
+      useAsResource: false,
     });
   });
 
@@ -165,6 +167,8 @@ describe('skillMetaFromMarkdown', () => {
       description: null,
       slug: null,
       tags: [],
+      useAsPrompt: false,
+      useAsResource: false,
     });
   });
 
@@ -181,6 +185,29 @@ describe('skillMetaFromMarkdown', () => {
       description: original.description,
       slug: original.slug,
       tags: original.tags,
+      // `buildFrontmatter` não escreve as flags: o `.zip` gerado aqui volta
+      // sempre desligado, ainda que a skill de origem estivesse flagada.
+      useAsPrompt: false,
+      useAsResource: false,
     });
+  });
+
+  it('lê as flags de publicação de um SKILL.md externo, na raiz ou em metadata', () => {
+    const raiz = skillMetaFromMarkdown('---\nname: a\nuse_as_prompt: true\n---\ncorpo');
+    expect(raiz.useAsPrompt).toBe(true);
+    expect(raiz.useAsResource).toBe(false);
+
+    const emMetadata = skillMetaFromMarkdown(
+      '---\nname: a\nmetadata:\n  use_as_resource: true\n---\ncorpo',
+    );
+    expect(emMetadata.useAsResource).toBe(true);
+  });
+
+  it('só o texto `true` liga uma flag', () => {
+    for (const valor of ['false', 'sim', '1', 'yes', 'True']) {
+      expect(skillMetaFromMarkdown(`---\nname: a\nuse_as_prompt: ${valor}\n---\ncorpo`).useAsPrompt).toBe(
+        false,
+      );
+    }
   });
 });

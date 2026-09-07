@@ -3,6 +3,7 @@ import { useMeta } from '../useMeta.js';
 import { useReveal } from '../useReveal.js';
 import { Masthead } from '../components/catalog/Masthead.js';
 import { Connect } from '../components/catalog/Connect.js';
+import { ConnectAdmin } from '../components/catalog/ConnectAdmin.js';
 import { Endpoints } from '../components/catalog/Endpoints.js';
 import { Catalog } from '../components/catalog/Catalog.js';
 
@@ -19,6 +20,7 @@ export function HomePage() {
       <Masthead />
       <Catalog />
       <Connect />
+      <ConnectAdmin />
       <Endpoints />
     </>
   );

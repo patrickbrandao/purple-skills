@@ -79,6 +79,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Selo das superfícies extras do MCP, à direita do slug. */
+.skill-card .sk-surface {
+  flex: none;
+  margin-left: auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--brand);
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+}
+/* Com os dois selos, só o primeiro empurra: o segundo cola nele. */
+.skill-card .sk-surface + .sk-surface {
+  margin-left: 0;
+}
 .skill-card h4 {
   font-family: var(--font-display);
   font-size: 1.18rem;
@@ -665,6 +681,45 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   }
 }
 
+
+/* As duas portas além das ferramentas: prompt e resource. */
+.connect-surfaces {
+  max-width: 850px;
+  margin: clamp(28px, 5vh, 46px) auto 0;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  font-size: 0.92rem;
+  color: var(--text-dim);
+}
+.connect-surfaces ul {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+.connect-surfaces li {
+  padding-left: 16px;
+  border-left: 2px solid var(--brand-soft);
+  line-height: 1.65;
+}
+.connect-surfaces strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.connect-surfaces code,
+.connect-surfaces .s-tag {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  color: var(--brand);
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+}
+.connect-surfaces .s-tag {
+  border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+  border-radius: 999px;
+}
 
 /* ============================================================
    ENDEREÇOS DE ACESSO

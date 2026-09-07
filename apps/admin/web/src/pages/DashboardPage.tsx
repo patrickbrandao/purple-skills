@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  canManageUsers,
   canWrite,
   formatDateTime,
   getAudit,
@@ -11,7 +12,7 @@ import {
   type SkillSummary,
   type Stats,
 } from '../api.js';
-import { Badge, Panel } from '../components/ui.js';
+import { Badge, Panel, PublicationBadges } from '../components/ui.js';
 import { HistoryIcon, PlusIcon, TrendIcon } from '../components/Icons.js';
 
 const ACTION_LABEL: Record<AuditEntry['action'], string> = {
@@ -42,15 +43,21 @@ export function DashboardPage({ user }: { user: SessionUser }) {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [top, setTop] = useState<SkillSummary[]>([]);
 
+  // A trilha expõe e-mail de quem agiu e de quem sofreu a ação: `/api/audit` é
+  // restrita a admin, então nem pedimos nem mostramos o painel para os demais.
+  const showAudit = canManageUsers(user.role);
+
   useEffect(() => {
     getStats().then(setStats).catch(() => void 0);
-    getAudit()
-      .then((data) => setAudit(data.items.slice(0, 12)))
-      .catch(() => void 0);
+    if (showAudit) {
+      getAudit()
+        .then((data) => setAudit(data.items.slice(0, 12)))
+        .catch(() => void 0);
+    }
     listSkills({ limit: 6, sort: 'score' })
       .then((data) => setTop(data.items))
       .catch(() => void 0);
-  }, []);
+  }, [showAudit]);
 
   // Milhar separado: 28410 acessos é bem menos legível que 28.410.
   const num = (value: number | undefined) =>
@@ -88,7 +95,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
         ))}
       </div>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-2">
+      <div className={`mt-5 grid gap-5 ${showAudit ? 'lg:grid-cols-2' : ''}`}>
         <Panel title="Mais acessadas" icon={<TrendIcon />}>
           <div className="rank-list">
             {top.map((skill) => (
@@ -98,6 +105,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
                   <span className="row-sub">{skill.slug}</span>
                 </span>
                 <Badge isPublic={skill.isPublic} />
+                <PublicationBadges skill={skill} />
                 <span className="pts">{skill.score} pts</span>
               </Link>
             ))}
@@ -105,27 +113,29 @@ export function DashboardPage({ user }: { user: SessionUser }) {
           </div>
         </Panel>
 
-        <Panel title="Auditoria" icon={<HistoryIcon />}>
-          <div className="audit-list">
-            {audit.map((entry) => (
-              <div className="audit-row" key={entry.id}>
-                <span className="when">{formatDateTime(entry.createdAt)}</span>
-                <span className="who" title={entry.actorLabel ?? 'ator desconhecido'}>
-                  {entry.actorLabel ?? '—'}
-                </span>
-                <span className={`act ${ACTION_CLASS[entry.action]}`}>
-                  {ACTION_LABEL[entry.action]}
-                </span>
-                <span className="what">
-                  {entry.skillSlug ?? entry.targetLabel ?? '—'}
-                  {entry.filePath && ` / ${entry.filePath}`}
-                </span>
-                <span className="src">{entry.source}</span>
-              </div>
-            ))}
-            {audit.length === 0 && <p className="list-empty">Sem atividade registrada.</p>}
-          </div>
-        </Panel>
+        {showAudit && (
+          <Panel title="Auditoria" icon={<HistoryIcon />}>
+            <div className="audit-list">
+              {audit.map((entry) => (
+                <div className="audit-row" key={entry.id}>
+                  <span className="when">{formatDateTime(entry.createdAt)}</span>
+                  <span className="who" title={entry.actorLabel ?? 'ator desconhecido'}>
+                    {entry.actorLabel ?? '—'}
+                  </span>
+                  <span className={`act ${ACTION_CLASS[entry.action]}`}>
+                    {ACTION_LABEL[entry.action]}
+                  </span>
+                  <span className="what">
+                    {entry.skillSlug ?? entry.targetLabel ?? '—'}
+                    {entry.filePath && ` / ${entry.filePath}`}
+                  </span>
+                  <span className="src">{entry.source}</span>
+                </div>
+              ))}
+              {audit.length === 0 && <p className="list-empty">Sem atividade registrada.</p>}
+            </div>
+          </Panel>
+        )}
       </div>
     </>
   );

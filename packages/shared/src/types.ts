@@ -6,6 +6,14 @@ export type SkillSummary = {
   name: string;
   description: string;
   isPublic: boolean;
+  /**
+   * Oferece a skill como *prompt* e como *resource* (`skill://<slug>`) do MCP
+   * público. São ortogonais a `isPublic`: sozinhas não publicam nada — quem
+   * decide a visibilidade continua sendo `isPublic`. Ver
+   * `docs/06-publicacao-mcp.md` §3.1.
+   */
+  useAsPrompt: boolean;
+  useAsResource: boolean;
   viewCount: number;
   downloadCount: number;
   score: number;
