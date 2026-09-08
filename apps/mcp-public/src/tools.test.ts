@@ -21,6 +21,7 @@ const summary = {
   name: 'Minha Skill',
   description: 'Faz coisas',
   isPublic: true,
+  useAsSkill: true,
   useAsPrompt: false,
   useAsResource: false,
   viewCount: 10,
@@ -58,12 +59,14 @@ describe('search_skills', () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it('nunca expõe skills privadas', async () => {
+  it('nunca expõe skills privadas nem as que estão fora das ferramentas', async () => {
     db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
 
     await handlers.search_skills({ query: 'x' });
 
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ includePrivate: false }));
+    expect(db.listSkills).toHaveBeenCalledWith(
+      expect.objectContaining({ includePrivate: false, onlyAsSkill: true }),
+    );
   });
 
   it('responde com texto amigável quando não há resultados', async () => {
@@ -193,8 +196,62 @@ describe('list_tags', () => {
 
     const result = await handlers.list_tags();
 
-    expect(db.listTags).toHaveBeenCalledWith({ includePrivate: false });
+    expect(db.listTags).toHaveBeenCalledWith({ includePrivate: false, onlyAsSkill: true });
     expect(JSON.parse(result.content[0].text).tags).toEqual([{ name: 'git', count: 2 }]);
+  });
+});
+
+describe('use_as_skill', () => {
+  // O recorte é da consulta, não daqui: os handlers que recebem slug precisam
+  // pedi-lo, senão uma skill fora das ferramentas continuaria legível por quem
+  // já souber o slug — e o slug sai do site, que segue mostrando ela.
+  it('as três leituras por slug pedem o recorte da superfície de ferramentas', async () => {
+    db.getSkillDetail.mockResolvedValue(detail);
+    db.getSkillSummary.mockResolvedValue(summary);
+    db.readFile.mockResolvedValue(null);
+
+    await handlers.get_skill({ slug: 'minha-skill' });
+    await handlers.get_skill_file({ slug: 'minha-skill', path: 'ref/extra.md' });
+    await handlers.download_skill({ slug: 'minha-skill' });
+
+    const recorte = { includePrivate: false, onlyAsSkill: true };
+    expect(db.getSkillDetail).toHaveBeenCalledWith('minha-skill', recorte);
+    expect(db.getSkillSummary).toHaveBeenNthCalledWith(1, 'minha-skill', recorte);
+    expect(db.getSkillSummary).toHaveBeenNthCalledWith(2, 'minha-skill', recorte);
+  });
+
+  // A skill sem a flag chega como nulo — a query já a recortou — e a recusa
+  // fica indistinta da de um slug inexistente, como na §5.5.
+  it('a skill fora das ferramentas responde o mesmo "não encontrada" de um slug inexistente', async () => {
+    db.getSkillDetail.mockResolvedValue(null);
+    db.getSkillSummary.mockResolvedValue(null);
+
+    expect((await handlers.get_skill({ slug: 'minha-skill' })).isError).toBe(true);
+    expect((await handlers.download_skill({ slug: 'minha-skill' })).isError).toBe(true);
+    expect(
+      (await handlers.get_skill_file({ slug: 'minha-skill', path: 'ref/extra.md' })).isError,
+    ).toBe(true);
+    expect(db.incrementViewCount).not.toHaveBeenCalled();
+  });
+
+  // O caso que a feature existe para permitir: publicada só como prompt e como
+  // resource. As duas superfícies não podem enxergar `use_as_skill`.
+  it('não alcança prompt nem resource: uma skill pode viver só neles', async () => {
+    const soPromptEResource = {
+      ...detail,
+      useAsSkill: false,
+      useAsPrompt: true,
+      useAsResource: true,
+    };
+    db.getSkillDetail.mockResolvedValue(soPromptEResource);
+
+    const prompt = await surfaces.getPrompt('minha-skill');
+    const resource = await surfaces.readResource('skill://minha-skill');
+
+    expect(prompt.messages[0].content.text).toContain('Conteúdo.');
+    expect(resource.contents[0].text).toBe(composeSkillMd(soPromptEResource, detail.skillMd));
+    // Sem `onlyAsSkill`: aqui o recorte é só o de visibilidade.
+    expect(db.getSkillDetail).toHaveBeenCalledWith('minha-skill', { includePrivate: false });
   });
 });
 

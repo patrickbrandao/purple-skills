@@ -20,9 +20,13 @@ Regras importantes:
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
   arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
 - Skills recém-criadas nascem privadas, a menos que is_public=true.
-- use_as_prompt e use_as_resource oferecem a skill também como prompt e como
-  resource skill://<slug> do MCP público. São independentes de is_public: sem
-  a skill pública, nenhuma das duas aparece para ninguém.
+- is_public é o interruptor global da publicação: com ela em false a skill não
+  aparece em superfície nenhuma do MCP público.
+- Com ela em true, três flags dizem por onde a skill é oferecida, e são
+  independentes entre si: use_as_skill (padrão true) a mantém nas ferramentas
+  do MCP público — search_skills, get_skill e as demais; use_as_prompt a
+  oferece como prompt, pelo slug; use_as_resource, como resource
+  skill://<slug>. Desligar use_as_skill publica a skill só nas outras duas.
 - delete_skill é irreversível e exige confirm=true.
 - As ferramentas de escrita dependem do papel da credencial: uma chave de
   usuário "leitor" só lê, e apagar skill exige papel "admin".`;
@@ -108,6 +112,14 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .describe('Nome oficial da skill (a-z, 0-9 e hífen). Gerado a partir do nome se omitido.')
           .optional(),
         is_public: z.boolean().describe('Publicar imediatamente (padrão false).').optional(),
+        use_as_skill: z
+          .boolean()
+          .describe(
+            'Mantém a skill nas ferramentas do MCP público — search_skills, get_skill, ' +
+              'get_skill_file, download_skill e list_tags (padrão true). Em false, ela só ' +
+              'aparece pelas superfícies abaixo que estiverem ligadas.',
+          )
+          .optional(),
         use_as_prompt: z
           .boolean()
           .describe('Oferece a skill como prompt do MCP público, pelo slug (padrão false).')
@@ -136,6 +148,10 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         new_slug: z
           .string()
           .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
+          .optional(),
+        use_as_skill: z
+          .boolean()
+          .describe('Mantém a skill nas ferramentas do MCP público (padrão true).')
           .optional(),
         use_as_prompt: z
           .boolean()

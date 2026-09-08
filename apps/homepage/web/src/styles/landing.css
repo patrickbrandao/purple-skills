@@ -15,7 +15,7 @@
   align-items: center;
   position: relative;
   overflow: hidden;
-  padding-top: 150px;
+  padding-top: 120px;
   padding-bottom: clamp(36px, 5vh, 56px);
   background: linear-gradient(var(--bg-2) 0, var(--bg) 640px);
 }
@@ -29,7 +29,9 @@
   margin-inline: auto;
 }
 .hero-fig {
-  width: clamp(88px, 10vw, 116px);
+  width: 220px;
+  height: 220px;
+  max-width: 100%;
   margin: 0 auto 18px;
   filter: drop-shadow(0 18px 34px rgba(124, 36, 180, 0.35));
   animation: floaty 6s ease-in-out infinite;
@@ -115,7 +117,7 @@
   display: grid;
   grid-template-columns: auto auto 1fr;
   align-items: center;
-  gap: clamp(18px, 3.5vw, 44px);
+  gap: clamp(8px, 1.5vw, 18px);
 }
 .connect-agent {
   display: flex;
@@ -141,7 +143,7 @@
   color: var(--gold);
 }
 .connect-link .cl-line {
-  width: clamp(18px, 3.5vw, 56px);
+  width: clamp(10px, 1.6vw, 26px);
   height: 2px;
   border-radius: 2px;
   background: linear-gradient(90deg, var(--brand), var(--gold));
@@ -153,6 +155,18 @@
 }
 .connect-code {
   min-width: 0;
+}
+/* Aperta o cabeçalho e o corpo do bloco para o título e o código
+   caberem sem quebrar linha nem revelar a barra de rolagem à toa. */
+.connect-code .code-top {
+  gap: 6px;
+  padding-inline: 14px;
+}
+.connect-code .code-top span:not(.tl) {
+  margin-left: 6px;
+}
+.connect-code .code-body {
+  padding-inline: 16px;
 }
 @media (max-width: 820px) {
   .connect-diagram {
@@ -1268,8 +1282,51 @@
   padding-block: clamp(90px, 14vw, 170px);
   text-align: center;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg);
+}
+.finale-mascot {
+  position: absolute;
+  left: calc(clamp(20px, 5vw, 48px) + 24px);
+  top: 0;
+  width: 200px;
+  height: 200px;
+  transform: translateY(-75%);
+  z-index: 3;
+  pointer-events: none;
+}
+@media (max-width: 720px) {
+  .finale-mascot {
+    width: 150px;
+    height: 150px;
+  }
+}
+/* o bot chega logo depois do quadro e "pousa" sentado na borda */
+.js-enabled .finale-mascot {
+  opacity: 0;
+}
+.js-enabled .finale-card.in ~ .finale-mascot {
+  animation: botLand 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.28s both;
+}
+@keyframes botLand {
+  0% {
+    opacity: 0;
+    transform: translateY(-75%) translateY(64px) rotate(-9deg);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-75%) translateY(-7px) rotate(4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(-75%) rotate(0deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .js-enabled .finale-card.in ~ .finale-mascot {
+    animation: none;
+    opacity: 1;
+  }
 }
 .finale-card {
   position: relative;

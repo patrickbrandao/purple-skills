@@ -36,12 +36,14 @@ export const skills = pgTable(
     slug: text('slug').notNull().unique(),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
+    /** Interruptor global: em `false` não há publicação em superfície alguma. */
     isPublic: boolean('is_public').notNull().default(false),
-    /**
-     * Superfícies do MCP público além das ferramentas: prompt (pelo slug) e
-     * resource (`skill://<slug>`). Ortogonais a `is_public` — sozinhas não
-     * publicam nada. Ver `schema/007-publicacao-mcp.sql`.
-     */
+    // Por quais superfícies do MCP público a skill sai: as ferramentas, o
+    // prompt (pelo slug) e o resource `skill://<slug>`. Ortogonais entre si e a
+    // `is_public` — sozinhas não publicam nada. Ver `schema/007-publicacao-mcp.sql`
+    // e `schema/008-publicacao-como-skill.sql`.
+    /** Opt-out: nasce `true` porque as ferramentas são o padrão de toda skill pública. */
+    useAsSkill: boolean('use_as_skill').notNull().default(true),
     useAsPrompt: boolean('use_as_prompt').notNull().default(false),
     useAsResource: boolean('use_as_resource').notNull().default(false),
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),

@@ -117,6 +117,7 @@ export type MarkdownSkillMeta = {
   /** `name` do frontmatter, quando já é um slug válido. */
   slug: string | null;
   tags: string[];
+  useAsSkill: boolean;
   useAsPrompt: boolean;
   useAsResource: boolean;
 };
@@ -147,6 +148,11 @@ export function skillMetaFromMarkdown(source: string): MarkdownSkillMeta {
     // Um `.zip` de terceiro pré-configura as flags, mas nunca se autopublica:
     // `is_public` vem só do formulário do import, e sem ele nada aparece no MCP.
     // O valor chega como texto e liga só com `true`, como o `isPublic` de lá.
+    //
+    // `use_as_skill` é o espelho: nasce ligada, então a leitura só a **desliga**,
+    // e só com o literal `false`. Um `.zip` calado mantém o padrão do schema, e
+    // a chave ausente nunca é confundida com uma escolha de desligar.
+    useAsSkill: data.use_as_skill !== 'false',
     useAsPrompt: data.use_as_prompt === 'true',
     useAsResource: data.use_as_resource === 'true',
   };

@@ -113,6 +113,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           name: skill.name,
           description: skill.description,
           visibility: skill.isPublic ? 'public' : 'private',
+          useAsSkill: skill.useAsSkill,
           useAsPrompt: skill.useAsPrompt,
           useAsResource: skill.useAsResource,
           tags: skill.tags,
@@ -133,6 +134,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         name: detail.name,
         description: detail.description,
         visibility: detail.isPublic ? 'public' : 'private',
+        useAsSkill: detail.useAsSkill,
         useAsPrompt: detail.useAsPrompt,
         useAsResource: detail.useAsResource,
         tags: detail.tags,
@@ -175,6 +177,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       tags?: string[];
       slug?: string;
       is_public?: boolean;
+      use_as_skill?: boolean;
       use_as_prompt?: boolean;
       use_as_resource?: boolean;
     }): Promise<ToolResult> {
@@ -190,6 +193,9 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           skillMd: stripFrontmatter(args.skill_md_content),
           tags: args.tags,
           isPublic: args.is_public === true,
+          // Espelho das outras duas: esta nasce ligada, então só o `false`
+          // explícito a desliga. Omitir mantém a skill nas ferramentas.
+          useAsSkill: args.use_as_skill !== false,
           useAsPrompt: args.use_as_prompt === true,
           useAsResource: args.use_as_resource === true,
         },
@@ -210,6 +216,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       description?: string;
       tags?: string[];
       new_slug?: string;
+      use_as_skill?: boolean;
       use_as_prompt?: boolean;
       use_as_resource?: boolean;
     }): Promise<ToolResult> {
@@ -223,6 +230,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           description: args.description,
           tags: args.tags,
           slug: args.new_slug,
+          useAsSkill: args.use_as_skill,
           useAsPrompt: args.use_as_prompt,
           useAsResource: args.use_as_resource,
         },

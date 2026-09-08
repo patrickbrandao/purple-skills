@@ -18,7 +18,7 @@ export function Masthead() {
           <h1 className="display">
             {meta?.name ?? 'Purple Skills'}
             <br />
-            <span className="grad-text">o seu catálogo de skills.</span>
+            <span className="grad-text">Sua biblioteca de habilidades</span>
           </h1>
           <p className="sub">
             {meta?.tagline ?? 'Catálogo aberto de skills para agentes de IA'}. Procure a skill que
@@ -49,9 +49,9 @@ export function Masthead() {
           className="masthead-fig wiz"
           src="/assets/images/wizard-10_512.png"
           alt="O Mago Roxo, mascote do Purple Skills"
-          width={512}
-          height={512}
-          style={{ width: 512, height: 512 }}
+          width={380}
+          height={380}
+          style={{ width: 380, height: 380 }}
         />
       </div>
     </header>

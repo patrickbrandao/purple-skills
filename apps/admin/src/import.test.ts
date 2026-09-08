@@ -40,12 +40,16 @@ async function importar(skillMd: string, campos: Record<string, string> = {}) {
   await rota('post', '/api/skills/import')(req as never, res as never, (() => {}) as never);
   await new Promise((resolve) => setImmediate(resolve));
 
-  return criar.mock.calls[0]?.[0];
+  // A última chamada, não a primeira: um teste que importa mais de um .zip
+  // compara cada resultado com a importação que acabou de fazer.
+  return criar.mock.calls.at(-1)?.[0];
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  criar.mockResolvedValue({ slug: 'minha-skill', files: [] });
+  // `skillMd` entra porque a rota passa o retorno por `bodyOnly` antes de
+  // responder: sem ele cada importação despeja um TypeError no stderr do teste.
+  criar.mockResolvedValue({ slug: 'minha-skill', skillMd: '', files: [] });
 });
 
 describe('POST /api/skills/import', () => {
@@ -71,5 +75,19 @@ describe('POST /api/skills/import', () => {
     const input = await importar('# Corpo\n', { useAsResource: 'true' });
 
     expect(input).toMatchObject({ useAsPrompt: false, useAsResource: true });
+  });
+
+  // `use_as_skill` é a única que nasce ligada: o .zip calado não a desliga, e
+  // o desligamento vale venha ele do formulário ou do frontmatter.
+  it('a superfície de ferramentas só é desligada por quem disser `false`', async () => {
+    expect(await importar('# Corpo\n')).toMatchObject({ useAsSkill: true });
+
+    expect(await importar('---\nname: a\nuse_as_skill: false\n---\n# Corpo\n')).toMatchObject({
+      useAsSkill: false,
+    });
+
+    expect(await importar('# Corpo\n', { useAsSkill: 'false' })).toMatchObject({
+      useAsSkill: false,
+    });
   });
 });

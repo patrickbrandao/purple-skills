@@ -21,7 +21,10 @@ Fluxo recomendado:
 
 Algumas skills também estão publicadas como prompt — pelo próprio slug — e como
 resource, na URI skill://<slug>. As ferramentas acima não dizem quais: quem
-mostra são prompts/list e resources/list.
+mostra são prompts/list e resources/list. As três superfícies são independentes,
+então uma skill pode estar publicada só como prompt ou só como resource e não
+aparecer em search_skills — consulte as três listagens antes de concluir que uma
+skill não existe aqui.
 
 Somente skills marcadas como públicas são expostas aqui.`;
 

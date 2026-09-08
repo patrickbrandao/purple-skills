@@ -91,9 +91,17 @@
   border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
   background: color-mix(in srgb, var(--brand) 9%, transparent);
 }
-/* Com os dois selos, só o primeiro empurra: o segundo cola nele. */
+/* Com mais de um selo, só o primeiro empurra: os seguintes colam nele. */
 .skill-card .sk-surface + .sk-surface {
   margin-left: 0;
+}
+/* Selo de ausência: contorno tracejado e sem preenchimento, para não ser lido
+   como mais uma porta aberta. */
+.skill-card .sk-surface.off {
+  color: var(--text-faint);
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
 }
 .skill-card h4 {
   font-family: var(--font-display);
@@ -627,7 +635,7 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   display: grid;
   grid-template-columns: auto auto 1fr;
   align-items: center;
-  gap: clamp(18px, 3.5vw, 44px);
+  gap: clamp(8px, 1.5vw, 18px);
 }
 .connect-agent {
   display: flex;
@@ -653,7 +661,7 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   color: var(--gold);
 }
 .connect-link .cl-line {
-  width: clamp(18px, 3.5vw, 56px);
+  width: clamp(10px, 1.6vw, 26px);
   height: 2px;
   border-radius: 2px;
   background: linear-gradient(90deg, var(--brand), var(--gold));
@@ -665,6 +673,18 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
 }
 .connect-code {
   min-width: 0;
+}
+/* Aperta o cabeçalho e o corpo do bloco para o título e o código
+   caberem sem quebrar linha nem revelar a barra de rolagem à toa. */
+.connect-code .code-top {
+  gap: 6px;
+  padding-inline: 14px;
+}
+.connect-code .code-top span:not(.tl) {
+  margin-left: 6px;
+}
+.connect-code .code-body {
+  padding-inline: 16px;
 }
 @media (max-width: 820px) {
   .connect-diagram {
@@ -719,6 +739,13 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
 .connect-surfaces .s-tag {
   border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
   border-radius: 999px;
+}
+/* Mesmo tratamento do selo no card: ausência é tracejada e apagada. */
+.connect-surfaces .s-tag.off {
+  color: var(--text-faint);
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
 }
 
 /* ============================================================

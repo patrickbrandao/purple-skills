@@ -64,6 +64,29 @@ docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
 O override assume um Traefik já rodando na rede externa `traefik`, com o
 entrypoint `websecure` e o certresolver `le`.
 
+### Depurando os MCPs com o Inspector
+
+O [MCP Inspector](https://github.com/modelcontextprotocol/inspector) oficial
+vem no compose, no perfil `inspector` — o `up -d` do dia a dia não o sobe:
+
+```bash
+docker compose --profile inspector up -d mcp-inspector
+```
+
+Abra <http://localhost:6274> e aponte para os servidores pelo **nome do
+serviço**, não por `localhost`: quem conecta é o backend do inspector, de
+dentro da rede `internal`.
+
+| Servidor | URL | Autenticação |
+|----------|-----|--------------|
+| mcp-public | `http://mcp-public:3002/mcp` | `Authorization: Bearer $MCP_PUBLIC_KEY`, se definida |
+| mcp-admin | `http://mcp-admin:3003/mcp` | `Authorization: Bearer $MCP_ADMIN_TOKEN` (obrigatório) |
+
+O inspector sobe **sem autenticação própria** (`DANGEROUSLY_OMIT_AUTH`), o que
+só é aceitável porque a porta fica em `127.0.0.1`. Com `BIND_ADDR=0.0.0.0` ele
+vira um cliente MCP aberto na rede, com caminho até o `mcp-admin` — não deixe
+ligado fora da máquina de desenvolvimento.
+
 ## Desenvolvimento local
 
 Requer Node.js 22+ (LTS) e um Postgres 18 acessível.
@@ -164,29 +187,36 @@ Exemplo de configuração em um cliente MCP:
 }
 ```
 
-### Prompts e resources do MCP público
+### Por onde cada skill é publicada
 
-Além das ferramentas, uma skill pública pode ser oferecida em mais duas
-superfícies do protocolo — cada uma ligada por sua flag, uma skill de cada vez:
+`is_public` é o **interruptor global**: com ela desligada a skill não aparece
+no site, na API REST nem em superfície nenhuma do MCP público. Com ela ligada,
+três flags independentes dizem por quais superfícies do protocolo a skill sai —
+qualquer combinação vale, inclusive nenhuma:
 
-| Superfície | Como aparece no cliente |
-|------------|-------------------------|
-| `use_as_prompt` | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
-| `use_as_resource` | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
+| Flag | Padrão | Como aparece no cliente |
+|------|--------|-------------------------|
+| `use_as_skill` | **ligada** | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags`. Desligada, some das cinco |
+| `use_as_prompt` | desligada | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
+| `use_as_resource` | desligada | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
 
-As duas **contam acesso** (`view_count`), como `get_skill`. Elas dependem de
-`is_public`: numa skill privada as flags ficam guardadas e nada aparece —
-`resources/read` responde o mesmo "não encontrada" de um slug inexistente. As
-listas são montadas por requisição, então publicar uma skill a faz aparecer sem
-reiniciar o servidor nem reabrir a sessão; não há `listChanged`, o cliente
-re-lista quando quiser. O desenho está em
-[`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md).
+As três superfícies **contam acesso** (`view_count`). Numa skill privada as
+flags ficam guardadas e nada aparece; uma skill fora de uma superfície responde
+por ela o mesmo "não encontrada" de um slug inexistente. As listas de prompts e
+resources são montadas por requisição, então publicar uma skill a faz aparecer
+sem reiniciar o servidor nem reabrir a sessão; não há `listChanged`, o cliente
+re-lista quando quiser.
+
+Desligar `use_as_skill` não tira a skill do site nem da API REST: ela continua
+com página, `.zip` e tudo mais — só sai do alcance da busca do agente. O
+desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
+[`docs/07-superficie-de-ferramentas.md`](docs/07-superficie-de-ferramentas.md).
 
 ### Ferramentas do MCP público
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills públicas |
+| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills públicas com `use_as_skill` |
 | `get_skill(slug)` | SKILL.md completo + metadados. **Conta um acesso** |
 | `get_skill_file(slug, path)` | Lê um arquivo auxiliar da skill |
 | `download_skill(slug)` | Devolve a URL do pacote `.zip` |
@@ -207,8 +237,8 @@ e `delete_skill` exige `admin`.
 |-----------|-----------|
 | `list_skills(includePrivate?, query?, tag?, limit?, offset?)` | Lista tudo, inclusive privadas |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?, use_as_prompt?, use_as_resource?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?, use_as_prompt?, use_as_resource?})` | Edita metadados — é por aqui que muda o frontmatter e as duas flags de publicação |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?, use_as_skill?, use_as_prompt?, use_as_resource?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?, use_as_skill?, use_as_prompt?, use_as_resource?})` | Edita metadados — é por aqui que muda o frontmatter e as três flags de publicação |
 | `set_visibility(slug, "public" \| "private")` | Publica/despublica |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |

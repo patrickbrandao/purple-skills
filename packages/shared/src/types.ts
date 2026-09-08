@@ -5,13 +5,23 @@ export type SkillSummary = {
   slug: string;
   name: string;
   description: string;
+  /**
+   * Interruptor global da publicação: em `false` a skill não aparece em
+   * superfície nenhuma do MCP público — nem ferramentas, nem prompt, nem
+   * resource — nem no site. Ver `docs/07-superficie-de-ferramentas.md` §3.3.
+   */
   isPublic: boolean;
   /**
-   * Oferece a skill como *prompt* e como *resource* (`skill://<slug>`) do MCP
-   * público. São ortogonais a `isPublic`: sozinhas não publicam nada — quem
-   * decide a visibilidade continua sendo `isPublic`. Ver
-   * `docs/06-publicacao-mcp.md` §3.1.
+   * Por quais superfícies do MCP público a skill é oferecida: as ferramentas
+   * (`search_skills`, `get_skill`, …), o *prompt* pelo slug e o *resource*
+   * `skill://<slug>`. As três são ortogonais a `isPublic`: sozinhas não
+   * publicam nada — quem decide a visibilidade continua sendo `isPublic`.
+   *
+   * `useAsSkill` nasce `true` (opt-out: a superfície de ferramentas é o
+   * comportamento histórico de toda skill pública); as outras duas nascem
+   * `false` (opt-in). Ver `docs/07-superficie-de-ferramentas.md` §3.1.
    */
+  useAsSkill: boolean;
   useAsPrompt: boolean;
   useAsResource: boolean;
   viewCount: number;

@@ -42,11 +42,28 @@ export type ListOptions = {
   limit?: number;
   offset?: number;
   includePrivate?: boolean;
+  /**
+   * Restringe a leitura às skills que saem pela superfície de ferramentas do
+   * MCP público (`use_as_skill`). Quem passa `true` é só o `apps/mcp-public`:
+   * site, painel e MCP administrativo não passam nada e continuam enxergando
+   * tudo.
+   *
+   * O filtro mora no SQL, e não no app, porque duas das respostas não têm
+   * conserto depois da consulta: o `total` de `listSkills` é um `count(*)`
+   * sobre o mesmo `WHERE` da página — descartar linhas em JavaScript deixaria
+   * a paginação mentindo — e a contagem por tag de `listTags` é um `GROUP BY`,
+   * que o app não tem como decrementar sem refazer a consulta.
+   */
+  onlyAsSkill?: boolean;
   sort?: SortOrder;
 };
 
+/** As chaves de `ListOptions` que também valem ao ler uma skill só, ou as tags. */
+type ReadOptions = Pick<ListOptions, 'includePrivate' | 'onlyAsSkill'>;
+
 const SKILL_COLUMNS = sql`
-  s.uuid, s.slug, s.name, s.description, s.is_public, s.use_as_prompt, s.use_as_resource,
+  s.uuid, s.slug, s.name, s.description, s.is_public,
+  s.use_as_skill, s.use_as_prompt, s.use_as_resource,
   s.view_count, s.download_count,
   s.created_at, s.updated_at,
   COALESCE((
@@ -67,6 +84,7 @@ function toSummary(row: Row): SkillSummary {
     name: row.name,
     description: row.description ?? '',
     isPublic: Boolean(row.is_public),
+    useAsSkill: Boolean(row.use_as_skill),
     useAsPrompt: Boolean(row.use_as_prompt),
     useAsResource: Boolean(row.use_as_resource),
     viewCount,
@@ -86,6 +104,7 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
   const query = normalizeQuery(options.query);
   const tag = options.tag?.trim() || null;
   const includePrivate = options.includePrivate === true;
+  const onlyAsSkill = options.onlyAsSkill === true;
   const sort = options.sort ?? (query ? 'relevance' : 'score');
 
   const rank = query
@@ -104,6 +123,7 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
   // Filtro compartilhado entre a contagem e a página de resultados.
   const where = sql`
     WHERE (${includePrivate} OR s.is_public)
+      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
       ${
         query
           ? sql`AND (
@@ -147,7 +167,15 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
   };
 }
 
-/** Superfície do MCP público em que a skill é oferecida além das ferramentas. */
+/**
+ * Superfície do MCP público em que a skill é oferecida além das ferramentas.
+ *
+ * `'skill'` não entra aqui de propósito: a superfície de ferramentas não tem
+ * listagem enxuta equivalente. Quem a serve é `listSkills`, que é paginada,
+ * ordenável e devolve `SkillSummary` inteiro — nada do que `PublishedSkill`
+ * existe para evitar se aplica a ela. Para filtrar por `use_as_skill`, a
+ * opção é `onlyAsSkill` em `ListOptions`.
+ */
 export type PublicationSurface = 'prompt' | 'resource';
 
 /** O que `prompts/list` e `resources/list` precisam de cada skill, e nada mais. */
@@ -190,11 +218,12 @@ export async function listPublishedSkills(surface: PublicationSurface): Promise<
 
 export async function getSkillSummary(
   slug: string,
-  { includePrivate = false }: { includePrivate?: boolean } = {},
+  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
 ): Promise<SkillSummary | null> {
   const result = await db().execute(sql`
     SELECT ${SKILL_COLUMNS} FROM skills s
     WHERE s.slug = ${slug} AND (${includePrivate} OR s.is_public)
+      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
     LIMIT 1
   `);
   const row = (result.rows as Row[])[0];
@@ -204,9 +233,9 @@ export async function getSkillSummary(
 /** Skill completa: metadados + SKILL.md + lista de arquivos anexados. */
 export async function getSkillDetail(
   slug: string,
-  { includePrivate = false }: { includePrivate?: boolean } = {},
+  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
 ): Promise<SkillDetail | null> {
-  const summary = await getSkillSummary(slug, { includePrivate });
+  const summary = await getSkillSummary(slug, { includePrivate, onlyAsSkill });
   if (!summary) return null;
 
   const files = await listFiles(summary.uuid);
@@ -304,7 +333,7 @@ export async function incrementDownloadCount(skillUuid: string): Promise<void> {
 // ------------------------------------------------------------------ tags ---
 
 export async function listTags(
-  { includePrivate = false }: { includePrivate?: boolean } = {},
+  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
 ): Promise<{ name: string; count: number }[]> {
   const result = await db().execute(sql`
     SELECT t.name, count(*)::int AS count
@@ -312,6 +341,7 @@ export async function listTags(
     JOIN skill_tags st ON st.tag_id = t.id
     JOIN skills s ON s.uuid = st.skill_uuid
     WHERE (${includePrivate} OR s.is_public)
+      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
     GROUP BY t.name
     ORDER BY count DESC, t.name ASC
   `);
@@ -355,9 +385,17 @@ export type CreateSkillInput = {
   tags?: string[];
   isPublic?: boolean;
   /**
-   * Superfícies do MCP público (prompt e `skill://<slug>`). Independentes de
-   * `isPublic`: sem ela nada aparece, mas a configuração fica guardada.
+   * Superfícies do MCP público (ferramentas, prompt e `skill://<slug>`).
+   * Independentes de `isPublic`: sem ela nada aparece, mas a configuração fica
+   * guardada.
+   *
+   * `useAsSkill` é a assimétrica das três: omiti-la significa `true`, e não
+   * `false` como nas outras duas. Prompt e resource são opt-in, então quem não
+   * decidiu não quer; a superfície de ferramentas é o padrão de toda skill
+   * pública, e fazer o chamador repetir `useAsSkill: true` em toda criação só
+   * garantiria que uma omissão em algum app sumisse com a skill do MCP.
    */
+  useAsSkill?: boolean;
   useAsPrompt?: boolean;
   useAsResource?: boolean;
   slug?: string;
@@ -414,9 +452,11 @@ export async function createSkill(
     try {
       await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, is_public, use_as_prompt, use_as_resource,
+          INSERT INTO skills (slug, name, description, is_public,
+                              use_as_skill, use_as_prompt, use_as_resource,
                               created_by_user_uuid)
           VALUES (${slug}, ${name}, ${description}, ${input.isPublic === true},
+                  ${input.useAsSkill !== false},
                   ${input.useAsPrompt === true}, ${input.useAsResource === true},
                   ${actor?.userUuid ?? null})
           RETURNING uuid
@@ -457,7 +497,11 @@ export type UpdateSkillInput = {
   description?: string;
   tags?: string[];
   isPublic?: boolean;
-  /** Como em `CreateSkillInput`: `undefined` mantém o que já está gravado. */
+  /**
+   * `undefined` mantém o que já está gravado — inclusive em `useAsSkill`, que
+   * na criação vale `true` quando omitida, mas aqui não reverte nada.
+   */
+  useAsSkill?: boolean;
   useAsPrompt?: boolean;
   useAsResource?: boolean;
   slug?: string;
@@ -478,6 +522,7 @@ export async function updateSkill(
   const tags = optionalTextList(input.tags, 'tags') ?? [];
 
   // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
+  const useAsSkill = input.useAsSkill ?? existing.useAsSkill;
   const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
   const useAsResource = input.useAsResource ?? existing.useAsResource;
 
@@ -496,6 +541,7 @@ export async function updateSkill(
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
           is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          use_as_skill = ${useAsSkill},
           use_as_prompt = ${useAsPrompt},
           use_as_resource = ${useAsResource},
           slug = ${newSlug},
@@ -552,6 +598,7 @@ export async function updateSkillWithContent(
   const tags = optionalTextList(input.tags, 'tags') ?? [];
 
   // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
+  const useAsSkill = input.useAsSkill ?? existing.useAsSkill;
   const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
   const useAsResource = input.useAsResource ?? existing.useAsResource;
 
@@ -573,6 +620,7 @@ export async function updateSkillWithContent(
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
           is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
+          use_as_skill = ${useAsSkill},
           use_as_prompt = ${useAsPrompt},
           use_as_resource = ${useAsResource},
           slug = ${newSlug},

@@ -10,11 +10,14 @@ type Seed = {
   tags: string[];
   isPublic: boolean;
   /**
-   * Obrigatórios e falsos em todo exemplo: uma demo que já nasce com cinco
-   * slash-commands e cinco `skill://` no cliente ensina o contrário do que a
-   * feature quer (`docs/06-publicacao-mcp.md` §3.2). Sendo obrigatórios, o
-   * exemplo novo é forçado a decidir em vez de herdar o padrão em silêncio.
+   * Obrigatórios para que o exemplo novo seja forçado a decidir em vez de
+   * herdar o padrão em silêncio. `useAsSkill` é `true` em todos porque é assim
+   * que a demo mostra o catálogo: as skills públicas aparecem nas ferramentas
+   * do MCP. As outras duas são falsas em todo exemplo — uma demo que já nasce
+   * com cinco slash-commands e cinco `skill://` no cliente ensina o contrário
+   * do que a feature quer (`docs/06-publicacao-mcp.md` §3.2).
    */
+  useAsSkill: boolean;
   useAsPrompt: boolean;
   useAsResource: boolean;
   skillMd: string;
@@ -29,6 +32,7 @@ const SEEDS: Seed[] = [
       'Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.',
     tags: ['git', 'workflow', 'produtividade'],
     isPublic: true,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `---
@@ -101,6 +105,7 @@ fix(db): corrige contador de downloads em transações concorrentes
       'Revisa um diff procurando bugs de correção, casos de borda e simplificações possíveis.',
     tags: ['review', 'qualidade', 'workflow'],
     isPublic: true,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `---
@@ -142,6 +147,7 @@ description: Revisa um diff procurando bugs de correção, casos de borda e simp
       'Modela busca textual em PostgreSQL com tsvector, pesos por coluna, índices GIN e ranking.',
     tags: ['postgres', 'banco-de-dados', 'busca'],
     isPublic: true,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `---
@@ -197,6 +203,7 @@ LIMIT 20;
       'Escreve Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.',
     tags: ['docker', 'nodejs', 'deploy'],
     isPublic: true,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `---
@@ -243,6 +250,7 @@ CMD ["node", "dist/index.js"]
       'Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.',
     tags: ['mcp', 'typescript', 'agentes'],
     isPublic: true,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `---
@@ -296,6 +304,7 @@ exceções para falhas realmente inesperadas.
     description: 'Exemplo de skill privada — visível apenas no painel administrativo.',
     tags: ['interno'],
     isPublic: false,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
     skillMd: `# Rascunho interno
@@ -323,6 +332,7 @@ async function main() {
         skillMd: seed.skillMd,
         tags: seed.tags,
         isPublic: seed.isPublic,
+        useAsSkill: seed.useAsSkill,
         useAsPrompt: seed.useAsPrompt,
         useAsResource: seed.useAsResource,
       },

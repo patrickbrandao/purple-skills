@@ -63,7 +63,8 @@ a implementação.
 | `slug`           | text, unique            | identificador legível usado em URLs/MCP |
 | `name`           | text                    |                                          |
 | `description`    | text                    |                                          |
-| `is_public`      | boolean                 | público/privado                          |
+| `is_public`      | boolean                 | público/privado — **interruptor global** da publicação |
+| `use_as_skill`   | boolean, default true   | mantém a skill pública nas *ferramentas* do MCP (opt-out) |
 | `use_as_prompt`  | boolean, default false  | oferece a skill pública como *prompt* do MCP |
 | `use_as_resource`| boolean, default false  | oferece a skill pública como *resource* `skill://<slug>` |
 | `view_count`     | bigint, default 0       | incrementado a cada acesso ao SKILL.md   |
@@ -74,6 +75,12 @@ a implementação.
 - **Ranking/"votação de acesso"**: `ORDER BY (view_count + download_count) DESC`
   — soma simples, sem pesos, calculada em tempo de query (sem coluna de
   score armazenada).
+- **As três flags de superfície são independentes entre si e de `is_public`**,
+  sem CHECK amarrando uma à outra: `is_public` decide *se* a skill é publicada,
+  elas decidem *por onde*, e nenhuma publica nada sozinha. Desenho em
+  [`06-publicacao-mcp.md`](06-publicacao-mcp.md) (prompt e resource) e
+  [`07-superficie-de-ferramentas.md`](07-superficie-de-ferramentas.md)
+  (ferramentas, e `is_public` como interruptor global).
 
 ### 3.2 Tabela `files`
 
@@ -310,7 +317,8 @@ de grupo do IdP. Os motivos estão na §5 de
 ### 8.1 MCP público (`apps/mcp-public`)
 
 - `search_skills(query, tag?, limit?, offset?)` → lista de
-  `{ slug, name, description, tags, score }` (apenas skills públicas).
+  `{ slug, name, description, tags, score }` (apenas skills públicas **com
+  `use_as_skill`** — as demais só saem por prompt/resource, se flagadas).
 - `get_skill(slug)` → conteúdo completo do SKILL.md + lista de arquivos
   anexados. Incrementa `view_count`.
 - `download_skill(slug)` → retorna a **URL** de download do site
@@ -325,8 +333,10 @@ de grupo do IdP. Os motivos estão na §5 de
 
 CRUD completo, espelhando o painel administrativo:
 
-- `create_skill(name, description, skill_md_content, tags?)`
-- `edit_skill(slug, { name?, description?, tags? })`
+- `create_skill(name, description, skill_md_content, tags?, is_public?,
+  use_as_skill?, use_as_prompt?, use_as_resource?)`
+- `edit_skill(slug, { name?, description?, tags?, use_as_skill?,
+  use_as_prompt?, use_as_resource? })`
 - `set_visibility(slug, "public" | "private")`
 - `set_file(slug, path, content)`
 - `set_files_bulk(slug, zip_base64)`

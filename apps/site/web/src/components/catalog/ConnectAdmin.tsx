@@ -64,7 +64,7 @@ export function ConnectAdmin() {
         <div className="connect-diagram reveal d2">
           <figure className="connect-agent">
             <img
-              src="/assets/images/bot-right-point-01_512.png"
+              src="/assets/images/claude-code-up-right-01_512.png"
               alt="Um agente de IA"
               width={172}
               height={172}

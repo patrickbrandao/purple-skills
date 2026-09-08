@@ -42,9 +42,11 @@ export function NewSkillPage() {
     slug: '',
     description: '',
     tags: '',
-    // Nasce privada e sem nenhuma publicação extra, como o default do schema,
-    // do MCP admin e da documentação.
+    // Nasce privada, como o default do schema, do MCP admin e da documentação;
+    // as superfícies seguem o mesmo default — ferramentas ligadas (opt-out),
+    // prompt e resource desligados (opt-in).
     isPublic: false,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
   });
@@ -78,6 +80,7 @@ export function NewSkillPage() {
               description: meta.description,
               tags,
               isPublic: meta.isPublic,
+              useAsSkill: meta.useAsSkill,
               useAsPrompt: meta.useAsPrompt,
               useAsResource: meta.useAsResource,
             })
@@ -89,6 +92,7 @@ export function NewSkillPage() {
               skillMd: stripFrontmatter(skillMd),
               tags,
               isPublic: meta.isPublic,
+              useAsSkill: meta.useAsSkill,
               useAsPrompt: meta.useAsPrompt,
               useAsResource: meta.useAsResource,
             });

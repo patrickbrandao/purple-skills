@@ -290,6 +290,14 @@
   border-color: var(--border-strong);
   background: var(--surface-2);
 }
+/* O selo de ausência ("sem ferramentas"): contorno tracejado e sem
+   preenchimento, para não ser lido como mais uma superfície ligada. */
+.badge.surface.off {
+  color: var(--text-faint);
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+}
 
 button.badge {
   cursor: pointer;
