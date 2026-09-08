@@ -13,7 +13,17 @@ export function SkillCard({ skill, className = '' }: { skill: SkillSummary; clas
         </span>
 
         {/* Diz que a skill não chega só pelas ferramentas: o cliente também a
-            vê como slash-command e como endereço skill://. */}
+            vê como slash-command e como endereço skill://. E, quando ela está
+            fora das ferramentas, que essas são as únicas portas — buscar por
+            ela no agente não a encontraria. */}
+        {!skill.useAsSkill && (
+          <span
+            className="sk-surface off"
+            title="Fora das ferramentas do MCP: o agente não a encontra por search_skills"
+          >
+            sem busca
+          </span>
+        )}
         {skill.useAsPrompt && (
           <span className="sk-surface" title="Disponível como prompt do MCP — o slug vira um comando no seu agente">
             prompt

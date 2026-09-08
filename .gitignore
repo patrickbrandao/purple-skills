@@ -16,6 +16,7 @@ run-rebuild.sh
 run-builder.sh
 run-local.sh
 run-prod.sh
+run-mcp-inspector.sh
 docker-compose-builder.yml
 
 # Material de referência local (a página do LangWizard usada no redesign)

@@ -47,6 +47,14 @@ export function Finale() {
             </a>
           </div>
         </div>
+        <img
+          className="finale-mascot"
+          src="/assets/images/openclaw-sit-to-right-01_512.png"
+          alt=""
+          aria-hidden
+          width={200}
+          height={200}
+        />
       </div>
     </section>
   );

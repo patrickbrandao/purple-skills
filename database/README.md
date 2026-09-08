@@ -46,6 +46,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `005-api-keys.sql` | `api_keys` — credenciais `psk_` por usuário para o MCP administrativo |
 | `006-reset-tokens.sql` | `reset_tokens` — link de uso único para redefinir senha |
 | `007-publicacao-mcp.sql` | `skills.use_as_prompt` / `use_as_resource` e os índices parciais das listagens do MCP público |
+| `008-publicacao-como-skill.sql` | `skills.use_as_skill` — a superfície de ferramentas do MCP público vira opt-out |
 
 Regras:
 
@@ -65,7 +66,7 @@ Regras:
 
 | Tabela | Papel |
 |--------|-------|
-| `skills` | catálogo: `slug`, `name`, `description`, `is_public`, `use_as_prompt`, `use_as_resource`, contadores e `search_vector` |
+| `skills` | catálogo: `slug`, `name`, `description`, `is_public`, `use_as_skill`, `use_as_prompt`, `use_as_resource`, contadores e `search_vector` |
 | `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
@@ -88,15 +89,37 @@ O desenho de contas, papéis e credenciais está em
 
 ### Publicação no MCP
 
-`is_public` diz **se** a skill sai do painel; `use_as_prompt` e
-`use_as_resource` dizem **como**, além das ferramentas: prompt com o nome do
-slug e resource `skill://<slug>`. As três colunas são independentes — nenhum
-CHECK amarra as duas últimas à primeira, para que despublicar e republicar não
-apague a configuração. O efeito, porém, é sempre conjunto:
-`listPublishedSkills` filtra `is_public AND use_as_prompt` (ou
-`use_as_resource`), então **a flag sozinha não publica nada**. Desenho em
-[`docs/06-publicacao-mcp.md`](../docs/06-publicacao-mcp.md); `007` é a parte
-dele que vive aqui.
+`is_public` é o **interruptor global**: em `false` a skill não sai do painel e
+não é publicada no MCP público de jeito nenhum — nem como skill, nem como
+prompt, nem como resource. As outras três colunas dizem **por quais
+superfícies** uma skill pública sai:
+
+| Coluna | Superfície | Padrão |
+|--------|-----------|--------|
+| `use_as_skill` | as cinco ferramentas (`search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags`) | `true` |
+| `use_as_prompt` | prompt com o nome do slug | `false` |
+| `use_as_resource` | resource `skill://<slug>` | `false` |
+
+`use_as_skill` nasce `true` porque é **opt-out**: a superfície de ferramentas
+já é o comportamento de toda skill pública, e ligá-la por padrão é o que
+preserva o catálogo existente. As outras duas nascem `false` porque são
+**opt-in**: ligar prompt e resource no catálogo inteiro entope a lista de
+slash-commands de todo cliente conectado — evitar isso é a razão de a feature
+existir. Com `use_as_skill` em `false` a skill continua pública no site e na
+API REST, some das ferramentas e ainda pode ser publicada como prompt e/ou
+resource.
+
+As quatro colunas são independentes no banco — nenhum CHECK amarra as três
+flags a `is_public`, para que despublicar e republicar não apague a
+configuração. Quem condiciona é a leitura: `listPublishedSkills` filtra
+`is_public AND use_as_prompt` (ou `use_as_resource`) e as leituras do
+`apps/mcp-public` passam `onlyAsSkill: true`. **A flag sozinha não publica
+nada.** O desenho está em dois documentos:
+[`docs/06-publicacao-mcp.md`](../docs/06-publicacao-mcp.md) fecha prompt e
+resource, e `007` é a parte dele que vive aqui;
+[`docs/07-superficie-de-ferramentas.md`](../docs/07-superficie-de-ferramentas.md)
+fecha `use_as_skill` e a promoção de `is_public` a interruptor global, e `008`
+é a parte dele que vive aqui.
 
 ## Containers
 
@@ -174,6 +197,25 @@ await setFiles(slug, arquivos, 'mcp-admin', { replace: true }, ator); // actor �
 O ator é `AuditActor` de `@purple-skills/shared` (`{ userUuid, label }`).
 Omiti-lo grava a linha sem ator, como antes — nenhuma chamada existente quebra.
 Em `createSkill` ele também preenche `skills.created_by_user_uuid`.
+
+### Leitura restrita à superfície de ferramentas
+
+`listSkills` (via `ListOptions`), `getSkillSummary`, `getSkillDetail` e
+`listTags` aceitam `onlyAsSkill?: boolean` — omitida ou `false`, não filtra
+nada. Ligada, acrescenta `AND s.use_as_skill` ao `WHERE` e a leitura passa a
+enxergar só o que a superfície de ferramentas publica:
+
+```ts
+// apps/mcp-public — o único que passa a opção
+const resultado = await listSkills({ query, onlyAsSkill: true });
+const tags = await listTags({ onlyAsSkill: true });
+```
+
+Site, painel e MCP administrativo continuam sem passar nada e enxergando tudo.
+O filtro é do SQL, e não do app, porque duas respostas não têm conserto depois
+da consulta: o `total` de `listSkills` é um `count(*)` sobre o mesmo `WHERE` da
+página — descartar linhas em JavaScript deixaria a paginação mentindo — e a
+contagem por tag de `listTags` é um `GROUP BY`.
 
 ### Contas, chaves e senha
 

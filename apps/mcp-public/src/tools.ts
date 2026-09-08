@@ -39,6 +39,20 @@ export const fileUrlFor = (slug: string, path: string) =>
     .join('/')}`;
 
 /**
+ * O recorte de toda leitura das ferramentas: pública **e** flagada para esta
+ * superfície, a primeira das três do MCP público
+ * (`docs/07-superficie-de-ferramentas.md` §3.2).
+ *
+ * Sem `use_as_skill` a skill continua pública no site e na API REST, mas some
+ * daqui — inclusive de `list_tags`, cuja contagem não pode somar skill que
+ * nenhuma ferramenta mostra.
+ *
+ * O filtro é da consulta e não daqui: `search_skills` pagina, e um descarte
+ * pós-consulta furaria o `total` e a página.
+ */
+const RECORTE_DAS_FERRAMENTAS = { includePrivate: false, onlyAsSkill: true } as const;
+
+/**
  * Handlers das ferramentas do MCP público. Ficam separados do registro no
  * servidor para poderem ser testados sem subir o transporte HTTP.
  */
@@ -54,7 +68,7 @@ export const handlers = {
       tag: args.tag ?? null,
       limit: args.limit ?? 10,
       offset: args.offset ?? 0,
-      includePrivate: false,
+      ...RECORTE_DAS_FERRAMENTAS,
     });
 
     if (result.items.length === 0) {
@@ -83,7 +97,7 @@ export const handlers = {
 
   /** Retorna o SKILL.md completo. Conta um acesso (view_count). */
   async get_skill(args: { slug: string }): Promise<ToolResult> {
-    const detail = await getSkillDetail(args.slug, { includePrivate: false });
+    const detail = await getSkillDetail(args.slug, RECORTE_DAS_FERRAMENTAS);
     if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
     await incrementViewCount(detail.uuid);
@@ -113,7 +127,7 @@ export const handlers = {
 
   /** Lê um arquivo anexado da skill. Não conta acesso (só o SKILL.md conta). */
   async get_skill_file(args: { slug: string; path: string }): Promise<ToolResult> {
-    const skill = await getSkillSummary(args.slug, { includePrivate: false });
+    const skill = await getSkillSummary(args.slug, RECORTE_DAS_FERRAMENTAS);
     if (!skill) return fail(`Skill não encontrada: "${args.slug}"`);
 
     const path = normalizeRelativePath(args.path);
@@ -136,7 +150,7 @@ export const handlers = {
 
   /** Devolve a URL de download; o zip é gerado pelo site quando ela é seguida. */
   async download_skill(args: { slug: string }): Promise<ToolResult> {
-    const skill = await getSkillSummary(args.slug, { includePrivate: false });
+    const skill = await getSkillSummary(args.slug, RECORTE_DAS_FERRAMENTAS);
     if (!skill) return fail(`Skill não encontrada: "${args.slug}"`);
 
     return asJson({
@@ -150,7 +164,7 @@ export const handlers = {
   },
 
   async list_tags(): Promise<ToolResult> {
-    const tags = await listTags({ includePrivate: false });
+    const tags = await listTags(RECORTE_DAS_FERRAMENTAS);
     if (tags.length === 0) return text('Nenhuma tag cadastrada.');
     return asJson({ tags });
   },
@@ -175,7 +189,14 @@ export const resourceUriFor = (slug: string) => `${RESOURCE_SCHEME}${slug}`;
  */
 const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams, mensagem);
 
-/** A skill pública flagada para a superfície, ou nada. */
+/**
+ * A skill pública flagada para a superfície, ou nada.
+ *
+ * Sem `onlyAsSkill` de propósito: as três superfícies são independentes, e uma
+ * skill publicada **só** como prompt ou resource — `use_as_skill` desligada —
+ * precisa continuar legível por aqui. O que ela tem em comum com as
+ * ferramentas é só `is_public`, conferida na consulta.
+ */
 async function skillPublicada(
   slug: string,
   flag: 'useAsPrompt' | 'useAsResource',
@@ -186,7 +207,8 @@ async function skillPublicada(
 
 /**
  * As duas superfícies em que uma skill pública flagada é oferecida além das
- * ferramentas: *prompt* (pelo slug) e *resource* (`skill://<slug>`).
+ * ferramentas: *prompt* (pelo slug) e *resource* (`skill://<slug>`). Nenhuma
+ * delas depende de `use_as_skill`: uma skill pode viver só aqui.
  *
  * As listas saem do banco a **cada requisição**. Não há `listChanged` para
  * avisar o cliente, então uma skill publicada agora precisa aparecer na

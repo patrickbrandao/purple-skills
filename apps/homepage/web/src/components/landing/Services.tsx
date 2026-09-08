@@ -176,6 +176,14 @@ export function Services() {
     <section className="diag" id="servicos">
       <div className="wrap">
         <div className="head center reveal">
+          <img
+            src="/assets/images/wizard-08_512.png"
+            alt=""
+            aria-hidden
+            width={280}
+            height={280}
+            style={{ display: 'block', margin: '0 auto 1rem', width: 280, height: 280 }}
+          />
           <h2 className="display">
             Cinco serviços, <span className="grad-text">um só catálogo.</span>
           </h2>

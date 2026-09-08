@@ -60,6 +60,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     description: '',
     tags: '',
     isPublic: false,
+    useAsSkill: true,
     useAsPrompt: false,
     useAsResource: false,
   });
@@ -79,6 +80,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       description: detail.description,
       tags: detail.tags.join(', '),
       isPublic: detail.isPublic,
+      useAsSkill: detail.useAsSkill,
       useAsPrompt: detail.useAsPrompt,
       useAsResource: detail.useAsResource,
     });
@@ -121,6 +123,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         description: meta.description,
         tags: parseTags(meta.tags),
         isPublic: meta.isPublic,
+        useAsSkill: meta.useAsSkill,
         useAsPrompt: meta.useAsPrompt,
         useAsResource: meta.useAsResource,
         skillMd: prompt !== skill.skillMd ? prompt : undefined,
@@ -231,6 +234,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     meta.description !== skill.description ||
     meta.tags !== skill.tags.join(', ') ||
     meta.isPublic !== skill.isPublic ||
+    meta.useAsSkill !== skill.useAsSkill ||
     meta.useAsPrompt !== skill.useAsPrompt ||
     meta.useAsResource !== skill.useAsResource ||
     skillMd !== stripFrontmatter(skill.skillMd);

@@ -55,15 +55,20 @@ export function Badge({ isPublic }: { isPublic: boolean }) {
 }
 
 /**
- * As superfícies extras do MCP público, ao lado da visibilidade. Só leitura:
- * quem liga e desliga é o formulário de edição — aqui elas apenas informam,
- * e numa skill privada aparecem apagadas, porque a flag está guardada e não
- * valendo (`docs/06-publicacao-mcp.md` §3.1).
+ * As superfícies do MCP público, ao lado da visibilidade. Só leitura: quem liga
+ * e desliga é o formulário de edição — aqui elas apenas informam, e numa skill
+ * privada aparecem apagadas, porque a flag está guardada e não valendo
+ * (`docs/06-publicacao-mcp.md` §3.1).
+ *
+ * `prompt` e `resource` aparecem quando **ligados**; a superfície de
+ * ferramentas, ao contrário, aparece quando **desligada**. É o que informa: ela
+ * nasce ligada, então um selo por skill flagada estaria em quase toda linha
+ * sem dizer nada, enquanto a ausência é a exceção que o operador precisa ver.
  */
 export function PublicationBadges({
   skill,
 }: {
-  skill: { isPublic: boolean; useAsPrompt: boolean; useAsResource: boolean };
+  skill: { isPublic: boolean; useAsSkill: boolean; useAsPrompt: boolean; useAsResource: boolean };
 }) {
   const surfaces = [
     skill.useAsPrompt && 'prompt',
@@ -72,6 +77,19 @@ export function PublicationBadges({
 
   return (
     <>
+      {!skill.useAsSkill && (
+        <span
+          className={`badge surface ${skill.isPublic ? 'off' : 'idle'}`}
+          title={
+            skill.isPublic
+              ? 'Fora das ferramentas do MCP público: search_skills e get_skill não a encontram'
+              : 'Ficará fora das ferramentas do MCP público quando a skill for tornada pública'
+          }
+        >
+          sem ferramentas
+        </span>
+      )}
+
       {surfaces.map((surface) => (
         <span
           key={surface}

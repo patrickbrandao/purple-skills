@@ -104,6 +104,12 @@ export function Connect() {
               documento anexado à conversa.
             </li>
           </ul>
+          <p>
+            As portas são independentes. Uma skill marcada com{' '}
+            <span className="s-tag off">sem busca</span> ficou de fora das ferramentas: o agente não a
+            encontra por <code>search_skills</code> e ela chega só pelas portas acima — ou pelo
+            download aqui do site.
+          </p>
         </div>
       </div>
     </section>

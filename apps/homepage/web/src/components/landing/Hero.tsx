@@ -9,10 +9,10 @@ export function Hero() {
         <div className="hero-copy">
           <img
             className="hero-fig wiz"
-            src="/assets/images/icon-purple-right-279x400.png"
+            src="/assets/images/hat_512.png"
             alt="O Mago Roxo, mascote do Purple Skills"
-            width={279}
-            height={400}
+            width={512}
+            height={512}
           />
           <h1 className="display">
             <span className="line">

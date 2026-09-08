@@ -548,6 +548,7 @@ api.post(
       skillMd?: unknown;
       tags?: string[];
       isPublic?: boolean;
+      useAsSkill?: boolean;
       useAsPrompt?: boolean;
       useAsResource?: boolean;
     };
@@ -570,6 +571,7 @@ api.post(
         skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
         isPublic: body.isPublic,
+        useAsSkill: body.useAsSkill,
         useAsPrompt: body.useAsPrompt,
         useAsResource: body.useAsResource,
       },
@@ -604,6 +606,7 @@ api.post(
       description?: string;
       tags?: string;
       isPublic?: string;
+      useAsSkill?: string;
       useAsPrompt?: string;
       useAsResource?: string;
     };
@@ -629,6 +632,11 @@ api.post(
         // continua sendo a única porta da visibilidade, então uma skill
         // importada de terceiro nasce privada e as flags ficam inertes até
         // alguém publicá-la.
+        //
+        // `useAsSkill` nasce ligada, então o espelho é um `&&`: o .zip só a
+        // **desliga**, e nunca a religa contra o formulário. Nos dois casos o
+        // .zip só consegue mover a flag para o lado de menos exposição.
+        useAsSkill: body.useAsSkill !== 'false' && meta.useAsSkill,
         useAsPrompt: body.useAsPrompt === 'true' || meta.useAsPrompt,
         useAsResource: body.useAsResource === 'true' || meta.useAsResource,
         files: attachments.map((file) => ({
@@ -666,6 +674,7 @@ api.patch(
       description?: string;
       tags?: string[];
       isPublic?: boolean;
+      useAsSkill?: boolean;
       useAsPrompt?: boolean;
       useAsResource?: boolean;
       skillMd?: string;
@@ -681,6 +690,7 @@ api.patch(
         description: body.description,
         tags: body.tags,
         isPublic: body.isPublic,
+        useAsSkill: body.useAsSkill,
         useAsPrompt: body.useAsPrompt,
         useAsResource: body.useAsResource,
         skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,

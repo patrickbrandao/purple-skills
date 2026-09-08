@@ -5,7 +5,12 @@ export type SkillSummary = {
   name: string;
   description: string;
   isPublic: boolean;
-  /** Também oferecida como prompt e como `skill://<slug>` no MCP público. */
+  /**
+   * Por quais superfícies do MCP público a skill é oferecida: as ferramentas
+   * (`useAsSkill`, ligada por padrão), o prompt pelo slug e o resource
+   * `skill://<slug>`.
+   */
+  useAsSkill: boolean;
   useAsPrompt: boolean;
   useAsResource: boolean;
   viewCount: number;

@@ -9,7 +9,7 @@ export function QuickStartAdmin() {
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">
-            Administrar Skills via <span className="grad-text">agente.</span>
+            Administrar Skills via agente. Configure o seu <span className="grad-text">mcp.json</span>
           </h2>
           <p>
             Aponte seu agente para o endpoint administrativo e ele cria, edita e publica skills
@@ -20,12 +20,12 @@ export function QuickStartAdmin() {
         <div className="connect-diagram reveal d1">
           <figure className="connect-agent">
             <img
-              src="/assets/images/bot-right-point-01_512.png"
+              src="/assets/images/claude-code-up-right-01_512.png"
               alt="Um agente de IA"
               width={172}
               height={172}
             />
-            <figcaption>SEU AGENTE</figcaption>
+            <figcaption>SEU AGENTE<br />PROVISIONADOR</figcaption>
           </figure>
 
           <div className="connect-link" aria-hidden>

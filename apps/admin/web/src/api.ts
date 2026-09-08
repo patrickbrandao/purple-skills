@@ -5,6 +5,7 @@ export type SkillSummary = {
   name: string;
   description: string;
   isPublic: boolean;
+  useAsSkill: boolean;
   useAsPrompt: boolean;
   useAsResource: boolean;
   viewCount: number;
@@ -249,6 +250,7 @@ export type CreateSkillBody = {
   skillMd: string;
   tags?: string[];
   isPublic?: boolean;
+  useAsSkill?: boolean;
   useAsPrompt?: boolean;
   useAsResource?: boolean;
 };
@@ -304,6 +306,7 @@ export function importZip(
     description?: string;
     tags?: string[];
     isPublic?: boolean;
+    useAsSkill?: boolean;
     useAsPrompt?: boolean;
     useAsResource?: boolean;
   },
@@ -314,6 +317,8 @@ export function importZip(
   if (fields.description) form.append('description', fields.description);
   if (fields.tags?.length) form.append('tags', JSON.stringify(fields.tags));
   form.append('isPublic', String(fields.isPublic === true));
+  // Esta nasce ligada: quem omite quer o padrão, não o desligamento.
+  form.append('useAsSkill', String(fields.useAsSkill !== false));
   form.append('useAsPrompt', String(fields.useAsPrompt === true));
   form.append('useAsResource', String(fields.useAsResource === true));
   return request<SkillDetail>('/api/skills/import', { method: 'POST', body: form });

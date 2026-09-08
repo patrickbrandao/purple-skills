@@ -1,0 +1,44 @@
+-- Purple Skills — a superfície de ferramentas do MCP público vira opt-out.
+--
+-- Problema: `007` deu controle sobre duas das três superfícies do MCP público
+-- (prompt e `skill://<slug>`) e deixou a primeira — as cinco ferramentas
+-- `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e
+-- `list_tags` — implícita: toda skill pública aparece nelas, sem escolha. Isso
+-- impede o caso de quem quer a skill no site e na API REST, ou só como prompt,
+-- mas fora da busca do agente. `use_as_skill` fecha a lacuna.
+--
+-- A partir daqui `is_public` é o **interruptor global**: em `false` não há
+-- publicação nenhuma no MCP público, por superfície alguma. As três flags
+-- dizem apenas por quais superfícies a skill pública sai, e são independentes
+-- entre si — nenhum CHECK amarra qualquer uma delas a `is_public`, pela mesma
+-- razão da §3.1 de `docs/06-publicacao-mcp.md`: com CHECK, despublicar uma
+-- skill flagada falharia ou exigiria zerar as flags junto, e a intenção do
+-- admin se perderia no ciclo publicar → despublicar → republicar. Quem
+-- condiciona é a leitura, que só filtra por esta coluna quando o chamador é o
+-- MCP público (`onlyAsSkill`); site, painel e MCP administrativo enxergam tudo.
+--
+-- Por que `DEFAULT true`, ao contrário das colunas de `007`: aqui não há
+-- opt-in a fazer. A superfície de ferramentas já é hoje o comportamento de
+-- toda skill pública, e `true` é o único default que preserva a base
+-- existente exatamente como está — com `false`, esta migration apagaria o
+-- catálogo inteiro do MCP público. `007` nasceu `false` porque ligar
+-- prompt/resource em todo o catálogo é justamente o que aquela feature evita;
+-- esta coluna é o oposto, um opt-**out**.
+--
+-- Efeito sobre dados existentes: nenhum, e não há backfill a fazer — o
+-- `DEFAULT` não é volátil, então o PostgreSQL ≥ 11 o guarda no catálogo em vez
+-- de reescrever a tabela. O ALTER é instantâneo mesmo com catálogo grande.
+
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS use_as_skill BOOLEAN NOT NULL DEFAULT true;
+
+-- Sem índice, e isso é deliberado. Os índices parciais de `007` valem porque
+-- `use_as_prompt`/`use_as_resource` são raras: o predicado recorta um punhado
+-- de linhas de uma tabela inteira. `use_as_skill` é o contrário — verdadeira
+-- em quase toda linha —, então um índice parcial com esse predicado cobriria
+-- quase a tabela toda, custaria escrita em todo INSERT e não ajudaria consulta
+-- nenhuma: o planejador prefere o seqscan quando o filtro não seleciona nada.
+-- E não há consulta pedindo por ele: as leituras das ferramentas já filtram
+-- por `is_public` + full-text e se apoiam nos índices de `001`
+-- (`skills_search_vector_idx`, `skills_public_score_idx`), onde
+-- `use_as_skill` entra como refinamento sobre um conjunto já reduzido. A
+-- pergunta "quais NÃO são skill?" é de painel, não tem volume.

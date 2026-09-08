@@ -14,6 +14,13 @@ e [`tools.ts`](../apps/mcp-public/src/tools.ts).
 Os fatos do SDK citados aqui foram verificados contra
 `@modelcontextprotocol/sdk` **1.30.0**, a versão instalada.
 
+> **Continuação.** A terceira superfície — as próprias ferramentas — virou
+> flag depois, em [`07-superficie-de-ferramentas.md`](07-superficie-de-ferramentas.md):
+> `use_as_skill`, com `is_public` promovida a interruptor global explícito. As
+> decisões deste documento continuam valendo; onde ele diz "as duas flags" ou
+> "além das ferramentas", hoje são três superfícies simétricas. `07` só
+> acrescenta — nada aqui foi revogado.
+
 ## 1. Por que
 
 Hoje a skill tem **uma** dimensão de publicação, `is_public`, e **uma** forma
@@ -224,6 +231,10 @@ Esse texto carrega mais peso do que parece: `search_skills` fica **inalterado**
 superfícies separadas, cada uma com sua listagem — então as `INSTRUCTIONS` são
 o único ponteiro que o agente tem de que as outras duas portas existem.
 
+[`07`](07-superficie-de-ferramentas.md) acrescentou a esse parágrafo o aviso de
+que uma skill pode estar **só** no prompt ou no resource, e por isso não
+aparecer em `search_skills`.
+
 ## 6. Superfície de escrita
 
 ### 6.1 Nenhuma rota nova, nenhuma ferramenta nova
@@ -243,7 +254,9 @@ secundária, e o formulário de edição basta. Na listagem elas aparecem como
 
 Dois checkboxes no `SkillMetaForm`, ao lado do de visibilidade, **editáveis
 mesmo enquanto a skill for privada**, com uma linha de aviso explicando que
-sem "pública" nada aparece no MCP.
+sem "pública" nada aparece no MCP. (São três desde
+[`07`](07-superficie-de-ferramentas.md), que acrescentou `use_as_skill` à
+esquerda das duas.)
 
 Desabilitá-los obrigaria a salvar duas vezes — publicar e depois flagar — e
 apagaria da tela a intenção de quem está preparando uma skill para lançar. A

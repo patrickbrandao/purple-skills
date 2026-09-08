@@ -86,6 +86,14 @@ export function PublishFlow() {
     <section className="diag" id="publicar" style={{ background: 'var(--bg-2)' }}>
       <div className="wrap">
         <div className="head center reveal">
+          <img
+            src="/assets/images/codex-01_512.png"
+            alt=""
+            aria-hidden
+            width={280}
+            height={280}
+            style={{ display: 'block', margin: '0 auto 1rem', width: 280, height: 280 }}
+          />
           <h2 className="display">
             Publique uma vez. <br /><span className="grad-text">Todos os agentes aprendem.</span>
           </h2>
@@ -115,7 +123,7 @@ export function PublishFlow() {
             <div className="dia2-cell dia2-cell--left">
               <div className="dia2-creator">
                 <span className="diag-agent">
-                  <img src="/assets/images/icon-agent-claude-code-64.png" alt="Claude Code" />
+                  <img src="/assets/images/icon-agent-codex-64.png" alt="OpenAI Codex" />
                 </span>
                 <span className="dia2-create-lbl">
                   criando nova skill

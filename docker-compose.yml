@@ -3,6 +3,7 @@
 #   docker compose run --rm migrate     # aplica database/schema/*.sql (uma vez)
 #   docker compose up -d                # sobe homepage, site, admin e os dois MCPs
 #   docker compose run --rm seed        # (opcional) popula skills de exemplo
+#   docker compose --profile inspector up -d   # (opcional) MCP Inspector em :6274
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
 # externo via DATABASE_URL.
@@ -164,6 +165,61 @@ services:
       MCP_MAX_ZIP_BASE64: ${MCP_MAX_ZIP_BASE64:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
+
+  # Inspector oficial do MCP — ferramenta de depuração, não faz parte do
+  # produto: fica no perfil `inspector` para o `up -d` do dia a dia ignorá-lo.
+  #
+  #   docker compose --profile inspector up -d mcp-inspector
+  #   docker compose --profile inspector stop mcp-inspector
+  #
+  # Abra http://localhost:6274 e aponte para os servidores pelo NOME do serviço
+  # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
+  # do container — `localhost` ali é o próprio inspector, não o seu host:
+  #
+  #   http://mcp-public:3002/mcp    (Streamable HTTP; /sse para o transporte antigo)
+  #   http://mcp-admin:3003/mcp     + header `Authorization: Bearer $MCP_ADMIN_TOKEN`
+  #
+  # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a
+  # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 6274.
+  mcp-inspector:
+    profiles: [inspector]
+    image: ghcr.io/modelcontextprotocol/inspector:${INSPECTOR_TAG:-latest}
+    # Equivalente ao `docker pull` que o script fazia a cada execução.
+    pull_policy: always
+    restart: unless-stopped
+    hostname: mcp-inspector.intranet.br
+    networks: [internal]
+    # Tetos de memória do script original. O inspector guarda em memória tudo
+    # o que trafega na sessão; um servidor tagarela não deve derrubar o host.
+    mem_limit: 1g
+    memswap_limit: 1g
+    shm_size: 1g
+    environment:
+      # `HOST`, `CLIENT_PORT` e `MCP_AUTO_OPEN_ENABLED` já vêm assim na imagem;
+      # ficam explícitos porque a allow-list de origens e a CSP do sandbox são
+      # derivadas da CLIENT_PORT — ela precisa ser fixa, remapeie só no host.
+      HOST: 0.0.0.0
+      CLIENT_PORT: '6274'
+      MCP_AUTO_OPEN_ENABLED: 'false'
+      # Origem do NAVEGADOR (a URL que você abre), não o endereço dos MCPs. A
+      # lista SUBSTITUI a padrão e cada item precisa do esquema; por isso ela
+      # acompanha a INSPECTOR_PORT. Atrás de um proxy, acrescente a origem dele.
+      ALLOWED_ORIGINS:
+      # ${INSPECTOR_ALLOWED_ORIGINS:-http://localhost:${INSPECTOR_PORT:-6274},http://127.0.0.1:${INSPECTOR_PORT:-6274}}
+      # Inspector sem autenticação: aceitável porque a porta fica no loopback.
+      # Com BIND_ADDR=0.0.0.0 isto vira um cliente MCP aberto para a rede, com
+      # acesso ao mcp-admin — só suba assim em máquina de teste isolada.
+      DANGEROUSLY_OMIT_AUTH: 'true'
+      # Sem chaveiro do SO dentro do container, o inspector cai para memória e
+      # avisa em vermelho no log. Escolher explicitamente cala o aviso: o token
+      # do mcp-admin digitado na UI vive só enquanto o container viver (o
+      # catálogo de servidores, em /home/node/.mcp-inspector, some no recreate).
+      MCP_INSPECTOR_SECRET_STORE: ${INSPECTOR_SECRET_STORE:-memory}
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-6274}:6274'
+      # A aba "MCP Apps" serve um sandbox em 6275/6278. Publique se for usá-la.
+      # - '${BIND_ADDR:-127.0.0.1}:6275:6275'
+      # - '${BIND_ADDR:-127.0.0.1}:6278:6278'
 
 # O volume `pgdata` é declarado em database/docker-compose.yml.
 

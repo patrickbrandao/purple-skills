@@ -101,6 +101,12 @@ A `§6.4` de [`06-publicacao-mcp.md`](06-publicacao-mcp.md) decide que
 Ficou `campo do formulário || frontmatter do .zip` — a mesma forma que nome,
 descrição e tags já usavam, com o formulário ganhando quando preenchido.
 
+`use_as_skill` ([`07`](07-superficie-de-ferramentas.md)) entrou depois e nasce
+**ligada**, então ficou espelhada nas duas pontas: a leitura desliga só com o
+literal `false` (`data.use_as_skill !== 'false'`), e a combinação é
+`formulário && .zip` em vez de `||`. A regra de fundo é a mesma das outras
+duas — **o `.zip` só move a flag para o lado de menos exposição**.
+
 `isPublic` continua fora dessa regra: vem **só** do formulário. É o que impede
 um `.zip` de terceiro de se autopublicar, e é o que torna a leitura das flags
 segura — no máximo elas chegam pré-configuradas e inertes, até um admin

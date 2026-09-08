@@ -49,6 +49,7 @@ const detail = {
   name: 'Minha Skill',
   description: 'Faz coisas',
   isPublic: false,
+  useAsSkill: true,
   useAsPrompt: false,
   useAsResource: false,
   viewCount: 0,
@@ -117,6 +118,47 @@ describe('create_skill', () => {
 
     expect(db.createSkill).toHaveBeenCalledWith(
       expect.objectContaining({ isPublic: false }),
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+
+  // As três flags de superfície não têm o mesmo padrão: omitir prompt e
+  // resource desliga, omitir `use_as_skill` mantém a skill nas ferramentas.
+  it('nasce nas ferramentas do MCP público, e só o false explícito a tira de lá', async () => {
+    db.createSkill.mockResolvedValue(detail);
+
+    await handlers.create_skill({ name: 'X', skill_md_content: '# X' });
+    expect(db.createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ useAsSkill: true, useAsPrompt: false, useAsResource: false }),
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+
+    await handlers.create_skill({ name: 'X', skill_md_content: '# X', use_as_skill: false });
+    expect(db.createSkill).toHaveBeenLastCalledWith(
+      expect.objectContaining({ useAsSkill: false }),
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+});
+
+describe('edit_skill', () => {
+  // Aqui `undefined` é "não mexe" nas três, e é o `@purple-skills/db` que
+  // preserva o valor gravado — mandar `false` por omissão apagaria a escolha.
+  it('repassa as flags de superfície sem inventar padrão', async () => {
+    db.updateSkill.mockResolvedValue(detail);
+
+    await handlers.edit_skill({ slug: 'minha-skill', use_as_skill: false });
+
+    expect(db.updateSkill).toHaveBeenCalledWith(
+      'minha-skill',
+      expect.objectContaining({
+        useAsSkill: false,
+        useAsPrompt: undefined,
+        useAsResource: undefined,
+      }),
       'mcp-admin',
       ADMIN_ACTOR,
     );
