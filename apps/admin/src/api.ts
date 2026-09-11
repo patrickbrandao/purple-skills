@@ -570,6 +570,36 @@ api.delete(
   }),
 );
 
+// ------------------------------------------- chaves do MCP principal ---
+
+// Só admin: uma chave do principal abre o catálogo público inteiro a quem a
+// tiver, e não há dono a quem delegar.
+api.get(
+  '/api/public-mcp/keys',
+  requireAdmin,
+  route(async (_req, res) => {
+    res.json({ items: await mcps.listPublicKeys() });
+  }),
+);
+
+api.post(
+  '/api/public-mcp/keys',
+  requireAdmin,
+  route(async (req, res) => {
+    // `token` aparece uma única vez, aqui.
+    res.status(201).json(await mcps.issuePublicKey(req.user!, (req.body as { name?: unknown })?.name));
+  }),
+);
+
+api.delete(
+  '/api/public-mcp/keys/:id',
+  requireAdmin,
+  route(async (req, res) => {
+    await mcps.revokePublicKey(req.user!, param(req, 'id'));
+    res.json({ revoked: true });
+  }),
+);
+
 // ------------------------------------------------------------- dashboard ---
 
 api.get(

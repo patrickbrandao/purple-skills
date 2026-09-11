@@ -15,6 +15,7 @@ import {
   type AuditActor,
   type AuditEntry,
   type AuditSource,
+  type PublicMcpKeySummary,
   type Role,
   type SkillDetail,
   type SkillFileMeta,
@@ -1382,8 +1383,9 @@ export async function consumeResetToken(tokenHash: string): Promise<{ userUuid: 
  * congelado no momento do evento: sem ele a linha não diz sobre quem foi, já
  * que `skill_slug`/`file_path` são nulos e a conta pode nem existir mais.
  *
- * As chaves de MCP virtual (`mcp.key.*`) entram aqui pelo mesmo motivo: a
- * emissão e a revogação são do app, e o alvo é o nome da chave.
+ * As chaves de MCP virtual (`mcp.key.*`) e as gerenciadas do MCP principal
+ * (`public.key.*`) entram aqui pelo mesmo motivo: a emissão e a revogação são
+ * do app, e o alvo é o nome da chave.
  */
 export async function recordAccountAudit(entry: {
   action:
@@ -1393,7 +1395,9 @@ export async function recordAccountAudit(entry: {
     | 'key.create'
     | 'key.revoke'
     | 'mcp.key.create'
-    | 'mcp.key.revoke';
+    | 'mcp.key.revoke'
+    | 'public.key.create'
+    | 'public.key.revoke';
   source: AuditSource;
   actor: AuditActor;
   targetLabel: string | null;
@@ -2073,6 +2077,131 @@ export async function getVirtualMcpKeyByPrefix(prefix: string): Promise<VirtualM
 export async function touchVirtualMcpKey(id: string): Promise<void> {
   if (!isUuid(id)) return;
   await db().execute(sql`UPDATE virtual_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
+}
+
+// --------------------------------------- chaves do MCP público principal ---
+//
+// Espelho das `psv_`, sem o servidor: o MCP principal é um só, e a tabela
+// inteira é dele (`docs/08-mcp-virtual.md` §7, `MCP_PUBLIC_AUTH=managed`).
+// Quem emite é só o admin — a checagem de papel é do app, a chave em si não
+// carrega papel nenhum.
+
+const PUBLIC_MCP_KEY_COLUMNS = sql`
+  id, name, prefix, created_by_user_uuid, last_used_at, revoked_at, created_at
+`;
+
+function toPublicMcpKeySummary(row: Row): PublicMcpKeySummary {
+  return {
+    id: row.id,
+    name: row.name,
+    prefix: row.prefix,
+    createdByUserUuid: row.created_by_user_uuid ?? null,
+    lastUsedAt: iso(row.last_used_at),
+    revokedAt: iso(row.revoked_at),
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/** Inclui as revogadas: elas explicam as linhas de auditoria que produziram. */
+export async function listPublicMcpKeys(): Promise<PublicMcpKeySummary[]> {
+  const result = await db().execute(sql`
+    SELECT ${PUBLIC_MCP_KEY_COLUMNS}
+    FROM public_mcp_keys
+    ORDER BY created_at DESC
+  `);
+  return (result.rows as Row[]).map(toPublicMcpKeySummary);
+}
+
+/**
+ * Grava a chave emitida. O segredo em texto **não** passa por aqui: quem o
+ * gera e o mostra uma única vez é o app, com `generateApiKey('psp')` de shared.
+ */
+export async function createPublicMcpKey(input: {
+  name: string;
+  prefix: string;
+  keyHash: string;
+  createdByUserUuid: string | null;
+}): Promise<PublicMcpKeySummary> {
+  const createdBy = ownerOrNull(input.createdByUserUuid ?? null);
+
+  const name = (input.name ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+  if (!input.prefix?.trim() || !input.keyHash?.trim()) {
+    throw badRequest('Prefixo e hash da chave são obrigatórios');
+  }
+
+  try {
+    const result = await db().execute(sql`
+      INSERT INTO public_mcp_keys (name, prefix, key_hash, created_by_user_uuid)
+      VALUES (${name}, ${input.prefix.trim()}, ${input.keyHash}, ${createdBy})
+      RETURNING ${PUBLIC_MCP_KEY_COLUMNS}
+    `);
+    return toPublicMcpKeySummary((result.rows as Row[])[0]);
+  } catch (err) {
+    if (isUniqueViolation(err)) throw conflict('Prefixo de chave já em uso; tente novamente');
+    // Quem emite sumiu entre a sessão e a emissão: a chave é do servidor,
+    // então gravamos sem o emissor em vez de recusar.
+    if (isForeignKeyViolation(err)) {
+      return createPublicMcpKey({ ...input, createdByUserUuid: null });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Revoga. `false` quando não achou ou já estava revogada — idempotente,
+ * nunca reescreve o `revoked_at` original. Sem dono para restringir: só o
+ * admin chega aqui, e a checagem de papel é do app.
+ */
+export async function revokePublicMcpKey(id: string): Promise<boolean> {
+  if (!isUuid(id)) return false;
+
+  const result = await db().execute(sql`
+    UPDATE public_mcp_keys SET revoked_at = now()
+    WHERE id = ${id}
+      AND revoked_at IS NULL
+    RETURNING id
+  `);
+  return (result.rows as Row[]).length > 0;
+}
+
+export type PublicMcpKeyRecord = {
+  id: string;
+  name: string;
+  prefix: string;
+  keyHash: string;
+  revokedAt: string | null;
+};
+
+/**
+ * Primeiro passo da autenticação: acha a linha pelo prefixo público. A
+ * conferência do segredo contra `keyHash` é do app (`verifyApiKeySecret`),
+ * assim como recusar a chave se `revokedAt` não for nulo.
+ */
+export async function getPublicMcpKeyByPrefix(prefix: string): Promise<PublicMcpKeyRecord | null> {
+  const wanted = (prefix ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT id, name, prefix, key_hash, revoked_at
+    FROM public_mcp_keys WHERE prefix = ${wanted} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    name: row.name,
+    prefix: row.prefix,
+    keyHash: row.key_hash,
+    revokedAt: iso(row.revoked_at),
+  };
+}
+
+/** Marca o uso. Falha silenciosa de propósito: não é para derrubar a chamada. */
+export async function touchPublicMcpKey(id: string): Promise<void> {
+  if (!isUuid(id)) return;
+  await db().execute(sql`UPDATE public_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
 }
 
 // --------------------------------------------------------------- internos ---

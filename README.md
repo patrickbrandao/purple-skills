@@ -222,8 +222,12 @@ desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
 | `download_skill(slug)` | Devolve a URL do pacote `.zip` |
 | `list_tags()` | Tags disponíveis, com contagem |
 
-Autenticação é **opcional**: sem `MCP_PUBLIC_KEY` o servidor é aberto; com ela,
-exige `Authorization: Bearer <MCP_PUBLIC_KEY>`.
+A autenticação do servidor principal é escolhida por `MCP_PUBLIC_AUTH`:
+`open` (sem autenticação), `key` (só a `MCP_PUBLIC_KEY`) ou `managed` (chaves
+`psp_…` emitidas por administradores no painel, e também a `MCP_PUBLIC_KEY`
+se estiver definida). Sem a variável, o modo é `key` quando há
+`MCP_PUBLIC_KEY` e `open` quando não há — o comportamento de sempre. O
+`GET /` anuncia o modo.
 
 ### MCPs virtuais: um servidor por time
 
@@ -286,6 +290,7 @@ e `delete_skill` exige `admin`.
 | `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
 | `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}], confirm_open?)` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
+| `list_public_mcp_keys()` / `create_public_mcp_key(name)` / `revoke_public_mcp_key(key_id)` | Chaves `psp_` do MCP principal (`MCP_PUBLIC_AUTH=managed`); só admin |
 
 ## API REST pública
 
@@ -388,7 +393,8 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
-| `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público **principal** (não os virtuais) |
+| `MCP_PUBLIC_AUTH` | não | `open`, `key` ou `managed` para o MCP público **principal**; vazio = `key` com `MCP_PUBLIC_KEY`, `open` sem |
+| `MCP_PUBLIC_KEY` / `_FILE` | com `key` | A chave dos modos `key` e `managed` (não abre os virtuais) |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
 | `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é também a base dos MCPs virtuais no painel e nas URLs de download do mcp-public |
 | `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |

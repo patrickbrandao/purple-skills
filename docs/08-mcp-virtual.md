@@ -1,8 +1,7 @@
 # MCP virtual: um servidor de leitura por time
 
-**Status: PR1 implementado** (o MCP virtual completo). O PR2 — as chaves
-gerenciadas do MCP principal, `MCP_PUBLIC_AUTH=managed` — está desenhado aqui
-(`§7`) e ainda não foi entregue.
+**Status: implementado**, em dois PRs: o MCP virtual completo e, em seguida,
+as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive
@@ -43,7 +42,7 @@ universalidade.
 | 4 | Path | `/virtual/<slug>/mcp` — namespace fixo, sem lista de slugs reservados |
 | 5 | Downloads de skill privada | Servidos pelo próprio mcp-public sob `/virtual/<slug>/skills/<skill>/…`, com a mesma credencial |
 | 6 | Acesso | Chave obrigatória por padrão; `is_open` por MCP. Abrir com skill privada dentro **exige confirmação explícita** |
-| 7 | Modo do principal | `MCP_PUBLIC_AUTH=open\|key\|managed` (PR2) |
+| 7 | Modo do principal | `MCP_PUBLIC_AUTH=open\|key\|managed`; ausente = deduzido da `MCP_PUBLIC_KEY` |
 | 8 | Aceitação cruzada | **Nenhuma**: cada servidor só aceita as próprias chaves |
 | 9 | Dono | `editor`+ cria; dono = criador; admin manda em todos e transfere; conta desativada não desliga o MCP |
 | 10 | Chaves | Tabela própria `virtual_mcp_keys`, esquema `psv_`; sem expiração, só revogação |
@@ -54,7 +53,7 @@ universalidade.
 | 15 | Identidade do servidor | `name = <MCP_SERVER_NAME>-<slug>`; instruções = texto base + `description` |
 | 16 | Contadores | No vínculo **e** no global da skill |
 | 17 | Recusas | 404 para slug inexistente ou desligado; 401 para chave ausente ou inválida |
-| 18 | Entrega | PR1 virtual completo; PR2 modo `managed` do principal |
+| 18 | Entrega | Dois PRs: o virtual completo, depois o modo `managed` do principal |
 
 ## 3. Semântica
 
@@ -230,19 +229,39 @@ Cinco ações novas no CHECK de `audit_log.action`: `mcp.create`,
 `target_label` = slug do MCP (nas chaves, `"<slug>: <nome>"`). Ver a trilha
 continua sendo de admin.
 
-## 7. PR2 — chaves gerenciadas do MCP principal
+## 7. Chaves gerenciadas do MCP principal
 
-Desenhado, não entregue. `MCP_PUBLIC_AUTH=open|key|managed`:
+O MCP principal ganhou uma terceira forma de acesso, escolhida por
+`MCP_PUBLIC_AUTH`:
 
-- `open` (padrão) ignora tudo — o comportamento de hoje sem `MCP_PUBLIC_KEY`;
-- `key` é o comportamento de hoje com `MCP_PUBLIC_KEY`;
-- `managed` aceita chaves `psp_` de uma tabela `public_mcp_keys` (emitidas
-  só por admin, no painel e por `list/create/revoke_public_mcp_key` no
-  mcp-admin) **e também** `MCP_PUBLIC_KEY`, se definida.
+| Modo | Aceita |
+|------|--------|
+| `open` | qualquer um; `MCP_PUBLIC_KEY` é ignorada (com aviso no log) |
+| `key` | só `MCP_PUBLIC_KEY` — obrigatória neste modo, o boot falha sem ela |
+| `managed` | chaves `psp_` de `public_mcp_keys` **e também** `MCP_PUBLIC_KEY`, se definida |
 
-A env explícita evita a surpresa de emitir a primeira chave e trancar um
-servidor que estava aberto. `GET /` anuncia o modo. Auditoria:
-`public.key.create` / `public.key.revoke`.
+A env explícita é o que evita a surpresa de emitir a primeira chave e trancar
+um servidor que estava aberto: uma chave no banco só vale quando o operador
+ligou `managed`. `GET /` anuncia o modo em `auth`.
+
+**Padrão quando a variável está ausente: deduzido, não `open`.** A entrevista
+fechou `open` como padrão, mas um padrão fixo abriria, em silêncio, toda
+instalação que hoje protege o principal com `MCP_PUBLIC_KEY` e sobe de versão
+sem tocar no `.env`. Sem `MCP_PUBLIC_AUTH`, o modo é `key` quando há
+`MCP_PUBLIC_KEY` e `open` quando não há — exatamente o comportamento
+anterior. Quem quer `open` com a chave ainda definida escreve `open`.
+
+As chaves `psp_` são só de admin — abrem o catálogo público inteiro e não há
+dono a quem delegar — e não carregam papel; `created_by_user_uuid` é
+informativo. Emissão e revogação no painel (card "Chaves do MCP principal" na
+seção de MCPs) e por `list/create/revoke_public_mcp_key` no mcp-admin;
+auditoria `public.key.create` / `public.key.revoke`. O painel não sabe em que
+modo o mcp-public roda, e o card diz isso.
+
+Sessões no principal ficam presas à identidade como nos virtuais:
+`public:env` para a chave da env (todo portador é o mesmo cliente),
+`public:key:<id>` para uma `psp_`, nenhuma no modo aberto. A migration é a
+`010-public-mcp-keys.sql`.
 
 ## 8. Riscos aceitos
 

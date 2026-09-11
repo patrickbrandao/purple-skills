@@ -1,43 +1,89 @@
 import type { NextFunction, Request, Response } from 'express';
 import {
+  getPublicMcpKeyByPrefix,
   getVirtualMcpKeyByPrefix,
   resolveVirtualMcp,
+  touchPublicMcpKey,
   touchVirtualMcpKey,
   type VirtualMcpRuntime,
 } from '@purple-skills/db';
 import {
+  PUBLIC_KEY_SCHEME,
   VIRTUAL_KEY_SCHEME,
   bearerToken,
   parseApiKey,
   safeEqual,
   verifyApiKeySecret,
 } from '@purple-skills/shared';
-import { publicKey } from './config.js';
+import { publicAuthMode, publicKey } from './config.js';
 
 const unauthorized = (res: Response, message: string) => {
   res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message }, id: null });
 };
 
+// ----------------------------------------------------------- principal ---
+
 /**
- * Autenticação opcional do MCP principal. Sem `MCP_PUBLIC_KEY` definida o
- * servidor é aberto — é o modo padrão, já que o objetivo é ser consumido por
- * qualquer agente.
+ * Quem está falando com o MCP principal, e a identidade que prende a sessão.
+ *
+ * `identity` é `undefined` no modo aberto (todo anônimo é o mesmo anônimo),
+ * `public:env` para a `MCP_PUBLIC_KEY` (todo portador dela é o mesmo cliente)
+ * e `public:key:<id>` para uma chave `psp_` gerenciada.
  */
-export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
-  const expected = publicKey();
-  if (!expected) {
-    next();
-    return;
+export type PublicCaller = { identity: string | undefined };
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    public?: PublicCaller;
   }
+}
+
+export async function resolvePublicCaller(req: Request): Promise<PublicCaller | null> {
+  const mode = publicAuthMode();
+  if (mode === 'open') return { identity: undefined };
 
   const provided = bearerToken(req.header('authorization'));
-  // Mesma política do MCP admin e do painel: comparação em tempo constante.
-  if (provided !== null && safeEqual(provided, expected)) {
-    next();
-    return;
-  }
+  if (provided === null) return null;
 
-  unauthorized(res, 'Não autorizado: informe Authorization: Bearer <MCP_PUBLIC_KEY>');
+  // A chave da env vale nos modos `key` e `managed`. Mesma política do MCP
+  // admin e do painel: comparação em tempo constante.
+  const expected = publicKey();
+  if (expected && safeEqual(provided, expected)) return { identity: 'public:env' };
+  if (mode === 'key') return null;
+
+  // `managed`: chave psp_ achada pelo prefixo (indexado), conferida por hash.
+  const parsed = parseApiKey(provided, PUBLIC_KEY_SCHEME);
+  if (!parsed) return null;
+
+  const record = await getPublicMcpKeyByPrefix(parsed.prefix);
+  if (!record || record.revokedAt) return null;
+  if (!verifyApiKeySecret(parsed.secret, record.keyHash)) return null;
+
+  // `last_used_at` é informativo: uma falha aqui não pode negar o acesso.
+  void touchPublicMcpKey(record.id).catch((err) => {
+    console.warn('[mcp-public] não foi possível marcar o uso da chave:', err.message);
+  });
+
+  return { identity: `public:key:${record.id}` };
+}
+
+/** Autenticação do MCP principal, conforme `MCP_PUBLIC_AUTH`. */
+export function publicAuth(req: Request, res: Response, next: NextFunction): void {
+  resolvePublicCaller(req)
+    .then((caller) => {
+      if (!caller) {
+        unauthorized(
+          res,
+          publicAuthMode() === 'managed'
+            ? 'Não autorizado: informe Authorization: Bearer <chave psp_… ou MCP_PUBLIC_KEY>'
+            : 'Não autorizado: informe Authorization: Bearer <MCP_PUBLIC_KEY>',
+        );
+        return;
+      }
+      req.public = caller;
+      next();
+    })
+    .catch((err) => next(err));
 }
 
 // ------------------------------------------------------------ MCP virtual ---

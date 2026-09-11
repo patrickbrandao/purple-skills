@@ -72,7 +72,10 @@ export type AuditAction =
   | 'mcp.update'
   | 'mcp.delete'
   | 'mcp.key.create'
-  | 'mcp.key.revoke';
+  | 'mcp.key.revoke'
+  // Chaves gerenciadas do MCP público principal (`08` §7); só admin as emite.
+  | 'public.key.create'
+  | 'public.key.revoke';
 
 export type AuditSource = 'web-admin' | 'mcp-admin';
 
@@ -196,6 +199,21 @@ export type VirtualMcpRef = {
 export type VirtualMcpKeySummary = {
   id: string;
   virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  createdByUserUuid: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+/**
+ * Chave `psp_` do MCP público principal, válida só com
+ * `MCP_PUBLIC_AUTH=managed` no mcp-public. Não pertence a um usuário: quem
+ * emitiu é informativo.
+ */
+export type PublicMcpKeySummary = {
+  id: string;
   name: string;
   prefix: string;
   createdByUserUuid: string | null;

@@ -63,6 +63,8 @@ export type McpHttpOptions = {
     description: string;
     /** `true` quando o servidor principal exige Bearer token. */
     requiresAuth: boolean;
+    /** O modo de `MCP_PUBLIC_AUTH` — quem configura um cliente sabe o que mandar. */
+    auth?: 'open' | 'key' | 'managed';
   };
   /** CORS aberto (MCP público) ou restrito (MCP admin). */
   openCors: boolean;

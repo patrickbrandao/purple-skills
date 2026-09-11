@@ -98,19 +98,24 @@ export function McpPage({ session, user }: { session: Session; user: SessionUser
             )}
           </h1>
           <p className="sub mono flex flex-wrap items-center gap-x-3">
-            <span>/virtual/{mcp.slug}/mcp</span>
-            <span>· {mcp.skillCount} skills</span>
+            <span className="break-all">/virtual/{mcp.slug}/mcp</span>
+            <span>
+              · {mcp.skillCount} skill{mcp.skillCount === 1 ? '' : 's'}
+            </span>
             <span>· dono: {mcp.ownerEmail ?? 'nenhum (só admin)'}</span>
           </p>
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
-        <div className="grid gap-5">
+      {/* `minmax(0,…)` nas duas colunas: sem isso o `min-width: auto` do grid
+          deixa o snippet de `mcp.json`, que não quebra linha, esticar a coluna
+          da direita e empurrar a página inteira para fora da viewport. */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
+        <div className="grid min-w-0 content-start gap-5">
           <SkillsPanel mcp={mcp} onSaved={setMcp} />
           <KeysPanel mcp={mcp} keys={keys} onChanged={load} />
         </div>
-        <div className="grid gap-5 content-start">
+        <div className="grid min-w-0 content-start gap-5">
           <ConnectPanel mcp={mcp} mcpPublicUrl={session.mcpPublicUrl} />
           <SettingsPanel mcp={mcp} user={user} users={users} onSaved={setMcp} />
         </div>
@@ -485,25 +490,26 @@ function ConnectPanel({ mcp, mcpPublicUrl }: { mcp: VirtualMcpDetail; mcpPublicU
           </>
         )}
       </p>
-      <div className="key-reveal">
-        <div className="row">
-          <code style={{ whiteSpace: 'pre' }}>{snippet}</code>
-          <button
-            type="button"
-            className="row-action"
-            title="Copiar"
-            onClick={() => {
-              void navigator.clipboard?.writeText(snippet);
-              toast.success('Snippet copiado.');
-            }}
-          >
-            <CopyIcon />
-          </button>
-        </div>
+      {/* O JSON não quebra linha: rola dentro do próprio bloco, e o botão de
+          copiar fica fixo fora da área rolável. */}
+      <div className="snippet">
+        <pre>{snippet}</pre>
+        <button
+          type="button"
+          className="row-action"
+          title="Copiar"
+          onClick={() => {
+            void navigator.clipboard?.writeText(snippet);
+            toast.success('Snippet copiado.');
+          }}
+        >
+          <CopyIcon />
+        </button>
       </div>
-      <p className="panel-hint mt-3">
-        Também respondem <code>{url}/stateless</code> e o SSE legado em <code>/virtual/{mcp.slug}/sse</code>.
-        Os downloads de <code>download_skill</code> aceitam a mesma chave.
+      <p className="panel-hint mt-3 break-words">
+        Também respondem <code>{url}/stateless</code> e o SSE legado em{' '}
+        <code>/virtual/{mcp.slug}/sse</code>. Os downloads de <code>download_skill</code> aceitam a
+        mesma chave.
       </p>
     </Panel>
   );

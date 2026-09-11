@@ -413,6 +413,11 @@ em aberto:
   `download` e `download.skill`; a `url` da página só sai quando `is_public`.
 - **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
   credencial, e o site continua sendo o único lugar com `max-age`.
+- **`MCP_PUBLIC_AUTH` ausente é deduzida**, não `open` (`08` §7): a
+  entrevista escolheu `open` como padrão, mas isso abriria em silêncio toda
+  instalação protegida por `MCP_PUBLIC_KEY` que subisse de versão. `key` sem
+  chave e um valor desconhecido derrubam o boot; `open` com chave definida
+  avisa no log e a ignora.
 - **Selo na skill inclui MCPs desligados** — `listVirtualMcpsForSkill` não
   filtra `is_active`: o vínculo existe, e o selo é sobre o vínculo.
 
