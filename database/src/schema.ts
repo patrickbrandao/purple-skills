@@ -174,6 +174,81 @@ export const resetTokens = pgTable(
   (table) => [index('reset_tokens_user_uuid_idx').on(table.userUuid)],
 );
 
+// ------------------------------------------------------------ MCP virtual ---
+
+/**
+ * Servidor MCP de leitura com recorte próprio (`docs/08-mcp-virtual.md`). É a
+ * primeira entidade com ownership: `ownerUserUuid` nulo é órfão (só o admin
+ * gerencia) ou criado pela sessão de bootstrap.
+ */
+export const virtualMcps = pgTable(
+  'virtual_mcps',
+  {
+    uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    /** Desligado: tudo sob `/virtual/<slug>` responde 404; vínculos e chaves ficam. */
+    isActive: boolean('is_active').notNull().default(true),
+    /** Aberto: sem chave. Com skill privada dentro, é publicação de fato. */
+    isOpen: boolean('is_open').notNull().default(false),
+    ownerUserUuid: uuid('owner_user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('virtual_mcps_owner_user_uuid_idx').on(table.ownerUserUuid)],
+);
+
+/**
+ * Vínculo skill ↔ MCP virtual. As três flags são **do vínculo** e sem default:
+ * as `use_as_*` da skill valem só para o MCP principal. Os contadores também
+ * são do vínculo; o global da skill continua somando.
+ */
+export const virtualMcpSkills = pgTable(
+  'virtual_mcp_skills',
+  {
+    virtualMcpUuid: uuid('virtual_mcp_uuid')
+      .notNull()
+      .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
+    skillUuid: uuid('skill_uuid')
+      .notNull()
+      .references(() => skills.uuid, { onDelete: 'cascade' }),
+    asSkill: boolean('as_skill').notNull(),
+    asPrompt: boolean('as_prompt').notNull(),
+    asResource: boolean('as_resource').notNull(),
+    viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
+    downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.virtualMcpUuid, table.skillUuid] }),
+    index('virtual_mcp_skills_skill_uuid_idx').on(table.skillUuid),
+  ],
+);
+
+/** Chaves `psv_` — pertencem ao servidor, não a um usuário. Mesmo formato de `api_keys`. */
+export const virtualMcpKeys = pgTable(
+  'virtual_mcp_keys',
+  {
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    virtualMcpUuid: uuid('virtual_mcp_uuid')
+      .notNull()
+      .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Público e indexado: é por ele que a autenticação encontra a linha. */
+    prefix: text('prefix').notNull().unique(),
+    keyHash: text('key_hash').notNull(),
+    /** Informativo: quem emitiu. Sobrevive à remoção da conta. */
+    createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid)],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -181,3 +256,6 @@ export type AuditRow = typeof auditLog.$inferSelect;
 export type UserRow = typeof users.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type ResetTokenRow = typeof resetTokens.$inferSelect;
+export type VirtualMcpRow = typeof virtualMcps.$inferSelect;
+export type VirtualMcpSkillRow = typeof virtualMcpSkills.$inferSelect;
+export type VirtualMcpKeyRow = typeof virtualMcpKeys.$inferSelect;

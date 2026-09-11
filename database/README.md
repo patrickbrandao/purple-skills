@@ -47,6 +47,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `006-reset-tokens.sql` | `reset_tokens` — link de uso único para redefinir senha |
 | `007-publicacao-mcp.sql` | `skills.use_as_prompt` / `use_as_resource` e os índices parciais das listagens do MCP público |
 | `008-publicacao-como-skill.sql` | `skills.use_as_skill` — a superfície de ferramentas do MCP público vira opt-out |
+| `009-mcp-virtual.sql` | `virtual_mcps`, `virtual_mcp_skills`, `virtual_mcp_keys` e o `CHECK` de `action` com os eventos `mcp.*` |
 
 Regras:
 
@@ -73,6 +74,9 @@ Regras:
 | `users` | contas: papel (`admin`/`editor`/`leitor`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
 | `api_keys` | chaves `psk_` por usuário; guarda o prefixo e o hash, nunca o segredo |
 | `reset_tokens` | tokens de redefinição de senha, com expiração e uso único |
+| `virtual_mcps` | servidores MCP virtuais: `slug`, dono (`owner_user_uuid`), `is_active`, `is_open` |
+| `virtual_mcp_skills` | vínculo skill ↔ MCP virtual, com as flags `as_skill`/`as_prompt`/`as_resource` e contadores **próprios** |
+| `virtual_mcp_keys` | chaves `psv_` por servidor; mesmo formato de `api_keys` |
 | `schema_migrations` | controle do runner (criado por ele, não por um `.sql`) |
 
 Chaves primárias são `uuidv7()` do PostgreSQL 18. A busca usa `tsvector` com
@@ -82,8 +86,10 @@ O desenho de contas, papéis e credenciais está em
 [`docs/05-accounts-and-roles.md`](../docs/05-accounts-and-roles.md); `004` a
 `006` são a parte dele que vive aqui. Dois pontos que o modelo assume:
 
-- **não há ownership.** `skills.created_by_user_uuid` é informativo; o papel
-  limita a ação, nunca o escopo;
+- **não há ownership nas skills.** `skills.created_by_user_uuid` é informativo;
+  o papel limita a ação, nunca o escopo. A única exceção do projeto é
+  `virtual_mcps.owner_user_uuid` (`009`): o MCP virtual tem dono, o admin
+  manda em todos e o dono no seu;
 - **o ator pode não ser uma conta.** `audit_log.actor_user_uuid` é nulo para o
   `MCP_ADMIN_TOKEN` e para o bootstrap; quem sempre existe é `actor_label`.
 
@@ -120,6 +126,14 @@ resource, e `007` é a parte dele que vive aqui;
 [`docs/07-superficie-de-ferramentas.md`](../docs/07-superficie-de-ferramentas.md)
 fecha `use_as_skill` e a promoção de `is_public` a interruptor global, e `008`
 é a parte dele que vive aqui.
+
+Tudo acima vale para o **MCP principal**. Um **MCP virtual**
+([`docs/08-mcp-virtual.md`](../docs/08-mcp-virtual.md), `009`) publica um
+recorte próprio em `/virtual/<slug>/mcp` e decide as superfícies **por
+vínculo**: `virtual_mcp_skills` carrega suas próprias `as_skill`, `as_prompt`
+e `as_resource` (obrigatórias, sem default) e seus próprios contadores. Nele
+`is_public` e as `use_as_*` da skill são ignorados — skill privada vinculada
+sai —, e o contador global da skill continua somando junto com o do vínculo.
 
 ## Containers
 
@@ -181,9 +195,10 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
+| MCP virtual | `listVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpsForSkill`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions` |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -217,6 +232,50 @@ da consulta: o `total` de `listSkills` é um `count(*)` sobre o mesmo `WHERE` da
 página — descartar linhas em JavaScript deixaria a paginação mentindo — e a
 contagem por tag de `listTags` é um `GROUP BY`.
 
+As mesmas quatro funções aceitam `virtualMcp?: VirtualScope`
+(`{ uuid, surface: 'skill' | 'prompt' | 'resource' }`) — o recorte de um MCP
+virtual. Com ela o `WHERE` vira um `EXISTS` sobre `virtual_mcp_skills` com a
+flag da superfície pedida, e **ignora** `includePrivate` e `onlyAsSkill`:
+skill privada vinculada entra, e as `use_as_*` da skill não contam.
+`listPublishedSkills(surface, { virtualMcpUuid })` faz o mesmo para
+`prompts/list` e `resources/list`, e `incrementViewCount(skill, mcp)` /
+`incrementDownloadCount(skill, mcp)` somam no vínculo **e** no global:
+
+```ts
+// apps/mcp-public — rota /virtual/<slug>/mcp
+const mcp = await resolveVirtualMcp(slug);            // null = inativo ou inexistente → 404
+const resultado = await listSkills({ query, virtualMcp: { uuid: mcp.uuid, surface: 'skill' } });
+const prompts = await listPublishedSkills('prompt', { virtualMcpUuid: mcp.uuid });
+await incrementViewCount(skill.uuid, mcp.uuid);
+```
+
+### MCP virtual
+
+- `listVirtualMcps()` sem opção é a visão do admin (todos, inclusive inativos
+  e órfãos); `{ ownerUserUuid }` restringe ao dono; `{ ownerUserUuid: null }`
+  devolve `[]` — a sessão de bootstrap não é dona de nada.
+- `getVirtualMcp(slug)` / `getVirtualMcpByUuid(uuid)` devolvem
+  `VirtualMcpDetail` (resumo + skills vinculadas, com as flags e os contadores
+  **do vínculo**) e incluem inativos: é o painel que lê. `resolveVirtualMcp`
+  é o oposto — só ativos, uma linha, sem agregação — e é o que o servidor
+  consulta a cada requisição.
+- `createVirtualMcp` / `updateVirtualMcp` / `deleteVirtualMcp` exigem ator e
+  auditam como `mcp.create` / `mcp.update` / `mcp.delete`, com `targetLabel`
+  = slug do MCP (o novo, em rename). Slug omitido é gerado do nome; informado
+  passa por `isValidSlug`; em uso é 409. `updateVirtualMcp` é parcial no
+  padrão de `updateUser` (`undefined` não mexe, `ownerUserUuid: null` apaga o
+  dono).
+- `setVirtualMcpSkills(uuid, lista)` é **declarativa**: a lista é o estado
+  desejado. Quem saiu é removido, quem entrou é inserido, quem ficou tem só as
+  flags reescritas e mantém os contadores. As três flags são obrigatórias por
+  item; slug desconhecido ou repetido é 400 e nada muda.
+- Chaves `psv_` espelham as `psk_`: `createVirtualMcpKey` recebe prefixo e
+  hash já gerados pelo app (`generateApiKey('psv')`), `getVirtualMcpKeyByPrefix`
+  acha a linha — conferir o segredo **e** se `virtualMcpUuid` é o do servidor
+  da URL é do app — e `revokeVirtualMcpKey(id, virtualMcpUuid)` é sempre
+  restrita ao MCP. A auditoria das chaves (`mcp.key.create` / `mcp.key.revoke`)
+  é gravada pelo app via `recordAccountAudit`, com `targetLabel` = nome da chave.
+
 ### Contas, chaves e senha
 
 - `UserRecord` é `UserSummary` **mais** `passwordHash`, `tokenVersion`,
@@ -235,7 +294,8 @@ contagem por tag de `listTags` é um `GROUP BY`.
 - `consumeResetToken` é um UPDATE condicional atômico: dois cliques no mesmo
   link não redefinem a senha duas vezes.
 - `recordAccountAudit` grava os eventos de conta (`user.create`, `user.role`,
-  `user.deactivate`, `key.create`, `key.revoke`) — linhas sem skill, com
+  `user.deactivate`, `key.create`, `key.revoke`) e os das chaves de MCP
+  virtual (`mcp.key.create`, `mcp.key.revoke`) — linhas sem skill, com
   `targetLabel` dizendo sobre quem foi.
 
 ## Contrato com os outros agentes
@@ -268,14 +328,16 @@ recriado do zero a cada execução:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
-  npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts
+  npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts \
+    database/src/virtual-mcps.integration.test.ts
 ```
 
 | Suíte | Cobre |
 |-------|-------|
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
+| `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
 
-As duas recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
+As três recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o
 arquivo. Suíte de integração nova aqui dentro precisa usar o mesmo número.

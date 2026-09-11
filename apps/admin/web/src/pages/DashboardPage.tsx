@@ -24,6 +24,11 @@ const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   'user.deactivate': 'desativou',
   'key.create': 'emitiu chave',
   'key.revoke': 'revogou chave',
+  'mcp.create': 'criou MCP virtual',
+  'mcp.update': 'alterou MCP virtual',
+  'mcp.delete': 'removeu MCP virtual',
+  'mcp.key.create': 'emitiu chave de MCP',
+  'mcp.key.revoke': 'revogou chave de MCP',
 };
 
 /** Eventos de conta não têm skill: o alvo é a própria pessoa ou a chave. */
@@ -36,6 +41,11 @@ const ACTION_CLASS: Record<AuditEntry['action'], string> = {
   'user.deactivate': 'delete',
   'key.create': 'create',
   'key.revoke': 'delete',
+  'mcp.create': 'create',
+  'mcp.update': 'update',
+  'mcp.delete': 'delete',
+  'mcp.key.create': 'create',
+  'mcp.key.revoke': 'delete',
 };
 
 export function DashboardPage({ user }: { user: SessionUser }) {

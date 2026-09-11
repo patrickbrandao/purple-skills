@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { requireAdmin, requireDelete, requireWrite } = await import('./auth.js');
+const { requireAdmin, requireDelete, requireVirtualMcpCreate, requireWrite } = await import('./auth.js');
 const { api } = await import('./api.js');
 
 /**
@@ -50,6 +50,20 @@ describe('papéis exigidos pelas rotas', () => {
 
   it('apagar skill exige admin', () => {
     expect(handlers('delete', '/api/skills/:slug')).toContain(requireDelete);
+  });
+
+  it('criar MCP virtual exige papel de escrita; o resto é decidido pelo dono', () => {
+    expect(handlers('post', '/api/mcps')).toContain(requireVirtualMcpCreate);
+    // Sem guarda de papel de propósito: `loadManaged` deixa passar o dono ou
+    // um admin, e um leitor que virou dono por transferência administra o seu.
+    for (const [method, path] of [
+      ['patch', '/api/mcps/:slug'],
+      ['put', '/api/mcps/:slug/skills'],
+      ['post', '/api/mcps/:slug/keys'],
+    ] as const) {
+      expect(handlers(method, path)).not.toContain(requireWrite);
+      expect(handlers(method, path)).not.toContain(requireAdmin);
+    }
   });
 
   it('leitura do catálogo não exige papel além da sessão', () => {

@@ -12,6 +12,7 @@ import {
   listAudit,
   listSkills,
   listTags,
+  listVirtualMcpsForSkill,
   readAllFiles,
   readFile,
   setFile,
@@ -41,9 +42,11 @@ import {
   requireAuth,
   requireDelete,
   requirePasswordChanged,
+  requireVirtualMcpCreate,
   requireWrite,
   resolveUser,
 } from './auth.js';
+import * as mcps from './mcps.js';
 import {
   bootstrapAdmin,
   changeOwnPassword,
@@ -201,6 +204,7 @@ api.get(
       passwordResetByEmail: smtpEnabled(),
       siteName: config.siteName,
       siteBaseUrl: config.siteBaseUrl,
+      mcpPublicUrl: config.mcpPublicUrl,
     });
   }),
 );
@@ -479,6 +483,93 @@ api.post(
   }),
 );
 
+// ----------------------------------------------------------- MCPs virtuais ---
+
+/**
+ * O virtual é a única entidade com dono (`docs/08-mcp-virtual.md` §2): a
+ * criação exige papel de escrita, e tudo depois passa por `loadManaged`, que
+ * deixa passar o dono ou um admin. Por isso as rotas abaixo não levam
+ * `requireWrite` — um leitor que virou dono por transferência administra o
+ * seu.
+ */
+api.get(
+  '/api/mcps',
+  route(async (req, res) => {
+    res.json({ items: await mcps.listMine(req.user!) });
+  }),
+);
+
+api.post(
+  '/api/mcps',
+  requireVirtualMcpCreate,
+  route(async (req, res) => {
+    res.status(201).json(await mcps.create(req.user!, req.body ?? {}));
+  }),
+);
+
+api.get(
+  '/api/mcps/:slug',
+  route(async (req, res) => {
+    res.json(await mcps.loadManaged(req.user!, param(req, 'slug')));
+  }),
+);
+
+api.patch(
+  '/api/mcps/:slug',
+  route(async (req, res) => {
+    res.json(await mcps.update(req.user!, param(req, 'slug'), req.body ?? {}));
+  }),
+);
+
+api.delete(
+  '/api/mcps/:slug',
+  route(async (req, res) => {
+    await mcps.remove(req.user!, param(req, 'slug'));
+    res.json({ deleted: true });
+  }),
+);
+
+api.put(
+  '/api/mcps/:slug/skills',
+  route(async (req, res) => {
+    res.json(
+      await mcps.setSkills(req.user!, param(req, 'slug'), req.body ?? {}, async (slugs) => {
+        // Quantas das que vão entrar são privadas — é o que dispara a
+        // confirmação num MCP aberto.
+        const found = await Promise.all(
+          slugs.map((slug) => getSkillSummary(slug, { includePrivate: true })),
+        );
+        return found.filter((skill) => skill && !skill.isPublic).length;
+      }),
+    );
+  }),
+);
+
+api.get(
+  '/api/mcps/:slug/keys',
+  route(async (req, res) => {
+    res.json({ items: await mcps.listKeys(req.user!, param(req, 'slug')) });
+  }),
+);
+
+api.post(
+  '/api/mcps/:slug/keys',
+  route(async (req, res) => {
+    // `token` aparece uma única vez, aqui.
+    res.status(201).json(
+      await mcps.issueKey(req.user!, param(req, 'slug'), (req.body as { name?: unknown })?.name),
+    );
+  }),
+);
+
+api.delete(
+  '/api/mcps/:slug/keys/:id',
+  route(async (req, res) => {
+    await mcps.revokeKey(req.user!, param(req, 'slug'), param(req, 'id'));
+    res.json({ revoked: true });
+  }),
+);
+
 // ------------------------------------------------------------- dashboard ---
 
 api.get(
@@ -660,7 +751,9 @@ api.get(
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
     }
-    res.json(bodyOnly(detail));
+    // Só leitura: em quais MCPs virtuais a skill está. O vínculo é feito do
+    // lado do MCP (`docs/08-mcp-virtual.md`, decisão 12).
+    res.json({ ...bodyOnly(detail), virtualMcps: await listVirtualMcpsForSkill(detail.uuid) });
   }),
 );
 

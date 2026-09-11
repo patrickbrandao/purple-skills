@@ -29,6 +29,27 @@ export const canDelete = (role: Role): boolean => role === 'admin';
 /** Criar contas, trocar papéis, desativar e resetar senha. */
 export const canManageUsers = (role: Role): boolean => role === 'admin';
 
+/**
+ * Criar um MCP virtual — admin e editor (`docs/08-mcp-virtual.md` §2, decisão 9).
+ *
+ * É ação de publicação: um virtual pode expor skills privadas, e publicar é o
+ * que separa `editor` de `leitor`.
+ */
+export const canCreateVirtualMcp = (role: Role): boolean => roleAtLeast(role, 'editor');
+
+/**
+ * Editar, vincular skills e emitir chaves de **um** MCP virtual.
+ *
+ * É a única exceção ao "papel limita a ação, não o escopo": o virtual tem
+ * dono. Admin manda em todos; o dono, no seu; ninguém mais. `userUuid` nulo
+ * (sessão de bootstrap) só passa como admin.
+ */
+export const canManageVirtualMcp = (
+  role: Role,
+  ownerUserUuid: string | null,
+  userUuid: string | null,
+): boolean => role === 'admin' || (userUuid !== null && ownerUserUuid === userUuid);
+
 export const ROLE_LABEL: Record<Role, string> = {
   admin: 'administrador',
   editor: 'editor',

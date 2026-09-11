@@ -253,6 +253,15 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
     lida uma única vez no boot.
 - CORS totalmente aberto (`*`), pois o objetivo é ser consumido por
   qualquer agente externo.
+- **MCPs virtuais** (`/virtual/<slug>/mcp`, [`08-mcp-virtual.md`](08-mcp-virtual.md)):
+  o mesmo processo monta, sob esse prefixo, um servidor de leitura por MCP
+  virtual, com um recorte próprio do catálogo (inclusive skills privadas) e
+  autenticação própria — chave `psv_` da tabela `virtual_mcp_keys`, ou
+  aberto quando `is_open`. `MCP_PUBLIC_KEY` **não** abre um virtual e uma
+  chave de virtual não abre o principal nem outro virtual. Sessões ficam
+  presas à identidade (MCP + chave) que as abriu, como no mcp-admin. Os
+  downloads de um virtual são servidos pelo próprio mcp-public, sob o mesmo
+  prefixo e com a mesma credencial.
 
 ### 7.4 Padrão de secrets (env vars)
 
@@ -328,6 +337,12 @@ de grupo do IdP. Os motivos estão na §5 de
   `download_count` no site.
 - Suporte a todas as versões do protocolo MCP TypeScript SDK: SSE,
   Streamable HTTP e modo stateless.
+- Sob `/virtual/<slug>/`, as **mesmas cinco ferramentas** e as mesmas
+  superfícies de prompt e resource, lendo pelo vínculo `virtual_mcp_skills`
+  (flags `as_skill` / `as_prompt` / `as_resource`) em vez de
+  `is_public AND use_as_*`. `download_skill` e `get_skill_file` devolvem URLs
+  do próprio servidor (`/virtual/<slug>/skills/<skill>/download` e
+  `…/files/<path>`), e `url` da página só quando a skill é pública.
 
 ### 8.2 MCP administrativo (`apps/mcp-admin`)
 
@@ -343,6 +358,15 @@ CRUD completo, espelhando o painel administrativo:
 - `delete_file(slug, path)` (bloqueado para `path = "SKILL.md"`)
 - `delete_skill(slug)`
 - `list_skills(includePrivate = true)`
+- MCPs virtuais ([`08`](08-mcp-virtual.md) §6.2): `list_virtual_mcps()`,
+  `get_virtual_mcp(slug)`, `create_virtual_mcp(name, slug?, description?,
+  is_open?)`, `update_virtual_mcp(slug, {name?, new_slug?, description?,
+  is_open?, is_active?, confirm_open?})`, `delete_virtual_mcp(slug, confirm)`,
+  `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}],
+  confirm_open?)`, `list_virtual_mcp_keys(slug)`,
+  `create_virtual_mcp_key(slug, name)`, `revoke_virtual_mcp_key(slug, key_id)`.
+  Alcance por dono: o token global e as chaves de admin administram qualquer
+  um; a chave de um usuário, os MCPs de que ele é dono.
 
 ## 9. Download de pacotes
 
@@ -411,3 +435,9 @@ administrador. A mitigação é operacional — aponte `OIDC_ISSUER` para um
 provedor que você controla e mantenha `OIDC_ALLOWED_DOMAINS` restrita a
 domínios sob sua administração. Com a lista vazia, o auto-provisionamento fica
 desligado e a instalação falha fechada.
+
+**Riscos introduzidos pelo MCP virtual** ([`08`](08-mcp-virtual.md) §8): um
+virtual aberto (`is_open`) com skill privada dentro é publicação de fato,
+protegida só pela confirmação explícita; a diferença 404/401 sob `/virtual/`
+permite enumerar os slugs dos MCPs; e o virtual é a primeira entidade com dono
+— a exceção ao "papel limita a ação, não o escopo" da `§7.1`, restrita a ele.
