@@ -1348,3 +1348,43 @@ tr.is-off {
 .prompt-editor.pane-preview .pane.edit {
   display: none;
 }
+
+/* ------------------------------------------------------------- snippet ---
+   Bloco de configuração para copiar (o `mcp.json` de um MCP virtual). Ao
+   contrário do `.key-reveal`, que mostra um token de uma linha, aqui o
+   conteúdo é um JSON de várias linhas que não quebra: ele rola dentro do
+   próprio bloco. Sem isso, o `white-space: pre` estica a coluna do grid e
+   empurra a página inteira para fora da viewport. */
+/* Um painel nunca estica a célula do grid que o contém: o `min-width: auto`
+   padrão deixaria um conteúdo largo (um snippet, uma tabela) empurrar a
+   página inteira para fora da viewport. Quem precisa de mais espaço rola
+   dentro de si (`.table-wrap`, `.snippet`). */
+.panel {
+  min-width: 0;
+}
+
+.snippet {
+  position: relative;
+  margin-top: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.snippet pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 12px 44px 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--text-soft);
+}
+
+/* Fora da área rolável: o botão acompanha o bloco, não o conteúdo. */
+.snippet .row-action {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--surface-2);
+}

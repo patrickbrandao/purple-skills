@@ -37,7 +37,9 @@ Regras importantes:
   (asSkill, asPrompt, asResource) por conta própria; as flags use_as_* da
   skill valem só para o MCP principal. O MCP virtual tem dono: quem cria é o
   dono, e só o dono ou um admin o administra. Abrir um MCP (is_open) com
-  skill privada dentro exige confirm_open=true.`;
+  skill privada dentro exige confirm_open=true.
+- Chaves do MCP principal (tools *_public_mcp_key): chaves psp_ que abrem o
+  MCP público principal quando ele roda com MCP_PUBLIC_AUTH=managed. Só admin.`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -399,6 +401,39 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       inputSchema: { slug: z.string(), key_id: z.string() },
     },
     (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
+  );
+
+  // ------------------------------------------ chaves do MCP principal ---
+
+  server.registerTool(
+    'list_public_mcp_keys',
+    {
+      title: 'Listar chaves do MCP principal',
+      description:
+        'Chaves psp_ do MCP público principal (só valem com MCP_PUBLIC_AUTH=managed). Só admin. Nunca mostra o segredo.',
+      inputSchema: {},
+    },
+    () => guard(() => mcps.list_public_mcp_keys()),
+  );
+
+  server.registerTool(
+    'create_public_mcp_key',
+    {
+      title: 'Emitir chave do MCP principal',
+      description: 'Emite uma chave psp_ para o MCP público principal. Só admin. O token aparece uma única vez.',
+      inputSchema: { name: z.string().describe('Nome da chave (ex.: "agentes do time X").') },
+    },
+    (args) => guard(() => mcps.create_public_mcp_key(args)),
+  );
+
+  server.registerTool(
+    'revoke_public_mcp_key',
+    {
+      title: 'Revogar chave do MCP principal',
+      description: 'Revoga uma chave psp_ pelo id (de list_public_mcp_keys). Só admin.',
+      inputSchema: { key_id: z.string() },
+    },
+    (args) => guard(() => mcps.revoke_public_mcp_key(args)),
   );
 
   return server;

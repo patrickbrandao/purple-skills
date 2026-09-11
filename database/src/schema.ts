@@ -249,6 +249,32 @@ export const virtualMcpKeys = pgTable(
   (table) => [index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid)],
 );
 
+// ------------------------------------------ chaves do MCP público principal ---
+
+/**
+ * Chaves `psp_` do MCP principal (`docs/08-mcp-virtual.md` §7, modo
+ * `MCP_PUBLIC_AUTH=managed`). Sem FK de servidor: o principal é um só. A chave
+ * é do servidor, não de um usuário — `createdByUserUuid` é informativo.
+ */
+export const publicMcpKeys = pgTable(
+  'public_mcp_keys',
+  {
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    name: text('name').notNull(),
+    /** Público e indexado: é por ele que a autenticação encontra a linha. */
+    prefix: text('prefix').notNull().unique(),
+    keyHash: text('key_hash').notNull(),
+    /** Informativo: quem emitiu. Sobrevive à remoção da conta. */
+    createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('public_mcp_keys_created_by_user_uuid_idx').on(table.createdByUserUuid)],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -259,3 +285,4 @@ export type ResetTokenRow = typeof resetTokens.$inferSelect;
 export type VirtualMcpRow = typeof virtualMcps.$inferSelect;
 export type VirtualMcpSkillRow = typeof virtualMcpSkills.$inferSelect;
 export type VirtualMcpKeyRow = typeof virtualMcpKeys.$inferSelect;
+export type PublicMcpKeyRow = typeof publicMcpKeys.$inferSelect;

@@ -148,6 +148,8 @@ services:
     environment:
       <<: *app-env
       PORT: 3002
+      # open | key | managed. Vazio = key com MCP_PUBLIC_KEY, open sem ela.
+      MCP_PUBLIC_AUTH: ${MCP_PUBLIC_AUTH:-}
       MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
       MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
       # Base das URLs de download dos MCPs virtuais. Vazio = deduzida de cada

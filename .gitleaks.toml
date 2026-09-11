@@ -19,6 +19,9 @@ useDefault = true
 #   `${POSTGRES_PASSWORD:?defina …}`.
 # - `CHANGE_ME` e afins: placeholders do .env.example.
 # - `postgres`: senha padrão do Postgres em exemplo de DSN local.
+# - `undefined`: um teste que passa a variável ausente para uma função — a
+#   regra não filtra por entropia, então `MCP_PUBLIC_KEY: undefined` num
+#   `*.test.ts` casa como se "undefined" fosse o segredo.
 # --------------------------------------------------------------------------
 [[allowlists]]
 description = "Placeholders, interpolação do compose e DSN local de exemplo"
@@ -26,7 +29,7 @@ regexTarget = "secret"
 regexes = [
   '''^\$\{''',
   '''^[?-]''',
-  '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+)''',
+  '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+|undefined)''',
   '''^postgres$''',
 ]
 
