@@ -5,6 +5,13 @@ export const config = {
   host: readTextEnv('HOST', '0.0.0.0'),
   /** Base do site, usada para montar URLs de download e de arquivos. */
   siteBaseUrl: readTextEnv('SITE_BASE_URL', 'http://localhost:3000').replace(/\/+$/, ''),
+  /**
+   * Endereço público deste servidor, base das URLs de download dos MCPs
+   * virtuais (`/virtual/<slug>/skills/<skill>/download`). Vazio = deduzido de
+   * cada requisição (`proto://host`), o que só acerta quando o proxy repassa
+   * os headers — atrás do Traefik do compose, ele repassa.
+   */
+  publicUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
   serverName: readTextEnv('MCP_SERVER_NAME', 'purple-skills'),
   version: readTextEnv('APP_VERSION', '1.0.0-beta.1'),
 };

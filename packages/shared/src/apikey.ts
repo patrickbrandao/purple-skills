@@ -2,9 +2,15 @@ import { randomBytes } from 'node:crypto';
 import { KEY_COST, hashSecret, verifySecret } from './password.js';
 
 /**
- * Chaves de API do MCP administrativo.
+ * Chaves de API dos servidores MCP.
  *
- *     psk_<prefixo>_<segredo>
+ *     psk_<prefixo>_<segredo>   — MCP administrativo, por usuário
+ *     psv_<prefixo>_<segredo>   — MCP virtual, por servidor (`docs/08-mcp-virtual.md`)
+ *
+ * O **esquema** (os três caracteres antes do primeiro `_`) diz em que tabela a
+ * chave vive: `psk_` em `api_keys`, `psv_` em `virtual_mcp_keys`. É ele que
+ * permite a cada servidor consultar uma tabela só — e que torna uma chave
+ * vazada identificável de cara.
  *
  * O **prefixo** é público e indexado: é por ele que a linha é encontrada, sem
  * varrer a tabela nem comparar hash por hash. O **segredo** tem 32 bytes
@@ -15,7 +21,11 @@ import { KEY_COST, hashSecret, verifySecret } from './password.js';
  * "psk_a1b2c3d4…" numa listagem sem guardar nada sensível.
  */
 export const API_KEY_SCHEME = 'psk';
+/** Chave de leitura de um MCP virtual — pertence ao servidor, não a um usuário. */
+export const VIRTUAL_KEY_SCHEME = 'psv';
 export const API_KEY_PREFIX_LENGTH = 8;
+
+export type ApiKeyScheme = typeof API_KEY_SCHEME | typeof VIRTUAL_KEY_SCHEME;
 
 export type GeneratedApiKey = {
   /** Texto completo, mostrado uma vez ao usuário. */
@@ -24,18 +34,17 @@ export type GeneratedApiKey = {
   keyHash: string;
 };
 
-export function generateApiKey(): GeneratedApiKey {
+export function generateApiKey(scheme: ApiKeyScheme = API_KEY_SCHEME): GeneratedApiKey {
   // 6 bytes viram exatamente 8 caracteres em base64url — nada de padding.
   const prefix = randomBytes(6).toString('base64url');
   const secret = randomBytes(32).toString('base64url');
   return {
-    token: `${API_KEY_SCHEME}_${prefix}_${secret}`,
+    token: `${scheme}_${prefix}_${secret}`,
     prefix,
     keyHash: hashSecret(secret, KEY_COST),
   };
 }
 
-const HEAD = `${API_KEY_SCHEME}_`;
 const SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 /**
@@ -46,13 +55,17 @@ const SEGMENT = /^[A-Za-z0-9_-]+$/;
  * recusaria uma chave legítima. O prefixo tem comprimento fixo, o que torna a
  * posição do separador determinística.
  */
-export function parseApiKey(token: string | null | undefined): {
+export function parseApiKey(
+  token: string | null | undefined,
+  scheme: ApiKeyScheme = API_KEY_SCHEME,
+): {
   prefix: string;
   secret: string;
 } | null {
-  if (!token || !token.startsWith(HEAD)) return null;
+  const head = `${scheme}_`;
+  if (!token || !token.startsWith(head)) return null;
 
-  const rest = token.slice(HEAD.length);
+  const rest = token.slice(head.length);
   if (rest[API_KEY_PREFIX_LENGTH] !== '_') return null;
 
   const prefix = rest.slice(0, API_KEY_PREFIX_LENGTH);
@@ -64,11 +77,14 @@ export function parseApiKey(token: string | null | undefined): {
 }
 
 /** `true` quando o texto tem a **forma** de uma chave — não que ela seja válida. */
-export const looksLikeApiKey = (token: string | null | undefined): boolean =>
-  parseApiKey(token) !== null;
+export const looksLikeApiKey = (
+  token: string | null | undefined,
+  scheme: ApiKeyScheme = API_KEY_SCHEME,
+): boolean => parseApiKey(token, scheme) !== null;
 
 export const verifyApiKeySecret = (secret: string, keyHash: string | null | undefined): boolean =>
   verifySecret(secret, keyHash);
 
 /** Como a chave aparece numa listagem: só o prefixo, nunca o segredo. */
-export const maskApiKey = (prefix: string): string => `${API_KEY_SCHEME}_${prefix}_…`;
+export const maskApiKey = (prefix: string, scheme: ApiKeyScheme = API_KEY_SCHEME): string =>
+  `${scheme}_${prefix}_…`;

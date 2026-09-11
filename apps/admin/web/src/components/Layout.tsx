@@ -7,6 +7,7 @@ import {
   ExternalIcon,
   LogoutIcon,
   MoonIcon,
+  ServerIcon,
   StackIcon,
   SunIcon,
   UserIcon,
@@ -33,6 +34,7 @@ export function Layout({
   const links = [
     { to: '/', label: 'Visão geral', Icon: DashboardIcon, end: true },
     { to: '/skills', label: 'Skills', Icon: StackIcon, end: false },
+    { to: '/mcps', label: 'MCPs virtuais', Icon: ServerIcon, end: false },
     ...(canManageUsers(user.role) && !user.legacy
       ? [{ to: '/users', label: 'Contas', Icon: UsersIcon, end: false }]
       : []),

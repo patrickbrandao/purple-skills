@@ -11,6 +11,7 @@ import {
   type Session,
   type SessionUser,
   type SkillDetail,
+  type VirtualMcpRef,
 } from '../api.js';
 import { Badge, Button, Panel, PublicationBadges } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
@@ -37,7 +38,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [skill, setSkill] = useState<SkillDetail | null>(null);
+  const [skill, setSkill] = useState<(SkillDetail & { virtualMcps: VirtualMcpRef[] }) | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -130,6 +131,18 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
             </span>
           ))}
         </div>
+      )}
+
+      {/* Só leitura: o vínculo é feito na página do MCP virtual. */}
+      {skill.virtualMcps.length > 0 && (
+        <p className="row-sub mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span>Publicada nos MCPs virtuais:</span>
+          {skill.virtualMcps.map((mcp) => (
+            <Link key={mcp.uuid} to={`/mcps/${mcp.slug}`} className="tag">
+              {mcp.name}
+            </Link>
+          ))}
+        </p>
       )}
 
       <div className="skill-read mt-5">

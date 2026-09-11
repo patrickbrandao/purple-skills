@@ -13,7 +13,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@purple-skills/db', () => db);
 
-const { handlers, surfaces } = await import('./tools.js');
+const { handlers, surfaces, createHandlers, createSurfaces } = await import('./tools.js');
 
 const summary = {
   uuid: 'uuid-1',
@@ -85,7 +85,7 @@ describe('get_skill', () => {
 
     const result = await handlers.get_skill({ slug: 'minha-skill' });
 
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1');
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', undefined);
     expect(result.content[0].text).toContain('Conteúdo.');
     expect(result.content[0].text).toContain('ref/extra.md');
   });
@@ -267,8 +267,8 @@ describe('prompts/list e resources/list', () => {
     const prompts = await surfaces.listPrompts();
     const resources = await surfaces.listResources();
 
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt');
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource');
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', undefined);
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', undefined);
     expect(prompts.prompts).toEqual([
       { name: 'minha-skill', title: 'Minha Skill', description: 'Faz coisas' },
     ]);
@@ -309,7 +309,7 @@ describe('resources/read', () => {
     const result = await surfaces.readResource('skill://minha-skill');
 
     expect(db.getSkillDetail).toHaveBeenCalledWith('minha-skill', { includePrivate: false });
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1');
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', undefined);
     expect(result.contents[0].uri).toBe('skill://minha-skill');
     expect(result.contents[0].mimeType).toBe('text/markdown');
     // Byte a byte o mesmo do .zip e do /files/SKILL.md.
@@ -346,7 +346,7 @@ describe('prompts/get', () => {
 
     const result = await surfaces.getPrompt('minha-skill');
 
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1');
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', undefined);
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe('user');
     expect(result.messages[0].content.text).toBe('# Minha Skill\n');
@@ -371,5 +371,120 @@ describe('resources/templates/list', () => {
   // na inicialização não leva "method not found".
   it('responde com lista vazia', () => {
     expect(surfaces.listResourceTemplates()).toEqual({ resourceTemplates: [] });
+  });
+});
+
+// ------------------------------------------------------------ MCP virtual ---
+
+/**
+ * Dentro de um MCP virtual as mesmas ferramentas leem pelo vínculo — skill
+ * privada entra, as flags da skill não contam — e os downloads apontam para o
+ * próprio servidor, sob `/virtual/<slug>` (`docs/08-mcp-virtual.md` §3, §4).
+ */
+describe('escopo de MCP virtual', () => {
+  const mcp = { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: false };
+  const scope = { mcp, baseUrl: 'https://mcp.exemplo.dev/virtual/time-a' };
+  const virtual = createHandlers(scope);
+  const privada = { ...summary, isPublic: false, useAsSkill: false };
+
+  it('toda leitura das ferramentas passa o recorte do vínculo, e só ele', async () => {
+    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
+    db.listTags.mockResolvedValue([]);
+    db.getSkillSummary.mockResolvedValue(null);
+    db.getSkillDetail.mockResolvedValue(null);
+
+    await virtual.search_skills({ query: 'x' });
+    await virtual.list_tags();
+    await virtual.get_skill({ slug: 's' });
+    await virtual.download_skill({ slug: 's' });
+
+    const recorte = { virtualMcp: { uuid: 'mcp-1', surface: 'skill' } };
+    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining(recorte));
+    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('includePrivate');
+    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('onlyAsSkill');
+    expect(db.listTags).toHaveBeenCalledWith(recorte);
+    expect(db.getSkillDetail).toHaveBeenCalledWith('s', recorte);
+    expect(db.getSkillSummary).toHaveBeenCalledWith('s', recorte);
+  });
+
+  it('get_skill numa skill privada conta acesso no vínculo e devolve download do próprio servidor, sem página', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, ...privada });
+
+    const result = await virtual.get_skill({ slug: 'minha-skill' });
+
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-1');
+    expect(result.content[0].text).toContain(
+      'download (zip): https://mcp.exemplo.dev/virtual/time-a/skills/minha-skill/download',
+    );
+    expect(result.content[0].text).not.toContain('página:');
+  });
+
+  it('mantém a página do site quando a skill vinculada é pública', async () => {
+    db.listSkills.mockResolvedValue({ items: [summary, privada], total: 2, limit: 10, offset: 0 });
+
+    const payload = JSON.parse((await virtual.search_skills({})).content[0].text);
+
+    expect(payload.results[0].url).toBe('http://localhost:3000/skills/minha-skill');
+    expect(payload.results[1].url).toBeUndefined();
+  });
+
+  it('download_skill e arquivo binário apontam para o servidor virtual, com a dica da chave', async () => {
+    db.getSkillSummary.mockResolvedValue(privada);
+    db.readFile.mockResolvedValue({
+      relativePath: 'img/logo.png',
+      mimeType: 'image/png',
+      sizeBytes: 3,
+      isText: false,
+      buffer: Buffer.from([1, 2, 3]),
+    });
+
+    const download = JSON.parse((await virtual.download_skill({ slug: 'minha-skill' })).content[0].text);
+    const file = await virtual.get_skill_file({ slug: 'minha-skill', path: 'img/logo.png' });
+
+    expect(download.downloadUrl).toBe(
+      'https://mcp.exemplo.dev/virtual/time-a/skills/minha-skill/download',
+    );
+    expect(download.hint).toContain('Authorization: Bearer');
+    expect(file.content[0].text).toContain(
+      'https://mcp.exemplo.dev/virtual/time-a/skills/minha-skill/files/img/logo.png',
+    );
+  });
+
+  it('num virtual aberto a dica de download não pede chave', async () => {
+    db.getSkillSummary.mockResolvedValue(privada);
+    const aberto = createHandlers({ ...scope, mcp: { ...mcp, isOpen: true } });
+
+    const download = JSON.parse((await aberto.download_skill({ slug: 'minha-skill' })).content[0].text);
+
+    expect(download.hint).not.toContain('Authorization');
+  });
+
+  it('prompts e resources listam pelo vínculo e leem pela flag do vínculo', async () => {
+    const surfacesVirtual = createSurfaces(scope);
+    db.listPublishedSkills.mockResolvedValue([{ slug: 'minha-skill', name: 'Minha Skill', description: '' }]);
+    db.getSkillDetail.mockResolvedValue({ ...detail, ...privada });
+
+    await surfacesVirtual.listPrompts();
+    await surfacesVirtual.listResources();
+    await surfacesVirtual.getPrompt('minha-skill');
+    await surfacesVirtual.readResource('skill://minha-skill');
+
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', { virtualMcpUuid: 'mcp-1' });
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', { virtualMcpUuid: 'mcp-1' });
+    expect(db.getSkillDetail).toHaveBeenNthCalledWith(1, 'minha-skill', {
+      virtualMcp: { uuid: 'mcp-1', surface: 'prompt' },
+    });
+    expect(db.getSkillDetail).toHaveBeenNthCalledWith(2, 'minha-skill', {
+      virtualMcp: { uuid: 'mcp-1', surface: 'resource' },
+    });
+    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-1');
+  });
+
+  it('no principal, prompts e resources continuam sem escopo', async () => {
+    db.listPublishedSkills.mockResolvedValue([]);
+
+    await surfaces.listPrompts();
+
+    expect(db.listPublishedSkills).toHaveBeenCalledWith('prompt', undefined);
   });
 });

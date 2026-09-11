@@ -16,6 +16,12 @@ export const config = {
   host: readTextEnv('HOST', '0.0.0.0'),
   siteBaseUrl: readTextEnv('SITE_BASE_URL', 'http://localhost:3000').replace(/\/+$/, ''),
   siteName: readTextEnv('SITE_NAME', 'Purple Skills'),
+  /**
+   * Endereço público do MCP público — base das URLs `/virtual/<slug>/mcp`
+   * que o painel mostra no snippet de conexão de cada MCP virtual. Vazio = o
+   * painel mostra o caminho e avisa que falta configurar.
+   */
+  mcpPublicUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
   isProduction: process.env.NODE_ENV === 'production',
   /** Duração da sessão do painel, em segundos (padrão: 12h). */
   sessionTtlSeconds: readIntEnv('ADMIN_SESSION_TTL', 12 * 3600, { min: 60 }),

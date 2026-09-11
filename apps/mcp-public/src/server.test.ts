@@ -17,11 +17,11 @@ vi.mock('@purple-skills/db', () => db);
 const { createMcpServer } = await import('./server.js');
 
 /** Cliente ligado a um servidor novo pelo transporte em memória. */
-async function conectar() {
+async function conectar(scope?: Parameters<typeof createMcpServer>[0]) {
   const [doCliente, doServidor] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'teste', version: '0' });
 
-  await Promise.all([createMcpServer().connect(doServidor), client.connect(doCliente)]);
+  await Promise.all([createMcpServer(scope).connect(doServidor), client.connect(doCliente)]);
   return client;
 }
 
@@ -96,5 +96,29 @@ describe('métodos das superfícies', () => {
     await expect(client.readResource({ uri: 'skill://nao-existe' })).rejects.toThrow(
       /não encontrado/,
     );
+  });
+});
+
+describe('servidor de um MCP virtual', () => {
+  const scope = {
+    mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: 'Skills do projeto X.', isOpen: false },
+    baseUrl: 'https://mcp.exemplo.dev/virtual/time-a',
+  };
+
+  it('sufixa o nome do servidor com o slug e leva a descrição às instruções', async () => {
+    const client = await conectar(scope);
+
+    expect(client.getServerVersion()?.name).toBe('purple-skills-time-a');
+    expect(client.getInstructions()).toContain('Skills do projeto X.');
+    expect(client.getInstructions()).toContain('search_skills');
+  });
+
+  it('oferece as mesmas ferramentas e superfícies do principal', async () => {
+    const client = await conectar(scope);
+
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(['search_skills', 'get_skill', 'get_skill_file', 'download_skill', 'list_tags']),
+    );
+    expect(client.getServerCapabilities()?.prompts).toEqual({});
   });
 });

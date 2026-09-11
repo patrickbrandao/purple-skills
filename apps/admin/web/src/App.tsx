@@ -12,6 +12,8 @@ import { SkillsPage } from './pages/SkillsPage.js';
 import { SkillViewPage } from './pages/SkillViewPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
+import { McpsPage } from './pages/McpsPage.js';
+import { McpPage } from './pages/McpPage.js';
 
 /** Estado assumido quando `/api/session` não responde — só serve ao login. */
 const OFFLINE: Session = {
@@ -23,6 +25,7 @@ const OFFLINE: Session = {
   passwordResetByEmail: false,
   siteName: 'Purple Skills',
   siteBaseUrl: '/',
+  mcpPublicUrl: '',
 };
 
 export default function App() {
@@ -90,6 +93,8 @@ export default function App() {
             path="/skills/:slug/editar"
             element={<SkillEditorPage session={current} user={user} />}
           />
+          <Route path="/mcps" element={<McpsPage user={user} />} />
+          <Route path="/mcps/:slug" element={<McpPage session={current} user={user} />} />
           <Route path="/account" element={<AccountPage user={user} onChanged={refresh} />} />
           <Route
             path="/users"

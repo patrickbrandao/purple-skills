@@ -386,6 +386,36 @@ resolve o empate; o código traduz o `23505` resultante: com slug gerado a parti
 do nome, escolhe outro e tenta de novo (a intenção é "qualquer slug livre"); com
 slug pedido explicitamente, devolve 409.
 
+## MCP virtual
+
+Decisões de implementação que [`08-mcp-virtual.md`](08-mcp-virtual.md) deixou
+em aberto:
+
+- **Dois pontos de montagem, um mapa de sessões.** `createHttpApp` do
+  mcp-public passou a receber `mounts`; os transportes são registrados num
+  `Router({ mergeParams: true })` por mount, para o `:slug` do prefixo chegar
+  às rotas de dentro. As sessões (Streamable e SSE) vivem num mapa só, com a
+  amarração por identidade portada do mcp-admin — a identidade do virtual
+  embute MCP e chave. O `http.ts` do mcp-admin continua com a forma antiga
+  (um mount implícito): os dois arquivos são cópias por app, como sempre foram.
+- **Base das URLs de download.** `MCP_PUBLIC_URL` no mcp-public; sem ela, a
+  origem da requisição (`req.protocol://host`, respeitando `trust proxy`). O
+  painel recebe a mesma variável para o snippet de `mcp.json`.
+- **Confirmação de abertura.** O painel responde `400` com
+  `error: "confirm_open_required"` e o cliente reenvia com `confirmOpen: true`
+  depois do `window.confirm`; a tool devolve `isError` pedindo
+  `confirm_open: true`. A contagem de privadas usada na checagem do `PUT
+  …/skills` é feita na rota, por `getSkillSummary` slug a slug — a lista é
+  curta e a alternativa seria uma query só para isso.
+- **`setVirtualMcpSkills` trava o MCP** (`SELECT … FOR UPDATE`) dentro da
+  transação: dois salvamentos concorrentes da lista não se sobrescrevem.
+- **Sem `.skill` nem página no site para skill privada.** O virtual serve
+  `download` e `download.skill`; a `url` da página só sai quando `is_public`.
+- **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
+  credencial, e o site continua sendo o único lugar com `max-age`.
+- **Selo na skill inclui MCPs desligados** — `listVirtualMcpsForSkill` não
+  filtra `is_active`: o vínculo existe, e o selo é sobre o vínculo.
+
 ## Portas
 
 | Serviço | Porta |
@@ -420,3 +450,16 @@ slug pedido explicitamente, devolve 409.
   admin, senha única ficando inerte depois dele, matriz de papéis nas rotas do
   painel, revogação por `token_version`, trava do login por tentativas, e chave
   `psk_` autenticando no MCP administrativo com o papel do dono.
+- Smoke test do MCP virtual contra um Postgres descartável (migration `009`
+  aplicada duas vezes; suíte de integração `virtual-mcps`): cliente MCP real
+  em `/virtual/<slug>/mcp` com chave `psv_` (serverInfo sufixado, instruções
+  com a descrição, `search_skills` só o vínculo com uma privada, `get_skill`
+  da privada com download no próprio servidor, `.zip` e `SKILL.md` com e sem
+  chave, `prompts/list` e `resources/list` obedecendo `as_prompt`/`as_resource`,
+  401/404 conforme a `§4.5` de `08`, virtual aberto sem chave, principal sem a
+  privada, SSE anunciando o endpoint com prefixo, contadores no vínculo e no
+  global); a API do painel (`/api/mcps*`: papel para criar, alcance por dono,
+  `PUT` declarativo, confirmação de abertura nos dois sentidos, transferência
+  de dono, chave emitida abrindo o virtual e revogada respondendo 401, selo na
+  skill, rename, 409, delete, auditoria `mcp.*`); e as nove tools do
+  mcp-admin com o token global.

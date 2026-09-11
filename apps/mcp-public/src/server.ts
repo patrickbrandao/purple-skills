@@ -8,12 +8,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { config } from './config.js';
-import { handlers, surfaces } from './tools.js';
+import { createHandlers, createSurfaces, type VirtualScope } from './tools.js';
 
-const INSTRUCTIONS = `Servidor MCP do Purple Skills — um catálogo de skills (instruções
-reutilizáveis) para agentes de IA.
-
-Fluxo recomendado:
+const FLUXO = `Fluxo recomendado:
 1. search_skills("tema") para descobrir skills relevantes pelo conteúdo.
 2. get_skill("<slug>") para ler o SKILL.md completo da skill escolhida.
 3. get_skill_file("<slug>", "<caminho>") para ler arquivos auxiliares.
@@ -24,26 +21,63 @@ resource, na URI skill://<slug>. As ferramentas acima não dizem quais: quem
 mostra são prompts/list e resources/list. As três superfícies são independentes,
 então uma skill pode estar publicada só como prompt ou só como resource e não
 aparecer em search_skills — consulte as três listagens antes de concluir que uma
-skill não existe aqui.
+skill não existe aqui.`;
+
+const INSTRUCTIONS = `Servidor MCP do Purple Skills — um catálogo de skills (instruções
+reutilizáveis) para agentes de IA.
+
+${FLUXO}
 
 Somente skills marcadas como públicas são expostas aqui.`;
 
-/** Cria uma instância do servidor MCP público com as ferramentas registradas. */
-export function createMcpServer(): McpServer {
+/**
+ * As instruções de um MCP virtual: o mesmo fluxo, mais o que o dono escreveu
+ * na descrição — é por ela que ele contextualiza o agente ("skills do
+ * projeto X") sem um campo de instruções à parte (`08`, decisão 15).
+ */
+const instrucoesDoVirtual = (scope: VirtualScope) =>
+  `Servidor MCP "${scope.mcp.name}" — um recorte do catálogo de skills do Purple
+Skills feito para um time ou projeto. As skills aqui foram escolhidas por quem
+administra este servidor; o catálogo completo vive no MCP principal.
+
+${FLUXO}
+
+Os downloads (download_skill e arquivos binários) apontam para este mesmo
+servidor e aceitam a mesma credencial usada para conectar.${
+    scope.mcp.description ? `\n\nSobre este servidor:\n${scope.mcp.description}` : ''
+  }`;
+
+/**
+ * Cria uma instância do servidor MCP público com as ferramentas registradas.
+ *
+ * Sem `scope`, é o MCP principal. Com ele, é um MCP virtual: mesmo conjunto
+ * de ferramentas e superfícies, com as leituras recortadas pelo vínculo e o
+ * nome do servidor sufixado pelo slug, para o cliente distinguir os dois no
+ * `serverInfo`.
+ */
+export function createMcpServer(scope?: VirtualScope): McpServer {
+  const handlers = createHandlers(scope);
+  const surfaces = createSurfaces(scope);
+
   const server = new McpServer(
-    { name: config.serverName, version: config.version },
-    { instructions: INSTRUCTIONS },
+    {
+      name: scope ? `${config.serverName}-${scope.mcp.slug}` : config.serverName,
+      version: config.version,
+    },
+    { instructions: scope ? instrucoesDoVirtual(scope) : INSTRUCTIONS },
   );
 
-  registrarSuperficies(server);
+  registrarSuperficies(server, surfaces);
+
+  const busca = scope
+    ? 'Busca as skills deste MCP virtual por texto livre (nome, descrição e conteúdo do SKILL.md), '
+    : 'Busca skills públicas por texto livre (nome, descrição e conteúdo do SKILL.md), ';
 
   server.registerTool(
     'search_skills',
     {
       title: 'Buscar skills',
-      description:
-        'Busca skills públicas por texto livre (nome, descrição e conteúdo do SKILL.md), ' +
-        'opcionalmente filtrando por tag. Retorna os slugs a usar em get_skill.',
+      description: busca + 'opcionalmente filtrando por tag. Retorna os slugs a usar em get_skill.',
       inputSchema: {
         query: z.string().describe('Termos de busca. Vazio lista as mais acessadas.').optional(),
         tag: z.string().describe('Filtra por uma tag exata.').optional(),
@@ -119,7 +153,7 @@ export function createMcpServer(): McpServer {
  * neste servidor**: o SDK lança quando um handler do mesmo método já existe, e
  * o processo cairia no boot.
  */
-function registrarSuperficies(server: McpServer) {
+function registrarSuperficies(server: McpServer, surfaces: ReturnType<typeof createSurfaces>) {
   // Na mão e sem `listChanged`: o SDK o declara fixo como `true` ao registrar
   // resources, mas admin e mcp-public são containers separados — não há evento
   // em processo para disparar a notificação, e um cliente que confiasse na

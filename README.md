@@ -225,6 +225,44 @@ desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
 Autenticação é **opcional**: sem `MCP_PUBLIC_KEY` o servidor é aberto; com ela,
 exige `Authorization: Bearer <MCP_PUBLIC_KEY>`.
 
+### MCPs virtuais: um servidor por time
+
+Um **MCP virtual** é um recorte do catálogo servido pelo mesmo mcp-public em
+`/virtual/<slug>/mcp` (e `/mcp/stateless`, `/sse` + `/messages`), com
+endereço, chaves e dono próprios. Serve para um time ou projeto conectar o
+agente só às skills que lhe interessam — **inclusive skills privadas**, que
+nunca aparecem no MCP principal nem no site.
+
+- Cria quem é `editor` ou `admin`, no painel (seção "MCPs virtuais") ou pelo
+  MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
+  nele, ninguém mais. Admin transfere o dono.
+- Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
+  prompt, resource) **naquele servidor** — as flags `use_as_*` da skill valem
+  só para o MCP principal.
+- O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a
+  `MCP_PUBLIC_KEY` não abre um virtual e a chave de um virtual não abre outro.
+  Um MCP pode ser marcado **aberto** (sem chave) — com skill privada dentro,
+  isso a torna pública naquele endereço, e o sistema pede confirmação.
+- `download_skill` e os arquivos binários apontam para o próprio servidor,
+  atrás da mesma chave. Cada MCP tem contadores próprios por skill; o total da
+  skill também soma.
+- Desligar (`ligado` no painel) faz tudo sob `/virtual/<slug>` responder 404
+  sem apagar nada; slug inexistente também é 404, chave errada é 401.
+
+```json
+{
+  "mcpServers": {
+    "time-a": {
+      "type": "http",
+      "url": "https://mcp.example.com/virtual/time-a/mcp",
+      "headers": { "Authorization": "Bearer psv_…" }
+    }
+  }
+}
+```
+
+O desenho está em [`docs/08-mcp-virtual.md`](docs/08-mcp-virtual.md).
+
 ### Ferramentas do MCP administrativo
 
 Exige sempre `Authorization: Bearer <credencial>`, que pode ser o
@@ -245,6 +283,9 @@ e `delete_skill` exige `admin`.
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`) |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
+| `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
+| `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}], confirm_open?)` | Substitui a lista inteira de skills do MCP virtual |
+| `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
 
 ## API REST pública
 
@@ -347,9 +388,9 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
-| `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público |
+| `MCP_PUBLIC_KEY` / `_FILE` | não | Se definida, protege o MCP público **principal** (não os virtuais) |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
-| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é também a base dos MCPs virtuais no painel e nas URLs de download do mcp-public |
 | `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
@@ -379,6 +420,8 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 - Busca vetorial deixada para uma versão futura.
 - Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
   no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.
+- Um MCP virtual aberto com skill privada dentro é publicação: o painel e a
+  tool pedem confirmação, e só.
 
 ## Licença
 

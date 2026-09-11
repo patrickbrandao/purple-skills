@@ -53,7 +53,12 @@ export type AuditAction =
   | 'user.role'
   | 'user.deactivate'
   | 'key.create'
-  | 'key.revoke';
+  | 'key.revoke'
+  | 'mcp.create'
+  | 'mcp.update'
+  | 'mcp.delete'
+  | 'mcp.key.create'
+  | 'mcp.key.revoke';
 
 export type AuditEntry = {
   id: string;
@@ -80,6 +85,12 @@ export const ROLE_LABEL: Record<Role, string> = {
 export const canWrite = (role: Role) => role === 'admin' || role === 'editor';
 export const canDelete = (role: Role) => role === 'admin';
 export const canManageUsers = (role: Role) => role === 'admin';
+export const canCreateVirtualMcp = canWrite;
+export const canManageVirtualMcp = (
+  role: Role,
+  ownerUserUuid: string | null,
+  userUuid: string | null,
+) => role === 'admin' || (userUuid !== null && ownerUserUuid === userUuid);
 
 export type SessionUser = {
   uuid: string | null;
@@ -100,6 +111,8 @@ export type Session = {
   passwordResetByEmail: boolean;
   siteName: string;
   siteBaseUrl: string;
+  /** Base pública do MCP público — vazia quando `MCP_PUBLIC_URL` não foi configurada. */
+  mcpPublicUrl: string;
 };
 
 export type UserSummary = {
@@ -127,10 +140,67 @@ export type ApiKeySummary = {
   createdAt: string;
 };
 
+// ----------------------------------------------------------- MCP virtual ---
+
+export type VirtualMcpSummary = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  isActive: boolean;
+  isOpen: boolean;
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  skillCount: number;
+  privateSkillCount: number;
+  activeKeyCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type VirtualMcpSkill = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  isPublic: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+  viewCount: number;
+  downloadCount: number;
+};
+
+export type VirtualMcpDetail = VirtualMcpSummary & { skills: VirtualMcpSkill[] };
+
+export type VirtualMcpSkillInput = {
+  slug: string;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
+export type VirtualMcpRef = { uuid: string; slug: string; name: string };
+
+export type VirtualMcpKeySummary = {
+  id: string;
+  virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  createdByUserUuid: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+/** Código do 400 que pede confirmação para abrir um MCP com skill privada. */
+export const CONFIRM_OPEN_REQUIRED = 'confirm_open_required';
+
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code: string = 'error',
   ) {
     super(message);
   }
@@ -144,8 +214,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { message?: string };
-    throw new ApiError(body.message ?? `Erro ${response.status}`, response.status);
+    const body = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+    throw new ApiError(body.message ?? `Erro ${response.status}`, response.status, body.error);
   }
 
   if (response.status === 204) return undefined as T;
@@ -241,7 +311,7 @@ export function listSkills(params: { q?: string; tag?: string; limit?: number; o
 }
 
 export const getSkill = (slug: string) =>
-  request<SkillDetail>(`/api/skills/${encodeURIComponent(slug)}`);
+  request<SkillDetail & { virtualMcps: VirtualMcpRef[] }>(`/api/skills/${encodeURIComponent(slug)}`);
 
 export type CreateSkillBody = {
   name: string;
@@ -342,6 +412,51 @@ export function uploadFiles(slug: string, files: FileList | File[], prefix = '')
     body: form,
   });
 }
+
+// ----------------------------------------------------------- MCP virtual ---
+
+const mcpPath = (slug: string) => `/api/mcps/${encodeURIComponent(slug)}`;
+
+export const getMcps = () => request<{ items: VirtualMcpSummary[] }>('/api/mcps');
+
+export const getMcp = (slug: string) => request<VirtualMcpDetail>(mcpPath(slug));
+
+export const createMcp = (body: { name: string; slug?: string; description?: string; isOpen?: boolean }) =>
+  request<VirtualMcpDetail>('/api/mcps', { method: 'POST', body: json(body) });
+
+export type UpdateMcpBody = {
+  name?: string;
+  slug?: string;
+  description?: string;
+  isOpen?: boolean;
+  isActive?: boolean;
+  ownerUserUuid?: string | null;
+  confirmOpen?: boolean;
+};
+
+export const updateMcp = (slug: string, body: UpdateMcpBody) =>
+  request<VirtualMcpDetail>(mcpPath(slug), { method: 'PATCH', body: json(body) });
+
+export const deleteMcp = (slug: string) => request<unknown>(mcpPath(slug), { method: 'DELETE' });
+
+export const setMcpSkills = (slug: string, skills: VirtualMcpSkillInput[], confirmOpen?: boolean) =>
+  request<VirtualMcpDetail>(`${mcpPath(slug)}/skills`, {
+    method: 'PUT',
+    body: json({ skills, confirmOpen }),
+  });
+
+export const getMcpKeys = (slug: string) =>
+  request<{ items: VirtualMcpKeySummary[] }>(`${mcpPath(slug)}/keys`);
+
+/** O campo `token` chega uma única vez, na resposta desta chamada. */
+export const createMcpKey = (slug: string, name: string) =>
+  request<{ key: VirtualMcpKeySummary; token: string }>(`${mcpPath(slug)}/keys`, {
+    method: 'POST',
+    body: json({ name }),
+  });
+
+export const revokeMcpKey = (slug: string, id: string) =>
+  request<unknown>(`${mcpPath(slug)}/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

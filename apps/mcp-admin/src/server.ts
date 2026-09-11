@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
+import { createMcpHandlers } from './mcps.js';
 import { createHandlers, guard } from './tools.js';
 
 const INSTRUCTIONS = `Servidor MCP administrativo do Purple Skills.
@@ -29,7 +30,14 @@ Regras importantes:
   skill://<slug>. Desligar use_as_skill publica a skill só nas outras duas.
 - delete_skill é irreversível e exige confirm=true.
 - As ferramentas de escrita dependem do papel da credencial: uma chave de
-  usuário "leitor" só lê, e apagar skill exige papel "admin".`;
+  usuário "leitor" só lê, e apagar skill exige papel "admin".
+- MCPs virtuais (tools *_virtual_mcp*): servidores de leitura em
+  /virtual/<slug>/mcp que publicam um recorte de skills — inclusive privadas —
+  com chaves próprias (psv_…). Cada vínculo escolhe as três superfícies
+  (asSkill, asPrompt, asResource) por conta própria; as flags use_as_* da
+  skill valem só para o MCP principal. O MCP virtual tem dono: quem cria é o
+  dono, e só o dono ou um admin o administra. Abrir um MCP (is_open) com
+  skill privada dentro exige confirm_open=true.`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -40,6 +48,7 @@ Regras importantes:
  */
 export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
   const handlers = createHandlers(caller);
+  const mcps = createMcpHandlers(caller);
 
   const server = new McpServer(
     { name: config.serverName, version: config.version },
@@ -257,6 +266,139 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       inputSchema: {},
     },
     () => guard(() => handlers.get_stats()),
+  );
+
+  // ------------------------------------------------------- MCPs virtuais ---
+
+  server.registerTool(
+    'list_virtual_mcps',
+    {
+      title: 'Listar MCPs virtuais',
+      description:
+        'Lista os MCPs virtuais que a credencial administra: todos para admin, os próprios para os demais.',
+      inputSchema: {},
+    },
+    () => guard(() => mcps.list_virtual_mcps()),
+  );
+
+  server.registerTool(
+    'get_virtual_mcp',
+    {
+      title: 'Ler MCP virtual',
+      description: 'Configuração, skills vinculadas (com as superfícies e contadores do vínculo) e chaves ativas.',
+      inputSchema: { slug: z.string().describe('Slug do MCP virtual.') },
+    },
+    (args) => guard(() => mcps.get_virtual_mcp(args)),
+  );
+
+  server.registerTool(
+    'create_virtual_mcp',
+    {
+      title: 'Criar MCP virtual',
+      description:
+        'Cria um MCP virtual vazio em /virtual/<slug>/mcp. Quem cria é o dono. Nasce ligado e exigindo chave.',
+      inputSchema: {
+        name: z.string().describe('Nome de exibição.'),
+        slug: z.string().describe('Slug (a-z, 0-9 e hífen). Gerado do nome se omitido.').optional(),
+        description: z
+          .string()
+          .describe('Vai para as instruções do servidor: é como o agente sabe do que este MCP trata.')
+          .optional(),
+        is_open: z.boolean().describe('Sem chave (padrão false).').optional(),
+      },
+    },
+    (args) => guard(() => mcps.create_virtual_mcp(args)),
+  );
+
+  server.registerTool(
+    'update_virtual_mcp',
+    {
+      title: 'Alterar MCP virtual',
+      description:
+        'Altera nome, slug, descrição, is_open ou is_active. Abrir (is_open=true) com skill privada dentro exige confirm_open=true.',
+      inputSchema: {
+        slug: z.string().describe('Slug atual.'),
+        name: z.string().optional(),
+        new_slug: z.string().describe('Novo slug — muda o endereço de todo cliente configurado.').optional(),
+        description: z.string().optional(),
+        is_open: z.boolean().optional(),
+        is_active: z.boolean().describe('false desliga: tudo sob /virtual/<slug> responde 404.').optional(),
+        confirm_open: z.boolean().optional(),
+      },
+    },
+    (args) => guard(() => mcps.update_virtual_mcp(args)),
+  );
+
+  server.registerTool(
+    'delete_virtual_mcp',
+    {
+      title: 'Remover MCP virtual',
+      description: 'Remove o MCP virtual, seus vínculos e suas chaves. Irreversível.',
+      inputSchema: {
+        slug: z.string(),
+        confirm: z.boolean().describe('Precisa ser true para a remoção acontecer.'),
+      },
+    },
+    (args) => guard(() => mcps.delete_virtual_mcp(args)),
+  );
+
+  server.registerTool(
+    'set_virtual_mcp_skills',
+    {
+      title: 'Definir skills do MCP virtual',
+      description:
+        'Substitui a lista inteira de skills do MCP virtual: a lista é o estado desejado, e quem não ' +
+        'está nela sai. Cada entrada escolhe as três superfícies. Num MCP aberto, vincular skill privada ' +
+        'exige confirm_open=true.',
+      inputSchema: {
+        slug: z.string(),
+        skills: z
+          .array(
+            z.object({
+              slug: z.string(),
+              asSkill: z.boolean().describe('Nas ferramentas (search_skills, get_skill…).'),
+              asPrompt: z.boolean().describe('Como prompt, pelo slug.'),
+              asResource: z.boolean().describe('Como resource skill://<slug>.'),
+            }),
+          )
+          .describe('Lista completa. Vazia esvazia o MCP.'),
+        confirm_open: z.boolean().optional(),
+      },
+    },
+    (args) => guard(() => mcps.set_virtual_mcp_skills(args)),
+  );
+
+  server.registerTool(
+    'list_virtual_mcp_keys',
+    {
+      title: 'Listar chaves do MCP virtual',
+      description: 'Chaves psv_ do MCP virtual, inclusive revogadas. Nunca mostra o segredo.',
+      inputSchema: { slug: z.string() },
+    },
+    (args) => guard(() => mcps.list_virtual_mcp_keys(args)),
+  );
+
+  server.registerTool(
+    'create_virtual_mcp_key',
+    {
+      title: 'Emitir chave do MCP virtual',
+      description: 'Emite uma chave psv_ para o MCP virtual. O token aparece uma única vez, na resposta.',
+      inputSchema: {
+        slug: z.string(),
+        name: z.string().describe('Nome da chave (ex.: "CI do projeto X").'),
+      },
+    },
+    (args) => guard(() => mcps.create_virtual_mcp_key(args)),
+  );
+
+  server.registerTool(
+    'revoke_virtual_mcp_key',
+    {
+      title: 'Revogar chave do MCP virtual',
+      description: 'Revoga uma chave pelo id (de list_virtual_mcp_keys). Quem a usa perde o acesso na hora.',
+      inputSchema: { slug: z.string(), key_id: z.string() },
+    },
+    (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
   );
 
   return server;

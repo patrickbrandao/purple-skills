@@ -3,6 +3,7 @@ import { countUsers, getUserByUuid } from '@purple-skills/db';
 import {
   type AuditActor,
   type Role,
+  canCreateVirtualMcp,
   canDelete,
   canManageUsers,
   canWrite,
@@ -207,3 +208,9 @@ export const requireDelete = guard(canDelete, 'Só um administrador pode apagar 
 
 /** Gerenciar contas — só admin. */
 export const requireAdmin = guard(canManageUsers, 'Só um administrador pode gerenciar contas');
+
+/** Criar um MCP virtual — admin e editor; o dono é quem cria. */
+export const requireVirtualMcpCreate = guard(
+  canCreateVirtualMcp,
+  'Seu papel não permite criar MCPs virtuais',
+);

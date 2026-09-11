@@ -110,6 +110,9 @@ services:
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
       ADMIN_ALLOWED_ORIGINS: ${ADMIN_ALLOWED_ORIGINS:-}
       ADMIN_MAX_UPLOAD_BYTES: ${ADMIN_MAX_UPLOAD_BYTES:-}
+      # Base das URLs /virtual/<slug>/mcp mostradas no snippet de conexão de
+      # cada MCP virtual (docs/08-mcp-virtual.md). Vazio = o painel avisa.
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       # Endereço público do painel: base do redirect_uri do SSO e do link de
       # redefinição de senha. Vazio = deduzido do Host da requisição.
       ADMIN_PUBLIC_URL: ${ADMIN_PUBLIC_URL:-}
@@ -147,6 +150,9 @@ services:
       PORT: 3002
       MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
       MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
+      # Base das URLs de download dos MCPs virtuais. Vazio = deduzida de cada
+      # requisição (proto://host), o que funciona atrás do Traefik do override.
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
 

@@ -65,7 +65,14 @@ export type AuditAction =
   | 'user.role'
   | 'user.deactivate'
   | 'key.create'
-  | 'key.revoke';
+  | 'key.revoke'
+  // Eventos de MCP virtual (`docs/08-mcp-virtual.md` §6). `target_label` é o
+  // slug do servidor; nas chaves, o nome da chave.
+  | 'mcp.create'
+  | 'mcp.update'
+  | 'mcp.delete'
+  | 'mcp.key.create'
+  | 'mcp.key.revoke';
 
 export type AuditSource = 'web-admin' | 'mcp-admin';
 
@@ -121,6 +128,77 @@ export type ApiKeySummary = {
   userUuid: string;
   name: string;
   prefix: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+// ------------------------------------------------------- MCP virtual ------
+
+/**
+ * As três superfícies de um MCP virtual, decididas **por vínculo** — e não
+ * pelas flags da skill, que valem só para o MCP principal
+ * (`docs/08-mcp-virtual.md` §3.2).
+ */
+export type VirtualSurface = 'skill' | 'prompt' | 'resource';
+
+export type VirtualMcpSummary = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** Desligado: tudo sob `/virtual/<slug>` responde 404, as chaves ficam. */
+  isActive: boolean;
+  /** Aberto: sem chave. Com skill privada dentro, é publicação de fato. */
+  isOpen: boolean;
+  /** Nulo quando o dono foi removido ou quando quem criou foi a sessão de bootstrap. */
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  skillCount: number;
+  /** Quantas das vinculadas são privadas — o painel avisa quando `isOpen`. */
+  privateSkillCount: number;
+  activeKeyCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Uma skill vista de dentro do MCP virtual: as flags e os contadores são do vínculo. */
+export type VirtualMcpSkill = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  isPublic: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+  viewCount: number;
+  downloadCount: number;
+};
+
+export type VirtualMcpDetail = VirtualMcpSummary & { skills: VirtualMcpSkill[] };
+
+/** Entrada de `setVirtualMcpSkills`: a escolha das três superfícies é obrigatória. */
+export type VirtualMcpSkillInput = {
+  slug: string;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
+/** Referência curta — o selo "publicada em" da página da skill. */
+export type VirtualMcpRef = {
+  uuid: string;
+  slug: string;
+  name: string;
+};
+
+export type VirtualMcpKeySummary = {
+  id: string;
+  virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  createdByUserUuid: string | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
   createdAt: string;

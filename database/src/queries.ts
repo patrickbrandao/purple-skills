@@ -4,6 +4,7 @@ import {
   isRole,
   isSkillMd,
   isTextualMime,
+  isValidSlug,
   mimeTypeFor,
   normalizeRelativePath,
   skillScore,
@@ -20,6 +21,13 @@ import {
   type SkillSummary,
   type SearchResult,
   type UserSummary,
+  type VirtualMcpDetail,
+  type VirtualMcpKeySummary,
+  type VirtualMcpRef,
+  type VirtualMcpSkill,
+  type VirtualMcpSkillInput,
+  type VirtualMcpSummary,
+  type VirtualSurface,
 } from '@purple-skills/shared';
 import { getDb, type Database } from './client.js';
 import {
@@ -35,6 +43,17 @@ type Row = Record<string, any>;
 const db = () => getDb().db;
 
 export type SortOrder = 'score' | 'recent' | 'name' | 'relevance';
+
+/**
+ * Recorte de um MCP virtual (`docs/08-mcp-virtual.md` §3.2): a leitura passa
+ * a enxergar só as skills **vinculadas** a ele e ligadas na superfície pedida
+ * (`as_skill`, `as_prompt` ou `as_resource` do vínculo).
+ *
+ * Quando presente, `includePrivate` e `onlyAsSkill` são ignorados: skill
+ * privada vinculada entra, e as flags `use_as_*` da skill não contam — elas
+ * valem só para o MCP principal. Quem decide é o vínculo.
+ */
+export type VirtualScope = { uuid: string; surface: VirtualSurface };
 
 export type ListOptions = {
   query?: string | null;
@@ -55,11 +74,51 @@ export type ListOptions = {
    * que o app não tem como decrementar sem refazer a consulta.
    */
   onlyAsSkill?: boolean;
+  /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe as duas opções acima. */
+  virtualMcp?: VirtualScope;
   sort?: SortOrder;
 };
 
 /** As chaves de `ListOptions` que também valem ao ler uma skill só, ou as tags. */
-type ReadOptions = Pick<ListOptions, 'includePrivate' | 'onlyAsSkill'>;
+type ReadOptions = Pick<ListOptions, 'includePrivate' | 'onlyAsSkill' | 'virtualMcp'>;
+
+/**
+ * A cláusula de visibilidade que `listSkills`, `getSkillSummary` e `listTags`
+ * compartilham. Mora no SQL pelo mesmo motivo de `onlyAsSkill`: o `total` da
+ * página e a contagem por tag não têm conserto depois da consulta.
+ *
+ * Com `virtualMcp`, a cláusula vira um `EXISTS` sobre o vínculo e **só** ele:
+ * nem `is_public`, nem `use_as_*` da skill entram.
+ */
+function visibilityClause({
+  includePrivate = false,
+  onlyAsSkill = false,
+  virtualMcp,
+}: ReadOptions): SQL {
+  if (virtualMcp) {
+    // UUID torto é "nenhuma skill", não erro do driver virando HTTP 500.
+    if (!isUuid(virtualMcp.uuid)) return sql`false`;
+    return sql`EXISTS (
+      SELECT 1 FROM virtual_mcp_skills v
+      WHERE v.skill_uuid = s.uuid
+        AND v.virtual_mcp_uuid = ${virtualMcp.uuid}
+        AND ${virtualSurfaceFlag(virtualMcp.surface)}
+    )`;
+  }
+  return sql`((${includePrivate} OR s.is_public)${onlyAsSkill ? sql` AND s.use_as_skill` : sql``})`;
+}
+
+/** A coluna do vínculo (`v`) que corresponde à superfície — nunca texto do chamador. */
+function virtualSurfaceFlag(surface: VirtualSurface): SQL {
+  switch (surface) {
+    case 'prompt':
+      return sql`v.as_prompt`;
+    case 'resource':
+      return sql`v.as_resource`;
+    default:
+      return sql`v.as_skill`;
+  }
+}
 
 const SKILL_COLUMNS = sql`
   s.uuid, s.slug, s.name, s.description, s.is_public,
@@ -103,8 +162,6 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
   const offset = Math.max(0, options.offset ?? 0);
   const query = normalizeQuery(options.query);
   const tag = options.tag?.trim() || null;
-  const includePrivate = options.includePrivate === true;
-  const onlyAsSkill = options.onlyAsSkill === true;
   const sort = options.sort ?? (query ? 'relevance' : 'score');
 
   const rank = query
@@ -122,8 +179,7 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
 
   // Filtro compartilhado entre a contagem e a página de resultados.
   const where = sql`
-    WHERE (${includePrivate} OR s.is_public)
-      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
+    WHERE ${visibilityClause(options)}
       ${
         query
           ? sql`AND (
@@ -198,8 +254,36 @@ export type PublishedSkill = {
  * A ordem por slug é estável entre chamadas. A lista é recomputada a cada
  * requisição (nada notifica o cliente sobre mudança), e um catálogo que chega
  * embaralhado a cada listagem seria ruído para quem o mostra ao usuário.
+ *
+ * Com `virtualMcpUuid`, a listagem é a de um MCP virtual: o JOIN é no vínculo
+ * e a flag é a **do vínculo** (`as_prompt` / `as_resource`), sem filtro de
+ * `is_public` — skill privada vinculada sai (`docs/08-mcp-virtual.md` §3.2).
  */
-export async function listPublishedSkills(surface: PublicationSurface): Promise<PublishedSkill[]> {
+export async function listPublishedSkills(
+  surface: PublicationSurface,
+  options: { virtualMcpUuid?: string } = {},
+): Promise<PublishedSkill[]> {
+  const toPublished = (row: Row): PublishedSkill => ({
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+  });
+
+  const virtualMcpUuid = options.virtualMcpUuid;
+  if (virtualMcpUuid !== undefined) {
+    if (!isUuid(virtualMcpUuid)) return [];
+    const flag = surface === 'prompt' ? sql`v.as_prompt` : sql`v.as_resource`;
+
+    const result = await db().execute(sql`
+      SELECT s.slug, s.name, s.description
+      FROM virtual_mcp_skills v
+      JOIN skills s ON s.uuid = v.skill_uuid
+      WHERE v.virtual_mcp_uuid = ${virtualMcpUuid} AND ${flag}
+      ORDER BY s.slug ASC
+    `);
+    return (result.rows as Row[]).map(toPublished);
+  }
+
   const flag = surface === 'prompt' ? sql`s.use_as_prompt` : sql`s.use_as_resource`;
 
   const result = await db().execute(sql`
@@ -208,22 +292,16 @@ export async function listPublishedSkills(surface: PublicationSurface): Promise<
     WHERE s.is_public AND ${flag}
     ORDER BY s.slug ASC
   `);
-
-  return (result.rows as Row[]).map((row) => ({
-    slug: row.slug,
-    name: row.name,
-    description: row.description ?? '',
-  }));
+  return (result.rows as Row[]).map(toPublished);
 }
 
 export async function getSkillSummary(
   slug: string,
-  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
+  options: ReadOptions = {},
 ): Promise<SkillSummary | null> {
   const result = await db().execute(sql`
     SELECT ${SKILL_COLUMNS} FROM skills s
-    WHERE s.slug = ${slug} AND (${includePrivate} OR s.is_public)
-      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
+    WHERE s.slug = ${slug} AND ${visibilityClause(options)}
     LIMIT 1
   `);
   const row = (result.rows as Row[])[0];
@@ -233,9 +311,9 @@ export async function getSkillSummary(
 /** Skill completa: metadados + SKILL.md + lista de arquivos anexados. */
 export async function getSkillDetail(
   slug: string,
-  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
+  options: ReadOptions = {},
 ): Promise<SkillDetail | null> {
-  const summary = await getSkillSummary(slug, { includePrivate, onlyAsSkill });
+  const summary = await getSkillSummary(slug, options);
   if (!summary) return null;
 
   const files = await listFiles(summary.uuid);
@@ -320,28 +398,48 @@ export async function readAllFiles(skillUuid: string): Promise<FileContent[]> {
 
 // ------------------------------------------------------------- contadores ---
 
-export async function incrementViewCount(skillUuid: string): Promise<void> {
+/**
+ * Com `virtualMcpUuid`, soma **nos dois lugares**: no vínculo (o contador
+ * "por este MCP") e no global da skill. Dois UPDATEs sem transação: são
+ * contadores best-effort, e perder um incremento numa falha no meio é
+ * preferível a segurar a leitura por um lock a mais.
+ */
+export async function incrementViewCount(skillUuid: string, virtualMcpUuid?: string): Promise<void> {
   await db().execute(sql`UPDATE skills SET view_count = view_count + 1 WHERE uuid = ${skillUuid}`);
+  if (virtualMcpUuid !== undefined && isUuid(virtualMcpUuid)) {
+    await db().execute(sql`
+      UPDATE virtual_mcp_skills SET view_count = view_count + 1
+      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${skillUuid}
+    `);
+  }
 }
 
-export async function incrementDownloadCount(skillUuid: string): Promise<void> {
+export async function incrementDownloadCount(
+  skillUuid: string,
+  virtualMcpUuid?: string,
+): Promise<void> {
   await db().execute(
     sql`UPDATE skills SET download_count = download_count + 1 WHERE uuid = ${skillUuid}`,
   );
+  if (virtualMcpUuid !== undefined && isUuid(virtualMcpUuid)) {
+    await db().execute(sql`
+      UPDATE virtual_mcp_skills SET download_count = download_count + 1
+      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${skillUuid}
+    `);
+  }
 }
 
 // ------------------------------------------------------------------ tags ---
 
 export async function listTags(
-  { includePrivate = false, onlyAsSkill = false }: ReadOptions = {},
+  options: ReadOptions = {},
 ): Promise<{ name: string; count: number }[]> {
   const result = await db().execute(sql`
     SELECT t.name, count(*)::int AS count
     FROM tags t
     JOIN skill_tags st ON st.tag_id = t.id
     JOIN skills s ON s.uuid = st.skill_uuid
-    WHERE (${includePrivate} OR s.is_public)
-      ${onlyAsSkill ? sql`AND s.use_as_skill` : sql``}
+    WHERE ${visibilityClause(options)}
     GROUP BY t.name
     ORDER BY count DESC, t.name ASC
   `);
@@ -1283,9 +1381,19 @@ export async function consumeResetToken(tokenHash: string): Promise<{ userUuid: 
  * `targetLabel` é quem sofreu a ação (e-mail da conta, nome da chave),
  * congelado no momento do evento: sem ele a linha não diz sobre quem foi, já
  * que `skill_slug`/`file_path` são nulos e a conta pode nem existir mais.
+ *
+ * As chaves de MCP virtual (`mcp.key.*`) entram aqui pelo mesmo motivo: a
+ * emissão e a revogação são do app, e o alvo é o nome da chave.
  */
 export async function recordAccountAudit(entry: {
-  action: 'user.create' | 'user.role' | 'user.deactivate' | 'key.create' | 'key.revoke';
+  action:
+    | 'user.create'
+    | 'user.role'
+    | 'user.deactivate'
+    | 'key.create'
+    | 'key.revoke'
+    | 'mcp.key.create'
+    | 'mcp.key.revoke';
   source: AuditSource;
   actor: AuditActor;
   targetLabel: string | null;
@@ -1374,6 +1482,597 @@ export async function healthCheck(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ------------------------------------------------------------ MCP virtual ---
+
+// `m` é o servidor, `u` o dono. As três contagens são subconsultas porque a
+// listagem é de painel (poucas linhas) e cada uma responde a uma pergunta
+// distinta: "quantas skills", "quantas privadas" (o aviso de `isOpen`) e
+// "quantas chaves vivas".
+const VIRTUAL_MCP_COLUMNS = sql`
+  m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
+  m.owner_user_uuid, u.email AS owner_email,
+  (SELECT count(*) FROM virtual_mcp_skills v
+    WHERE v.virtual_mcp_uuid = m.uuid)::int AS skill_count,
+  (SELECT count(*) FROM virtual_mcp_skills v JOIN skills s ON s.uuid = v.skill_uuid
+    WHERE v.virtual_mcp_uuid = m.uuid AND NOT s.is_public)::int AS private_skill_count,
+  (SELECT count(*) FROM virtual_mcp_keys k
+    WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
+  m.created_at, m.updated_at
+`;
+
+const VIRTUAL_MCP_FROM = sql`FROM virtual_mcps m LEFT JOIN users u ON u.uuid = m.owner_user_uuid`;
+
+function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
+  return {
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    isActive: Boolean(row.is_active),
+    isOpen: Boolean(row.is_open),
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    ownerEmail: row.owner_email ?? null,
+    skillCount: Number(row.skill_count ?? 0),
+    privateSkillCount: Number(row.private_skill_count ?? 0),
+    activeKeyCount: Number(row.active_key_count ?? 0),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+/** As flags e os contadores vêm do vínculo (`v`), não da skill. */
+function toVirtualMcpSkill(row: Row): VirtualMcpSkill {
+  return {
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    isPublic: Boolean(row.is_public),
+    asSkill: Boolean(row.as_skill),
+    asPrompt: Boolean(row.as_prompt),
+    asResource: Boolean(row.as_resource),
+    viewCount: Number(row.view_count ?? 0),
+    downloadCount: Number(row.download_count ?? 0),
+  };
+}
+
+/**
+ * Listagem do painel. Sem `ownerUserUuid` (ou `undefined`) é a visão do
+ * admin: todos, inclusive inativos e órfãos. Com um UUID, só os daquele dono.
+ * `null` é "nenhum dono possível" — a sessão de bootstrap, que não é conta —
+ * e devolve lista vazia em vez de vazar os órfãos, que são só do admin.
+ */
+export async function listVirtualMcps(
+  options: { ownerUserUuid?: string | null } = {},
+): Promise<VirtualMcpSummary[]> {
+  const owner = options.ownerUserUuid;
+  if (owner === null) return [];
+  if (owner !== undefined && !isUuid(owner)) return [];
+
+  const result = await db().execute(sql`
+    SELECT ${VIRTUAL_MCP_COLUMNS} ${VIRTUAL_MCP_FROM}
+    ${owner !== undefined ? sql`WHERE m.owner_user_uuid = ${owner}` : sql``}
+    ORDER BY m.name ASC, m.slug ASC
+  `);
+  return (result.rows as Row[]).map(toVirtualMcpSummary);
+}
+
+async function loadVirtualMcpSkills(virtualMcpUuid: string): Promise<VirtualMcpSkill[]> {
+  const result = await db().execute(sql`
+    SELECT s.uuid, s.slug, s.name, s.description, s.is_public,
+           v.as_skill, v.as_prompt, v.as_resource, v.view_count, v.download_count
+    FROM virtual_mcp_skills v
+    JOIN skills s ON s.uuid = v.skill_uuid
+    WHERE v.virtual_mcp_uuid = ${virtualMcpUuid}
+    ORDER BY s.name ASC, s.slug ASC
+  `);
+  return (result.rows as Row[]).map(toVirtualMcpSkill);
+}
+
+/** Detalhe = resumo + skills vinculadas. Inclui inativos: é o painel que lê. */
+async function loadVirtualMcpDetail(where: SQL): Promise<VirtualMcpDetail | null> {
+  const result = await db().execute(sql`
+    SELECT ${VIRTUAL_MCP_COLUMNS} ${VIRTUAL_MCP_FROM} WHERE ${where} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  const summary = toVirtualMcpSummary(row);
+  return { ...summary, skills: await loadVirtualMcpSkills(summary.uuid) };
+}
+
+export async function getVirtualMcp(slug: string): Promise<VirtualMcpDetail | null> {
+  const wanted = (slug ?? '').trim();
+  if (!wanted) return null;
+  return loadVirtualMcpDetail(sql`m.slug = ${wanted}`);
+}
+
+/** UUID malformado devolve `null` — é "não existe", não erro de servidor. */
+export async function getVirtualMcpByUuid(uuid: string): Promise<VirtualMcpDetail | null> {
+  if (!isUuid(uuid)) return null;
+  return loadVirtualMcpDetail(sql`m.uuid = ${uuid}`);
+}
+
+/** O que o servidor precisa por requisição, e nada mais. */
+export type VirtualMcpRuntime = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  isOpen: boolean;
+};
+
+/**
+ * Resolve o servidor pelo slug da URL, **só se ativo**. É a consulta de toda
+ * requisição a `/virtual/<slug>/mcp`: uma linha pela chave única, sem
+ * agregação. Inativo e inexistente são a mesma resposta (404) de propósito —
+ * a URL não deve confirmar que um servidor desligado existe.
+ */
+export async function resolveVirtualMcp(slug: string): Promise<VirtualMcpRuntime | null> {
+  const wanted = (slug ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT uuid, slug, name, description, is_open
+    FROM virtual_mcps WHERE slug = ${wanted} AND is_active
+    LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  return {
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    isOpen: Boolean(row.is_open),
+  };
+}
+
+export type CreateVirtualMcpInput = {
+  /** Omitido: gerado a partir de `name`. Informado: precisa passar em `isValidSlug`. */
+  slug?: string;
+  name: string;
+  description?: string;
+  isOpen?: boolean;
+  /** `null` = sem dono (sessão de bootstrap); só o admin gerencia depois. */
+  ownerUserUuid: string | null;
+};
+
+export async function createVirtualMcp(
+  input: CreateVirtualMcpInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  const name = (optionalText(input.name, 'name') ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const isOpen = optionalBoolean(input.isOpen, 'isOpen') ?? false;
+  const owner = ownerOrNull(input.ownerUserUuid);
+
+  // Slug vazio é "gera para mim", como em `createSkill`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim() || undefined;
+  if (requestedSlug !== undefined) assertVirtualMcpSlug(requestedSlug);
+
+  // Mesma corrida de `createSkill`: o slug gerado é escolhido antes do INSERT
+  // e outra criação pode levá-lo no meio. Gerado, vale tentar de novo;
+  // pedido, o conflito é a resposta.
+  let slug = '';
+  for (let attempt = 1; ; attempt += 1) {
+    slug = requestedSlug ?? (await freeVirtualMcpSlug(name));
+
+    try {
+      const uuid = await db().transaction(async (tx) => {
+        const inserted = await tx.execute(sql`
+          INSERT INTO virtual_mcps (slug, name, description, is_open, owner_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${isOpen}, ${owner})
+          RETURNING uuid
+        `);
+        const created = (inserted.rows as Row[])[0].uuid as string;
+        await auditTx(tx, virtualMcpAudit('mcp.create', slug, source, actor));
+        return created;
+      });
+
+      const detail = await getVirtualMcpByUuid(uuid);
+      if (!detail) throw new Error('MCP virtual criado mas não encontrado');
+      return detail;
+    } catch (err) {
+      // O dono sumiu entre a sessão e a criação.
+      if (isForeignKeyViolation(err)) throw notFound(`Conta não encontrada: ${owner}`);
+      if (!isUniqueViolation(err)) throw err;
+      if (requestedSlug !== undefined || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe um MCP virtual com o slug "${slug}"`);
+      }
+    }
+  }
+}
+
+export type UpdateVirtualMcpInput = {
+  slug?: string;
+  name?: string;
+  description?: string;
+  isOpen?: boolean;
+  isActive?: boolean;
+  /** `undefined` não mexe; `null` apaga o dono. */
+  ownerUserUuid?: string | null;
+};
+
+/** Parcial, no padrão de `updateUser`: campo ausente fica como está. */
+export async function updateVirtualMcp(
+  uuid: string,
+  input: UpdateVirtualMcpInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(uuid)) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+
+  const sets: SQL[] = [];
+
+  if (input.name !== undefined) {
+    const name = optionalText(input.name, 'name')?.trim();
+    if (!name) throw badRequest('O campo "name" não pode ficar vazio');
+    sets.push(sql`name = ${name}`);
+  }
+  if (input.description !== undefined) {
+    sets.push(sql`description = ${optionalText(input.description, 'description')?.trim() ?? ''}`);
+  }
+  const isOpen = optionalBoolean(input.isOpen, 'isOpen');
+  if (isOpen !== undefined) sets.push(sql`is_open = ${isOpen}`);
+  const isActive = optionalBoolean(input.isActive, 'isActive');
+  if (isActive !== undefined) sets.push(sql`is_active = ${isActive}`);
+  if (input.ownerUserUuid !== undefined) {
+    sets.push(sql`owner_user_uuid = ${ownerOrNull(input.ownerUserUuid)}`);
+  }
+
+  // Slug vazio continua significando "mantém o atual", como em `updateSkill`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim() || undefined;
+  if (requestedSlug !== undefined) {
+    assertVirtualMcpSlug(requestedSlug);
+    sets.push(sql`slug = ${requestedSlug}`);
+  }
+
+  sets.push(sql`updated_at = now()`);
+
+  try {
+    await db().transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        UPDATE virtual_mcps SET ${sql.join(sets, sql`, `)}
+        WHERE uuid = ${uuid}
+        RETURNING slug
+      `);
+      const row = (result.rows as Row[])[0];
+      if (!row) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+      // O slug novo em caso de rename: é o que o painel vai mostrar dali em diante.
+      await auditTx(tx, virtualMcpAudit('mcp.update', row.slug as string, source, actor));
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw conflict(`Já existe um MCP virtual com o slug "${requestedSlug}"`);
+    }
+    if (isForeignKeyViolation(err)) {
+      throw notFound(`Conta não encontrada: ${input.ownerUserUuid}`);
+    }
+    throw err;
+  }
+
+  const detail = await getVirtualMcpByUuid(uuid);
+  if (!detail) throw new Error('MCP virtual atualizado mas não encontrado');
+  return detail;
+}
+
+/** A cascata leva vínculos e chaves. */
+export async function deleteVirtualMcp(
+  uuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> {
+  if (!isUuid(uuid)) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+
+  await db().transaction(async (tx) => {
+    const result = await tx.execute(
+      sql`DELETE FROM virtual_mcps WHERE uuid = ${uuid} RETURNING slug`,
+    );
+    const row = (result.rows as Row[])[0];
+    if (!row) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+    await auditTx(tx, virtualMcpAudit('mcp.delete', row.slug as string, source, actor));
+  });
+}
+
+/**
+ * Define o recorte de forma **declarativa**: a lista é o estado desejado
+ * inteiro. Numa transação: quem saiu da lista é removido, quem entrou é
+ * inserido e quem ficou tem só as flags reescritas — os contadores do vínculo
+ * sobrevivem a um re-salvar do formulário.
+ *
+ * As três flags são obrigatórias por item (não há default no banco, de
+ * propósito): a escolha por superfície é do vínculo, não da skill.
+ */
+export async function setVirtualMcpSkills(
+  uuid: string,
+  skills: VirtualMcpSkillInput[],
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(uuid)) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+  if (!Array.isArray(skills)) throw badRequest('O campo "skills" deve ser uma lista');
+
+  const wanted = skills.map((item, index) => {
+    const position = `Item ${index + 1}`;
+    const slug = (optionalText(item?.slug, 'slug') ?? '').trim();
+    if (!slug) throw badRequest(`${position}: o campo "slug" é obrigatório`);
+    return {
+      slug,
+      asSkill: requireBoolean(item.asSkill, 'asSkill', slug),
+      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', slug),
+      asResource: requireBoolean(item.asResource, 'asResource', slug),
+    };
+  });
+
+  const seen = new Set<string>();
+  for (const item of wanted) {
+    if (seen.has(item.slug)) throw badRequest(`Slug repetido na lista: "${item.slug}"`);
+    seen.add(item.slug);
+  }
+  const slugs = wanted.map((item) => item.slug);
+
+  await db().transaction(async (tx) => {
+    // `FOR UPDATE` serializa dois salvamentos concorrentes do mesmo recorte:
+    // o segundo espera o primeiro e enxerga o estado dele, em vez de os dois
+    // apagarem e inserirem por cima um do outro.
+    const locked = await tx.execute(
+      sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR UPDATE`,
+    );
+    const mcp = (locked.rows as Row[])[0];
+    if (!mcp) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+
+    const bySlug = new Map<string, string>();
+    if (slugs.length > 0) {
+      const found = await tx.execute(sql`
+        SELECT uuid, slug FROM skills WHERE slug = ANY(${sql.param(slugs)}::text[])
+      `);
+      for (const row of found.rows as Row[]) bySlug.set(row.slug as string, row.uuid as string);
+    }
+    const missing = slugs.filter((slug) => !bySlug.has(slug));
+    if (missing.length > 0) {
+      throw badRequest(`Skills não encontradas: ${missing.join(', ')}`);
+    }
+
+    const keep = slugs.map((slug) => bySlug.get(slug)!);
+    await tx.execute(sql`
+      DELETE FROM virtual_mcp_skills
+      WHERE virtual_mcp_uuid = ${uuid}
+        AND skill_uuid <> ALL(${sql.param(keep)}::uuid[])
+    `);
+
+    for (const item of wanted) {
+      await tx.execute(sql`
+        INSERT INTO virtual_mcp_skills
+          (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource)
+        VALUES (${uuid}, ${bySlug.get(item.slug)!},
+                ${item.asSkill}, ${item.asPrompt}, ${item.asResource})
+        ON CONFLICT (virtual_mcp_uuid, skill_uuid) DO UPDATE SET
+          as_skill = EXCLUDED.as_skill,
+          as_prompt = EXCLUDED.as_prompt,
+          as_resource = EXCLUDED.as_resource
+      `);
+    }
+
+    await tx.execute(sql`UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${uuid}`);
+    await auditTx(tx, virtualMcpAudit('mcp.update', mcp.slug as string, source, actor));
+  });
+
+  const detail = await getVirtualMcpByUuid(uuid);
+  if (!detail) throw new Error('MCP virtual atualizado mas não encontrado');
+  return detail;
+}
+
+/**
+ * O selo "publicada em" da página da skill. Inclui servidores inativos: o
+ * vínculo existe e é o painel que lê — quem quiser distinguir abre o MCP.
+ */
+export async function listVirtualMcpsForSkill(skillUuid: string): Promise<VirtualMcpRef[]> {
+  if (!isUuid(skillUuid)) return [];
+
+  const result = await db().execute(sql`
+    SELECT m.uuid, m.slug, m.name
+    FROM virtual_mcp_skills v
+    JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+    WHERE v.skill_uuid = ${skillUuid}
+    ORDER BY m.name ASC, m.slug ASC
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+  }));
+}
+
+/** Linha de auditoria de um MCP virtual: sem skill, com o slug do servidor como alvo. */
+function virtualMcpAudit(
+  action: 'mcp.create' | 'mcp.update' | 'mcp.delete',
+  slug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): AuditInput {
+  return {
+    skillUuid: null,
+    skillSlug: null,
+    filePath: null,
+    action,
+    source,
+    previousContent: null,
+    actor,
+    targetLabel: slug,
+  };
+}
+
+function assertVirtualMcpSlug(slug: string): void {
+  if (!isValidSlug(slug)) throw badRequest(`Slug inválido: "${slug}"`);
+}
+
+/** Slug livre a partir do nome, no padrão de `resolveSlug` — mas sobre `virtual_mcps`. */
+async function freeVirtualMcpSlug(name: string): Promise<string> {
+  const desired = slugify(name) || 'mcp';
+  const result = await db().execute(
+    sql`SELECT slug FROM virtual_mcps WHERE slug = ${desired} OR slug LIKE ${desired + '-%'}`,
+  );
+  const taken = (result.rows as Row[]).map((row) => row.slug as string);
+  return uniqueSlug(desired, taken);
+}
+
+/** `null` passa; UUID torto é "conta não encontrada", como em `createApiKey`. */
+function ownerOrNull(value: string | null): string | null {
+  if (value === null) return null;
+  if (!isUuid(value)) throw notFound(`Conta não encontrada: ${String(value)}`);
+  return value;
+}
+
+/** Mesma história de `optionalText`: `{"isOpen": "sim"}` é erro do cliente, não 500. */
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') throw badRequest(`O campo "${field}" deve ser booleano`);
+  return value;
+}
+
+/** As flags do vínculo não têm default: omitir uma é erro, não `false`. */
+function requireBoolean(value: unknown, field: string, slug: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw badRequest(`Skill "${slug}": o campo "${field}" é obrigatório e deve ser booleano`);
+  }
+  return value;
+}
+
+// ------------------------------------------------- chaves de MCP virtual ---
+
+const VIRTUAL_MCP_KEY_COLUMNS = sql`
+  id, virtual_mcp_uuid, name, prefix, created_by_user_uuid, last_used_at, revoked_at, created_at
+`;
+
+function toVirtualMcpKeySummary(row: Row): VirtualMcpKeySummary {
+  return {
+    id: row.id,
+    virtualMcpUuid: row.virtual_mcp_uuid,
+    name: row.name,
+    prefix: row.prefix,
+    createdByUserUuid: row.created_by_user_uuid ?? null,
+    lastUsedAt: iso(row.last_used_at),
+    revokedAt: iso(row.revoked_at),
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/** Inclui as revogadas: elas explicam as linhas de auditoria que produziram. */
+export async function listVirtualMcpKeys(virtualMcpUuid: string): Promise<VirtualMcpKeySummary[]> {
+  if (!isUuid(virtualMcpUuid)) return [];
+
+  const result = await db().execute(sql`
+    SELECT ${VIRTUAL_MCP_KEY_COLUMNS}
+    FROM virtual_mcp_keys WHERE virtual_mcp_uuid = ${virtualMcpUuid}
+    ORDER BY created_at DESC
+  `);
+  return (result.rows as Row[]).map(toVirtualMcpKeySummary);
+}
+
+/**
+ * Grava a chave emitida. O segredo em texto **não** passa por aqui: quem o
+ * gera e o mostra uma única vez é o app, com `generateApiKey('psv')` de shared.
+ */
+export async function createVirtualMcpKey(input: {
+  virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  keyHash: string;
+  createdByUserUuid: string | null;
+}): Promise<VirtualMcpKeySummary> {
+  if (!isUuid(input.virtualMcpUuid)) {
+    throw notFound(`MCP virtual não encontrado: ${input.virtualMcpUuid}`);
+  }
+  const createdBy = ownerOrNull(input.createdByUserUuid ?? null);
+
+  const name = (input.name ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+  if (!input.prefix?.trim() || !input.keyHash?.trim()) {
+    throw badRequest('Prefixo e hash da chave são obrigatórios');
+  }
+
+  try {
+    const result = await db().execute(sql`
+      INSERT INTO virtual_mcp_keys (virtual_mcp_uuid, name, prefix, key_hash, created_by_user_uuid)
+      VALUES (${input.virtualMcpUuid}, ${name}, ${input.prefix.trim()}, ${input.keyHash}, ${createdBy})
+      RETURNING ${VIRTUAL_MCP_KEY_COLUMNS}
+    `);
+    return toVirtualMcpKeySummary((result.rows as Row[])[0]);
+  } catch (err) {
+    if (isUniqueViolation(err)) throw conflict('Prefixo de chave já em uso; tente novamente');
+    // O servidor (ou quem emite) sumiu entre a sessão e a emissão.
+    if (isForeignKeyViolation(err)) {
+      throw notFound(`MCP virtual não encontrado: ${input.virtualMcpUuid}`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Revoga, **sempre** restrita ao servidor informado: a chave pertence ao MCP,
+ * e a URL do painel já diz de qual. `false` quando não achou, não é dele ou
+ * já estava revogada — idempotente, nunca reescreve o `revoked_at` original.
+ */
+export async function revokeVirtualMcpKey(id: string, virtualMcpUuid: string): Promise<boolean> {
+  if (!isUuid(id) || !isUuid(virtualMcpUuid)) return false;
+
+  const result = await db().execute(sql`
+    UPDATE virtual_mcp_keys SET revoked_at = now()
+    WHERE id = ${id}
+      AND virtual_mcp_uuid = ${virtualMcpUuid}
+      AND revoked_at IS NULL
+    RETURNING id
+  `);
+  return (result.rows as Row[]).length > 0;
+}
+
+export type VirtualMcpKeyRecord = {
+  id: string;
+  virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  keyHash: string;
+  revokedAt: string | null;
+};
+
+/**
+ * Primeiro passo da autenticação: acha a linha pelo prefixo público. A
+ * conferência do segredo contra `keyHash` é do app (`verifyApiKeySecret`), e
+ * conferir se a chave abre **este** servidor também: compare `virtualMcpUuid`
+ * com o resolvido pela URL — uma chave `psv_` válida de outro MCP não vale.
+ */
+export async function getVirtualMcpKeyByPrefix(prefix: string): Promise<VirtualMcpKeyRecord | null> {
+  const wanted = (prefix ?? '').trim();
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT id, virtual_mcp_uuid, name, prefix, key_hash, revoked_at
+    FROM virtual_mcp_keys WHERE prefix = ${wanted} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    virtualMcpUuid: row.virtual_mcp_uuid,
+    name: row.name,
+    prefix: row.prefix,
+    keyHash: row.key_hash,
+    revokedAt: iso(row.revoked_at),
+  };
+}
+
+/** Marca o uso. Falha silenciosa de propósito: não é para derrubar a chamada. */
+export async function touchVirtualMcpKey(id: string): Promise<void> {
+  if (!isUuid(id)) return;
+  await db().execute(sql`UPDATE virtual_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
 }
 
 // --------------------------------------------------------------- internos ---

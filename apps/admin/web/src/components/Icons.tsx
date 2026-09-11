@@ -192,3 +192,11 @@ export const CheckIcon = ({ className }: Props) => (
     <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
+
+export const ServerIcon = ({ className }: Props) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+    <rect x="3" y="4" width="18" height="7" rx="2" />
+    <rect x="3" y="13" width="18" height="7" rx="2" />
+    <path d="M7 7.5h.01M7 16.5h.01" />
+  </svg>
+);
