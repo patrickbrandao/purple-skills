@@ -58,7 +58,9 @@ export type AuditAction =
   | 'mcp.update'
   | 'mcp.delete'
   | 'mcp.key.create'
-  | 'mcp.key.revoke';
+  | 'mcp.key.revoke'
+  | 'public.key.create'
+  | 'public.key.revoke';
 
 export type AuditEntry = {
   id: string;
@@ -185,6 +187,16 @@ export type VirtualMcpRef = { uuid: string; slug: string; name: string };
 export type VirtualMcpKeySummary = {
   id: string;
   virtualMcpUuid: string;
+  name: string;
+  prefix: string;
+  createdByUserUuid: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+export type PublicMcpKeySummary = {
+  id: string;
   name: string;
   prefix: string;
   createdByUserUuid: string | null;
@@ -457,6 +469,20 @@ export const createMcpKey = (slug: string, name: string) =>
 
 export const revokeMcpKey = (slug: string, id: string) =>
   request<unknown>(`${mcpPath(slug)}/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+// ------------------------------------------ chaves do MCP principal ---
+
+export const getPublicKeys = () => request<{ items: PublicMcpKeySummary[] }>('/api/public-mcp/keys');
+
+/** O campo `token` chega uma única vez, na resposta desta chamada. */
+export const createPublicKey = (name: string) =>
+  request<{ key: PublicMcpKeySummary; token: string }>('/api/public-mcp/keys', {
+    method: 'POST',
+    body: json({ name }),
+  });
+
+export const revokePublicKey = (id: string) =>
+  request<unknown>(`/api/public-mcp/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

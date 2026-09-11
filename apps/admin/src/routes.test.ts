@@ -33,6 +33,10 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/users'],
     ['patch', '/api/users/:uuid'],
     ['post', '/api/users/:uuid/reset-password'],
+    // Uma chave do principal abre o catálogo público inteiro: só admin.
+    ['get', '/api/public-mcp/keys'],
+    ['post', '/api/public-mcp/keys'],
+    ['delete', '/api/public-mcp/keys/:id'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireAdmin);
   });

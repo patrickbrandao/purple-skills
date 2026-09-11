@@ -6,9 +6,11 @@ import { KEY_COST, hashSecret, verifySecret } from './password.js';
  *
  *     psk_<prefixo>_<segredo>   — MCP administrativo, por usuário
  *     psv_<prefixo>_<segredo>   — MCP virtual, por servidor (`docs/08-mcp-virtual.md`)
+ *     psp_<prefixo>_<segredo>   — MCP público principal, gerenciada (`08` §7)
  *
  * O **esquema** (os três caracteres antes do primeiro `_`) diz em que tabela a
- * chave vive: `psk_` em `api_keys`, `psv_` em `virtual_mcp_keys`. É ele que
+ * chave vive: `psk_` em `api_keys`, `psv_` em `virtual_mcp_keys`, `psp_` em
+ * `public_mcp_keys`. É ele que
  * permite a cada servidor consultar uma tabela só — e que torna uma chave
  * vazada identificável de cara.
  *
@@ -23,9 +25,14 @@ import { KEY_COST, hashSecret, verifySecret } from './password.js';
 export const API_KEY_SCHEME = 'psk';
 /** Chave de leitura de um MCP virtual — pertence ao servidor, não a um usuário. */
 export const VIRTUAL_KEY_SCHEME = 'psv';
+/** Chave de leitura gerenciada do MCP público principal (`MCP_PUBLIC_AUTH=managed`). */
+export const PUBLIC_KEY_SCHEME = 'psp';
 export const API_KEY_PREFIX_LENGTH = 8;
 
-export type ApiKeyScheme = typeof API_KEY_SCHEME | typeof VIRTUAL_KEY_SCHEME;
+export type ApiKeyScheme =
+  | typeof API_KEY_SCHEME
+  | typeof VIRTUAL_KEY_SCHEME
+  | typeof PUBLIC_KEY_SCHEME;
 
 export type GeneratedApiKey = {
   /** Texto completo, mostrado uma vez ao usuário. */

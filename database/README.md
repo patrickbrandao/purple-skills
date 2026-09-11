@@ -48,6 +48,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `007-publicacao-mcp.sql` | `skills.use_as_prompt` / `use_as_resource` e os índices parciais das listagens do MCP público |
 | `008-publicacao-como-skill.sql` | `skills.use_as_skill` — a superfície de ferramentas do MCP público vira opt-out |
 | `009-mcp-virtual.sql` | `virtual_mcps`, `virtual_mcp_skills`, `virtual_mcp_keys` e o `CHECK` de `action` com os eventos `mcp.*` |
+| `010-public-mcp-keys.sql` | `public_mcp_keys` — chaves `psp_` gerenciadas do MCP principal — e o `CHECK` de `action` com `public.key.*` |
 
 Regras:
 
@@ -77,6 +78,7 @@ Regras:
 | `virtual_mcps` | servidores MCP virtuais: `slug`, dono (`owner_user_uuid`), `is_active`, `is_open` |
 | `virtual_mcp_skills` | vínculo skill ↔ MCP virtual, com as flags `as_skill`/`as_prompt`/`as_resource` e contadores **próprios** |
 | `virtual_mcp_keys` | chaves `psv_` por servidor; mesmo formato de `api_keys` |
+| `public_mcp_keys` | chaves `psp_` do MCP principal (modo `MCP_PUBLIC_AUTH=managed`); sem FK de servidor, emitidas só por admin |
 | `schema_migrations` | controle do runner (criado por ele, não por um `.sql`) |
 
 Chaves primárias são `uuidv7()` do PostgreSQL 18. A busca usa `tsvector` com
@@ -134,6 +136,13 @@ vínculo**: `virtual_mcp_skills` carrega suas próprias `as_skill`, `as_prompt`
 e `as_resource` (obrigatórias, sem default) e seus próprios contadores. Nele
 `is_public` e as `use_as_*` da skill são ignorados — skill privada vinculada
 sai —, e o contador global da skill continua somando junto com o do vínculo.
+
+O MCP principal, por sua vez, tem **chaves gerenciadas próprias** em
+`public_mcp_keys` (`010`, [`docs/08-mcp-virtual.md`](../docs/08-mcp-virtual.md)
+§7): chaves `psp_` que valem no modo `MCP_PUBLIC_AUTH=managed`, ao lado de
+`open` (sem chave) e `key` (a `MCP_PUBLIC_KEY` única de ambiente). Não há FK
+de servidor porque o principal é um só, e a chave é do servidor, não de um
+usuário — `created_by_user_uuid` é informativo.
 
 ## Containers
 
@@ -196,9 +205,10 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
 | MCP virtual | `listVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpsForSkill`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
+| Chaves do MCP principal | `listPublicMcpKeys`, `createPublicMcpKey`, `revokePublicMcpKey`, `getPublicMcpKeyByPrefix`, `touchPublicMcpKey` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `publicMcpKeys`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `PublicMcpKeyRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `PublicMcpKeyRecord`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -276,6 +286,22 @@ await incrementViewCount(skill.uuid, mcp.uuid);
   restrita ao MCP. A auditoria das chaves (`mcp.key.create` / `mcp.key.revoke`)
   é gravada pelo app via `recordAccountAudit`, com `targetLabel` = nome da chave.
 
+### Chaves gerenciadas do MCP principal
+
+- Espelho das `psv_` sem o servidor: `createPublicMcpKey` recebe prefixo e
+  hash já gerados pelo app (`generateApiKey('psp')`), `getPublicMcpKeyByPrefix`
+  acha a linha (conferir o segredo com `verifyApiKeySecret` e recusar
+  `revokedAt` não nulo é do app), `revokePublicMcpKey(id)` devolve `false`
+  quando não achou ou já estava revogada, `touchPublicMcpKey` marca o uso e
+  `listPublicMcpKeys` devolve todas, inclusive revogadas, mais recente primeiro.
+- Nenhuma delas restringe por dono ou papel: a chave é do servidor. **Só o
+  admin emite e revoga**, e essa checagem é do app, antes de chamar.
+- Se quem emitiu deixou de existir entre a sessão e a emissão, a chave é
+  gravada com `createdByUserUuid` nulo em vez de recusada — o campo é
+  informativo.
+- A auditoria (`public.key.create` / `public.key.revoke`) é gravada pelo app
+  via `recordAccountAudit`, com `targetLabel` = nome da chave.
+
 ### Contas, chaves e senha
 
 - `UserRecord` é `UserSummary` **mais** `passwordHash`, `tokenVersion`,
@@ -294,9 +320,10 @@ await incrementViewCount(skill.uuid, mcp.uuid);
 - `consumeResetToken` é um UPDATE condicional atômico: dois cliques no mesmo
   link não redefinem a senha duas vezes.
 - `recordAccountAudit` grava os eventos de conta (`user.create`, `user.role`,
-  `user.deactivate`, `key.create`, `key.revoke`) e os das chaves de MCP
-  virtual (`mcp.key.create`, `mcp.key.revoke`) — linhas sem skill, com
-  `targetLabel` dizendo sobre quem foi.
+  `user.deactivate`, `key.create`, `key.revoke`), os das chaves de MCP
+  virtual (`mcp.key.create`, `mcp.key.revoke`) e os das chaves do MCP
+  principal (`public.key.create`, `public.key.revoke`) — linhas sem skill,
+  com `targetLabel` dizendo sobre quem foi.
 
 ## Contrato com os outros agentes
 
@@ -329,7 +356,7 @@ recriado do zero a cada execução:
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
   npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts \
-    database/src/virtual-mcps.integration.test.ts
+    database/src/virtual-mcps.integration.test.ts database/src/public-mcp-keys.integration.test.ts
 ```
 
 | Suíte | Cobre |
@@ -337,7 +364,8 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
+| `public-mcp-keys.integration.test.ts` | chaves `psp_` do MCP principal: emissão, busca por prefixo, revogação idempotente, listagem com revogadas e `public.key.*` no CHECK |
 
-As três recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
+As quatro recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o
 arquivo. Suíte de integração nova aqui dentro precisa usar o mesmo número.

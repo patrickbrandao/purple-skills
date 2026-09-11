@@ -24,6 +24,9 @@ const db = vi.hoisted(() => ({
   createVirtualMcpKey: vi.fn(),
   revokeVirtualMcpKey: vi.fn(),
   recordAccountAudit: vi.fn(),
+  listPublicMcpKeys: vi.fn(),
+  createPublicMcpKey: vi.fn(),
+  revokePublicMcpKey: vi.fn(),
   notFound: (message: string) => new AppError(message, 404, 'not_found'),
   badRequest: (message: string) => new AppError(message, 400, 'bad_request'),
 }));
@@ -241,5 +244,46 @@ describe('delete_virtual_mcp', () => {
 
     expect(result.isError).toBe(true);
     expect(db.deleteVirtualMcp).not.toHaveBeenCalled();
+  });
+});
+
+describe('chaves do MCP principal', () => {
+  it('só admin lista, emite e revoga', async () => {
+    const editor = createMcpHandlers(caller('editor'));
+
+    expect((await editor.list_public_mcp_keys()).isError).toBe(true);
+    expect((await editor.create_public_mcp_key({ name: 'x' })).isError).toBe(true);
+    expect((await editor.revoke_public_mcp_key({ key_id: 'k' })).isError).toBe(true);
+    expect(db.createPublicMcpKey).not.toHaveBeenCalled();
+    expect(db.revokePublicMcpKey).not.toHaveBeenCalled();
+  });
+
+  it('admin emite uma psp_ e audita com o nome', async () => {
+    db.createPublicMcpKey.mockImplementation(async (input: { name: string; prefix: string }) => ({
+      id: 'chave-p',
+      name: input.name,
+      prefix: input.prefix,
+      createdByUserUuid: null,
+      lastUsedAt: null,
+      revokedAt: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }));
+    const admin = createMcpHandlers(caller('admin', null));
+
+    const payload = JSON.parse((await admin.create_public_mcp_key({ name: 'agentes' })).content[0].text);
+
+    expect(payload.token).toMatch(/^psp_[A-Za-z0-9_-]{8}_/);
+    expect(db.recordAccountAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'public.key.create', targetLabel: 'agentes' }),
+    );
+  });
+
+  it('admin revoga e sinaliza quando não achou', async () => {
+    db.revokePublicMcpKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const admin = createMcpHandlers(caller('admin', null));
+
+    expect((await admin.revoke_public_mcp_key({ key_id: 'a' })).isError).toBeUndefined();
+    expect((await admin.revoke_public_mcp_key({ key_id: 'b' })).isError).toBe(true);
+    expect(db.recordAccountAudit).toHaveBeenCalledTimes(1);
   });
 });

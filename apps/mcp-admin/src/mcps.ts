@@ -1,20 +1,24 @@
 import {
   AppError,
   badRequest,
+  createPublicMcpKey,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
   getSkillSummary,
   getVirtualMcp,
+  listPublicMcpKeys,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
   recordAccountAudit,
+  revokePublicMcpKey,
   revokeVirtualMcpKey,
   setVirtualMcpSkills,
   updateVirtualMcp,
 } from '@purple-skills/db';
 import {
+  PUBLIC_KEY_SCHEME,
   VIRTUAL_KEY_SCHEME,
   canCreateVirtualMcp,
   canManageVirtualMcp,
@@ -72,6 +76,12 @@ const view = (mcp: VirtualMcpDetail) => ({
 export function createMcpHandlers(caller: Caller) {
   const actor = caller.actor;
   const userUuid = actor.userUuid;
+
+  /** Chaves do principal são só de admin: abrem o catálogo público inteiro. */
+  const denyPublicKeys = (): ToolResult | null =>
+    caller.role === 'admin'
+      ? null
+      : fail(`As chaves do MCP principal exigem papel "admin"; sua credencial é "${caller.role}".`);
 
   async function managed(slug: string): Promise<VirtualMcpDetail> {
     const mcp = await getVirtualMcp(slug);
@@ -288,6 +298,73 @@ export function createMcpHandlers(caller: Caller) {
         targetLabel: `${current.slug}: ${args.key_id}`,
       });
       return text(`Chave ${args.key_id} revogada.`);
+    },
+
+    // --------------------------------------- chaves do MCP principal ---
+
+    async list_public_mcp_keys(): Promise<ToolResult> {
+      const denied = denyPublicKeys();
+      if (denied) return denied;
+
+      const keys = await listPublicMcpKeys();
+      return asJson({
+        keys: keys.map((key) => ({
+          id: key.id,
+          name: key.name,
+          prefix: `psp_${key.prefix}_…`,
+          lastUsedAt: key.lastUsedAt,
+          revokedAt: key.revokedAt,
+          createdAt: key.createdAt,
+        })),
+        hint: 'Valem só com MCP_PUBLIC_AUTH=managed no mcp-public.',
+      });
+    },
+
+    /** O texto completo da chave só existe nesta resposta. */
+    async create_public_mcp_key(args: { name: string }): Promise<ToolResult> {
+      const denied = denyPublicKeys();
+      if (denied) return denied;
+
+      const name = (args.name ?? '').trim();
+      if (!name) throw badRequest('Dê um nome à chave (ex.: "agentes do time X")');
+
+      const generated = generateApiKey(PUBLIC_KEY_SCHEME);
+      const key = await createPublicMcpKey({
+        name,
+        prefix: generated.prefix,
+        keyHash: generated.keyHash,
+        createdByUserUuid: userUuid,
+      });
+      await recordAccountAudit({
+        action: 'public.key.create',
+        source: SOURCE,
+        actor,
+        targetLabel: name,
+      });
+
+      return asJson({
+        id: key.id,
+        name: key.name,
+        token: generated.token,
+        warning: 'Guarde agora: o token não volta a aparecer.',
+        usage: `Authorization: Bearer ${generated.token} em /mcp, com MCP_PUBLIC_AUTH=managed`,
+      });
+    },
+
+    async revoke_public_mcp_key(args: { key_id: string }): Promise<ToolResult> {
+      const denied = denyPublicKeys();
+      if (denied) return denied;
+
+      const revoked = await revokePublicMcpKey(args.key_id);
+      if (!revoked) return fail('Chave não encontrada, ou já revogada.');
+
+      await recordAccountAudit({
+        action: 'public.key.revoke',
+        source: SOURCE,
+        actor,
+        targetLabel: args.key_id,
+      });
+      return text(`Chave ${args.key_id} do MCP principal revogada.`);
     },
   };
 }

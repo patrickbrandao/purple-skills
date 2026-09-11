@@ -1,8 +1,8 @@
 import type { Request } from 'express';
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
 import { readTextEnv } from '@purple-skills/shared';
-import { optionalAuth, virtualAuth } from './auth.js';
-import { config, publicKey } from './config.js';
+import { publicAuth, virtualAuth } from './auth.js';
+import { config, publicAuthMode } from './config.js';
 import { registrarDownloads } from './downloads.js';
 import { createHttpApp, type McpApp } from './http.js';
 import { createMcpServer } from './server.js';
@@ -21,16 +21,17 @@ function escopoDe(req: Request): VirtualScope {
 }
 
 async function main() {
-  const requiresAuth = Boolean(publicKey());
+  // Falha rápido com MCP_PUBLIC_AUTH inválida ou `key` sem chave.
+  const mode = publicAuthMode();
+  const requiresAuth = mode !== 'open';
 
   const app = createHttpApp({
     mounts: [
       {
         basePath: '',
-        auth: optionalAuth,
+        auth: publicAuth,
         createServer: () => createMcpServer(),
-        // Com `MCP_PUBLIC_KEY` todo cliente é o mesmo cliente; sem ela, idem.
-        identityOf: () => undefined,
+        identityOf: (req) => req.public?.identity,
       },
       {
         basePath: '/virtual/:slug',
@@ -49,6 +50,7 @@ async function main() {
       version: config.version,
       description: 'MCP público do Purple Skills — busca e download de skills.',
       requiresAuth,
+      auth: mode,
     },
   }) as McpApp;
 
@@ -57,7 +59,11 @@ async function main() {
 
   const server = app.listen(config.port, config.host, () => {
     console.log(`[mcp-public] ouvindo em http://${config.host}:${config.port}`);
-    console.log(`[mcp-public] autenticação: ${requiresAuth ? 'Bearer obrigatório' : 'aberta'}`);
+    console.log(
+      `[mcp-public] autenticação do principal: ${
+        mode === 'open' ? 'aberta' : mode === 'key' ? 'MCP_PUBLIC_KEY' : 'chaves gerenciadas (psp_) + MCP_PUBLIC_KEY'
+      }`,
+    );
     console.log('[mcp-public] transportes: /mcp, /mcp/stateless, /sse + /messages');
     console.log('[mcp-public] MCPs virtuais: /virtual/<slug>/mcp (chave psv_ ou aberto, por MCP)');
   });

@@ -1,22 +1,27 @@
 import {
   AppError,
   badRequest,
+  createPublicMcpKey,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
   getVirtualMcp,
+  listPublicMcpKeys,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
   recordAccountAudit,
+  revokePublicMcpKey,
   revokeVirtualMcpKey,
   setVirtualMcpSkills,
   updateVirtualMcp,
 } from '@purple-skills/db';
 import {
+  PUBLIC_KEY_SCHEME,
   VIRTUAL_KEY_SCHEME,
   canManageVirtualMcp,
   generateApiKey,
+  type PublicMcpKeySummary,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
   type VirtualMcpSkillInput,
@@ -220,5 +225,51 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
     source: SOURCE,
     actor: actorOf(user),
     targetLabel: `${current.slug}: ${id}`,
+  });
+}
+
+// ------------------------------------------- chaves do MCP principal ---
+
+/**
+ * Chaves `psp_` do MCP público principal (`docs/08-mcp-virtual.md` §7). Só
+ * valem quando o mcp-public roda com `MCP_PUBLIC_AUTH=managed`; as rotas são
+ * de admin, e o painel não sabe o modo do mcp-public — o card avisa.
+ */
+export const listPublicKeys = (): Promise<PublicMcpKeySummary[]> => listPublicMcpKeys();
+
+export async function issuePublicKey(
+  user: AuthUser,
+  rawName: unknown,
+): Promise<{ key: PublicMcpKeySummary; token: string }> {
+  const name = String(rawName ?? '').trim();
+  if (!name) throw badRequest('Dê um nome à chave (ex.: "agentes do time X")');
+
+  const generated = generateApiKey(PUBLIC_KEY_SCHEME);
+  const key = await createPublicMcpKey({
+    name,
+    prefix: generated.prefix,
+    keyHash: generated.keyHash,
+    createdByUserUuid: user.uuid,
+  });
+
+  await recordAccountAudit({
+    action: 'public.key.create',
+    source: SOURCE,
+    actor: actorOf(user),
+    targetLabel: name,
+  });
+
+  return { key, token: generated.token };
+}
+
+export async function revokePublicKey(user: AuthUser, id: string): Promise<void> {
+  const revoked = await revokePublicMcpKey(id);
+  if (!revoked) throw notFound('Chave não encontrada ou já revogada');
+
+  await recordAccountAudit({
+    action: 'public.key.revoke',
+    source: SOURCE,
+    actor: actorOf(user),
+    targetLabel: id,
   });
 }

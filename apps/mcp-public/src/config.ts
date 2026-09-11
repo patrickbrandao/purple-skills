@@ -16,6 +16,46 @@ export const config = {
   version: readTextEnv('APP_VERSION', '1.0.0-beta.1'),
 };
 
+/**
+ * Como o MCP **principal** autentica (`docs/08-mcp-virtual.md` §7):
+ *
+ * | `MCP_PUBLIC_AUTH` | Aceita                                              |
+ * |-------------------|-----------------------------------------------------|
+ * | `open`            | qualquer um; `MCP_PUBLIC_KEY` é ignorada            |
+ * | `key`             | só `MCP_PUBLIC_KEY` (obrigatória neste modo)        |
+ * | `managed`         | chaves `psp_` do banco **e** `MCP_PUBLIC_KEY`, se definida |
+ *
+ * Sem a variável, o modo é deduzido do que já existia — `key` quando há
+ * `MCP_PUBLIC_KEY`, `open` quando não há — para uma instalação que sobe de
+ * versão sem mexer no `.env` continuar exatamente como estava: um padrão
+ * fixo em `open` abriria, em silêncio, um servidor que estava protegido.
+ * Os MCPs virtuais não olham para isto: cada um tem a própria regra.
+ */
+export type PublicAuthMode = 'open' | 'key' | 'managed';
+
+let cachedMode: PublicAuthMode | undefined;
+
+export function publicAuthMode(): PublicAuthMode {
+  if (cachedMode) return cachedMode;
+
+  const raw = readTextEnv('MCP_PUBLIC_AUTH', '').trim().toLowerCase();
+  if (raw === '') {
+    cachedMode = publicKey() ? 'key' : 'open';
+  } else if (raw === 'open' || raw === 'key' || raw === 'managed') {
+    cachedMode = raw;
+  } else {
+    throw new Error(`MCP_PUBLIC_AUTH inválida: "${raw}" (use open, key ou managed)`);
+  }
+
+  if (cachedMode === 'key' && !publicKey()) {
+    throw new Error('MCP_PUBLIC_AUTH=key exige MCP_PUBLIC_KEY (ou MCP_PUBLIC_KEY_FILE)');
+  }
+  if (cachedMode === 'open' && publicKey()) {
+    console.warn('[mcp-public] MCP_PUBLIC_AUTH=open: a MCP_PUBLIC_KEY definida está sendo ignorada');
+  }
+  return cachedMode;
+}
+
 let cachedKey: string | undefined;
 let keyLoaded = false;
 

@@ -246,11 +246,17 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
 
 ### 7.3 MCP público
 
-- Autenticação **opcional**, controlada pela env var `MCP_PUBLIC_KEY`:
-  - Se vazia/ausente → servidor totalmente aberto, sem autenticação.
-  - Se definida → exige header `Authorization: Bearer <MCP_PUBLIC_KEY>`,
-    comparação case-sensitive em tempo constante (`safeEqual`), com a chave
-    lida uma única vez no boot.
+- Autenticação do servidor **principal** escolhida por `MCP_PUBLIC_AUTH`
+  ([`08-mcp-virtual.md`](08-mcp-virtual.md) §7):
+  - `open` → totalmente aberto, sem autenticação;
+  - `key` → exige `Authorization: Bearer <MCP_PUBLIC_KEY>`, comparação
+    case-sensitive em tempo constante (`safeEqual`), com a chave lida uma
+    única vez no boot;
+  - `managed` → aceita chaves `psp_` da tabela `public_mcp_keys` (emitidas só
+    por admin, revogáveis uma a uma) e também a `MCP_PUBLIC_KEY`, se definida.
+  - Ausente → `key` quando há `MCP_PUBLIC_KEY`, `open` quando não há: o
+    comportamento anterior, preservado para quem sobe de versão sem mexer no
+    `.env`.
 - CORS totalmente aberto (`*`), pois o objetivo é ser consumido por
   qualquer agente externo.
 - **MCPs virtuais** (`/virtual/<slug>/mcp`, [`08-mcp-virtual.md`](08-mcp-virtual.md)):
@@ -367,6 +373,8 @@ CRUD completo, espelhando o painel administrativo:
   `create_virtual_mcp_key(slug, name)`, `revoke_virtual_mcp_key(slug, key_id)`.
   Alcance por dono: o token global e as chaves de admin administram qualquer
   um; a chave de um usuário, os MCPs de que ele é dono.
+- Chaves do MCP principal (`08` §7, só admin): `list_public_mcp_keys()`,
+  `create_public_mcp_key(name)`, `revoke_public_mcp_key(key_id)`.
 
 ## 9. Download de pacotes
 
