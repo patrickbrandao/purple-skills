@@ -67,11 +67,8 @@ entrypoint `websecure` e o certresolver `le`.
 ### Depurando os MCPs com o Inspector
 
 O [MCP Inspector](https://github.com/modelcontextprotocol/inspector) oficial
-vem no compose, no perfil `inspector` — o `up -d` do dia a dia não o sobe:
-
-```bash
-docker compose --profile inspector up -d mcp-inspector
-```
+é parte da stack e sobe junto no `up -d` do dia a dia, em
+<http://localhost:6274>.
 
 Abra <http://localhost:6274> e aponte para os servidores pelo **nome do
 serviço**, não por `localhost`: quem conecta é o backend do inspector, de

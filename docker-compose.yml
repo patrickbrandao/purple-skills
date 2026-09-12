@@ -1,9 +1,8 @@
 # Purple Skills — orquestração local completa.
 #
 #   docker compose run --rm migrate     # aplica database/schema/*.sql (uma vez)
-#   docker compose up -d                # sobe homepage, site, admin e os dois MCPs
+#   docker compose up -d                # sobe homepage, site, admin, os dois MCPs e o Inspector
 #   docker compose run --rm seed        # (opcional) popula skills de exemplo
-#   docker compose --profile inspector up -d   # (opcional) MCP Inspector em :6274
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
 # externo via DATABASE_URL.
@@ -174,11 +173,8 @@ services:
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
 
-  # Inspector oficial do MCP — ferramenta de depuração, não faz parte do
-  # produto: fica no perfil `inspector` para o `up -d` do dia a dia ignorá-lo.
-  #
-  #   docker compose --profile inspector up -d mcp-inspector
-  #   docker compose --profile inspector stop mcp-inspector
+  # Inspector oficial do MCP — ferramenta de depuração, parte oficial da
+  # stack: sobe junto no `up -d` do dia a dia, como os demais serviços.
   #
   # Abra http://localhost:6274 e aponte para os servidores pelo NOME do serviço
   # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
@@ -190,7 +186,6 @@ services:
   # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a
   # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 6274.
   mcp-inspector:
-    profiles: [inspector]
     image: ghcr.io/modelcontextprotocol/inspector:${INSPECTOR_TAG:-latest}
     # Equivalente ao `docker pull` que o script fazia a cada execução.
     pull_policy: always
