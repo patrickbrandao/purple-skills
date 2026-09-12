@@ -32,48 +32,30 @@ const fail = (message: string): ToolResult => ({
 const asJson = (value: unknown): ToolResult => text(JSON.stringify(value, null, 2));
 
 /**
- * O MCP virtual em que as ferramentas estão rodando, quando estão.
+ * O MCP virtual em que as ferramentas estão rodando.
  *
- * Ausente, é o MCP principal: leituras com `is_public AND use_as_skill` e URLs
- * do site. Presente, toda leitura passa a ser recortada pelo vínculo
- * `virtual_mcp_skills` — que traz skill privada — e os downloads apontam para
- * o próprio servidor, sob `/virtual/<slug>` (`docs/08-mcp-virtual.md` §3, §4).
+ * Sempre há um: a raiz (`/mcp`) é o vMCP padrão da instalação, e
+ * `/virtual/<slug>` é qualquer outro (`docs/09-mcp-padrao-e-skills-flutuantes.md`).
+ * Toda leitura é recortada pelo vínculo `virtual_mcp_skills` — que traz skill
+ * privada — e os downloads apontam para o próprio servidor, sob o caminho por
+ * onde ele foi chamado (`docs/08-mcp-virtual.md` §3, §4).
  */
 export type VirtualScope = {
   mcp: VirtualMcpRuntime;
-  /** Base pública deste MCP virtual: `<origem>/virtual/<slug>`, sem barra final. */
+  /** Base pública deste ponto de montagem: `<origem>` na raiz, `<origem>/virtual/<slug>` nos demais, sem barra final. */
   baseUrl: string;
 };
-
-export const downloadUrlFor = (slug: string) =>
-  `${config.siteBaseUrl}/skills/${encodeURIComponent(slug)}/download`;
-
-export const fileUrlFor = (slug: string, path: string) =>
-  `${config.siteBaseUrl}/skills/${encodeURIComponent(slug)}/files/${path
-    .split('/')
-    .map(encodeURIComponent)
-    .join('/')}`;
 
 const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/');
 
 /**
- * As URLs que as ferramentas devolvem, por escopo.
+ * As URLs que as ferramentas devolvem.
  *
- * No principal, tudo aponta para o site. No virtual, download e arquivo
- * apontam para o mcp-public, que os serve com a mesma chave do MCP — uma
- * skill privada não existe no site. A página continua sendo do site, e só
- * quando a skill é pública.
+ * Download e arquivo apontam para o mcp-public, que os serve com a mesma
+ * credencial do MCP — uma skill privada não existe no site. A página é do
+ * site, e só quando a skill é pública.
  */
-function urlsFor(scope?: VirtualScope) {
-  if (!scope) {
-    return {
-      page: (skill: SkillSummary): string | undefined => `${config.siteBaseUrl}/skills/${skill.slug}`,
-      download: downloadUrlFor,
-      file: fileUrlFor,
-      downloadHint: 'Baixe com: curl -L -o skill.zip "<downloadUrl>"',
-    };
-  }
-
+function urlsFor(scope: VirtualScope) {
   const base = scope.baseUrl;
   return {
     page: (skill: SkillSummary): string | undefined =>
@@ -89,34 +71,25 @@ function urlsFor(scope?: VirtualScope) {
 }
 
 /**
- * O recorte de toda leitura das ferramentas.
- *
- * No principal: pública **e** flagada para esta superfície, a primeira das
- * três do MCP público (`docs/07-superficie-de-ferramentas.md` §3.2). Sem
- * `use_as_skill` a skill continua pública no site e na API REST, mas some
- * daqui — inclusive de `list_tags`, cuja contagem não pode somar skill que
- * nenhuma ferramenta mostra.
- *
- * No virtual: o vínculo com `as_skill`, e nada mais — nem `is_public`, nem
- * as flags da skill (`08` §3.2).
+ * O recorte de toda leitura das ferramentas: o vínculo com `as_skill`, e nada
+ * mais — nem `is_public`, nem qualquer flag da skill (`08` §3.2).
  *
  * O filtro é da consulta e não daqui: `search_skills` pagina, e um descarte
- * pós-consulta furaria o `total` e a página.
+ * pós-consulta furaria o `total` e a página; a contagem de `list_tags` não
+ * pode somar skill que nenhuma ferramenta mostra.
  */
-const recorteDasFerramentas = (scope?: VirtualScope) =>
-  scope
-    ? ({ virtualMcp: { uuid: scope.mcp.uuid, surface: 'skill' } } as const)
-    : ({ includePrivate: false, onlyAsSkill: true } as const);
+const recorteDasFerramentas = (scope: VirtualScope) =>
+  ({ virtualMcp: { uuid: scope.mcp.uuid, surface: 'skill' } }) as const;
 
 /**
  * Handlers das ferramentas do MCP público. Ficam separados do registro no
  * servidor para poderem ser testados sem subir o transporte HTTP, e são
- * criados **por escopo**: o principal e cada MCP virtual têm o seu.
+ * criados **por escopo**: cada vMCP — inclusive o padrão, na raiz — tem o seu.
  */
-export function createHandlers(scope?: VirtualScope) {
+export function createHandlers(scope: VirtualScope) {
   const recorte = recorteDasFerramentas(scope);
   const urls = urlsFor(scope);
-  const mcpUuid = scope?.mcp.uuid;
+  const mcpUuid = scope.mcp.uuid;
 
   return {
     async search_skills(args: {
@@ -157,7 +130,7 @@ export function createHandlers(scope?: VirtualScope) {
       });
     },
 
-    /** Retorna o SKILL.md completo. Conta um acesso (view_count). */
+    /** Retorna o SKILL.md completo. Conta um acesso no vínculo e na skill. */
     async get_skill(args: { slug: string }): Promise<ToolResult> {
       const detail = await getSkillDetail(args.slug, recorte);
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
@@ -234,9 +207,6 @@ export function createHandlers(scope?: VirtualScope) {
   };
 }
 
-/** Os handlers do MCP principal. */
-export const handlers = createHandlers();
-
 export type Handlers = ReturnType<typeof createHandlers>;
 
 // ------------------------------------------- prompts e resources -----------
@@ -251,47 +221,29 @@ const RESOURCE_SCHEME = 'skill://';
 export const resourceUriFor = (slug: string) => `${RESOURCE_SCHEME}${slug}`;
 
 /**
- * Mesma recusa para skill privada, inexistente e pública sem a flag.
- *
- * Distingui-las entregaria os slugs privados a quem sonda um servidor que, por
- * padrão, roda sem autenticação.
+ * Mesma recusa para skill fora do vínculo, inexistente e vinculada sem a flag
+ * da superfície: distingui-las entregaria slugs a quem sonda um servidor que
+ * pode estar aberto.
  */
 const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams, mensagem);
 
 /**
  * As duas superfícies em que uma skill é oferecida além das ferramentas:
- * *prompt* (pelo slug) e *resource* (`skill://<slug>`).
- *
- * No principal, nenhuma delas depende de `use_as_skill`: uma skill pode viver
- * só aqui. No virtual, quem decide é o vínculo (`as_prompt` / `as_resource`).
+ * *prompt* (pelo slug) e *resource* (`skill://<slug>`). Quem decide é o
+ * vínculo (`as_prompt` / `as_resource`), independente de `as_skill`: uma
+ * skill pode viver só aqui.
  *
  * As listas saem do banco a **cada requisição**. Não há `listChanged` para
- * avisar o cliente, então uma skill publicada agora precisa aparecer na
+ * avisar o cliente, então uma skill vinculada agora precisa aparecer na
  * listagem seguinte, mesmo numa sessão aberta antes dela existir.
  */
-export function createSurfaces(scope?: VirtualScope) {
-  const mcpUuid = scope?.mcp.uuid;
-  const listOptions = mcpUuid ? { virtualMcpUuid: mcpUuid } : undefined;
+export function createSurfaces(scope: VirtualScope) {
+  const mcpUuid = scope.mcp.uuid;
+  const listOptions = { virtualMcpUuid: mcpUuid };
 
-  /**
-   * A skill oferecida na superfície, ou nada.
-   *
-   * No principal: pública e flagada — sem `onlyAsSkill` de propósito, porque
-   * uma skill publicada **só** como prompt ou resource precisa continuar
-   * legível por aqui. O que ela tem em comum com as ferramentas é só
-   * `is_public`, conferida na consulta. No virtual, a consulta já filtra pelo
-   * vínculo com a flag da superfície.
-   */
-  async function skillPublicada(
-    slug: string,
-    surface: 'prompt' | 'resource',
-  ): Promise<SkillDetail | null> {
-    if (mcpUuid) return getSkillDetail(slug, { virtualMcp: { uuid: mcpUuid, surface } });
-
-    const detail = await getSkillDetail(slug, { includePrivate: false });
-    const flag = surface === 'prompt' ? detail?.useAsPrompt : detail?.useAsResource;
-    return flag ? detail! : null;
-  }
+  /** A skill oferecida na superfície, ou nada — a consulta já filtra pelo vínculo. */
+  const skillPublicada = (slug: string, surface: 'prompt' | 'resource'): Promise<SkillDetail | null> =>
+    getSkillDetail(slug, { virtualMcp: { uuid: mcpUuid, surface } });
 
   return {
     async listPrompts() {
@@ -375,7 +327,7 @@ export function createSurfaces(scope?: VirtualScope) {
     /**
      * Vazia de propósito. Responde ao método — nada de *method not found* para o
      * cliente que sonda na inicialização — sem anunciar que `skill://` qualquer
-     * é legível: só as flagadas são, e essas já saem uma a uma em
+     * é legível: só as vinculadas são, e essas já saem uma a uma em
      * `resources/list`.
      */
     listResourceTemplates() {
@@ -383,6 +335,3 @@ export function createSurfaces(scope?: VirtualScope) {
     },
   };
 }
-
-/** As superfícies do MCP principal. */
-export const surfaces = createSurfaces();

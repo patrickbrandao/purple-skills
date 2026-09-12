@@ -76,7 +76,7 @@ dentro da rede `internal`.
 
 | Servidor | URL | Autenticação |
 |----------|-----|--------------|
-| mcp-public | `http://mcp-public:3002/mcp` | `Authorization: Bearer $MCP_PUBLIC_KEY`, se definida |
+| mcp-public | `http://mcp-public:3002/mcp` | A do MCP virtual padrão: nenhuma se ele está aberto, `Authorization: Bearer psv_…` se exige chave |
 | mcp-admin | `http://mcp-admin:3003/mcp` | `Authorization: Bearer $MCP_ADMIN_TOKEN` (obrigatório) |
 
 O inspector sobe **sem autenticação própria** (`DANGEROUSLY_OMIT_AUTH`), o que
@@ -219,12 +219,24 @@ desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
 | `download_skill(slug)` | Devolve a URL do pacote `.zip` |
 | `list_tags()` | Tags disponíveis, com contagem |
 
-A autenticação do servidor principal é escolhida por `MCP_PUBLIC_AUTH`:
-`open` (sem autenticação), `key` (só a `MCP_PUBLIC_KEY`) ou `managed` (chaves
-`psp_…` emitidas por administradores no painel, e também a `MCP_PUBLIC_KEY`
-se estiver definida). Sem a variável, o modo é `key` quando há
-`MCP_PUBLIC_KEY` e `open` quando não há — o comportamento de sempre. O
-`GET /` anuncia o modo.
+### O MCP público é o MCP virtual padrão
+
+Não existe mais um servidor "principal" à parte: o que responde em `/mcp` é o
+**MCP virtual escolhido como padrão** em Configurações, no painel (ou por
+`set_default_virtual_mcp` no mcp-admin, só admin). Ele continua respondendo
+em `/virtual/<slug>/mcp`, e não tem nenhum tratamento especial — pode ser
+fechado, desligado ou apagado como qualquer outro. Quem decide o acesso a
+`/mcp` é ele: aberto, ou chaves `psv_` emitidas na página dele. `GET /`
+anuncia qual é o padrão, e sem um em pé `/mcp` responde 404 dizendo a causa
+(nenhum escolhido, removido ou desligado).
+
+Quem sobe de versão recebe o MCP virtual `public`, aberto, com toda skill
+pública vinculada nas mesmas superfícies de antes. `MCP_PUBLIC_AUTH`,
+`MCP_PUBLIC_KEY` e as chaves `psp_` deixaram de existir; o mcp-public recusa
+subir enquanto as variáveis estiverem no `.env`, para quem protegia o servidor
+fechar o `public` (ou emitir chaves `psv_` para ele) antes de removê-las. O
+desenho está em
+[`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
 ### MCPs virtuais: um servidor por time
 
@@ -232,16 +244,16 @@ Um **MCP virtual** é um recorte do catálogo servido pelo mesmo mcp-public em
 `/virtual/<slug>/mcp` (e `/mcp/stateless`, `/sse` + `/messages`), com
 endereço, chaves e dono próprios. Serve para um time ou projeto conectar o
 agente só às skills que lhe interessam — **inclusive skills privadas**, que
-nunca aparecem no MCP principal nem no site.
+não aparecem no site. Um deles é o **padrão**, e responde também em `/mcp`.
 
 - Cria quem é `editor` ou `admin`, no painel (seção "MCPs virtuais") ou pelo
   MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
   nele, ninguém mais. Admin transfere o dono.
 - Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
-  prompt, resource) **naquele servidor** — as flags `use_as_*` da skill valem
-  só para o MCP principal.
-- O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a
-  `MCP_PUBLIC_KEY` não abre um virtual e a chave de um virtual não abre outro.
+  prompt, resource) **naquele servidor**. As flags `use_as_*` da skill não
+  valem em MCP nenhum e saem no próximo PR, junto com `is_public`.
+- O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a chave de
+  um virtual não abre outro.
   Um MCP pode ser marcado **aberto** (sem chave) — com skill privada dentro,
   isso a torna pública naquele endereço, e o sistema pede confirmação.
 - `download_skill` e os arquivos binários apontam para o próprio servidor,
@@ -287,7 +299,7 @@ e `delete_skill` exige `admin`.
 | `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
 | `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}], confirm_open?)` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
-| `list_public_mcp_keys()` / `create_public_mcp_key(name)` / `revoke_public_mcp_key(key_id)` | Chaves `psp_` do MCP principal (`MCP_PUBLIC_AUTH=managed`); só admin |
+| `get_default_virtual_mcp()` / `set_default_virtual_mcp(slug \| null)` | Qual MCP virtual responde em `/mcp`; escolher é só admin |
 
 ## API REST pública
 
@@ -390,10 +402,8 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
-| `MCP_PUBLIC_AUTH` | não | `open`, `key` ou `managed` para o MCP público **principal**; vazio = `key` com `MCP_PUBLIC_KEY`, `open` sem |
-| `MCP_PUBLIC_KEY` / `_FILE` | com `key` | A chave dos modos `key` e `managed` (não abre os virtuais) |
-| `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
-| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP principal, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
+| `SITE_BASE_URL` | recomendada | Base da URL da página de uma skill pública, devolvida pelo MCP |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP público, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
 | `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |

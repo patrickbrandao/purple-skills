@@ -1,27 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PUBLIC_KEY_SCHEME, VIRTUAL_KEY_SCHEME, generateApiKey } from '@purple-skills/shared';
+import { VIRTUAL_KEY_SCHEME, generateApiKey } from '@purple-skills/shared';
 
 const db = vi.hoisted(() => ({
   resolveVirtualMcp: vi.fn(),
+  resolveDefaultVirtualMcp: vi.fn(),
   getVirtualMcpKeyByPrefix: vi.fn(),
   touchVirtualMcpKey: vi.fn(),
-  getPublicMcpKeyByPrefix: vi.fn(),
-  touchPublicMcpKey: vi.fn(),
-}));
-
-const cfg = vi.hoisted(() => ({
-  mode: 'open' as 'open' | 'key' | 'managed',
-  key: undefined as string | undefined,
 }));
 
 vi.mock('@purple-skills/db', () => db);
-vi.mock('./config.js', () => ({
-  publicKey: () => cfg.key,
-  publicAuthMode: () => cfg.mode,
-  config: { siteBaseUrl: 'http://localhost:3000', publicUrl: '' },
-}));
 
-const { resolvePublicCaller, resolveVirtualCaller } = await import('./auth.js');
+const { resolveRootCaller, resolveVirtualCaller, ROOT_REFUSAL_MESSAGE } = await import('./auth.js');
 
 /** Requisição mínima: só o slug da URL e o header Authorization. */
 const request = (slug: string, authorization?: string) =>
@@ -41,68 +30,71 @@ const fechado = {
 beforeEach(() => {
   vi.clearAllMocks();
   db.touchVirtualMcpKey.mockResolvedValue(undefined);
-  db.touchPublicMcpKey.mockResolvedValue(undefined);
-  cfg.mode = 'open';
-  cfg.key = undefined;
 });
 
-const principal = (authorization?: string) => request('', authorization);
+/** Na raiz não há slug: o vMCP vem de `settings`. */
+const raiz = (authorization?: string) => request('', authorization);
 
-describe('MCP principal por MCP_PUBLIC_AUTH', () => {
-  it('open: entra sem nada e ignora a chave da env', async () => {
-    cfg.key = 'chave-env';
+describe('a raiz é o vMCP padrão', () => {
+  it('sem padrão, padrão removido ou desligado: recusa com a causa, sem olhar credencial', async () => {
+    for (const refusal of [
+      { status: 'none', mcp: null, uuid: null, slug: null },
+      { status: 'deleted', mcp: null, uuid: null, slug: null },
+      { status: 'inactive', mcp: null, uuid: 'mcp-1', slug: 'time-a' },
+    ] as const) {
+      db.resolveDefaultVirtualMcp.mockResolvedValue(refusal);
 
-    expect(await resolvePublicCaller(principal())).toEqual({ identity: undefined });
-    expect(await resolvePublicCaller(principal('Bearer qualquer'))).toEqual({ identity: undefined });
+      expect(await resolveRootCaller(raiz('Bearer psv_x'))).toEqual(refusal);
+    }
+    expect(db.getVirtualMcpKeyByPrefix).not.toHaveBeenCalled();
   });
 
-  it('key: só a MCP_PUBLIC_KEY, com identidade compartilhada', async () => {
-    cfg.mode = 'key';
-    cfg.key = 'chave-env';
+  it('as três causas têm mensagens distintas, e todas apontam para o painel', () => {
+    const mensagens = Object.values(ROOT_REFUSAL_MESSAGE);
 
-    expect(await resolvePublicCaller(principal('Bearer chave-env'))).toEqual({ identity: 'public:env' });
-    expect(await resolvePublicCaller(principal('Bearer outra'))).toBeNull();
-    expect(await resolvePublicCaller(principal())).toBeNull();
-    // Uma psp_ válida não é consultada neste modo.
-    expect(await resolvePublicCaller(principal('Bearer psp_AAAAAAAA_bbbbbbbbbbbbbbbbbbbb'))).toBeNull();
-    expect(db.getPublicMcpKeyByPrefix).not.toHaveBeenCalled();
+    expect(new Set(mensagens).size).toBe(3);
+    for (const mensagem of mensagens) expect(mensagem).toMatch(/Configurações/);
   });
 
-  it('managed: aceita psp_ do banco e também a chave da env, se houver', async () => {
-    cfg.mode = 'managed';
-    cfg.key = 'chave-env';
-    const key = generateApiKey(PUBLIC_KEY_SCHEME);
-    db.getPublicMcpKeyByPrefix.mockResolvedValue({
+  it('padrão aberto entra sem chave, com a mesma identidade que tem em /virtual', async () => {
+    db.resolveDefaultVirtualMcp.mockResolvedValue({ status: 'ok', mcp: { ...fechado, isOpen: true } });
+    db.resolveVirtualMcp.mockResolvedValue({ ...fechado, isOpen: true });
+
+    const naRaiz = await resolveRootCaller(raiz());
+    const noVirtual = await resolveVirtualCaller(request('time-a'));
+
+    expect(naRaiz).toEqual({ mcp: { ...fechado, isOpen: true }, identity: 'virtual:mcp-1:open' });
+    expect(noVirtual).toEqual(naRaiz);
+  });
+
+  it('padrão fechado exige uma chave psv_ do próprio vMCP', async () => {
+    const key = generateApiKey(VIRTUAL_KEY_SCHEME);
+    db.resolveDefaultVirtualMcp.mockResolvedValue({ status: 'ok', mcp: fechado });
+    db.getVirtualMcpKeyByPrefix.mockResolvedValue({
       id: 'chave-1',
+      virtualMcpUuid: 'mcp-1',
       name: 'ci',
       prefix: key.prefix,
       keyHash: key.keyHash,
       revokedAt: null,
     });
 
-    expect(await resolvePublicCaller(principal(`Bearer ${key.token}`))).toEqual({
-      identity: 'public:key:chave-1',
+    expect(await resolveRootCaller(raiz())).toBeNull();
+    expect(await resolveRootCaller(raiz(`Bearer ${key.token}`))).toEqual({
+      mcp: fechado,
+      identity: 'virtual:mcp-1:key:chave-1',
     });
-    expect(db.touchPublicMcpKey).toHaveBeenCalledWith('chave-1');
-    expect(await resolvePublicCaller(principal('Bearer chave-env'))).toEqual({ identity: 'public:env' });
-  });
 
-  it('managed: recusa sem chave, revogada, de outro esquema e segredo errado', async () => {
-    cfg.mode = 'managed';
-    const key = generateApiKey(PUBLIC_KEY_SCHEME);
-    const record = { id: 'chave-1', name: 'ci', prefix: key.prefix, keyHash: key.keyHash, revokedAt: null };
-
-    expect(await resolvePublicCaller(principal())).toBeNull();
-    // psv_ e psk_ não abrem o principal: o esquema decide a tabela.
-    expect(await resolvePublicCaller(principal(`Bearer ${key.token.replace(/^psp_/, 'psv_')}`))).toBeNull();
-    expect(db.getPublicMcpKeyByPrefix).not.toHaveBeenCalled();
-
-    db.getPublicMcpKeyByPrefix.mockResolvedValue({ ...record, revokedAt: '2026-01-01T00:00:00Z' });
-    expect(await resolvePublicCaller(principal(`Bearer ${key.token}`))).toBeNull();
-
-    db.getPublicMcpKeyByPrefix.mockResolvedValue(record);
-    expect(await resolvePublicCaller(principal(`Bearer psp_${key.prefix}_segredo-errado-xxxx`))).toBeNull();
-    expect(db.touchPublicMcpKey).not.toHaveBeenCalled();
+    // A chave de outro vMCP não abre a raiz, mesmo válida.
+    db.getVirtualMcpKeyByPrefix.mockResolvedValue({
+      id: 'chave-2',
+      virtualMcpUuid: 'mcp-2',
+      name: 'outra',
+      prefix: key.prefix,
+      keyHash: key.keyHash,
+      revokedAt: null,
+    });
+    expect(await resolveRootCaller(raiz(`Bearer ${key.token}`))).toBeNull();
   });
 });
 

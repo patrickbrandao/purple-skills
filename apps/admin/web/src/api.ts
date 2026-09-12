@@ -57,6 +57,7 @@ export type AuditAction =
   | 'mcp.create'
   | 'mcp.update'
   | 'mcp.delete'
+  | 'mcp.default'
   | 'mcp.key.create'
   | 'mcp.key.revoke'
   | 'public.key.create'
@@ -156,6 +157,8 @@ export type VirtualMcpSummary = {
   skillCount: number;
   privateSkillCount: number;
   activeKeyCount: number;
+  /** É o vMCP que responde em `/mcp`. */
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -195,14 +198,12 @@ export type VirtualMcpKeySummary = {
   createdAt: string;
 };
 
-export type PublicMcpKeySummary = {
-  id: string;
-  name: string;
-  prefix: string;
-  createdByUserUuid: string | null;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-  createdAt: string;
+/** Cópia manual de `InstallationSettings` de `@purple-skills/shared`. */
+export type InstallationSettings = {
+  defaultMcp:
+    | { status: 'ok'; uuid: string; slug: string; name: string; isOpen: boolean }
+    | { status: 'inactive'; uuid: string; slug: string; name: null; isOpen: null }
+    | { status: 'none' | 'deleted'; uuid: null; slug: null; name: null; isOpen: null };
 };
 
 /** Código do 400 que pede confirmação para abrir um MCP com skill privada. */
@@ -470,19 +471,13 @@ export const createMcpKey = (slug: string, name: string) =>
 export const revokeMcpKey = (slug: string, id: string) =>
   request<unknown>(`${mcpPath(slug)}/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
-// ------------------------------------------ chaves do MCP principal ---
+// ------------------------------------------------------- configuração ---
 
-export const getPublicKeys = () => request<{ items: PublicMcpKeySummary[] }>('/api/public-mcp/keys');
+export const getSettings = () => request<InstallationSettings>('/api/settings');
 
-/** O campo `token` chega uma única vez, na resposta desta chamada. */
-export const createPublicKey = (name: string) =>
-  request<{ key: PublicMcpKeySummary; token: string }>('/api/public-mcp/keys', {
-    method: 'POST',
-    body: json({ name }),
-  });
-
-export const revokePublicKey = (id: string) =>
-  request<unknown>(`/api/public-mcp/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+/** `null` limpa o padrão: a raiz passa a responder 404. */
+export const setDefaultMcp = (uuid: string | null) =>
+  request<InstallationSettings>('/api/settings/default-mcp', { method: 'PUT', body: json({ uuid }) });
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

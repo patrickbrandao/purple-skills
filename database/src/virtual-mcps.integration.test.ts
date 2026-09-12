@@ -146,6 +146,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(mcp.skillCount).toBe(0);
     expect(mcp.privateSkillCount).toBe(0);
     expect(mcp.activeKeyCount).toBe(0);
+    // Sem `settings` preenchida, ninguém é o padrão.
+    expect(mcp.isDefault).toBe(false);
     expect(mcp.skills).toEqual([]);
 
     // Segundo com o mesmo nome ganha sufixo; slug explícito em uso é conflito.

@@ -3,6 +3,17 @@
 **Status: implementado**, em dois PRs: o MCP virtual completo e, em seguida,
 as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 
+> **Parcialmente revogado por [`09`](09-mcp-padrao-e-skills-flutuantes.md).**
+> Não existe mais um "MCP principal": o que responde em `/mcp` é o vMCP
+> escolhido como padrão. Deixaram de valer a decisão 2 (o "universal" por
+> `is_public AND use_as_skill`), a decisão 7 e a `§7` inteira (`MCP_PUBLIC_AUTH`
+> e as chaves `psp_`, removidas no `011`), e a decisão 12 e a `§3.3` caem no
+> PR2 de `09` (vínculo pelos dois lados, fim de `confirm_open`). O item "listar
+> virtuais abertos no site" da `§9` entra no escopo do PR2. O resto — recorte
+> pelo vínculo, chaves `psv_`, dono, identidade da sessão, downloads próprios,
+> 404/401 — continua sendo o desenho de **todo** ponto de montagem, inclusive
+> a raiz.
+
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive
 skills privadas — para um time ou projeto, com chaves e dono próprios. É a

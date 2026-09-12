@@ -14,6 +14,7 @@ import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
 import { McpsPage } from './pages/McpsPage.js';
 import { McpPage } from './pages/McpPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
 
 /** Estado assumido quando `/api/session` não responde — só serve ao login. */
 const OFFLINE: Session = {
@@ -99,6 +100,12 @@ export default function App() {
           <Route
             path="/users"
             element={canManageUsers(user.role) ? <UsersPage me={user} /> : <Navigate to="/" replace />}
+          />
+          <Route
+            path="/configuracoes"
+            element={
+              canManageUsers(user.role) ? <SettingsPage session={current} /> : <Navigate to="/" replace />
+            }
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

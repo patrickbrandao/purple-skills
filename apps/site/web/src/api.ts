@@ -41,11 +41,27 @@ export type SearchResult = {
   offset: number;
 };
 
+/**
+ * O MCP público é o MCP virtual padrão da instalação. `status` diz se há um
+ * em pé; `requiresKey`, se o `mcp.json` precisa do header `Authorization`.
+ */
+export type PublicMcpInfo =
+  | { status: 'ok'; slug: string; name: string; description: string; requiresKey: boolean }
+  | {
+      status: 'none' | 'deleted' | 'inactive';
+      slug: string | null;
+      name: null;
+      description: null;
+      requiresKey: null;
+    };
+
 export type SiteMeta = {
   name: string;
   tagline: string;
   baseUrl: string;
+  /** `<MCP_PUBLIC_URL>/mcp`, ou nulo quando a variável não foi configurada. */
   mcpUrl: string | null;
+  mcp: PublicMcpInfo;
   mcpAdminUrl: string | null;
   adminUrl: string | null;
 };

@@ -35,11 +35,14 @@ Regras importantes:
   /virtual/<slug>/mcp que publicam um recorte de skills — inclusive privadas —
   com chaves próprias (psv_…). Cada vínculo escolhe as três superfícies
   (asSkill, asPrompt, asResource) por conta própria; as flags use_as_* da
-  skill valem só para o MCP principal. O MCP virtual tem dono: quem cria é o
+  skill não valem em nenhum MCP. O MCP virtual tem dono: quem cria é o
   dono, e só o dono ou um admin o administra. Abrir um MCP (is_open) com
   skill privada dentro exige confirm_open=true.
-- Chaves do MCP principal (tools *_public_mcp_key): chaves psp_ que abrem o
-  MCP público principal quando ele roda com MCP_PUBLIC_AUTH=managed. Só admin.`;
+- O MCP público (/mcp) é o MCP virtual escolhido como padrão
+  (get_default_virtual_mcp / set_default_virtual_mcp, só admin). Ele continua
+  respondendo em /virtual/<slug>/mcp e não tem tratamento especial: pode ser
+  fechado, desligado ou apagado como qualquer um, e aí /mcp responde 404.
+  Sem MCP padrão, /mcp responde 404.`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -403,37 +406,31 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
   );
 
-  // ------------------------------------------ chaves do MCP principal ---
+  // ------------------------------------------------------- MCP padrão ---
 
   server.registerTool(
-    'list_public_mcp_keys',
+    'get_default_virtual_mcp',
     {
-      title: 'Listar chaves do MCP principal',
+      title: 'Ler o MCP padrão',
       description:
-        'Chaves psp_ do MCP público principal (só valem com MCP_PUBLIC_AUTH=managed). Só admin. Nunca mostra o segredo.',
+        'Qual MCP virtual responde em /mcp — o MCP público desta instalação — ou por que nenhum responde.',
       inputSchema: {},
     },
-    () => guard(() => mcps.list_public_mcp_keys()),
+    () => guard(() => mcps.get_default_virtual_mcp()),
   );
 
   server.registerTool(
-    'create_public_mcp_key',
+    'set_default_virtual_mcp',
     {
-      title: 'Emitir chave do MCP principal',
-      description: 'Emite uma chave psp_ para o MCP público principal. Só admin. O token aparece uma única vez.',
-      inputSchema: { name: z.string().describe('Nome da chave (ex.: "agentes do time X").') },
+      title: 'Escolher o MCP padrão',
+      description:
+        'Faz um MCP virtual responder também em /mcp, com as próprias skills, chaves e regra de acesso. ' +
+        'slug null limpa: /mcp passa a responder 404. Só admin.',
+      inputSchema: {
+        slug: z.string().nullable().describe('Slug do MCP virtual, ou null para nenhum.'),
+      },
     },
-    (args) => guard(() => mcps.create_public_mcp_key(args)),
-  );
-
-  server.registerTool(
-    'revoke_public_mcp_key',
-    {
-      title: 'Revogar chave do MCP principal',
-      description: 'Revoga uma chave psp_ pelo id (de list_public_mcp_keys). Só admin.',
-      inputSchema: { key_id: z.string() },
-    },
-    (args) => guard(() => mcps.revoke_public_mcp_key(args)),
+    (args) => guard(() => mcps.set_default_virtual_mcp(args)),
   );
 
   return server;

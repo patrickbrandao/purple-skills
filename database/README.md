@@ -48,7 +48,8 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `007-publicacao-mcp.sql` | `skills.use_as_prompt` / `use_as_resource` e os índices parciais das listagens do MCP público |
 | `008-publicacao-como-skill.sql` | `skills.use_as_skill` — a superfície de ferramentas do MCP público vira opt-out |
 | `009-mcp-virtual.sql` | `virtual_mcps`, `virtual_mcp_skills`, `virtual_mcp_keys` e o `CHECK` de `action` com os eventos `mcp.*` |
-| `010-public-mcp-keys.sql` | `public_mcp_keys` — chaves `psp_` gerenciadas do MCP principal — e o `CHECK` de `action` com `public.key.*` |
+| `010-public-mcp-keys.sql` | `public_mcp_keys` — chaves `psp_` gerenciadas do antigo MCP principal — e o `CHECK` de `action` com `public.key.*` |
+| `011-mcp-padrao.sql` | `settings` (o vMCP padrão que responde em `/mcp`), `mcp.default` no `CHECK` de `action`, backfill do vMCP `public` e remoção de `public_mcp_keys` |
 
 Regras:
 
@@ -78,7 +79,7 @@ Regras:
 | `virtual_mcps` | servidores MCP virtuais: `slug`, dono (`owner_user_uuid`), `is_active`, `is_open` |
 | `virtual_mcp_skills` | vínculo skill ↔ MCP virtual, com as flags `as_skill`/`as_prompt`/`as_resource` e contadores **próprios** |
 | `virtual_mcp_keys` | chaves `psv_` por servidor; mesmo formato de `api_keys` |
-| `public_mcp_keys` | chaves `psp_` do MCP principal (modo `MCP_PUBLIC_AUTH=managed`); sem FK de servidor, emitidas só por admin |
+| `settings` | configuração da instalação, chave-valor; `default_virtual_mcp` guarda o uuid do vMCP que responde em `/mcp`, sem FK |
 | `schema_migrations` | controle do runner (criado por ele, não por um `.sql`) |
 
 Chaves primárias são `uuidv7()` do PostgreSQL 18. A busca usa `tsvector` com
@@ -129,7 +130,14 @@ resource, e `007` é a parte dele que vive aqui;
 fecha `use_as_skill` e a promoção de `is_public` a interruptor global, e `008`
 é a parte dele que vive aqui.
 
-Tudo acima vale para o **MCP principal**. Um **MCP virtual**
+> **Desde o `011` não existe mais um "MCP principal"**
+> ([`docs/09-mcp-padrao-e-skills-flutuantes.md`](../docs/09-mcp-padrao-e-skills-flutuantes.md)).
+> O que responde em `/mcp` é o **vMCP padrão** escolhido em `settings`, e ele
+> lê pelo vínculo como qualquer outro. As três colunas `use_as_*` continuam
+> gravadas e o site continua filtrando por `is_public`, mas **nenhum MCP as
+> lê**; as quatro saem no PR2. A tabela `public_mcp_keys` foi removida.
+
+Um **MCP virtual**
 ([`docs/08-mcp-virtual.md`](../docs/08-mcp-virtual.md), `009`) publica um
 recorte próprio em `/virtual/<slug>/mcp` e decide as superfícies **por
 vínculo**: `virtual_mcp_skills` carrega suas próprias `as_skill`, `as_prompt`
@@ -137,12 +145,20 @@ e `as_resource` (obrigatórias, sem default) e seus próprios contadores. Nele
 `is_public` e as `use_as_*` da skill são ignorados — skill privada vinculada
 sai —, e o contador global da skill continua somando junto com o do vínculo.
 
-O MCP principal, por sua vez, tem **chaves gerenciadas próprias** em
-`public_mcp_keys` (`010`, [`docs/08-mcp-virtual.md`](../docs/08-mcp-virtual.md)
-§7): chaves `psp_` que valem no modo `MCP_PUBLIC_AUTH=managed`, ao lado de
-`open` (sem chave) e `key` (a `MCP_PUBLIC_KEY` única de ambiente). Não há FK
-de servidor porque o principal é um só, e a chave é do servidor, não de um
-usuário — `created_by_user_uuid` é informativo.
+### MCP padrão
+
+`settings` é chave-valor (`key TEXT PRIMARY KEY, value TEXT, updated_at`). A
+chave `default_virtual_mcp` guarda o **uuid** do vMCP que responde em `/mcp`,
+como texto e **sem FK** de propósito: um vMCP apagado deixa o valor
+pendurado, e é assim que `resolveDefaultVirtualMcp` distingue "nenhum padrão"
+(chave ausente ou nula) de "o padrão foi removido" (valor sem linha). O
+padrão **não tem tratamento especial** no banco: pode ser fechado, desligado
+ou apagado como qualquer vMCP.
+
+O backfill do `011` cria o vMCP `public` (ou `public-N`) numa instalação que
+já tem skills: sem dono, ligado e aberto, com toda skill `is_public` vinculada
+e as flags copiadas de `use_as_*`. Numa instalação sem skills nada é criado;
+o `seed` cria o `public` com as skills de exemplo e o marca como padrão.
 
 ## Containers
 
@@ -205,10 +221,10 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
 | MCP virtual | `listVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpsForSkill`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
-| Chaves do MCP principal | `listPublicMcpKeys`, `createPublicMcpKey`, `revokePublicMcpKey`, `getPublicMcpKeyByPrefix`, `touchPublicMcpKey` |
+| MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `publicMcpKeys`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `PublicMcpKeyRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `PublicMcpKeyRecord`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `settings`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `SettingRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -286,21 +302,20 @@ await incrementViewCount(skill.uuid, mcp.uuid);
   restrita ao MCP. A auditoria das chaves (`mcp.key.create` / `mcp.key.revoke`)
   é gravada pelo app via `recordAccountAudit`, com `targetLabel` = nome da chave.
 
-### Chaves gerenciadas do MCP principal
+### MCP padrão
 
-- Espelho das `psv_` sem o servidor: `createPublicMcpKey` recebe prefixo e
-  hash já gerados pelo app (`generateApiKey('psp')`), `getPublicMcpKeyByPrefix`
-  acha a linha (conferir o segredo com `verifyApiKeySecret` e recusar
-  `revokedAt` não nulo é do app), `revokePublicMcpKey(id)` devolve `false`
-  quando não achou ou já estava revogada, `touchPublicMcpKey` marca o uso e
-  `listPublicMcpKeys` devolve todas, inclusive revogadas, mais recente primeiro.
-- Nenhuma delas restringe por dono ou papel: a chave é do servidor. **Só o
-  admin emite e revoga**, e essa checagem é do app, antes de chamar.
-- Se quem emitiu deixou de existir entre a sessão e a emissão, a chave é
-  gravada com `createdByUserUuid` nulo em vez de recusada — o campo é
-  informativo.
-- A auditoria (`public.key.create` / `public.key.revoke`) é gravada pelo app
-  via `recordAccountAudit`, com `targetLabel` = nome da chave.
+- `resolveDefaultVirtualMcp()` é a consulta de toda requisição à raiz do
+  mcp-public (e do `/api/meta` do site): um `LEFT JOIN` de `settings` com
+  `virtual_mcps` por `uuid::text`, sem cache. Devolve `DefaultMcpResolution`:
+  `{ status: 'ok', mcp }` com o mesmo `VirtualMcpRuntime` de
+  `resolveVirtualMcp`, ou `none` (chave ausente/nula), `deleted` (valor sem
+  linha) e `inactive` (linha com `is_active = false`, com `uuid` e `slug`).
+- `setDefaultVirtualMcp(uuid | null, source, actor)` faz o upsert da chave e
+  audita como `mcp.default`, com o slug novo — ou `"nenhum"` — em
+  `targetLabel`. Uuid sem linha é 404; um vMCP desligado é aceito. **Só o
+  admin escolhe**, e essa checagem é do app.
+- `VirtualMcpSummary.isDefault` é calculado na listagem e no detalhe a partir
+  da mesma chave.
 
 ### Contas, chaves e senha
 
@@ -356,7 +371,7 @@ recriado do zero a cada execução:
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
   npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts \
-    database/src/virtual-mcps.integration.test.ts database/src/public-mcp-keys.integration.test.ts
+    database/src/virtual-mcps.integration.test.ts database/src/settings.integration.test.ts
 ```
 
 | Suíte | Cobre |
@@ -364,7 +379,7 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
-| `public-mcp-keys.integration.test.ts` | chaves `psp_` do MCP principal: emissão, busca por prefixo, revogação idempotente, listagem com revogadas e `public.key.*` no CHECK |
+| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o backfill idempotente do `011` e o CHECK com `mcp.default` |
 
 As quatro recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o

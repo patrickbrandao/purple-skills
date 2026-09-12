@@ -93,6 +93,11 @@ export function McpPage({ session, user }: { session: Session; user: SessionUser
               <span className="dot" />
               {mcp.isActive ? 'ligado' : 'desligado'}
             </span>
+            {mcp.isDefault && (
+              <span className="badge surface" title="Responde também em /mcp, o MCP público desta instalação">
+                padrão
+              </span>
+            )}
             {mcp.isOpen && (
               <span className={`badge surface ${mcp.privateSkillCount > 0 ? 'off' : ''}`}>aberto</span>
             )}
@@ -207,8 +212,8 @@ function SkillsPanel({
     <Panel title="Skills publicadas" icon={<StackIcon />}>
       <p className="panel-hint">
         Skills privadas entram — é para isso que o MCP virtual existe. Para cada uma, marque por
-        quais superfícies ela sai <strong>neste servidor</strong>; as flags da própria skill valem
-        só para o MCP principal.
+        quais superfícies ela sai <strong>neste servidor</strong>; as flags de publicação da
+        própria skill não valem em nenhum MCP, nem no padrão.
       </p>
 
       <div className="table-wrap">
@@ -511,6 +516,12 @@ function ConnectPanel({ mcp, mcpPublicUrl }: { mcp: VirtualMcpDetail; mcpPublicU
         <code>/virtual/{mcp.slug}/sse</code>. Os downloads de <code>download_skill</code> aceitam a
         mesma chave.
       </p>
+      {mcp.isDefault && (
+        <p className="panel-hint mt-3 break-words">
+          Este é o <strong>MCP padrão</strong>: responde também em <code>{base}/mcp</code>, o endereço
+          do MCP público desta instalação, com as mesmas skills, chaves e regra de acesso.
+        </p>
+      )}
     </Panel>
   );
 }
@@ -577,7 +588,10 @@ function SettingsPanel({
   }
 
   async function remove() {
-    if (!window.confirm(`Remover o MCP virtual "${mcp.name}", seus vínculos e suas chaves? Irreversível.`)) return;
+    const aviso = mcp.isDefault
+      ? ' Ele é o MCP padrão: /mcp passa a responder 404 até outro ser escolhido em Configurações.'
+      : '';
+    if (!window.confirm(`Remover o MCP virtual "${mcp.name}", seus vínculos e suas chaves? Irreversível.${aviso}`)) return;
     try {
       await deleteMcp(mcp.slug);
       toast.success('MCP virtual removido.');
@@ -649,7 +663,10 @@ function SettingsPanel({
           />
           <span className="min-w-0">
             <span className="block text-sm">Ligado</span>
-            <span className="row-sub block">Desligado, tudo sob /virtual/{mcp.slug} responde 404. As chaves ficam.</span>
+            <span className="row-sub block">
+              Desligado, tudo sob /virtual/{mcp.slug} responde 404. As chaves ficam.
+              {mcp.isDefault && ' Como é o MCP padrão, /mcp também passa a responder 404.'}
+            </span>
           </span>
         </label>
 

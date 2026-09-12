@@ -16,8 +16,14 @@ vi.mock('@purple-skills/db', () => db);
 
 const { createMcpServer } = await import('./server.js');
 
+/** O vMCP padrão, chamado pela raiz. */
+const raiz = {
+  mcp: { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', isOpen: true },
+  baseUrl: 'https://mcp.exemplo.dev',
+};
+
 /** Cliente ligado a um servidor novo pelo transporte em memória. */
-async function conectar(scope?: Parameters<typeof createMcpServer>[0]) {
+async function conectar(scope: Parameters<typeof createMcpServer>[0] = raiz) {
   const [doCliente, doServidor] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'teste', version: '0' });
 
@@ -99,9 +105,9 @@ describe('métodos das superfícies', () => {
   });
 });
 
-describe('servidor de um MCP virtual', () => {
+describe('identidade do servidor', () => {
   const scope = {
-    mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: 'Skills do projeto X.', isOpen: false },
+    mcp: { uuid: 'mcp-2', slug: 'time-a', name: 'Time A', description: 'Skills do projeto X.', isOpen: false },
     baseUrl: 'https://mcp.exemplo.dev/virtual/time-a',
   };
 
@@ -113,7 +119,16 @@ describe('servidor de um MCP virtual', () => {
     expect(client.getInstructions()).toContain('search_skills');
   });
 
-  it('oferece as mesmas ferramentas e superfícies do principal', async () => {
+  // A raiz é o vMCP padrão: mesmo nome sufixado e as mesmas instruções que
+  // ele tem em /virtual/<slug>. Não existe mais um "catálogo completo" à parte.
+  it('na raiz, o vMCP padrão se apresenta como em /virtual/<slug>', async () => {
+    const client = await conectar(raiz);
+
+    expect(client.getServerVersion()?.name).toBe('purple-skills-public');
+    expect(client.getInstructions()).not.toMatch(/catálogo completo|MCP principal/);
+  });
+
+  it('oferece as mesmas ferramentas e superfícies em qualquer ponto de montagem', async () => {
     const client = await conectar(scope);
 
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(

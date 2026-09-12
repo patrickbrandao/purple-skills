@@ -147,12 +147,11 @@ services:
     environment:
       <<: *app-env
       PORT: 3002
-      # open | key | managed. Vazio = key com MCP_PUBLIC_KEY, open sem ela.
-      MCP_PUBLIC_AUTH: ${MCP_PUBLIC_AUTH:-}
-      MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
-      MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
-      # Base das URLs de download dos MCPs virtuais. Vazio = deduzida de cada
-      # requisição (proto://host), o que funciona atrás do Traefik do override.
+      # O acesso a /mcp é decidido pelo MCP virtual padrão, escolhido no
+      # painel: não há variável de autenticação aqui.
+      # Base das URLs de download que as ferramentas devolvem. Vazio = deduzida
+      # de cada requisição (proto://host), o que funciona atrás do Traefik do
+      # override.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
@@ -180,7 +179,7 @@ services:
   # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
   # do container — `localhost` ali é o próprio inspector, não o seu host:
   #
-  #   http://mcp-public:3002/mcp    (Streamable HTTP; /sse para o transporte antigo)
+  #   http://mcp-public:3002/mcp    (o MCP virtual padrão; /sse para o transporte antigo)
   #   http://mcp-admin:3003/mcp     + header `Authorization: Bearer $MCP_ADMIN_TOKEN`
   #
   # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a

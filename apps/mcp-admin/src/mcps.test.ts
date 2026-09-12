@@ -24,9 +24,8 @@ const db = vi.hoisted(() => ({
   createVirtualMcpKey: vi.fn(),
   revokeVirtualMcpKey: vi.fn(),
   recordAccountAudit: vi.fn(),
-  listPublicMcpKeys: vi.fn(),
-  createPublicMcpKey: vi.fn(),
-  revokePublicMcpKey: vi.fn(),
+  resolveDefaultVirtualMcp: vi.fn(),
+  setDefaultVirtualMcp: vi.fn(),
   notFound: (message: string) => new AppError(message, 404, 'not_found'),
   badRequest: (message: string) => new AppError(message, 400, 'bad_request'),
 }));
@@ -54,6 +53,7 @@ const mcp = {
   skillCount: 1,
   privateSkillCount: 1,
   activeKeyCount: 0,
+  isDefault: false,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   skills: [
@@ -247,43 +247,51 @@ describe('delete_virtual_mcp', () => {
   });
 });
 
-describe('chaves do MCP principal', () => {
-  it('só admin lista, emite e revoga', async () => {
+describe('MCP padrão', () => {
+  it('qualquer credencial lê qual responde em /mcp, e por que nenhum', async () => {
+    const leitor = createMcpHandlers(caller('leitor'));
+    db.resolveDefaultVirtualMcp.mockResolvedValueOnce({
+      status: 'ok',
+      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: false },
+    });
+    db.resolveDefaultVirtualMcp.mockResolvedValueOnce({ status: 'none', mcp: null, uuid: null, slug: null });
+
+    const ok = JSON.parse((await leitor.get_default_virtual_mcp()).content[0].text);
+    const nenhum = JSON.parse((await leitor.get_default_virtual_mcp()).content[0].text);
+
+    expect(ok).toMatchObject({ status: 'ok', slug: 'time-a', auth: 'key', path: '/mcp' });
+    expect(nenhum).toMatchObject({ status: 'none' });
+    expect(nenhum.hint).toMatch(/set_default_virtual_mcp/);
+  });
+
+  it('só admin escolhe', async () => {
     const editor = createMcpHandlers(caller('editor'));
 
-    expect((await editor.list_public_mcp_keys()).isError).toBe(true);
-    expect((await editor.create_public_mcp_key({ name: 'x' })).isError).toBe(true);
-    expect((await editor.revoke_public_mcp_key({ key_id: 'k' })).isError).toBe(true);
-    expect(db.createPublicMcpKey).not.toHaveBeenCalled();
-    expect(db.revokePublicMcpKey).not.toHaveBeenCalled();
+    const result = await editor.set_default_virtual_mcp({ slug: 'time-a' });
+
+    expect(result.isError).toBe(true);
+    expect(db.setDefaultVirtualMcp).not.toHaveBeenCalled();
   });
 
-  it('admin emite uma psp_ e audita com o nome', async () => {
-    db.createPublicMcpKey.mockImplementation(async (input: { name: string; prefix: string }) => ({
-      id: 'chave-p',
-      name: input.name,
-      prefix: input.prefix,
-      createdByUserUuid: null,
-      lastUsedAt: null,
-      revokedAt: null,
-      createdAt: '2026-01-01T00:00:00.000Z',
-    }));
+  it('admin escolhe pelo slug, limpa com null e é recusado num slug inexistente', async () => {
     const admin = createMcpHandlers(caller('admin', null));
+    db.setDefaultVirtualMcp.mockResolvedValueOnce({
+      status: 'ok',
+      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: true },
+    });
+    db.setDefaultVirtualMcp.mockResolvedValueOnce({ status: 'none', mcp: null, uuid: null, slug: null });
 
-    const payload = JSON.parse((await admin.create_public_mcp_key({ name: 'agentes' })).content[0].text);
+    const escolhido = await admin.set_default_virtual_mcp({ slug: 'time-a' });
+    const limpo = await admin.set_default_virtual_mcp({ slug: null });
 
-    expect(payload.token).toMatch(/^psp_[A-Za-z0-9_-]{8}_/);
-    expect(db.recordAccountAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'public.key.create', targetLabel: 'agentes' }),
-    );
-  });
+    expect(db.setDefaultVirtualMcp).toHaveBeenNthCalledWith(1, 'mcp-1', 'mcp-admin', caller('admin', null).actor);
+    expect(db.setDefaultVirtualMcp).toHaveBeenNthCalledWith(2, null, 'mcp-admin', caller('admin', null).actor);
+    expect(escolhido.content[0].text).toMatch(/time-a.*aberto/);
+    expect(limpo.content[0].text).toMatch(/404/);
 
-  it('admin revoga e sinaliza quando não achou', async () => {
-    db.revokePublicMcpKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const admin = createMcpHandlers(caller('admin', null));
-
-    expect((await admin.revoke_public_mcp_key({ key_id: 'a' })).isError).toBeUndefined();
-    expect((await admin.revoke_public_mcp_key({ key_id: 'b' })).isError).toBe(true);
-    expect(db.recordAccountAudit).toHaveBeenCalledTimes(1);
+    db.getVirtualMcp.mockResolvedValueOnce(null);
+    const inexistente = await guard(() => admin.set_default_virtual_mcp({ slug: 'nao-existe' }));
+    expect(inexistente.isError).toBe(true);
+    expect(db.setDefaultVirtualMcp).toHaveBeenCalledTimes(2);
   });
 });

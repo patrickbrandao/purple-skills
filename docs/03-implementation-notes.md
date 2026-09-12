@@ -413,13 +413,36 @@ em aberto:
   `download` e `download.skill`; a `url` da página só sai quando `is_public`.
 - **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
   credencial, e o site continua sendo o único lugar com `max-age`.
-- **`MCP_PUBLIC_AUTH` ausente é deduzida**, não `open` (`08` §7): a
-  entrevista escolheu `open` como padrão, mas isso abriria em silêncio toda
-  instalação protegida por `MCP_PUBLIC_KEY` que subisse de versão. `key` sem
-  chave e um valor desconhecido derrubam o boot; `open` com chave definida
-  avisa no log e a ignora.
 - **Selo na skill inclui MCPs desligados** — `listVirtualMcpsForSkill` não
   filtra `is_active`: o vínculo existe, e o selo é sobre o vínculo.
+
+## MCP padrão
+
+Decisões de implementação que
+[`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md)
+deixou em aberto:
+
+- **Um `auth` por mount, uma autenticação.** `rootAuth` e `virtualAuth`
+  diferem só em como acham o vMCP (`settings` vs. slug da URL); a conferência
+  de `is_open` e da chave `psv_` é a mesma função, `authenticateAgainst`. As
+  rotas de download recebem o `auth` do mount por parâmetro
+  (`registrarDownloads(auth)`), em vez de importar `virtualAuth` fixo.
+- **Prefixo das URLs vem de `req.baseUrl`.** É o prefixo do mount já
+  resolvido pelo Express (`''` na raiz, `/virtual/<slug>` no outro), então o
+  mesmo vMCP ganha URLs sob o caminho por onde foi chamado, sem um segundo
+  parâmetro para dizer "estou na raiz".
+- **`GET /` calcula por requisição.** `createHttpApp` ganhou `describe`, uma
+  função assíncrona mesclada aos metadados fixos; uma falha nela devolve só
+  os fixos, para o endpoint de descoberta nunca depender do banco.
+- **A trava de boot olha as três variáveis crua**, não por `readTextEnv`:
+  vazia é ausente, qualquer outra coisa derruba, e a mensagem nomeia todas as
+  que encontrou.
+- **O seed audita como `seed`.** `createVirtualMcp` e `setDefaultVirtualMcp`
+  exigem ator; o seed passa `{ userUuid: null, label: 'seed' }`, no mesmo
+  espírito de `bootstrap` e `token-global`.
+- **`DefaultMcpResolution.inactive` carrega `uuid` e `slug`.** O painel
+  precisa pré-selecionar o vMCP desligado no seletor e dizer qual é; `deleted`
+  não tem linha para apontar.
 
 ## Portas
 

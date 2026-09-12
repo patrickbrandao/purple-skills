@@ -27,8 +27,10 @@ const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   'mcp.create': 'criou MCP virtual',
   'mcp.update': 'alterou MCP virtual',
   'mcp.delete': 'removeu MCP virtual',
+  'mcp.default': 'escolheu o MCP padrão',
   'mcp.key.create': 'emitiu chave de MCP',
   'mcp.key.revoke': 'revogou chave de MCP',
+  // Chaves psp_ do antigo MCP principal: nada mais as emite, a trilha ainda as mostra.
   'public.key.create': 'emitiu chave do MCP principal',
   'public.key.revoke': 'revogou chave do MCP principal',
 };
@@ -46,6 +48,7 @@ const ACTION_CLASS: Record<AuditEntry['action'], string> = {
   'mcp.create': 'create',
   'mcp.update': 'update',
   'mcp.delete': 'delete',
+  'mcp.default': 'update',
   'mcp.key.create': 'create',
   'mcp.key.revoke': 'delete',
   'public.key.create': 'create',

@@ -23,16 +23,15 @@ import { KEY_COST, hashSecret, verifySecret } from './password.js';
  * "psk_a1b2c3d4…" numa listagem sem guardar nada sensível.
  */
 export const API_KEY_SCHEME = 'psk';
-/** Chave de leitura de um MCP virtual — pertence ao servidor, não a um usuário. */
+/**
+ * Chave de leitura de um MCP virtual — pertence ao servidor, não a um usuário.
+ * Vale também na raiz (`/mcp`), que é o vMCP padrão da instalação. O esquema
+ * `psp_` do antigo MCP principal deixou de existir no `011`.
+ */
 export const VIRTUAL_KEY_SCHEME = 'psv';
-/** Chave de leitura gerenciada do MCP público principal (`MCP_PUBLIC_AUTH=managed`). */
-export const PUBLIC_KEY_SCHEME = 'psp';
 export const API_KEY_PREFIX_LENGTH = 8;
 
-export type ApiKeyScheme =
-  | typeof API_KEY_SCHEME
-  | typeof VIRTUAL_KEY_SCHEME
-  | typeof PUBLIC_KEY_SCHEME;
+export type ApiKeyScheme = typeof API_KEY_SCHEME | typeof VIRTUAL_KEY_SCHEME;
 
 export type GeneratedApiKey = {
   /** Texto completo, mostrado uma vez ao usuário. */

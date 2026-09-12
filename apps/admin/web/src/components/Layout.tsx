@@ -8,6 +8,7 @@ import {
   LogoutIcon,
   MoonIcon,
   ServerIcon,
+  SettingsIcon,
   StackIcon,
   SunIcon,
   UserIcon,
@@ -37,6 +38,11 @@ export function Layout({
     { to: '/mcps', label: 'MCPs virtuais', Icon: ServerIcon, end: false },
     ...(canManageUsers(user.role) && !user.legacy
       ? [{ to: '/users', label: 'Contas', Icon: UsersIcon, end: false }]
+      : []),
+    // A configuração é só de admin; a sessão de bootstrap também escolhe o
+    // MCP padrão, porque isso não cria conta nem invalida a sessão.
+    ...(canManageUsers(user.role)
+      ? [{ to: '/configuracoes', label: 'Configurações', Icon: SettingsIcon, end: false }]
       : []),
   ];
 

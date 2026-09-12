@@ -49,7 +49,8 @@ function startApp() {
     ],
     jsonLimit: '1mb',
     openCors: true,
-    info: { name: 'teste', version: '0.0.0', description: 'teste', requiresAuth: false },
+    info: { name: 'teste', version: '0.0.0', description: 'teste' },
+    describe: async () => ({ defaultMcp: { status: 'ok', slug: 'time-a' } }),
   });
 
   return new Promise<string>((resolve) => {
@@ -96,6 +97,18 @@ afterEach(() => {
   for (const controller of abortControllers.splice(0)) controller.abort();
   running?.close();
   running = undefined;
+});
+
+describe('GET /', () => {
+  it('anuncia os metadados fixos e o que `describe` calcula por requisição', async () => {
+    const base = await startApp();
+
+    const payload = await (await fetch(`${base}/`)).json();
+
+    expect(payload.name).toBe('teste');
+    expect(payload.transports).toBeDefined();
+    expect(payload.defaultMcp).toEqual({ status: 'ok', slug: 'time-a' });
+  });
 });
 
 describe('montagem sob /virtual/:slug', () => {

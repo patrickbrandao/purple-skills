@@ -42,6 +42,7 @@ import {
   requireAuth,
   requireDelete,
   requirePasswordChanged,
+  requireSettingsAdmin,
   requireVirtualMcpCreate,
   requireWrite,
   resolveUser,
@@ -570,33 +571,22 @@ api.delete(
   }),
 );
 
-// ------------------------------------------- chaves do MCP principal ---
+// ------------------------------------------------------- configuração ---
 
-// Só admin: uma chave do principal abre o catálogo público inteiro a quem a
-// tiver, e não há dono a quem delegar.
+// Só admin: o vMCP padrão é o que responde em /mcp para toda a instalação.
 api.get(
-  '/api/public-mcp/keys',
-  requireAdmin,
+  '/api/settings',
+  requireSettingsAdmin,
   route(async (_req, res) => {
-    res.json({ items: await mcps.listPublicKeys() });
+    res.json(await mcps.getSettings());
   }),
 );
 
-api.post(
-  '/api/public-mcp/keys',
-  requireAdmin,
+api.put(
+  '/api/settings/default-mcp',
+  requireSettingsAdmin,
   route(async (req, res) => {
-    // `token` aparece uma única vez, aqui.
-    res.status(201).json(await mcps.issuePublicKey(req.user!, (req.body as { name?: unknown })?.name));
-  }),
-);
-
-api.delete(
-  '/api/public-mcp/keys/:id',
-  requireAdmin,
-  route(async (req, res) => {
-    await mcps.revokePublicKey(req.user!, param(req, 'id'));
-    res.json({ revoked: true });
+    res.json(await mcps.setDefaultMcp(req.user!, (req.body as { uuid?: unknown })?.uuid));
   }),
 );
 

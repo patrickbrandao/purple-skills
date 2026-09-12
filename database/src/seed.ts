@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 /** Popula o banco com skills de exemplo — útil para demo/desenvolvimento. */
 import { closeDb } from './client.js';
-import { createSkill, getSkillSummary, setFile } from './queries.js';
+import {
+  createSkill,
+  createVirtualMcp,
+  getSkillSummary,
+  getVirtualMcp,
+  resolveDefaultVirtualMcp,
+  setDefaultVirtualMcp,
+  setFile,
+  setVirtualMcpSkills,
+} from './queries.js';
+
+/** Quem assina as linhas de auditoria do seed — não é uma conta. */
+const SEED_ACTOR = { userUuid: null, label: 'seed' };
 
 type Seed = {
   slug: string;
@@ -344,6 +356,51 @@ async function main() {
     }
 
     console.log(`[seed] criada: ${seed.slug}`);
+  }
+
+  await seedDefaultMcp();
+}
+
+/**
+ * O `/mcp` só responde quando há um vMCP padrão
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`), então a demo cria o `public`:
+ * aberto, sem dono, com as skills públicas de exemplo nas ferramentas. A
+ * privada fica de fora — é o que a demonstra. Se a instalação já escolheu um
+ * padrão, ele é respeitado.
+ */
+async function seedDefaultMcp() {
+  let mcp = await getVirtualMcp('public');
+  if (mcp) {
+    console.log('[seed] já existe: MCP virtual public');
+  } else {
+    mcp = await createVirtualMcp(
+      {
+        slug: 'public',
+        name: 'Public',
+        description: 'Catálogo público desta instalação, com as skills de exemplo.',
+        isOpen: true,
+        ownerUserUuid: null,
+      },
+      'web-admin',
+      SEED_ACTOR,
+    );
+    await setVirtualMcpSkills(
+      mcp.uuid,
+      SEEDS.filter((seed) => seed.isPublic).map((seed) => ({
+        slug: seed.slug,
+        asSkill: true,
+        asPrompt: false,
+        asResource: false,
+      })),
+      'web-admin',
+      SEED_ACTOR,
+    );
+    console.log('[seed] criado MCP virtual: public (aberto, com as skills públicas)');
+  }
+
+  if ((await resolveDefaultVirtualMcp()).status === 'none') {
+    await setDefaultVirtualMcp(mcp.uuid, 'web-admin', SEED_ACTOR);
+    console.log('[seed] MCP padrão: public');
   }
 }
 

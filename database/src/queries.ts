@@ -15,7 +15,6 @@ import {
   type AuditActor,
   type AuditEntry,
   type AuditSource,
-  type PublicMcpKeySummary,
   type Role,
   type SkillDetail,
   type SkillFileMeta,
@@ -1383,9 +1382,8 @@ export async function consumeResetToken(tokenHash: string): Promise<{ userUuid: 
  * congelado no momento do evento: sem ele a linha não diz sobre quem foi, já
  * que `skill_slug`/`file_path` são nulos e a conta pode nem existir mais.
  *
- * As chaves de MCP virtual (`mcp.key.*`) e as gerenciadas do MCP principal
- * (`public.key.*`) entram aqui pelo mesmo motivo: a emissão e a revogação são
- * do app, e o alvo é o nome da chave.
+ * As chaves de MCP virtual (`mcp.key.*`) entram aqui pelo mesmo motivo: a
+ * emissão e a revogação são do app, e o alvo é o nome da chave.
  */
 export async function recordAccountAudit(entry: {
   action:
@@ -1395,9 +1393,7 @@ export async function recordAccountAudit(entry: {
     | 'key.create'
     | 'key.revoke'
     | 'mcp.key.create'
-    | 'mcp.key.revoke'
-    | 'public.key.create'
-    | 'public.key.revoke';
+    | 'mcp.key.revoke';
   source: AuditSource;
   actor: AuditActor;
   targetLabel: string | null;
@@ -1488,6 +1484,104 @@ export async function healthCheck(): Promise<boolean> {
   }
 }
 
+// --------------------------------------------------------------- settings ---
+
+/**
+ * Chave de `settings` que guarda o uuid do vMCP padrão — o que responde em
+ * `/mcp` (`docs/09-mcp-padrao-e-skills-flutuantes.md`). Só o admin a altera.
+ */
+export const DEFAULT_MCP_SETTING = 'default_virtual_mcp';
+
+/**
+ * O que o mcp-public precisa saber para responder na raiz.
+ *
+ * As três recusas são distintas de propósito: quem configura um cliente
+ * precisa saber se falta escolher o padrão (`none`), se o vMCP escolhido foi
+ * apagado (`deleted`) ou se está desligado (`inactive`). `slug` acompanha só
+ * quando a linha ainda existe.
+ */
+export type DefaultMcpResolution =
+  | { status: 'ok'; mcp: VirtualMcpRuntime }
+  | { status: 'none' | 'deleted'; mcp: null; uuid: null; slug: null }
+  | { status: 'inactive'; mcp: null; uuid: string; slug: string };
+
+/**
+ * Resolve o vMCP padrão a cada requisição, sem cache, como `resolveVirtualMcp`:
+ * trocar o padrão, desligá-lo ou apagá-lo vale na chamada seguinte.
+ *
+ * O JOIN é por `uuid::text` porque o valor é texto sem FK: um valor torto ou
+ * pendurado é "removido", não erro do driver.
+ */
+export async function resolveDefaultVirtualMcp(): Promise<DefaultMcpResolution> {
+  const result = await db().execute(sql`
+    SELECT st.value, m.uuid, m.slug, m.name, m.description, m.is_open, m.is_active
+    FROM settings st
+    LEFT JOIN virtual_mcps m ON m.uuid::text = st.value
+    WHERE st.key = ${DEFAULT_MCP_SETTING}
+    LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+
+  if (!row || row.value === null || row.value === undefined) {
+    return { status: 'none', mcp: null, uuid: null, slug: null };
+  }
+  if (!row.uuid) return { status: 'deleted', mcp: null, uuid: null, slug: null };
+  if (!row.is_active) {
+    return { status: 'inactive', mcp: null, uuid: row.uuid as string, slug: row.slug as string };
+  }
+
+  return {
+    status: 'ok',
+    mcp: {
+      uuid: row.uuid,
+      slug: row.slug,
+      name: row.name,
+      description: row.description ?? '',
+      isOpen: Boolean(row.is_open),
+    },
+  };
+}
+
+/**
+ * Escolhe (ou limpa, com `null`) o vMCP padrão. Audita como `mcp.default`,
+ * com o slug novo — ou "nenhum" — em `target_label`. A checagem de papel é do
+ * app: só admin chega aqui.
+ *
+ * Aceita um vMCP desligado de propósito: o padrão não tem tratamento
+ * especial, e escolher um desligado só faz a raiz responder 404 até religar.
+ */
+export async function setDefaultVirtualMcp(
+  uuid: string | null,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<DefaultMcpResolution> {
+  let slug: string | null = null;
+  if (uuid !== null) {
+    const mcp = await getVirtualMcpByUuid(uuid);
+    if (!mcp) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+    slug = mcp.slug;
+  }
+
+  await db().transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO settings (key, value) VALUES (${DEFAULT_MCP_SETTING}, ${uuid})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'mcp.default',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: slug ?? 'nenhum',
+    });
+  });
+
+  return resolveDefaultVirtualMcp();
+}
+
 // ------------------------------------------------------------ MCP virtual ---
 
 // `m` é o servidor, `u` o dono. As três contagens são subconsultas porque a
@@ -1503,6 +1597,8 @@ const VIRTUAL_MCP_COLUMNS = sql`
     WHERE v.virtual_mcp_uuid = m.uuid AND NOT s.is_public)::int AS private_skill_count,
   (SELECT count(*) FROM virtual_mcp_keys k
     WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
+  (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
+    AS is_default,
   m.created_at, m.updated_at
 `;
 
@@ -1521,6 +1617,8 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     skillCount: Number(row.skill_count ?? 0),
     privateSkillCount: Number(row.private_skill_count ?? 0),
     activeKeyCount: Number(row.active_key_count ?? 0),
+    // NULL quando não há padrão configurado: `Boolean(null)` é `false`.
+    isDefault: Boolean(row.is_default),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -2077,131 +2175,6 @@ export async function getVirtualMcpKeyByPrefix(prefix: string): Promise<VirtualM
 export async function touchVirtualMcpKey(id: string): Promise<void> {
   if (!isUuid(id)) return;
   await db().execute(sql`UPDATE virtual_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
-}
-
-// --------------------------------------- chaves do MCP público principal ---
-//
-// Espelho das `psv_`, sem o servidor: o MCP principal é um só, e a tabela
-// inteira é dele (`docs/08-mcp-virtual.md` §7, `MCP_PUBLIC_AUTH=managed`).
-// Quem emite é só o admin — a checagem de papel é do app, a chave em si não
-// carrega papel nenhum.
-
-const PUBLIC_MCP_KEY_COLUMNS = sql`
-  id, name, prefix, created_by_user_uuid, last_used_at, revoked_at, created_at
-`;
-
-function toPublicMcpKeySummary(row: Row): PublicMcpKeySummary {
-  return {
-    id: row.id,
-    name: row.name,
-    prefix: row.prefix,
-    createdByUserUuid: row.created_by_user_uuid ?? null,
-    lastUsedAt: iso(row.last_used_at),
-    revokedAt: iso(row.revoked_at),
-    createdAt: new Date(row.created_at).toISOString(),
-  };
-}
-
-/** Inclui as revogadas: elas explicam as linhas de auditoria que produziram. */
-export async function listPublicMcpKeys(): Promise<PublicMcpKeySummary[]> {
-  const result = await db().execute(sql`
-    SELECT ${PUBLIC_MCP_KEY_COLUMNS}
-    FROM public_mcp_keys
-    ORDER BY created_at DESC
-  `);
-  return (result.rows as Row[]).map(toPublicMcpKeySummary);
-}
-
-/**
- * Grava a chave emitida. O segredo em texto **não** passa por aqui: quem o
- * gera e o mostra uma única vez é o app, com `generateApiKey('psp')` de shared.
- */
-export async function createPublicMcpKey(input: {
-  name: string;
-  prefix: string;
-  keyHash: string;
-  createdByUserUuid: string | null;
-}): Promise<PublicMcpKeySummary> {
-  const createdBy = ownerOrNull(input.createdByUserUuid ?? null);
-
-  const name = (input.name ?? '').trim();
-  if (!name) throw badRequest('O campo "name" é obrigatório');
-  if (!input.prefix?.trim() || !input.keyHash?.trim()) {
-    throw badRequest('Prefixo e hash da chave são obrigatórios');
-  }
-
-  try {
-    const result = await db().execute(sql`
-      INSERT INTO public_mcp_keys (name, prefix, key_hash, created_by_user_uuid)
-      VALUES (${name}, ${input.prefix.trim()}, ${input.keyHash}, ${createdBy})
-      RETURNING ${PUBLIC_MCP_KEY_COLUMNS}
-    `);
-    return toPublicMcpKeySummary((result.rows as Row[])[0]);
-  } catch (err) {
-    if (isUniqueViolation(err)) throw conflict('Prefixo de chave já em uso; tente novamente');
-    // Quem emite sumiu entre a sessão e a emissão: a chave é do servidor,
-    // então gravamos sem o emissor em vez de recusar.
-    if (isForeignKeyViolation(err)) {
-      return createPublicMcpKey({ ...input, createdByUserUuid: null });
-    }
-    throw err;
-  }
-}
-
-/**
- * Revoga. `false` quando não achou ou já estava revogada — idempotente,
- * nunca reescreve o `revoked_at` original. Sem dono para restringir: só o
- * admin chega aqui, e a checagem de papel é do app.
- */
-export async function revokePublicMcpKey(id: string): Promise<boolean> {
-  if (!isUuid(id)) return false;
-
-  const result = await db().execute(sql`
-    UPDATE public_mcp_keys SET revoked_at = now()
-    WHERE id = ${id}
-      AND revoked_at IS NULL
-    RETURNING id
-  `);
-  return (result.rows as Row[]).length > 0;
-}
-
-export type PublicMcpKeyRecord = {
-  id: string;
-  name: string;
-  prefix: string;
-  keyHash: string;
-  revokedAt: string | null;
-};
-
-/**
- * Primeiro passo da autenticação: acha a linha pelo prefixo público. A
- * conferência do segredo contra `keyHash` é do app (`verifyApiKeySecret`),
- * assim como recusar a chave se `revokedAt` não for nulo.
- */
-export async function getPublicMcpKeyByPrefix(prefix: string): Promise<PublicMcpKeyRecord | null> {
-  const wanted = (prefix ?? '').trim();
-  if (!wanted) return null;
-
-  const result = await db().execute(sql`
-    SELECT id, name, prefix, key_hash, revoked_at
-    FROM public_mcp_keys WHERE prefix = ${wanted} LIMIT 1
-  `);
-  const row = (result.rows as Row[])[0];
-  if (!row) return null;
-
-  return {
-    id: row.id,
-    name: row.name,
-    prefix: row.prefix,
-    keyHash: row.key_hash,
-    revokedAt: iso(row.revoked_at),
-  };
-}
-
-/** Marca o uso. Falha silenciosa de propósito: não é para derrubar a chamada. */
-export async function touchPublicMcpKey(id: string): Promise<void> {
-  if (!isUuid(id)) return;
-  await db().execute(sql`UPDATE public_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
 }
 
 // --------------------------------------------------------------- internos ---

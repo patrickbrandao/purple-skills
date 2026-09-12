@@ -246,28 +246,29 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
 
 ### 7.3 MCP público
 
-- Autenticação do servidor **principal** escolhida por `MCP_PUBLIC_AUTH`
-  ([`08-mcp-virtual.md`](08-mcp-virtual.md) §7):
-  - `open` → totalmente aberto, sem autenticação;
-  - `key` → exige `Authorization: Bearer <MCP_PUBLIC_KEY>`, comparação
-    case-sensitive em tempo constante (`safeEqual`), com a chave lida uma
-    única vez no boot;
-  - `managed` → aceita chaves `psp_` da tabela `public_mcp_keys` (emitidas só
-    por admin, revogáveis uma a uma) e também a `MCP_PUBLIC_KEY`, se definida.
-  - Ausente → `key` quando há `MCP_PUBLIC_KEY`, `open` quando não há: o
-    comportamento anterior, preservado para quem sobe de versão sem mexer no
-    `.env`.
+- **Não existe mais um servidor "principal" à parte**
+  ([`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md)).
+  O que responde em `/mcp` é o **MCP virtual escolhido como padrão** na
+  tabela `settings` (chave `default_virtual_mcp`), pelo painel ou pelo
+  mcp-admin, só por admin. Ele continua respondendo em `/virtual/<slug>/mcp`
+  e não tem tratamento especial: pode ser fechado, desligado ou apagado, e
+  nesses casos `/mcp` responde 404 dizendo a causa (nenhum padrão, removido,
+  desligado).
+- A autenticação de `/mcp` é a do próprio vMCP padrão: aberto quando
+  `is_open`, senão chave `psv_` dele. `MCP_PUBLIC_AUTH`, `MCP_PUBLIC_KEY` e
+  as chaves `psp_` de `public_mcp_keys` deixaram de existir no `011`; o
+  mcp-public recusa subir enquanto as variáveis estiverem definidas.
 - CORS totalmente aberto (`*`), pois o objetivo é ser consumido por
   qualquer agente externo.
 - **MCPs virtuais** (`/virtual/<slug>/mcp`, [`08-mcp-virtual.md`](08-mcp-virtual.md)):
   o mesmo processo monta, sob esse prefixo, um servidor de leitura por MCP
   virtual, com um recorte próprio do catálogo (inclusive skills privadas) e
   autenticação própria — chave `psv_` da tabela `virtual_mcp_keys`, ou
-  aberto quando `is_open`. `MCP_PUBLIC_KEY` **não** abre um virtual e uma
-  chave de virtual não abre o principal nem outro virtual. Sessões ficam
-  presas à identidade (MCP + chave) que as abriu, como no mcp-admin. Os
-  downloads de um virtual são servidos pelo próprio mcp-public, sob o mesmo
-  prefixo e com a mesma credencial.
+  aberto quando `is_open`. A chave de um virtual não abre outro. Sessões
+  ficam presas à identidade (MCP + chave) que as abriu, como no mcp-admin; a
+  raiz reusa a identidade do vMCP padrão. Os downloads são servidos pelo
+  próprio mcp-public, sob o prefixo por onde o servidor foi chamado (vazio na
+  raiz) e com a mesma credencial.
 
 ### 7.4 Padrão de secrets (env vars)
 
@@ -277,7 +278,6 @@ o arquivo se `<NOME>_FILE` estiver definido; senão usa `<NOME>` direto):
 - `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE` (bootstrap — §7.1)
 - `ADMIN_SESSION_SECRET` / `ADMIN_SESSION_SECRET_FILE`
 - `MCP_ADMIN_TOKEN` / `MCP_ADMIN_TOKEN_FILE`
-- `MCP_PUBLIC_KEY` / `MCP_PUBLIC_KEY_FILE`
 - `OIDC_CLIENT_SECRET` / `OIDC_CLIENT_SECRET_FILE`
 - `SMTP_URL` / `SMTP_URL_FILE`
 
@@ -331,24 +331,23 @@ de grupo do IdP. Os motivos estão na §5 de
 
 ### 8.1 MCP público (`apps/mcp-public`)
 
+- Todo ponto de montagem — `/mcp` (o vMCP padrão) e `/virtual/<slug>/mcp` —
+  serve o mesmo servidor: as cinco ferramentas e as superfícies de prompt e
+  resource, lendo pelo vínculo `virtual_mcp_skills` (flags `as_skill` /
+  `as_prompt` / `as_resource`). Nome `<MCP_SERVER_NAME>-<slug>` e instruções
+  com a descrição do vMCP.
 - `search_skills(query, tag?, limit?, offset?)` → lista de
-  `{ slug, name, description, tags, score }` (apenas skills públicas **com
-  `use_as_skill`** — as demais só saem por prompt/resource, se flagadas).
+  `{ slug, name, description, tags, score }` das skills vinculadas com
+  `as_skill`.
 - `get_skill(slug)` → conteúdo completo do SKILL.md + lista de arquivos
-  anexados. Incrementa `view_count`.
-- `download_skill(slug)` → retorna a **URL** de download do site
-  (`{SITE_BASE_URL}/skills/{slug}/download}`), construída a partir de uma
-  env var de base URL. Não gera o zip no próprio processo MCP; a
-  requisição HTTP real (feita por quem seguir o link) incrementa
-  `download_count` no site.
+  anexados. Incrementa `view_count` no vínculo e na skill.
+- `download_skill(slug)` → retorna a **URL** de download servida pelo próprio
+  mcp-public sob o prefixo do mount (`/skills/<slug>/download` na raiz,
+  `/virtual/<slug>/skills/<skill>/download` nos demais), atrás da mesma
+  credencial. Não gera o zip na chamada; a requisição HTTP real incrementa
+  `download_count`. A `url` da página do site só sai quando a skill é pública.
 - Suporte a todas as versões do protocolo MCP TypeScript SDK: SSE,
   Streamable HTTP e modo stateless.
-- Sob `/virtual/<slug>/`, as **mesmas cinco ferramentas** e as mesmas
-  superfícies de prompt e resource, lendo pelo vínculo `virtual_mcp_skills`
-  (flags `as_skill` / `as_prompt` / `as_resource`) em vez de
-  `is_public AND use_as_*`. `download_skill` e `get_skill_file` devolvem URLs
-  do próprio servidor (`/virtual/<slug>/skills/<skill>/download` e
-  `…/files/<path>`), e `url` da página só quando a skill é pública.
 
 ### 8.2 MCP administrativo (`apps/mcp-admin`)
 
@@ -373,8 +372,9 @@ CRUD completo, espelhando o painel administrativo:
   `create_virtual_mcp_key(slug, name)`, `revoke_virtual_mcp_key(slug, key_id)`.
   Alcance por dono: o token global e as chaves de admin administram qualquer
   um; a chave de um usuário, os MCPs de que ele é dono.
-- Chaves do MCP principal (`08` §7, só admin): `list_public_mcp_keys()`,
-  `create_public_mcp_key(name)`, `revoke_public_mcp_key(key_id)`.
+- MCP padrão ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §3.6):
+  `get_default_virtual_mcp()` e `set_default_virtual_mcp(slug | null)`, o
+  segundo só admin.
 
 ## 9. Download de pacotes
 
@@ -449,3 +449,9 @@ virtual aberto (`is_open`) com skill privada dentro é publicação de fato,
 protegida só pela confirmação explícita; a diferença 404/401 sob `/virtual/`
 permite enumerar os slugs dos MCPs; e o virtual é a primeira entidade com dono
 — a exceção ao "papel limita a ação, não o escopo" da `§7.1`, restrita a ele.
+
+**Riscos introduzidos pelo MCP padrão** ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §5):
+o vMCP `public` criado na migração nasce aberto, e quem protegia o principal
+com `MCP_PUBLIC_KEY` é avisado só pela trava de boot; trocar o padrão derruba
+as sessões abertas na raiz até reconectar; e até o PR2 `is_public` e
+`use_as_*` existem sem efeito em MCP nenhum.

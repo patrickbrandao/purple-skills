@@ -1,24 +1,23 @@
 import {
   AppError,
   badRequest,
-  createPublicMcpKey,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
   getSkillSummary,
   getVirtualMcp,
-  listPublicMcpKeys,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
   recordAccountAudit,
-  revokePublicMcpKey,
+  resolveDefaultVirtualMcp,
   revokeVirtualMcpKey,
+  setDefaultVirtualMcp,
   setVirtualMcpSkills,
   updateVirtualMcp,
+  type DefaultMcpResolution,
 } from '@purple-skills/db';
 import {
-  PUBLIC_KEY_SCHEME,
   VIRTUAL_KEY_SCHEME,
   canCreateVirtualMcp,
   canManageVirtualMcp,
@@ -51,6 +50,7 @@ const view = (mcp: VirtualMcpDetail) => ({
   description: mcp.description,
   isActive: mcp.isActive,
   isOpen: mcp.isOpen,
+  isDefault: mcp.isDefault,
   owner: mcp.ownerEmail,
   path: `/virtual/${mcp.slug}/mcp`,
   skills: mcp.skills.map((skill) => ({
@@ -77,11 +77,11 @@ export function createMcpHandlers(caller: Caller) {
   const actor = caller.actor;
   const userUuid = actor.userUuid;
 
-  /** Chaves do principal são só de admin: abrem o catálogo público inteiro. */
-  const denyPublicKeys = (): ToolResult | null =>
+  /** O MCP padrão responde em /mcp para a instalação inteira: só admin escolhe. */
+  const denySettings = (): ToolResult | null =>
     caller.role === 'admin'
       ? null
-      : fail(`As chaves do MCP principal exigem papel "admin"; sua credencial é "${caller.role}".`);
+      : fail(`Escolher o MCP padrão exige papel "admin"; sua credencial é "${caller.role}".`);
 
   async function managed(slug: string): Promise<VirtualMcpDetail> {
     const mcp = await getVirtualMcp(slug);
@@ -115,6 +115,7 @@ export function createMcpHandlers(caller: Caller) {
           name: mcp.name,
           isActive: mcp.isActive,
           isOpen: mcp.isOpen,
+          isDefault: mcp.isDefault,
           owner: mcp.ownerEmail,
           skills: mcp.skillCount,
           privateSkills: mcp.privateSkillCount,
@@ -300,72 +301,63 @@ export function createMcpHandlers(caller: Caller) {
       return text(`Chave ${args.key_id} revogada.`);
     },
 
-    // --------------------------------------- chaves do MCP principal ---
+    // ------------------------------------------------------- MCP padrão ---
 
-    async list_public_mcp_keys(): Promise<ToolResult> {
-      const denied = denyPublicKeys();
-      if (denied) return denied;
-
-      const keys = await listPublicMcpKeys();
-      return asJson({
-        keys: keys.map((key) => ({
-          id: key.id,
-          name: key.name,
-          prefix: `psp_${key.prefix}_…`,
-          lastUsedAt: key.lastUsedAt,
-          revokedAt: key.revokedAt,
-          createdAt: key.createdAt,
-        })),
-        hint: 'Valem só com MCP_PUBLIC_AUTH=managed no mcp-public.',
-      });
+    async get_default_virtual_mcp(): Promise<ToolResult> {
+      return asJson(defaultView(await resolveDefaultVirtualMcp()));
     },
 
-    /** O texto completo da chave só existe nesta resposta. */
-    async create_public_mcp_key(args: { name: string }): Promise<ToolResult> {
-      const denied = denyPublicKeys();
+    /**
+     * Escolhe o vMCP que responde em /mcp, ou limpa com slug nulo. Sem guarda
+     * além do papel: o padrão não tem tratamento especial, e escolher um
+     * desligado ou fechado é permitido — a raiz responde de acordo.
+     */
+    async set_default_virtual_mcp(args: { slug: string | null }): Promise<ToolResult> {
+      const denied = denySettings();
       if (denied) return denied;
 
-      const name = (args.name ?? '').trim();
-      if (!name) throw badRequest('Dê um nome à chave (ex.: "agentes do time X")');
+      let uuid: string | null = null;
+      if (args.slug !== null) {
+        const mcp = await getVirtualMcp(args.slug);
+        if (!mcp) throw notFound(`MCP virtual não encontrado: "${args.slug}"`);
+        uuid = mcp.uuid;
+      }
 
-      const generated = generateApiKey(PUBLIC_KEY_SCHEME);
-      const key = await createPublicMcpKey({
-        name,
-        prefix: generated.prefix,
-        keyHash: generated.keyHash,
-        createdByUserUuid: userUuid,
-      });
-      await recordAccountAudit({
-        action: 'public.key.create',
-        source: SOURCE,
-        actor,
-        targetLabel: name,
-      });
-
-      return asJson({
-        id: key.id,
-        name: key.name,
-        token: generated.token,
-        warning: 'Guarde agora: o token não volta a aparecer.',
-        usage: `Authorization: Bearer ${generated.token} em /mcp, com MCP_PUBLIC_AUTH=managed`,
-      });
+      const resolved = await setDefaultVirtualMcp(uuid, SOURCE, actor);
+      return text(
+        resolved.status === 'ok'
+          ? `/mcp agora responde pelo MCP virtual "${resolved.mcp.slug}" (${
+              resolved.mcp.isOpen ? 'aberto' : 'exige chave psv_'
+            }).`
+          : resolved.status === 'inactive'
+            ? `/mcp aponta para "${resolved.slug}", que está desligado: responde 404 até religar.`
+            : 'Nenhum MCP padrão: /mcp responde 404.',
+      );
     },
+  };
+}
 
-    async revoke_public_mcp_key(args: { key_id: string }): Promise<ToolResult> {
-      const denied = denyPublicKeys();
-      if (denied) return denied;
-
-      const revoked = await revokePublicMcpKey(args.key_id);
-      if (!revoked) return fail('Chave não encontrada, ou já revogada.');
-
-      await recordAccountAudit({
-        action: 'public.key.revoke',
-        source: SOURCE,
-        actor,
-        targetLabel: args.key_id,
-      });
-      return text(`Chave ${args.key_id} do MCP principal revogada.`);
-    },
+/** O que `get_default_virtual_mcp` devolve: qual vMCP responde em /mcp, ou por que nenhum. */
+function defaultView(resolved: DefaultMcpResolution) {
+  if (resolved.status === 'ok') {
+    return {
+      status: 'ok',
+      slug: resolved.mcp.slug,
+      name: resolved.mcp.name,
+      auth: resolved.mcp.isOpen ? 'open' : 'key',
+      path: '/mcp',
+      alsoAt: `/virtual/${resolved.mcp.slug}/mcp`,
+    };
+  }
+  return {
+    status: resolved.status,
+    slug: resolved.slug,
+    hint:
+      resolved.status === 'inactive'
+        ? 'O MCP padrão está desligado: /mcp responde 404 até religar (update_virtual_mcp is_active=true) ou escolher outro.'
+        : resolved.status === 'deleted'
+          ? 'O MCP padrão foi removido: /mcp responde 404 até set_default_virtual_mcp escolher outro.'
+          : 'Nenhum MCP padrão: /mcp responde 404 até set_default_virtual_mcp escolher um.',
   };
 }
 

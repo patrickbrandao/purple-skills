@@ -1,27 +1,26 @@
 import {
   AppError,
   badRequest,
-  createPublicMcpKey,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
   getVirtualMcp,
-  listPublicMcpKeys,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
   recordAccountAudit,
-  revokePublicMcpKey,
+  resolveDefaultVirtualMcp,
   revokeVirtualMcpKey,
+  setDefaultVirtualMcp,
   setVirtualMcpSkills,
   updateVirtualMcp,
+  type DefaultMcpResolution,
 } from '@purple-skills/db';
 import {
-  PUBLIC_KEY_SCHEME,
   VIRTUAL_KEY_SCHEME,
   canManageVirtualMcp,
   generateApiKey,
-  type PublicMcpKeySummary,
+  type InstallationSettings,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
   type VirtualMcpSkillInput,
@@ -228,48 +227,46 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
   });
 }
 
-// ------------------------------------------- chaves do MCP principal ---
+// ---------------------------------------------------- configuração ---
 
 /**
- * Chaves `psp_` do MCP público principal (`docs/08-mcp-virtual.md` §7). Só
- * valem quando o mcp-public roda com `MCP_PUBLIC_AUTH=managed`; as rotas são
- * de admin, e o painel não sabe o modo do mcp-public — o card avisa.
+ * A configuração da instalação (`docs/09-mcp-padrao-e-skills-flutuantes.md`):
+ * qual vMCP responde em `/mcp`, ou por que nenhum. Só admin lê e altera —
+ * a checagem é da rota.
  */
-export const listPublicKeys = (): Promise<PublicMcpKeySummary[]> => listPublicMcpKeys();
-
-export async function issuePublicKey(
-  user: AuthUser,
-  rawName: unknown,
-): Promise<{ key: PublicMcpKeySummary; token: string }> {
-  const name = String(rawName ?? '').trim();
-  if (!name) throw badRequest('Dê um nome à chave (ex.: "agentes do time X")');
-
-  const generated = generateApiKey(PUBLIC_KEY_SCHEME);
-  const key = await createPublicMcpKey({
-    name,
-    prefix: generated.prefix,
-    keyHash: generated.keyHash,
-    createdByUserUuid: user.uuid,
-  });
-
-  await recordAccountAudit({
-    action: 'public.key.create',
-    source: SOURCE,
-    actor: actorOf(user),
-    targetLabel: name,
-  });
-
-  return { key, token: generated.token };
+function settingsView(resolved: DefaultMcpResolution): InstallationSettings {
+  if (resolved.status === 'ok') {
+    return {
+      defaultMcp: {
+        status: 'ok',
+        uuid: resolved.mcp.uuid,
+        slug: resolved.mcp.slug,
+        name: resolved.mcp.name,
+        isOpen: resolved.mcp.isOpen,
+      },
+    };
+  }
+  if (resolved.status === 'inactive') {
+    return {
+      defaultMcp: { status: 'inactive', uuid: resolved.uuid, slug: resolved.slug, name: null, isOpen: null },
+    };
+  }
+  return { defaultMcp: { status: resolved.status, uuid: null, slug: null, name: null, isOpen: null } };
 }
 
-export async function revokePublicKey(user: AuthUser, id: string): Promise<void> {
-  const revoked = await revokePublicMcpKey(id);
-  if (!revoked) throw notFound('Chave não encontrada ou já revogada');
+export async function getSettings(): Promise<InstallationSettings> {
+  return settingsView(await resolveDefaultVirtualMcp());
+}
 
-  await recordAccountAudit({
-    action: 'public.key.revoke',
-    source: SOURCE,
-    actor: actorOf(user),
-    targetLabel: id,
-  });
+/**
+ * Escolhe o vMCP padrão pelo uuid, ou limpa com `null`. Nenhuma outra guarda:
+ * o padrão não tem tratamento especial, e um vMCP desligado ou fechado pode
+ * ser escolhido — a raiz responde 404 ou exige chave conforme ele estiver.
+ */
+export async function setDefaultMcp(user: AuthUser, rawUuid: unknown): Promise<InstallationSettings> {
+  if (rawUuid !== null && typeof rawUuid !== 'string') {
+    throw badRequest('uuid precisa ser o uuid de um MCP virtual, ou null para nenhum');
+  }
+  const uuid = rawUuid === null ? null : rawUuid.trim() || null;
+  return settingsView(await setDefaultVirtualMcp(uuid, SOURCE, actorOf(user)));
 }

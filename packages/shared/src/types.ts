@@ -71,9 +71,13 @@ export type AuditAction =
   | 'mcp.create'
   | 'mcp.update'
   | 'mcp.delete'
+  // A troca do vMCP padrão (`docs/09-mcp-padrao-e-skills-flutuantes.md`);
+  // `target_label` é o slug novo, ou "nenhum".
+  | 'mcp.default'
   | 'mcp.key.create'
   | 'mcp.key.revoke'
-  // Chaves gerenciadas do MCP público principal (`08` §7); só admin as emite.
+  // Chaves `psp_` do antigo MCP principal. Nada mais as produz desde o `011`;
+  // ficam no tipo porque a trilha ainda carrega linhas com elas.
   | 'public.key.create'
   | 'public.key.revoke';
 
@@ -161,6 +165,8 @@ export type VirtualMcpSummary = {
   /** Quantas das vinculadas são privadas — o painel avisa quando `isOpen`. */
   privateSkillCount: number;
   activeKeyCount: number;
+  /** É o vMCP que responde em `/mcp` (`settings.default_virtual_mcp`). */
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -196,24 +202,21 @@ export type VirtualMcpRef = {
   name: string;
 };
 
+/**
+ * A configuração da instalação, como o painel a vê
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`). Por ora, só o vMCP padrão:
+ * qual responde em `/mcp`, ou por que nenhum responde.
+ */
+export type InstallationSettings = {
+  defaultMcp:
+    | { status: 'ok'; uuid: string; slug: string; name: string; isOpen: boolean }
+    | { status: 'inactive'; uuid: string; slug: string; name: null; isOpen: null }
+    | { status: 'none' | 'deleted'; uuid: null; slug: null; name: null; isOpen: null };
+};
+
 export type VirtualMcpKeySummary = {
   id: string;
   virtualMcpUuid: string;
-  name: string;
-  prefix: string;
-  createdByUserUuid: string | null;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-  createdAt: string;
-};
-
-/**
- * Chave `psp_` do MCP público principal, válida só com
- * `MCP_PUBLIC_AUTH=managed` no mcp-public. Não pertence a um usuário: quem
- * emitiu é informativo.
- */
-export type PublicMcpKeySummary = {
-  id: string;
   name: string;
   prefix: string;
   createdByUserUuid: string | null;

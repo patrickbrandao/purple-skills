@@ -10,6 +10,7 @@ import {
   readFile,
   getSkillDetail,
   healthCheck,
+  resolveDefaultVirtualMcp,
 } from '@purple-skills/db';
 import {
   composeSkillMd,
@@ -64,6 +65,26 @@ api.get(
   }),
 );
 
+/**
+ * O MCP público é o vMCP padrão da instalação
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`): o site diz qual é, se exige
+ * chave e, quando não há nenhum em pé, por quê — em vez de anunciar um
+ * endereço que responde 404. Resolvido a cada chamada, como no mcp-public.
+ */
+async function mcpPublico() {
+  const resolved = await resolveDefaultVirtualMcp();
+  if (resolved.status === 'ok') {
+    return {
+      status: 'ok' as const,
+      slug: resolved.mcp.slug,
+      name: resolved.mcp.name,
+      description: resolved.mcp.description,
+      requiresKey: !resolved.mcp.isOpen,
+    };
+  }
+  return { status: resolved.status, slug: resolved.slug, name: null, description: null, requiresKey: null };
+}
+
 api.get(
   '/api/meta',
   asyncRoute(async (_req, res) => {
@@ -72,6 +93,7 @@ api.get(
       tagline: config.siteTagline,
       baseUrl: config.siteBaseUrl,
       mcpUrl: config.mcpPublicUrl || null,
+      mcp: await mcpPublico(),
       mcpAdminUrl: config.mcpAdminUrl || null,
       adminUrl: config.adminUrl || null,
     });

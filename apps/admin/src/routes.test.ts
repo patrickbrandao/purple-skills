@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { requireAdmin, requireDelete, requireVirtualMcpCreate, requireWrite } = await import('./auth.js');
+const { requireAdmin, requireDelete, requireSettingsAdmin, requireVirtualMcpCreate, requireWrite } =
+  await import('./auth.js');
 const { api } = await import('./api.js');
 
 /**
@@ -33,12 +34,16 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/users'],
     ['patch', '/api/users/:uuid'],
     ['post', '/api/users/:uuid/reset-password'],
-    // Uma chave do principal abre o catálogo público inteiro: só admin.
-    ['get', '/api/public-mcp/keys'],
-    ['post', '/api/public-mcp/keys'],
-    ['delete', '/api/public-mcp/keys/:id'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireAdmin);
+  });
+
+  // O vMCP padrão responde em /mcp para a instalação inteira: só admin escolhe.
+  it.each([
+    ['get', '/api/settings'],
+    ['put', '/api/settings/default-mcp'],
+  ])('%s %s exige admin', (method, path) => {
+    expect(handlers(method, path)).toContain(requireSettingsAdmin);
   });
 
   it.each([

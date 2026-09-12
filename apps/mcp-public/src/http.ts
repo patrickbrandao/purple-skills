@@ -56,16 +56,18 @@ export type McpHttpOptions = {
    * recebe o `.zip` em base64 do `set_files_bulk`.
    */
   jsonLimit: string;
-  /** Metadados expostos em `GET /`. */
+  /** Metadados fixos expostos em `GET /`. */
   info: {
     name: string;
     version: string;
     description: string;
-    /** `true` quando o servidor principal exige Bearer token. */
-    requiresAuth: boolean;
-    /** O modo de `MCP_PUBLIC_AUTH` — quem configura um cliente sabe o que mandar. */
-    auth?: 'open' | 'key' | 'managed';
   };
+  /**
+   * Metadados **por requisição** de `GET /`, mesclados aos fixos: é por aqui
+   * que a raiz anuncia qual vMCP responde nela — ou por que nenhum. Uma falha
+   * aqui devolve só os fixos.
+   */
+  describe?: () => Promise<Record<string, unknown>>;
   /** CORS aberto (MCP público) ou restrito (MCP admin). */
   openCors: boolean;
 };
@@ -157,7 +159,15 @@ export function createHttpApp(options: McpHttpOptions): Express {
   });
 
   app.get('/', (_req, res) => {
-    res.json({ ...options.info, transports: TRANSPORTS });
+    const fixed = { ...options.info, transports: TRANSPORTS };
+    if (!options.describe) {
+      res.json(fixed);
+      return;
+    }
+    options
+      .describe()
+      .then((extra) => res.json({ ...fixed, ...extra }))
+      .catch(() => res.json(fixed));
   });
 
   for (const mount of options.mounts) {

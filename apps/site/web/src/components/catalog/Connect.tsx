@@ -35,7 +35,18 @@ export function Connect() {
   // vazio: a configuração continua servindo de modelo para copiar e ajustar.
   const publicUrl = meta?.mcpUrl ?? 'https://mcp.seu-dominio.dev/mcp';
 
-  const config = { mcpServers: { 'purple-skills': { type: 'http', url: publicUrl } } };
+  // O MCP público é o MCP virtual padrão: se ele exige chave, o snippet já
+  // traz o header, com um placeholder para a chave psv_ que o dono emite.
+  const requiresKey = meta?.mcp.status === 'ok' && meta.mcp.requiresKey;
+  const config = {
+    mcpServers: {
+      'purple-skills': {
+        type: 'http',
+        url: publicUrl,
+        ...(requiresKey ? { headers: { Authorization: 'Bearer SUA_CHAVE_PSV' } } : {}),
+      },
+    },
+  };
 
   const json = JSON.stringify(config, null, 4);
 
@@ -50,6 +61,8 @@ export function Connect() {
             Cole o bloco abaixo no arquivo de configuração MCP do seu agente. O servidor público é
             só de leitura e serve para consumir o catálogo: o agente busca skills e lê o SKILL.md
             sozinho.
+            {requiresKey &&
+              ' Este servidor exige uma chave: troque o placeholder pela chave psv_ que o administrador emitiu para você.'}
           </p>
         </div>
 
