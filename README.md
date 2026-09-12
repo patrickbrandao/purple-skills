@@ -393,7 +393,7 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `MCP_PUBLIC_AUTH` | não | `open`, `key` ou `managed` para o MCP público **principal**; vazio = `key` com `MCP_PUBLIC_KEY`, `open` sem |
 | `MCP_PUBLIC_KEY` / `_FILE` | com `key` | A chave dos modos `key` e `managed` (não abre os virtuais) |
 | `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
-| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é também a base dos MCPs virtuais no painel e nas URLs de download do mcp-public |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP principal, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
 | `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
