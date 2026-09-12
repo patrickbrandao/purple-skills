@@ -184,36 +184,37 @@ Exemplo de configuração em um cliente MCP:
 }
 ```
 
-### Por onde cada skill é publicada
+### Onde uma skill é exibida
 
-`is_public` é o **interruptor global**: com ela desligada a skill não aparece
-no site, na API REST nem em superfície nenhuma do MCP público. Com ela ligada,
-três flags independentes dizem por quais superfícies do protocolo a skill sai —
-qualquer combinação vale, inclusive nenhuma:
+Uma skill é **flutuante**: existe no catálogo e só é exibida — no site e nos
+servidores MCP — onde estiver **vinculada a um MCP virtual**. Não há mais
+"pública" ou "privada": o site lista o que está em ao menos um MCP virtual
+**aberto e ligado**, e uma skill sem vínculo fica visível só no painel. Cada
+vínculo escolhe por quais portas a skill sai **naquele servidor**:
 
-| Flag | Padrão | Como aparece no cliente |
-|------|--------|-------------------------|
-| `use_as_skill` | **ligada** | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags`. Desligada, some das cinco |
-| `use_as_prompt` | desligada | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
-| `use_as_resource` | desligada | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
+| Porta | O que faz |
+|-------|-----------|
+| `skill` | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags` |
+| `prompt` | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
+| `resource` | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
 
-As três superfícies **contam acesso** (`view_count`). Numa skill privada as
-flags ficam guardadas e nada aparece; uma skill fora de uma superfície responde
-por ela o mesmo "não encontrada" de um slug inexistente. As listas de prompts e
-resources são montadas por requisição, então publicar uma skill a faz aparecer
-sem reiniciar o servidor nem reabrir a sessão; não há `listChanged`, o cliente
-re-lista quando quiser.
+As três portas **contam acesso** (`view_count`), no vínculo e no total da
+skill. Uma skill fora de uma porta responde por ela o mesmo "não encontrada"
+de um slug inexistente. As listas de prompts e resources são montadas por
+requisição, então vincular uma skill a faz aparecer sem reiniciar o servidor
+nem reabrir a sessão; não há `listChanged`, o cliente re-lista quando quiser.
 
-Desligar `use_as_skill` não tira a skill do site nem da API REST: ela continua
-com página, `.zip` e tudo mais — só sai do alcance da busca do agente. O
-desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
-[`docs/07-superficie-de-ferramentas.md`](docs/07-superficie-de-ferramentas.md).
+O vínculo se faz pelos dois lados: na página da skill ("Publicada em") ou na
+do MCP virtual, e por `link_skill` / `set_virtual_mcp_skills` no mcp-admin.
+Publicar em um MCP virtual exige administrá-lo — o dono ou um admin. O
+desenho está em
+[`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
 ### Ferramentas do MCP público
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills públicas com `use_as_skill` |
+| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills vinculadas ao servidor como `skill` |
 | `get_skill(slug)` | SKILL.md completo + metadados. **Conta um acesso** |
 | `get_skill_file(slug, path)` | Lê um arquivo auxiliar da skill |
 | `download_skill(slug)` | Devolve a URL do pacote `.zip` |
@@ -243,19 +244,20 @@ desenho está em
 Um **MCP virtual** é um recorte do catálogo servido pelo mesmo mcp-public em
 `/virtual/<slug>/mcp` (e `/mcp/stateless`, `/sse` + `/messages`), com
 endereço, chaves e dono próprios. Serve para um time ou projeto conectar o
-agente só às skills que lhe interessam — **inclusive skills privadas**, que
-não aparecem no site. Um deles é o **padrão**, e responde também em `/mcp`.
+agente só às skills que lhe interessam — inclusive skills que não estão em
+nenhum servidor aberto, e por isso não aparecem no site. Um deles é o
+**padrão**, e responde também em `/mcp`.
 
 - Cria quem é `editor` ou `admin`, no painel (seção "MCPs virtuais") ou pelo
   MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
   nele, ninguém mais. Admin transfere o dono.
 - Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
-  prompt, resource) **naquele servidor**. As flags `use_as_*` da skill não
-  valem em MCP nenhum e saem no próximo PR, junto com `is_public`.
+  prompt, resource) **naquele servidor**. Vincular é o único jeito de uma
+  skill ser exibida.
 - O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a chave de
   um virtual não abre outro.
-  Um MCP pode ser marcado **aberto** (sem chave) — com skill privada dentro,
-  isso a torna pública naquele endereço, e o sistema pede confirmação.
+  Um MCP pode ser marcado **aberto** (sem chave): aberto é público — o site o
+  lista, com suas skills.
 - `download_skill` e os arquivos binários apontam para o próprio servidor,
   atrás da mesma chave. Cada MCP tem contadores próprios por skill; o total da
   skill também soma.
@@ -286,18 +288,18 @@ e `delete_skill` exige `admin`.
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `list_skills(includePrivate?, query?, tag?, limit?, offset?)` | Lista tudo, inclusive privadas |
+| `list_skills(query?, tag?, limit?, offset?)` | Lista tudo, inclusive skills sem vínculo, cada uma com `mcps` |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?, use_as_skill?, use_as_prompt?, use_as_resource?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?, use_as_skill?, use_as_prompt?, use_as_resource?})` | Edita metadados — é por aqui que muda o frontmatter e as três flags de publicação |
-| `set_visibility(slug, "public" \| "private")` | Publica/despublica |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, mcps?)` | Cria a skill e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial administra). `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados — é por aqui que muda o frontmatter |
+| `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill; a permissão é a do MCP virtual |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`) |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
 | `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
-| `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}], confirm_open?)` | Substitui a lista inteira de skills do MCP virtual |
+| `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
 | `get_default_virtual_mcp()` / `set_default_virtual_mcp(slug \| null)` | Qual MCP virtual responde em `/mcp`; escolher é só admin |
 
@@ -306,7 +308,8 @@ e `delete_skill` exige `admin`.
 A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
 
 ```
-GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (só públicas)
+GET  /api/mcps                                  MCPs virtuais abertos, com endereço
+GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (o que está em MCP virtual aberto)
 GET  /api/skills/:slug                          detalhe + corpo do SKILL.md (conta acesso)
 GET  /api/skills/:slug/files/<caminho>          arquivo avulso
 GET  /api/tags                                  tags com contagem
@@ -354,7 +357,7 @@ a ser sempre por e-mail e senha.
 
 | Ação | admin | editor | leitor |
 |------|:-----:|:------:|:------:|
-| Ver skills, inclusive privadas | ✅ | ✅ | ✅ |
+| Ver skills, inclusive sem vínculo | ✅ | ✅ | ✅ |
 | Criar / editar skill e arquivos | ✅ | ✅ | ❌ |
 | Publicar / despublicar | ✅ | ✅ | ❌ |
 | Apagar skill | ✅ | ❌ | ❌ |
@@ -375,8 +378,9 @@ o escopo.
   `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` e registre no provedor o
   `redirect_uri` `<ADMIN_PUBLIC_URL>/api/auth/oidc/callback`. **Defina
   `OIDC_ALLOWED_DOMAINS`**: com a lista vazia, o auto-provisionamento fica
-  desligado de propósito — um `leitor` enxerga as skills privadas, e sem
-  allowlist qualquer conta do provedor entraria.
+  desligado de propósito — um `leitor` enxerga o catálogo inteiro, inclusive
+  o que não está em servidor aberto nenhum, e sem allowlist qualquer conta do
+  provedor entraria.
 - **Redefinição de senha por e-mail** exige `SMTP_URL` + `SMTP_FROM`. Sem SMTP
   o painel continua completo: o administrador gera uma senha temporária, e a
   pessoa é obrigada a trocá-la no primeiro acesso.
@@ -433,8 +437,9 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 - Busca vetorial deixada para uma versão futura.
 - Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
   no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.
-- Um MCP virtual aberto com skill privada dentro é publicação: o painel e a
-  tool pedem confirmação, e só.
+- Um MCP virtual aberto é público: o site o lista, com suas skills, sem
+  confirmação. Endereço obscuro nunca foi proteção; quem não quer aparecer
+  fecha o servidor e emite chaves.
 
 ## Licença
 

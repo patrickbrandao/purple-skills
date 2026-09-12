@@ -15,15 +15,17 @@ import {
   type AuditActor,
   type AuditEntry,
   type AuditSource,
+  type PublicVirtualMcp,
   type Role,
   type SkillDetail,
   type SkillFileMeta,
+  type SkillLinkInput,
+  type SkillMcpRef,
   type SkillSummary,
   type SearchResult,
   type UserSummary,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
-  type VirtualMcpRef,
   type VirtualMcpSkill,
   type VirtualMcpSkillInput,
   type VirtualMcpSummary,
@@ -47,54 +49,56 @@ export type SortOrder = 'score' | 'recent' | 'name' | 'relevance';
 /**
  * Recorte de um MCP virtual (`docs/08-mcp-virtual.md` §3.2): a leitura passa
  * a enxergar só as skills **vinculadas** a ele e ligadas na superfície pedida
- * (`as_skill`, `as_prompt` ou `as_resource` do vínculo).
- *
- * Quando presente, `includePrivate` e `onlyAsSkill` são ignorados: skill
- * privada vinculada entra, e as flags `use_as_*` da skill não contam — elas
- * valem só para o MCP principal. Quem decide é o vínculo.
+ * (`as_skill`, `as_prompt` ou `as_resource` do vínculo). Quando presente,
+ * `visibility` é ignorada: quem decide é o vínculo.
  */
 export type VirtualScope = { uuid: string; surface: VirtualSurface };
+
+/**
+ * O que uma leitura enxerga (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.2).
+ *
+ * `'open'` — o padrão, e o que o site e a API REST mostram: só skills
+ * vinculadas a ao menos um vMCP **aberto e ligado**. `'all'` — o catálogo
+ * inteiro, inclusive skills flutuantes (sem vínculo): painel e mcp-admin.
+ * O padrão é o restritivo de propósito: um chamador que esquece a opção
+ * mostra de menos, nunca de mais.
+ */
+export type SkillVisibility = 'open' | 'all';
 
 export type ListOptions = {
   query?: string | null;
   tag?: string | null;
   limit?: number;
   offset?: number;
-  includePrivate?: boolean;
   /**
-   * Restringe a leitura às skills que saem pela superfície de ferramentas do
-   * MCP público (`use_as_skill`). Quem passa `true` é só o `apps/mcp-public`:
-   * site, painel e MCP administrativo não passam nada e continuam enxergando
-   * tudo.
-   *
-   * O filtro mora no SQL, e não no app, porque duas das respostas não têm
-   * conserto depois da consulta: o `total` de `listSkills` é um `count(*)`
-   * sobre o mesmo `WHERE` da página — descartar linhas em JavaScript deixaria
-   * a paginação mentindo — e a contagem por tag de `listTags` é um `GROUP BY`,
-   * que o app não tem como decrementar sem refazer a consulta.
+   * Mora no SQL, e não no app, porque duas das respostas não têm conserto
+   * depois da consulta: o `total` de `listSkills` é um `count(*)` sobre o
+   * mesmo `WHERE` da página — descartar linhas em JavaScript deixaria a
+   * paginação mentindo — e a contagem por tag de `listTags` é um `GROUP BY`.
    */
-  onlyAsSkill?: boolean;
-  /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe as duas opções acima. */
+  visibility?: SkillVisibility;
+  /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe `visibility`. */
   virtualMcp?: VirtualScope;
   sort?: SortOrder;
 };
 
 /** As chaves de `ListOptions` que também valem ao ler uma skill só, ou as tags. */
-type ReadOptions = Pick<ListOptions, 'includePrivate' | 'onlyAsSkill' | 'virtualMcp'>;
+type ReadOptions = Pick<ListOptions, 'visibility' | 'virtualMcp'>;
+
+/** Vínculo com um vMCP aberto e ligado — a regra do site, em SQL. */
+const OPEN_LINK_EXISTS = sql`EXISTS (
+  SELECT 1 FROM virtual_mcp_skills v
+  JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+  WHERE v.skill_uuid = s.uuid AND m.is_open AND m.is_active
+)`;
 
 /**
  * A cláusula de visibilidade que `listSkills`, `getSkillSummary` e `listTags`
- * compartilham. Mora no SQL pelo mesmo motivo de `onlyAsSkill`: o `total` da
- * página e a contagem por tag não têm conserto depois da consulta.
- *
- * Com `virtualMcp`, a cláusula vira um `EXISTS` sobre o vínculo e **só** ele:
- * nem `is_public`, nem `use_as_*` da skill entram.
+ * compartilham. Com `virtualMcp`, vira um `EXISTS` sobre o vínculo daquele
+ * servidor e **só** ele; sem, é `'open'` (vínculo com vMCP aberto e ligado)
+ * ou `'all'` (tudo).
  */
-function visibilityClause({
-  includePrivate = false,
-  onlyAsSkill = false,
-  virtualMcp,
-}: ReadOptions): SQL {
+function visibilityClause({ visibility = 'open', virtualMcp }: ReadOptions): SQL {
   if (virtualMcp) {
     // UUID torto é "nenhuma skill", não erro do driver virando HTTP 500.
     if (!isUuid(virtualMcp.uuid)) return sql`false`;
@@ -105,7 +109,7 @@ function visibilityClause({
         AND ${virtualSurfaceFlag(virtualMcp.surface)}
     )`;
   }
-  return sql`((${includePrivate} OR s.is_public)${onlyAsSkill ? sql` AND s.use_as_skill` : sql``})`;
+  return visibility === 'all' ? sql`true` : OPEN_LINK_EXISTS;
 }
 
 /** A coluna do vínculo (`v`) que corresponde à superfície — nunca texto do chamador. */
@@ -120,9 +124,17 @@ function virtualSurfaceFlag(surface: VirtualSurface): SQL {
   }
 }
 
-const SKILL_COLUMNS = sql`
-  s.uuid, s.slug, s.name, s.description, s.is_public,
-  s.use_as_skill, s.use_as_prompt, s.use_as_resource,
+/**
+ * As colunas de `SkillSummary`. Além dos metadados, cada linha traz `mcps`: os
+ * vínculos da skill, como JSON. Numa leitura `'all'` vêm todos os vínculos;
+ * nas demais só os com vMCP aberto e ligado — o site não pode revelar em qual
+ * servidor fechado uma skill está, e é por essa lista que o mcp-public sabe se
+ * a skill tem página no site.
+ */
+function skillColumns({ visibility = 'open' }: ReadOptions): SQL {
+  const everyLink = visibility === 'all';
+  return sql`
+  s.uuid, s.slug, s.name, s.description,
   s.view_count, s.download_count,
   s.created_at, s.updated_at,
   COALESCE((
@@ -130,8 +142,35 @@ const SKILL_COLUMNS = sql`
     FROM skill_tags st JOIN tags t ON t.id = st.tag_id
     WHERE st.skill_uuid = s.uuid
   ), '{}') AS tags,
-  (SELECT count(*) FROM files f WHERE f.skill_uuid = s.uuid) AS file_count
+  (SELECT count(*) FROM files f WHERE f.skill_uuid = s.uuid) AS file_count,
+  COALESCE((
+    SELECT json_agg(json_build_object(
+      'uuid', m.uuid, 'slug', m.slug, 'name', m.name,
+      'isOpen', m.is_open, 'isActive', m.is_active,
+      'isDefault', (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING})),
+      'asSkill', v.as_skill, 'asPrompt', v.as_prompt, 'asResource', v.as_resource
+    ) ORDER BY m.name, m.slug)
+    FROM virtual_mcp_skills v JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+    WHERE v.skill_uuid = s.uuid AND (${everyLink} OR (m.is_open AND m.is_active))
+  ), '[]'::json) AS mcps
 `;
+}
+
+/** O JSON do vínculo, com o `isDefault` nulo (sem padrão) normalizado. */
+function toSkillMcpRefs(value: unknown): SkillMcpRef[] {
+  const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
+  return (rows ?? []).map((m) => ({
+    uuid: m.uuid,
+    slug: m.slug,
+    name: m.name,
+    isOpen: Boolean(m.isOpen),
+    isActive: Boolean(m.isActive),
+    isDefault: Boolean(m.isDefault),
+    asSkill: Boolean(m.asSkill),
+    asPrompt: Boolean(m.asPrompt),
+    asResource: Boolean(m.asResource),
+  }));
+}
 
 function toSummary(row: Row): SkillSummary {
   const viewCount = Number(row.view_count ?? 0);
@@ -142,10 +181,7 @@ function toSummary(row: Row): SkillSummary {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
-    isPublic: Boolean(row.is_public),
-    useAsSkill: Boolean(row.use_as_skill),
-    useAsPrompt: Boolean(row.use_as_prompt),
-    useAsResource: Boolean(row.use_as_resource),
+    mcps: toSkillMcpRefs(row.mcps),
     viewCount,
     downloadCount,
     score: skillScore(viewCount, downloadCount),
@@ -208,7 +244,7 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
   const total = Number((counted.rows as Row[])[0]?.total ?? 0);
 
   const result = await db().execute(sql`
-    SELECT ${SKILL_COLUMNS}, ${rank} AS rank
+    SELECT ${skillColumns(options)}, ${rank} AS rank
     FROM skills s
     ${where}
     ORDER BY ${order}
@@ -224,13 +260,13 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
 }
 
 /**
- * Superfície do MCP público em que a skill é oferecida além das ferramentas.
+ * Superfície de um vMCP em que a skill é oferecida além das ferramentas.
  *
  * `'skill'` não entra aqui de propósito: a superfície de ferramentas não tem
  * listagem enxuta equivalente. Quem a serve é `listSkills`, que é paginada,
  * ordenável e devolve `SkillSummary` inteiro — nada do que `PublishedSkill`
- * existe para evitar se aplica a ela. Para filtrar por `use_as_skill`, a
- * opção é `onlyAsSkill` em `ListOptions`.
+ * existe para evitar se aplica a ela; o recorte dela é `virtualMcp` com
+ * `surface: 'skill'`.
  */
 export type PublicationSurface = 'prompt' | 'resource';
 
@@ -242,57 +278,35 @@ export type PublishedSkill = {
 };
 
 /**
- * Skills públicas flagadas para uma das superfícies (`use_as_prompt` /
- * `use_as_resource`), na forma exata dos índices parciais de `007`.
+ * As skills de um vMCP vinculadas com a flag da superfície (`as_prompt` /
+ * `as_resource`), para `prompts/list` e `resources/list`.
  *
  * Não reusa `listSkills` por dois motivos: aquela limita o resultado a 100, o
  * que esconderia skills em silêncio numa listagem que o protocolo entrega
- * inteira, sem cursor nem teto; e carrega por linha uma agregação de tags e
- * uma contagem de arquivos que as duas listagens descartam. Como não há teto,
- * a linha precisa ser barata — daí só três colunas.
- *
- * A ordem por slug é estável entre chamadas. A lista é recomputada a cada
- * requisição (nada notifica o cliente sobre mudança), e um catálogo que chega
- * embaralhado a cada listagem seria ruído para quem o mostra ao usuário.
- *
- * Com `virtualMcpUuid`, a listagem é a de um MCP virtual: o JOIN é no vínculo
- * e a flag é a **do vínculo** (`as_prompt` / `as_resource`), sem filtro de
- * `is_public` — skill privada vinculada sai (`docs/08-mcp-virtual.md` §3.2).
+ * inteira, sem cursor nem teto; e carrega por linha agregações que as duas
+ * listagens descartam. Como não há teto, a linha precisa ser barata — daí só
+ * três colunas. A ordem por slug é estável entre chamadas: a lista é
+ * recomputada a cada requisição, e um catálogo embaralhado seria ruído.
  */
 export async function listPublishedSkills(
   surface: PublicationSurface,
-  options: { virtualMcpUuid?: string } = {},
+  virtualMcpUuid: string,
 ): Promise<PublishedSkill[]> {
-  const toPublished = (row: Row): PublishedSkill => ({
-    slug: row.slug,
-    name: row.name,
-    description: row.description ?? '',
-  });
-
-  const virtualMcpUuid = options.virtualMcpUuid;
-  if (virtualMcpUuid !== undefined) {
-    if (!isUuid(virtualMcpUuid)) return [];
-    const flag = surface === 'prompt' ? sql`v.as_prompt` : sql`v.as_resource`;
-
-    const result = await db().execute(sql`
-      SELECT s.slug, s.name, s.description
-      FROM virtual_mcp_skills v
-      JOIN skills s ON s.uuid = v.skill_uuid
-      WHERE v.virtual_mcp_uuid = ${virtualMcpUuid} AND ${flag}
-      ORDER BY s.slug ASC
-    `);
-    return (result.rows as Row[]).map(toPublished);
-  }
-
-  const flag = surface === 'prompt' ? sql`s.use_as_prompt` : sql`s.use_as_resource`;
+  if (!isUuid(virtualMcpUuid)) return [];
+  const flag = surface === 'prompt' ? sql`v.as_prompt` : sql`v.as_resource`;
 
   const result = await db().execute(sql`
     SELECT s.slug, s.name, s.description
-    FROM skills s
-    WHERE s.is_public AND ${flag}
+    FROM virtual_mcp_skills v
+    JOIN skills s ON s.uuid = v.skill_uuid
+    WHERE v.virtual_mcp_uuid = ${virtualMcpUuid} AND ${flag}
     ORDER BY s.slug ASC
   `);
-  return (result.rows as Row[]).map(toPublished);
+  return (result.rows as Row[]).map((row) => ({
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+  }));
 }
 
 export async function getSkillSummary(
@@ -300,7 +314,7 @@ export async function getSkillSummary(
   options: ReadOptions = {},
 ): Promise<SkillSummary | null> {
   const result = await db().execute(sql`
-    SELECT ${SKILL_COLUMNS} FROM skills s
+    SELECT ${skillColumns(options)} FROM skills s
     WHERE s.slug = ${slug} AND ${visibilityClause(options)}
     LIMIT 1
   `);
@@ -481,21 +495,14 @@ export type CreateSkillInput = {
   description?: string;
   skillMd: string;
   tags?: string[];
-  isPublic?: boolean;
   /**
-   * Superfícies do MCP público (ferramentas, prompt e `skill://<slug>`).
-   * Independentes de `isPublic`: sem ela nada aparece, mas a configuração fica
-   * guardada.
-   *
-   * `useAsSkill` é a assimétrica das três: omiti-la significa `true`, e não
-   * `false` como nas outras duas. Prompt e resource são opt-in, então quem não
-   * decidiu não quer; a superfície de ferramentas é o padrão de toda skill
-   * pública, e fazer o chamador repetir `useAsSkill: true` em toda criação só
-   * garantiria que uma omissão em algum app sumisse com a skill do MCP.
+   * Vínculos criados na mesma transação — a skill já nasce publicada onde o
+   * chamador escolheu (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3). A
+   * checagem de que o chamador administra cada vMCP é do app, antes de chamar.
+   * Omitido ou vazio, a skill nasce flutuante: existe e não é exibida em
+   * lugar nenhum.
    */
-  useAsSkill?: boolean;
-  useAsPrompt?: boolean;
-  useAsResource?: boolean;
+  mcps?: readonly SkillLinkInput[];
   slug?: string;
   /**
    * Anexos gravados na mesma transação da criação (importação de `.zip`).
@@ -522,6 +529,7 @@ export async function createSkill(
   const requestedSlug = optionalText(input.slug, 'slug');
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
+  const links = await resolveLinks(input.mcps ?? []);
 
   // Validado antes de abrir a transação: um caminho recusado no meio da
   // gravação deixaria a skill criada sem parte dos anexos.
@@ -550,13 +558,8 @@ export async function createSkill(
     try {
       await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, is_public,
-                              use_as_skill, use_as_prompt, use_as_resource,
-                              created_by_user_uuid)
-          VALUES (${slug}, ${name}, ${description}, ${input.isPublic === true},
-                  ${input.useAsSkill !== false},
-                  ${input.useAsPrompt === true}, ${input.useAsResource === true},
-                  ${actor?.userUuid ?? null})
+          INSERT INTO skills (slug, name, description, created_by_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${actor?.userUuid ?? null})
           RETURNING uuid
         `);
         const uuid = (inserted.rows as Row[])[0].uuid as string;
@@ -575,6 +578,9 @@ export async function createSkill(
           actor,
           previousContent: null,
         });
+        for (const link of links) {
+          await linkTx(tx, uuid, link, source, actor);
+        }
       });
       break;
     } catch (err) {
@@ -585,7 +591,7 @@ export async function createSkill(
     }
   }
 
-  const detail = await getSkillDetail(slug, { includePrivate: true });
+  const detail = await getSkillDetail(slug, { visibility: 'all' });
   if (!detail) throw new Error('Skill criada mas não encontrada');
   return detail;
 }
@@ -594,14 +600,6 @@ export type UpdateSkillInput = {
   name?: string;
   description?: string;
   tags?: string[];
-  isPublic?: boolean;
-  /**
-   * `undefined` mantém o que já está gravado — inclusive em `useAsSkill`, que
-   * na criação vale `true` quando omitida, mas aqui não reverte nada.
-   */
-  useAsSkill?: boolean;
-  useAsPrompt?: boolean;
-  useAsResource?: boolean;
   slug?: string;
 };
 
@@ -619,11 +617,6 @@ export async function updateSkill(
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
 
-  // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
-  const useAsSkill = input.useAsSkill ?? existing.useAsSkill;
-  const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
-  const useAsResource = input.useAsResource ?? existing.useAsResource;
-
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
   const requestedSlug = optionalText(input.slug, 'slug')?.trim();
@@ -638,10 +631,6 @@ export async function updateSkill(
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
-          is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
-          use_as_skill = ${useAsSkill},
-          use_as_prompt = ${useAsPrompt},
-          use_as_resource = ${useAsResource},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -668,7 +657,7 @@ export async function updateSkill(
     throw err;
   }
 
-  const detail = await getSkillDetail(newSlug, { includePrivate: true });
+  const detail = await getSkillDetail(newSlug, { visibility: 'all' });
   if (!detail) throw new Error('Skill atualizada mas não encontrada');
   return detail;
 }
@@ -695,11 +684,6 @@ export async function updateSkillWithContent(
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
 
-  // `??` e não `||`: `false` aqui é "desligar a flag", não ausência de valor.
-  const useAsSkill = input.useAsSkill ?? existing.useAsSkill;
-  const useAsPrompt = input.useAsPrompt ?? existing.useAsPrompt;
-  const useAsResource = input.useAsResource ?? existing.useAsResource;
-
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
   const requestedSlug = optionalText(input.slug, 'slug')?.trim();
@@ -717,10 +701,6 @@ export async function updateSkillWithContent(
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
-          is_public = ${input.isPublic !== undefined ? input.isPublic : existing.isPublic},
-          use_as_skill = ${useAsSkill},
-          use_as_prompt = ${useAsPrompt},
-          use_as_resource = ${useAsResource},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -758,37 +738,150 @@ export async function updateSkillWithContent(
     throw err;
   }
 
-  const detail = await getSkillDetail(newSlug, { includePrivate: true });
+  const detail = await getSkillDetail(newSlug, { visibility: 'all' });
   if (!detail) throw new Error('Skill atualizada mas não encontrada');
   return detail;
 }
 
-export async function setVisibility(
+// ------------------------------------------------- vínculo pelo lado da skill ---
+
+/** Um vínculo já resolvido: o vMCP existe e as três flags são booleanas. */
+type ResolvedLink = SkillLinkInput & { mcpSlug: string };
+
+/**
+ * Valida a lista de vínculos de `createSkill` antes da transação: uuid torto
+ * ou desconhecido, flag ausente ou vMCP repetido são erro do cliente (400), e
+ * nada é gravado.
+ */
+async function resolveLinks(inputs: readonly SkillLinkInput[]): Promise<ResolvedLink[]> {
+  if (!Array.isArray(inputs)) throw badRequest('O campo "mcps" deve ser uma lista');
+  if (inputs.length === 0) return [];
+
+  const seen = new Set<string>();
+  const wanted = inputs.map((item, index) => {
+    const uuid = String(item?.virtualMcpUuid ?? '');
+    if (!isUuid(uuid)) throw badRequest(`mcps[${index}]: "virtualMcpUuid" precisa ser um uuid`);
+    if (seen.has(uuid)) throw badRequest(`MCP virtual repetido na lista: ${uuid}`);
+    seen.add(uuid);
+    return {
+      virtualMcpUuid: uuid,
+      asSkill: requireBoolean(item.asSkill, 'asSkill', uuid),
+      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', uuid),
+      asResource: requireBoolean(item.asResource, 'asResource', uuid),
+    };
+  });
+
+  const found = await db().execute(sql`
+    SELECT uuid, slug FROM virtual_mcps
+    WHERE uuid = ANY(${sql.param(wanted.map((w) => w.virtualMcpUuid))}::uuid[])
+  `);
+  const slugs = new Map((found.rows as Row[]).map((row) => [row.uuid as string, row.slug as string]));
+
+  return wanted.map((link) => {
+    const mcpSlug = slugs.get(link.virtualMcpUuid);
+    if (!mcpSlug) throw badRequest(`MCP virtual não encontrado: ${link.virtualMcpUuid}`);
+    return { ...link, mcpSlug };
+  });
+}
+
+/** Grava (ou reescreve) um vínculo e audita no vMCP, como `setVirtualMcpSkills`. */
+async function linkTx(
+  tx: Tx,
+  skillUuid: string,
+  link: ResolvedLink,
+  source: AuditSource,
+  actor: AuditActor | null | undefined,
+) {
+  await tx.execute(sql`
+    INSERT INTO virtual_mcp_skills
+      (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource)
+    VALUES (${link.virtualMcpUuid}, ${skillUuid},
+            ${link.asSkill}, ${link.asPrompt}, ${link.asResource})
+    ON CONFLICT (virtual_mcp_uuid, skill_uuid) DO UPDATE SET
+      as_skill = EXCLUDED.as_skill,
+      as_prompt = EXCLUDED.as_prompt,
+      as_resource = EXCLUDED.as_resource
+  `);
+  await tx.execute(
+    sql`UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${link.virtualMcpUuid}`,
+  );
+  await auditTx(tx, {
+    skillUuid: null,
+    skillSlug: null,
+    filePath: null,
+    action: 'mcp.update',
+    source,
+    actor,
+    previousContent: null,
+    targetLabel: link.mcpSlug,
+  });
+}
+
+export type SkillLinkFlags = Pick<SkillLinkInput, 'asSkill' | 'asPrompt' | 'asResource'>;
+
+/**
+ * Publica uma skill num vMCP a partir do lado da skill
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3). Cria ou reescreve o
+ * vínculo — os contadores de um vínculo existente ficam. Audita como
+ * `mcp.update` no vMCP, como `setVirtualMcpSkills`. A checagem de que o
+ * chamador administra o vMCP é do app.
+ */
+export async function linkSkill(
   slug: string,
-  isPublic: boolean,
+  virtualMcpUuid: string,
+  flags: SkillLinkFlags,
   source: AuditSource,
   actor?: AuditActor | null,
-): Promise<SkillSummary> {
+): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
+  const [link] = await resolveLinks([{ virtualMcpUuid, ...flags }]);
 
   await db().transaction(async (tx) => {
-    await tx.execute(
-      sql`UPDATE skills SET is_public = ${isPublic}, updated_at = now() WHERE uuid = ${existing.uuid}`,
-    );
+    await linkTx(tx, existing.uuid, link!, source, actor);
+  });
+
+  const detail = await getSkillDetail(existing.slug, { visibility: 'all' });
+  if (!detail) throw new Error('Skill vinculada mas não encontrada');
+  return detail;
+}
+
+/** Desfaz o vínculo. Vínculo inexistente é 404: nada muda e nada é auditado. */
+export async function unlinkSkill(
+  slug: string,
+  virtualMcpUuid: string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillDetail> {
+  const existing = await requireSkill(slug);
+  if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
+
+  await db().transaction(async (tx) => {
+    const removed = await tx.execute(sql`
+      DELETE FROM virtual_mcp_skills
+      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${existing.uuid}
+      RETURNING virtual_mcp_uuid
+    `);
+    if ((removed.rows as Row[]).length === 0) {
+      throw notFound(`A skill "${slug}" não está vinculada a este MCP virtual`);
+    }
+    const mcp = await tx.execute(sql`
+      UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${virtualMcpUuid} RETURNING slug
+    `);
     await auditTx(tx, {
-      skillUuid: existing.uuid,
-      skillSlug: slug,
+      skillUuid: null,
+      skillSlug: null,
       filePath: null,
-      action: 'update',
+      action: 'mcp.update',
       source,
       actor,
-      previousContent: existing.isPublic ? 'public' : 'private',
+      previousContent: null,
+      targetLabel: ((mcp.rows as Row[])[0]?.slug as string | undefined) ?? virtualMcpUuid,
     });
   });
 
-  const summary = await getSkillSummary(slug, { includePrivate: true });
-  if (!summary) throw notFound();
-  return summary;
+  const detail = await getSkillDetail(existing.slug, { visibility: 'all' });
+  if (!detail) throw new Error('Skill desvinculada mas não encontrada');
+  return detail;
 }
 
 export async function deleteSkill(
@@ -1435,8 +1528,10 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
 
 export type Stats = {
   totalSkills: number;
-  publicSkills: number;
-  privateSkills: number;
+  /** Em ao menos um vMCP aberto e ligado — o que o site mostra. */
+  openSkills: number;
+  /** Flutuantes: sem vínculo com servidor nenhum. */
+  unlinkedSkills: number;
   totalFiles: number;
   totalViews: number;
   totalDownloads: number;
@@ -1449,7 +1544,12 @@ export async function stats(): Promise<Stats> {
   const result = await db().execute(sql`
     SELECT
       (SELECT count(*) FROM skills)::int AS total_skills,
-      (SELECT count(*) FROM skills WHERE is_public)::int AS public_skills,
+      (SELECT count(DISTINCT v.skill_uuid) FROM virtual_mcp_skills v
+        JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+        WHERE m.is_open AND m.is_active)::int AS open_skills,
+      (SELECT count(*) FROM skills s
+        WHERE NOT EXISTS (SELECT 1 FROM virtual_mcp_skills v WHERE v.skill_uuid = s.uuid))::int
+        AS unlinked_skills,
       (SELECT count(*) FROM files)::int AS total_files,
       (SELECT COALESCE(sum(view_count), 0) FROM skills)::bigint AS total_views,
       (SELECT COALESCE(sum(download_count), 0) FROM skills)::bigint AS total_downloads,
@@ -1459,13 +1559,11 @@ export async function stats(): Promise<Stats> {
   `);
 
   const row = (result.rows as Row[])[0];
-  const totalSkills = Number(row.total_skills);
-  const publicSkills = Number(row.public_skills);
 
   return {
-    totalSkills,
-    publicSkills,
-    privateSkills: totalSkills - publicSkills,
+    totalSkills: Number(row.total_skills),
+    openSkills: Number(row.open_skills),
+    unlinkedSkills: Number(row.unlinked_skills),
     totalFiles: Number(row.total_files),
     totalViews: Number(row.total_views),
     totalDownloads: Number(row.total_downloads),
@@ -1584,17 +1682,14 @@ export async function setDefaultVirtualMcp(
 
 // ------------------------------------------------------------ MCP virtual ---
 
-// `m` é o servidor, `u` o dono. As três contagens são subconsultas porque a
+// `m` é o servidor, `u` o dono. As contagens são subconsultas porque a
 // listagem é de painel (poucas linhas) e cada uma responde a uma pergunta
-// distinta: "quantas skills", "quantas privadas" (o aviso de `isOpen`) e
-// "quantas chaves vivas".
+// distinta: "quantas skills" e "quantas chaves vivas".
 const VIRTUAL_MCP_COLUMNS = sql`
   m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
   m.owner_user_uuid, u.email AS owner_email,
   (SELECT count(*) FROM virtual_mcp_skills v
     WHERE v.virtual_mcp_uuid = m.uuid)::int AS skill_count,
-  (SELECT count(*) FROM virtual_mcp_skills v JOIN skills s ON s.uuid = v.skill_uuid
-    WHERE v.virtual_mcp_uuid = m.uuid AND NOT s.is_public)::int AS private_skill_count,
   (SELECT count(*) FROM virtual_mcp_keys k
     WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
   (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
@@ -1615,7 +1710,6 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     ownerUserUuid: row.owner_user_uuid ?? null,
     ownerEmail: row.owner_email ?? null,
     skillCount: Number(row.skill_count ?? 0),
-    privateSkillCount: Number(row.private_skill_count ?? 0),
     activeKeyCount: Number(row.active_key_count ?? 0),
     // NULL quando não há padrão configurado: `Boolean(null)` é `false`.
     isDefault: Boolean(row.is_default),
@@ -1631,7 +1725,6 @@ function toVirtualMcpSkill(row: Row): VirtualMcpSkill {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
-    isPublic: Boolean(row.is_public),
     asSkill: Boolean(row.as_skill),
     asPrompt: Boolean(row.as_prompt),
     asResource: Boolean(row.as_resource),
@@ -1663,7 +1756,7 @@ export async function listVirtualMcps(
 
 async function loadVirtualMcpSkills(virtualMcpUuid: string): Promise<VirtualMcpSkill[]> {
   const result = await db().execute(sql`
-    SELECT s.uuid, s.slug, s.name, s.description, s.is_public,
+    SELECT s.uuid, s.slug, s.name, s.description,
            v.as_skill, v.as_prompt, v.as_resource, v.view_count, v.download_count
     FROM virtual_mcp_skills v
     JOIN skills s ON s.uuid = v.skill_uuid
@@ -1972,23 +2065,27 @@ export async function setVirtualMcpSkills(
 }
 
 /**
- * O selo "publicada em" da página da skill. Inclui servidores inativos: o
- * vínculo existe e é o painel que lê — quem quiser distinguir abre o MCP.
+ * Os vMCPs que o site lista (`docs/09-mcp-padrao-e-skills-flutuantes.md`
+ * §4.2): abertos e ligados, sem dono nem chaves — nada que um anônimo não
+ * possa saber. Um fechado ou desligado não aparece, nem que seja o padrão.
  */
-export async function listVirtualMcpsForSkill(skillUuid: string): Promise<VirtualMcpRef[]> {
-  if (!isUuid(skillUuid)) return [];
-
+export async function listOpenVirtualMcps(): Promise<PublicVirtualMcp[]> {
   const result = await db().execute(sql`
-    SELECT m.uuid, m.slug, m.name
-    FROM virtual_mcp_skills v
-    JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
-    WHERE v.skill_uuid = ${skillUuid}
-    ORDER BY m.name ASC, m.slug ASC
+    SELECT m.uuid, m.slug, m.name, m.description,
+      (SELECT count(*) FROM virtual_mcp_skills v WHERE v.virtual_mcp_uuid = m.uuid)::int AS skill_count,
+      (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
+        AS is_default
+    FROM virtual_mcps m
+    WHERE m.is_open AND m.is_active
+    ORDER BY is_default DESC NULLS LAST, m.name ASC, m.slug ASC
   `);
   return (result.rows as Row[]).map((row) => ({
     uuid: row.uuid,
     slug: row.slug,
     name: row.name,
+    description: row.description ?? '',
+    skillCount: Number(row.skill_count ?? 0),
+    isDefault: Boolean(row.is_default),
   }));
 }
 
@@ -2180,7 +2277,7 @@ export async function touchVirtualMcpKey(id: string): Promise<void> {
 // --------------------------------------------------------------- internos ---
 
 async function requireSkill(slug: string): Promise<SkillSummary> {
-  const skill = await getSkillSummary(slug, { includePrivate: true });
+  const skill = await getSkillSummary(slug, { visibility: 'all' });
   if (!skill) throw notFound(`Skill não encontrada: ${slug}`);
   return skill;
 }

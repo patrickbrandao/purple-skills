@@ -34,7 +34,6 @@ import {
   listTags,
   listVirtualMcpKeys,
   listVirtualMcps,
-  listVirtualMcpsForSkill,
   recordAccountAudit,
   resolveVirtualMcp,
   revokeVirtualMcpKey,
@@ -87,37 +86,20 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     brunoUuid = (await createUser({ email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
       .uuid;
 
-    // Catálogo: uma pública, uma privada e uma pública fora do recorte.
-    // A pública tem `use_as_skill` desligado de propósito: no virtual isso
-    // não conta, quem manda é o vínculo.
+    // Catálogo: três skills flutuantes — nenhuma está em servidor nenhum
+    // até o vínculo. Os nomes vêm do desenho anterior e continuam úteis: a
+    // "privada" é a que só existe dentro deste vMCP.
     await createSkill(
-      {
-        name: 'Publica',
-        slug: 'publica',
-        skillMd: '# publica',
-        isPublic: true,
-        useAsSkill: false,
-        useAsPrompt: true,
-        tags: ['comum', 'so-publica'],
-      },
+      { name: 'Publica', slug: 'publica', skillMd: '# publica', tags: ['comum', 'so-publica'] },
       SOURCE,
     );
     privadaUuid = (
       await createSkill(
-        {
-          name: 'Privada',
-          slug: 'privada',
-          skillMd: '# privada',
-          isPublic: false,
-          tags: ['comum', 'so-privada'],
-        },
+        { name: 'Privada', slug: 'privada', skillMd: '# privada', tags: ['comum', 'so-privada'] },
         SOURCE,
       )
     ).uuid;
-    await createSkill(
-      { name: 'Fora', slug: 'fora', skillMd: '# fora', isPublic: true, tags: ['comum'] },
-      SOURCE,
-    );
+    await createSkill({ name: 'Fora', slug: 'fora', skillMd: '# fora', tags: ['comum'] }, SOURCE);
   }, 60_000);
 
   afterAll(async () => {
@@ -144,7 +126,6 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(mcp.ownerUserUuid).toBe(brunoUuid);
     expect(mcp.ownerEmail).toBe('bruno@exemplo.dev');
     expect(mcp.skillCount).toBe(0);
-    expect(mcp.privateSkillCount).toBe(0);
     expect(mcp.activeKeyCount).toBe(0);
     // Sem `settings` preenchida, ninguém é o padrão.
     expect(mcp.isDefault).toBe(false);
@@ -206,7 +187,6 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     );
     expect(primeiro.skills.map((s) => s.slug)).toEqual(['privada', 'publica']);
     expect(primeiro.skillCount).toBe(2);
-    expect(primeiro.privateSkillCount).toBe(1);
 
     // Contador do vínculo E o global da skill.
     await incrementViewCount(privadaUuid, mcpUuid);
@@ -218,13 +198,13 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     );
     expect(privadaNoMcp?.viewCount).toBe(2);
     expect(privadaNoMcp?.downloadCount).toBe(1);
-    const privadaGlobal = await getSkillSummary('privada', { includePrivate: true });
+    const privadaGlobal = await getSkillSummary('privada', { visibility: 'all' });
     expect(privadaGlobal?.viewCount).toBe(2);
     expect(privadaGlobal?.downloadCount).toBe(1);
 
     // Sem o MCP, soma só no global.
     await incrementViewCount(privadaUuid);
-    expect((await getSkillSummary('privada', { includePrivate: true }))?.viewCount).toBe(3);
+    expect((await getSkillSummary('privada', { visibility: 'all' }))?.viewCount).toBe(3);
     expect(
       (await getVirtualMcpByUuid(mcpUuid))!.skills.find((s) => s.slug === 'privada')?.viewCount,
     ).toBe(2);
@@ -288,12 +268,24 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       'privada',
     ]);
 
-    expect((await listVirtualMcpsForSkill(privadaUuid)).map((m) => m.slug)).toEqual([
-      'time-de-dados',
+    // A skill enxerga os próprios vínculos, com as flags e o estado do vMCP.
+    const privadaLida = await getSkillSummary('privada', { visibility: 'all' });
+    expect(privadaLida?.mcps).toEqual([
+      {
+        uuid: mcpUuid,
+        slug: 'time-de-dados',
+        name: 'Time de Dados',
+        isOpen: false,
+        isActive: true,
+        isDefault: false,
+        asSkill: true,
+        asPrompt: false,
+        asResource: true,
+      },
     ]);
   });
 
-  it('recorta as leituras pelo vínculo, ignorando is_public e use_as_*', async () => {
+  it('recorta as leituras pelo vínculo, e o site só enxerga vMCP aberto e ligado', async () => {
     // Estado: privada (as_skill, as_resource), fora (as_prompt). `publica` está de fora.
     const skill = { uuid: mcpUuid, surface: 'skill' as const };
 
@@ -301,8 +293,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(lista.total).toBe(1);
     expect(lista.items.map((s) => s.slug)).toEqual(['privada']);
 
-    // `includePrivate: false` e `onlyAsSkill: true` não têm efeito com o recorte.
-    const forcado = await listSkills({ virtualMcp: skill, includePrivate: false, onlyAsSkill: true });
+    // `visibility` não tem efeito com o recorte.
+    const forcado = await listSkills({ virtualMcp: skill, visibility: 'open' });
     expect(forcado.items.map((s) => s.slug)).toEqual(['privada']);
 
     expect((await getSkillSummary('privada', { virtualMcp: skill }))?.slug).toBe('privada');
@@ -327,21 +319,26 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect((await listSkills({ virtualMcp: { uuid: 'torto', surface: 'skill' } })).total).toBe(0);
     expect(await listTags({ virtualMcp: { uuid: 'torto', surface: 'skill' } })).toEqual([]);
 
-    // Sem o recorte, tudo continua como antes.
-    expect((await listSkills({ onlyAsSkill: true })).items.map((s) => s.slug)).toEqual(['fora']);
+    // Sem o recorte: o vMCP está fechado, então o site (`'open'`) não vê
+    // nenhuma das três; o painel (`'all'`) vê tudo, inclusive a flutuante.
+    expect((await listSkills({ visibility: 'open' })).total).toBe(0);
+    expect((await listSkills({})).total).toBe(0);
+    expect((await listTags({ visibility: 'open' })).length).toBe(0);
+    expect(
+      (await listSkills({ visibility: 'all' })).items.map((s) => s.slug).sort(),
+    ).toEqual(['fora', 'privada', 'publica']);
+    expect(await getSkillSummary('privada')).toBeNull();
+    expect((await getSkillSummary('privada', { visibility: 'all' }))?.slug).toBe('privada');
   });
 
-  it('lista prompts e resources do MCP pela flag do vínculo, sem filtro de is_public', async () => {
-    const prompts = await listPublishedSkills('prompt', { virtualMcpUuid: mcpUuid });
+  it('lista prompts e resources do MCP pela flag do vínculo', async () => {
+    const prompts = await listPublishedSkills('prompt', mcpUuid);
     expect(prompts.map((s) => s.slug)).toEqual(['fora']);
 
-    const resources = await listPublishedSkills('resource', { virtualMcpUuid: mcpUuid });
+    const resources = await listPublishedSkills('resource', mcpUuid);
     expect(resources.map((s) => s.slug)).toEqual(['privada']);
 
-    expect(await listPublishedSkills('prompt', { virtualMcpUuid: 'torto' })).toEqual([]);
-
-    // O MCP principal segue com `is_public AND use_as_prompt`.
-    expect((await listPublishedSkills('prompt')).map((s) => s.slug)).toEqual(['publica']);
+    expect(await listPublishedSkills('prompt', 'torto')).toEqual([]);
   });
 
   it('emite, resolve pelo prefixo e revoga uma chave restrita ao MCP', async () => {
@@ -425,6 +422,20 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       isOpen: true,
     });
 
+    // Aberto: as vinculadas (qualquer flag) passam a existir para o site; a
+    // sem vínculo (`publica`) continua flutuante. A leitura pública só vê os
+    // vínculos abertos, e as tags contam só o que está lá.
+    const noSite = await listSkills({ visibility: 'open' });
+    expect(noSite.items.map((s) => s.slug).sort()).toEqual(['fora', 'privada']);
+    expect((await getSkillSummary('fora'))?.mcps.map((m) => [m.slug, m.isOpen])).toEqual([
+      ['dados', true],
+    ]);
+    expect(await getSkillSummary('publica')).toBeNull();
+    expect((await listTags({})).map((t) => [t.name, t.count])).toEqual([
+      ['comum', 2],
+      ['so-privada', 1],
+    ]);
+
     const auditoria = (await listAudit(20)).find(
       (e) => e.action === 'mcp.update' && e.targetLabel === 'dados',
     );
@@ -433,6 +444,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     const desligado = await updateVirtualMcp(mcpUuid, { isActive: false }, SOURCE, ana);
     expect(desligado.isActive).toBe(false);
     expect(await resolveVirtualMcp('dados')).toBeNull();
+    // Desligado, some do site mesmo aberto.
+    expect((await listSkills({ visibility: 'open' })).total).toBe(0);
     // O painel continua enxergando, com os vínculos e as chaves.
     expect((await getVirtualMcp('dados'))?.skillCount).toBe(2);
     expect(await listVirtualMcpKeys(mcpUuid)).toHaveLength(1);
@@ -451,7 +464,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     await deleteVirtualMcp(mcpUuid, SOURCE, ana);
     expect(await getVirtualMcpByUuid(mcpUuid)).toBeNull();
     expect(await listVirtualMcpKeys(mcpUuid)).toEqual([]);
-    expect(await listVirtualMcpsForSkill(privadaUuid)).toEqual([]);
+    expect((await getSkillSummary('privada', { visibility: 'all' }))?.mcps).toEqual([]);
 
     const { rows } = await raw.query<{ n: string }>(
       'SELECT count(*) AS n FROM virtual_mcp_skills WHERE virtual_mcp_uuid = $1',

@@ -1,6 +1,6 @@
 # O MCP público é o vMCP padrão, e as skills flutuam
 
-**Status: PR1 implementado; PR2 em andamento.** Dois PRs, como o `08`:
+**Status: implementado**, em dois PRs, como o `08`:
 
 - **PR1 — "o MCP público é o vMCP padrão"** (`§3`): o servidor principal
   hard-coded em `/mcp` deixa de existir; o que responde ali é o MCP virtual
@@ -187,47 +187,71 @@ no vínculo, sem porta no MCP, como estava.
   há padrão em pé; o `mcp.json` da seção de conexão inclui o header
   `Authorization` quando o padrão exige chave.
 
-### 3.7 Estado intermediário: `is_public` e `use_as_*` ainda existem
+### 3.7 O estado intermediário entre os PRs
 
-O PR1 deixa as quatro colunas no banco e nas telas, mas **nenhum MCP as lê**:
-a raiz recorta pelo vínculo. Até o PR2, `is_public` governa só o site e a API
-REST; as três `use_as_*` não governam nada, e o painel e o mcp-admin dizem
-isso onde as mostram. Uma skill privada vinculada ao `public` fica legível em
-`/mcp` e fora do site — é o estado de dois sistemas que o PR2 elimina, aceito
-para manter cada PR revisável e `main` com typecheck e testes passando.
+O PR1 deixou as quatro colunas no banco e nas telas, mas **nenhum MCP as
+lia**: a raiz recorta pelo vínculo. Naquele estado `is_public` governava só o
+site e a API REST, e as três `use_as_*` não governavam nada. Uma skill
+privada vinculada ao `public` ficava legível em `/mcp` e fora do site — dois
+sistemas de visibilidade, aceitos por um PR para manter cada um revisável e
+`main` com typecheck e testes passando. O PR2 (`§4`) fecha isso.
 
 ## 4. Skills flutuantes (PR2)
 
 ### 4.1 Fim das colunas
 
-Migration `012`: caem `skills.is_public`, `use_as_skill`, `use_as_prompt`,
-`use_as_resource`, os índices parciais de `007` e o `skills_public_score_idx`
-de `001`. `SkillSummary` perde os quatro campos e ganha `mcps` (em quais vMCPs
-a skill está e por quais portas), o que quebra o typecheck de toda fixture e
-das duas cópias manuais em `apps/*/web/src/api.ts`. `setVisibility`, a rota
-`/visibility`, a tool `set_visibility` e a leitura de flags do frontmatter no
-import saem; `create_skill` / `edit_skill` perdem `is_public` e `use_as_*`.
+Migration `012-skills-flutuantes.sql`: caem `skills.is_public`,
+`use_as_skill`, `use_as_prompt`, `use_as_resource`, os índices parciais de
+`007` e o `skills_public_score_idx` de `001` (entra `skills_score_idx`, só
+pela soma dos contadores). Nada se perde de publicação porque o `011` já
+copiou tudo para o vínculo com o `public`, e uma instalação que sobe de
+versão passa pelo `011` antes — o teste `settings.integration.test.ts`
+percorre exatamente esse caminho, de uma base parada no `010`.
+
+`SkillSummary` perde os quatro campos e ganha `mcps: SkillMcpRef[]` — em
+quais vMCPs a skill está, com estado (`isOpen`, `isActive`, `isDefault`) e as
+três portas do vínculo. Numa leitura `'all'` vêm todos os vínculos; nas demais
+só os com vMCP aberto e ligado, porque o site não pode revelar em qual
+servidor fechado uma skill está. É por essa lista que o mcp-public e o
+mcp-admin sabem se a skill tem página no site. `setVisibility`, a rota
+`/visibility`, a tool `set_visibility`, `listVirtualMcpsForSkill` (o `mcps`
+o substitui) e a leitura de flags do frontmatter no import saem;
+`create_skill` / `edit_skill` perdem `is_public` e `use_as_*`, e
+`list_skills` perde `includePrivate`.
 
 ### 4.2 Site = vMCPs abertos
 
-`listSkills`, `getSkillSummary`, `getSkillDetail` e `listTags` trocam
-`includePrivate` por uma visibilidade `'open'` (padrão, o site) ou `'all'`
-(painel e mcp-admin): a cláusula vira um `EXISTS` sobre `virtual_mcp_skills`
-com `virtual_mcps.is_open AND is_active`, e o mesmo filtro vale para os
-downloads. A página da skill lista os vMCPs abertos em que ela está, com as
-portas; o site ganha uma seção com os vMCPs abertos e ligados, cada um com
-endereço e snippet, e `/api/mcps` os expõe. `stats` troca públicas/privadas
-por "em vMCP aberto" e "sem vínculo".
+`ListOptions` troca `includePrivate` e `onlyAsSkill` por `visibility: 'open'
+| 'all'`. `'open'` é o padrão e o que o site e a API REST usam: um `EXISTS`
+sobre `virtual_mcp_skills` com `virtual_mcps.is_open AND is_active`, sem
+olhar as flags do vínculo (decisão derivada da `§2`). `'all'` é o painel e o
+mcp-admin. O padrão é o restritivo de propósito: um chamador que esquece a
+opção mostra de menos, nunca de mais. O mesmo filtro vale para tags, arquivos
+e downloads do site.
+
+O site ganha `/api/mcps` (`listOpenVirtualMcps`: abertos e ligados, sem dono
+nem chaves) e uma seção "Servidores MCP abertos" com endereço e cópia; a
+página da skill lista os vMCPs abertos em que ela está, com as portas de cada
+um e a URL para copiar (`/mcp` para o padrão). `stats` troca
+públicas/privadas por `openSkills` (no site) e `unlinkedSkills` (flutuantes).
 
 ### 4.3 Vínculo pelos dois lados
 
-A página da skill ganha um painel "Publicada em" editável, com os vMCPs que a
-sessão pode administrar (dono ou admin, decisão 6) e as três caixas por linha;
-o formulário de skill nova e o import ganham "Publicar em". `createSkill`
-aceita `mcps` na mesma transação; `linkSkill` / `unlinkSkill` entram no
-`@purple-skills/db`, e `link_skill` / `unlink_skill` no mcp-admin. A escolha
-das superfícies continua obrigatória e sem default no banco; na tela, a caixa
-`skill` já vem marcada ao acrescentar.
+`createSkill` aceita `mcps` (uuid do vMCP e as três flags) e grava os
+vínculos na mesma transação, auditando `mcp.update` por vMCP como
+`setVirtualMcpSkills`; `linkSkill` / `unlinkSkill` fazem o mesmo para uma
+skill existente. A permissão continua sendo a do vMCP alvo — `loadManaged`
+no painel, `canManageVirtualMcp` no mcp-admin — e uma lista com um vMCP que
+o chamador não administra recusa a criação inteira, antes de gravar qualquer
+coisa.
+
+No painel: "Publicar em" na skill nova e no import (um `mcps` em JSON no
+multipart), e o painel "Publicada em" na página da skill, com uma linha por
+vMCP que a sessão administra (mais os vínculos que ela não administra, só
+leitura) e salvamento por linha; a caixa `skill` já vem marcada ao publicar.
+Rotas `PUT`/`DELETE /api/skills/:slug/mcps/:mcp`, sem guarda de papel, como
+as do MCP. No mcp-admin: `create_skill(mcps?)`, `link_skill`, `unlink_skill`.
+A escolha das superfícies continua obrigatória e sem default no banco.
 
 ### 4.4 Fim de `confirm_open`
 
@@ -236,14 +260,22 @@ sai nos dois sentidos, com `privateSkillCount` e o código
 `confirm_open_required`. Abrir um vMCP é uma caixa como outra qualquer, e o
 aviso ao lado dela diz que o site passa a listá-lo.
 
+### 4.5 Seed e exemplo
+
+O seed publica os exemplos no `public` pelo vínculo e deixa o "Rascunho
+interno" de fora: é a skill flutuante — existe no painel e em lugar nenhum
+mais.
+
 ## 5. Riscos aceitos
 
 - O `public` do backfill nasce aberto; a proteção de quem tinha
   `MCP_PUBLIC_KEY` é a trava de boot, que exige ler a mensagem (`§3.5`).
 - Trocar o padrão derruba as sessões abertas na raiz com 403 até reconectar.
-- No PR1, `is_public` e `use_as_*` existem sem efeito no MCP (`§3.7`).
-- Todo vMCP aberto vira público de fato e listado no site (PR2); endereço
-  obscuro nunca foi proteção, e o aviso ao abrir passa a dizer isso.
+- Todo vMCP aberto vira público de fato e listado no site; endereço obscuro
+  nunca foi proteção, e o aviso ao abrir passa a dizer isso.
+- Uma skill em vMCP fechado tem `.zip` e página só pelo servidor fechado;
+  no site ela não existe, e a lista `mcps` de uma leitura pública não a
+  revela.
 
 ## 6. Fora do escopo
 

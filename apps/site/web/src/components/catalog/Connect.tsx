@@ -101,27 +101,29 @@ export function Connect() {
 
         <div className="connect-surfaces reveal d3">
           <p>
-            Algumas skills do catálogo — as marcadas com <span className="s-tag">prompt</span> ou{' '}
-            <span className="s-tag">resource</span> no card — chegam ao agente por mais duas
-            portas, sem precisar de ferramenta nenhuma:
+            Cada servidor publica suas skills por até três portas, escolhidas skill a skill por
+            quem o administra — a página de cada skill diz quais:
           </p>
           <ul>
             <li>
-              <strong>prompt</strong> — a skill aparece na lista de prompts do servidor com o
-              próprio slug. Na maioria dos clientes, é um comando que você invoca direto, e o
+              <span className="s-tag">skill</span> — as ferramentas: o agente a encontra por{' '}
+              <code>search_skills</code> e a lê com <code>get_skill</code>.
+            </li>
+            <li>
+              <span className="s-tag">prompt</span> — a skill aparece na lista de prompts do servidor
+              com o próprio slug. Na maioria dos clientes, é um comando que você invoca direto, e o
               conteúdo entra no contexto sem o agente ter de decidir buscá-lo.
             </li>
             <li>
-              <strong>resource</strong> — a skill ganha um endereço estável,{' '}
+              <span className="s-tag">resource</span> — a skill ganha um endereço estável,{' '}
               <code>skill://&lt;slug&gt;</code>, que o cliente lê e referencia como qualquer outro
               documento anexado à conversa.
             </li>
           </ul>
           <p>
-            As portas são independentes. Uma skill marcada com{' '}
-            <span className="s-tag off">sem busca</span> ficou de fora das ferramentas: o agente não a
-            encontra por <code>search_skills</code> e ela chega só pelas portas acima — ou pelo
-            download aqui do site.
+            As portas são independentes: uma skill publicada só como prompt não aparece em{' '}
+            <code>search_skills</code>, mas continua aqui no site, com download. Os demais servidores
+            abertos desta instalação estão listados logo abaixo, cada um com o próprio endereço.
           </p>
         </div>
       </div>

@@ -12,7 +12,7 @@ import {
   type SkillSummary,
   type Stats,
 } from '../api.js';
-import { Badge, Panel, PublicationBadges } from '../components/ui.js';
+import { McpBadges, Panel } from '../components/ui.js';
 import { HistoryIcon, PlusIcon, TrendIcon } from '../components/Icons.js';
 
 const ACTION_LABEL: Record<AuditEntry['action'], string> = {
@@ -81,7 +81,11 @@ export function DashboardPage({ user }: { user: SessionUser }) {
     value === undefined ? '—' : value.toLocaleString('pt-BR');
 
   const cards = [
-    { k: 'Skills', v: num(stats?.totalSkills), h: `${stats?.publicSkills ?? 0} públicas` },
+    {
+      k: 'Skills',
+      v: num(stats?.totalSkills),
+      h: `${stats?.openSkills ?? 0} no site · ${stats?.unlinkedSkills ?? 0} sem vínculo`,
+    },
     { k: 'Arquivos', v: num(stats?.totalFiles), h: `${stats?.totalTags ?? 0} tags` },
     { k: 'Acessos', v: num(stats?.totalViews), h: 'SKILL.md visualizado' },
     { k: 'Downloads', v: num(stats?.totalDownloads), h: 'pacotes .zip' },
@@ -121,8 +125,7 @@ export function DashboardPage({ user }: { user: SessionUser }) {
                   <span className="row-title">{skill.name}</span>
                   <span className="row-sub">{skill.slug}</span>
                 </span>
-                <Badge isPublic={skill.isPublic} />
-                <PublicationBadges skill={skill} />
+                <McpBadges skill={skill} />
                 <span className="pts">{skill.score} pts</span>
               </Link>
             ))}

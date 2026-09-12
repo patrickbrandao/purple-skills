@@ -19,7 +19,8 @@ const db = vi.hoisted(() => ({
   updateVirtualMcp: vi.fn(),
   deleteVirtualMcp: vi.fn(),
   setVirtualMcpSkills: vi.fn(),
-  getSkillSummary: vi.fn(),
+  linkSkill: vi.fn(),
+  unlinkSkill: vi.fn(),
   listVirtualMcpKeys: vi.fn(),
   createVirtualMcpKey: vi.fn(),
   revokeVirtualMcpKey: vi.fn(),
@@ -51,7 +52,6 @@ const mcp = {
   ownerUserUuid: 'uuid-editor',
   ownerEmail: 'editor@exemplo.com',
   skillCount: 1,
-  privateSkillCount: 1,
   activeKeyCount: 0,
   isDefault: false,
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -62,7 +62,6 @@ const mcp = {
       slug: 'privada',
       name: 'Privada',
       description: '',
-      isPublic: false,
       asSkill: true,
       asPrompt: false,
       asResource: false,
@@ -130,21 +129,15 @@ describe('alcance por dono', () => {
   });
 });
 
-describe('abrir com skill privada', () => {
+describe('abrir e fechar', () => {
   const handlers = createMcpHandlers(caller('editor'));
 
-  it('exige confirm_open ao ligar is_open num MCP com privada dentro', async () => {
-    const result = await handlers.update_virtual_mcp({ slug: 'time-a', is_open: true });
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/confirm_open/);
-    expect(db.updateVirtualMcp).not.toHaveBeenCalled();
-  });
-
-  it('com confirm_open, abre', async () => {
+  // Sem "skill privada" não há o que confirmar: aberto é uma caixa como
+  // outra qualquer, e o site passa a listar o vMCP.
+  it('abre sem pedir confirmação', async () => {
     db.updateVirtualMcp.mockResolvedValue({ ...mcp, isOpen: true });
 
-    const result = await handlers.update_virtual_mcp({ slug: 'time-a', is_open: true, confirm_open: true });
+    const result = await handlers.update_virtual_mcp({ slug: 'time-a', is_open: true });
 
     expect(result.isError).toBeUndefined();
     expect(db.updateVirtualMcp).toHaveBeenCalledWith(
@@ -154,18 +147,73 @@ describe('abrir com skill privada', () => {
       caller('editor').actor,
     );
   });
+});
 
-  it('num MCP aberto, vincular skill privada exige confirm_open', async () => {
-    db.getVirtualMcp.mockResolvedValue({ ...mcp, isOpen: true });
-    db.getSkillSummary.mockResolvedValue({ slug: 'privada', isPublic: false });
+describe('link_skill / unlink_skill', () => {
+  const handlers = createMcpHandlers(caller('editor'));
+  const vinculada = {
+    uuid: 'skill-1',
+    slug: 'privada',
+    name: 'Privada',
+    description: '',
+    mcps: [{ uuid: 'mcp-1', slug: 'time-a', name: 'Time A', isOpen: false, isActive: true, isDefault: false, asSkill: true, asPrompt: false, asResource: false }],
+    viewCount: 0,
+    downloadCount: 0,
+    score: 0,
+    tags: [],
+    fileCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    skillMd: '# p',
+    files: [],
+  };
 
-    const result = await handlers.set_virtual_mcp_skills({
-      slug: 'time-a',
-      skills: [{ slug: 'privada', asSkill: true, asPrompt: false, asResource: false }],
+  it('publica pelo lado da skill, com a permissão do vMCP', async () => {
+    db.linkSkill.mockResolvedValue(vinculada);
+
+    const result = await handlers.link_skill({
+      skill: 'privada',
+      mcp: 'time-a',
+      asSkill: true,
+      asPrompt: false,
+      asResource: false,
     });
 
-    expect(result.isError).toBe(true);
-    expect(db.setVirtualMcpSkills).not.toHaveBeenCalled();
+    expect(db.linkSkill).toHaveBeenCalledWith(
+      'privada',
+      'mcp-1',
+      { asSkill: true, asPrompt: false, asResource: false },
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    expect(result.content[0].text).toMatch(/publicada em "time-a" como skill/);
+  });
+
+  it('recusa vínculo sem superfície e vMCP de outra conta', async () => {
+    const semPorta = await handlers.link_skill({
+      skill: 'privada',
+      mcp: 'time-a',
+      asSkill: false,
+      asPrompt: false,
+      asResource: false,
+    });
+    expect(semPorta.isError).toBe(true);
+
+    const outro = createMcpHandlers(caller('editor', 'uuid-outro'));
+    const alheio = await guard(() =>
+      outro.link_skill({ skill: 'privada', mcp: 'time-a', asSkill: true, asPrompt: false, asResource: false }),
+    );
+    expect(alheio.isError).toBe(true);
+    expect(db.linkSkill).not.toHaveBeenCalled();
+  });
+
+  it('desvincula e diz se a skill ficou sem vínculo', async () => {
+    db.unlinkSkill.mockResolvedValue({ ...vinculada, mcps: [] });
+
+    const result = await handlers.unlink_skill({ skill: 'privada', mcp: 'time-a' });
+
+    expect(db.unlinkSkill).toHaveBeenCalledWith('privada', 'mcp-1', 'mcp-admin', caller('editor').actor);
+    expect(result.content[0].text).toMatch(/sem vínculo/);
   });
 });
 
@@ -189,7 +237,7 @@ describe('set_virtual_mcp_skills', () => {
     const result = await handlers.set_virtual_mcp_skills({ slug: 'time-a', skills });
 
     expect(db.setVirtualMcpSkills).toHaveBeenCalledWith('mcp-1', skills, 'mcp-admin', caller('editor').actor);
-    expect(result.content[0].text).toContain('privada (privada): skill');
+    expect(result.content[0].text).toContain('privada: skill');
   });
 });
 

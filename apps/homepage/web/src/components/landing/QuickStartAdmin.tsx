@@ -38,7 +38,7 @@ export function QuickStartAdmin() {
               <span className="tl" />
               <span className="tl" />
               <span className="tl" />
-              <span>mcp.json — create_skill · set_file · set_visibility</span>
+              <span>mcp.json — create_skill · set_file · link_skill</span>
             </div>
             <div className="code-body">
               <span className="c">{'// Adicione o Purple Skills administrativo ao seu agente'}</span>

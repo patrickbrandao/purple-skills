@@ -50,7 +50,6 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/skills'],
     ['post', '/api/skills/import'],
     ['patch', '/api/skills/:slug'],
-    ['post', '/api/skills/:slug/visibility'],
     ['post', '/api/skills/:slug/upload'],
     ['post', '/api/skills/:slug/files'],
   ])('%s %s exige papel de escrita', (method, path) => {
@@ -65,10 +64,14 @@ describe('papéis exigidos pelas rotas', () => {
     expect(handlers('post', '/api/mcps')).toContain(requireVirtualMcpCreate);
     // Sem guarda de papel de propósito: `loadManaged` deixa passar o dono ou
     // um admin, e um leitor que virou dono por transferência administra o seu.
+    // O vínculo pelo lado da skill segue a mesma regra: a permissão é a do
+    // vMCP alvo.
     for (const [method, path] of [
       ['patch', '/api/mcps/:slug'],
       ['put', '/api/mcps/:slug/skills'],
       ['post', '/api/mcps/:slug/keys'],
+      ['put', '/api/skills/:slug/mcps/:mcp'],
+      ['delete', '/api/skills/:slug/mcps/:mcp'],
     ] as const) {
       expect(handlers(method, path)).not.toContain(requireWrite);
       expect(handlers(method, path)).not.toContain(requireAdmin);

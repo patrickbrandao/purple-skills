@@ -20,18 +20,12 @@ type Seed = {
   name: string;
   description: string;
   tags: string[];
-  isPublic: boolean;
   /**
-   * Obrigatórios para que o exemplo novo seja forçado a decidir em vez de
-   * herdar o padrão em silêncio. `useAsSkill` é `true` em todos porque é assim
-   * que a demo mostra o catálogo: as skills públicas aparecem nas ferramentas
-   * do MCP. As outras duas são falsas em todo exemplo — uma demo que já nasce
-   * com cinco slash-commands e cinco `skill://` no cliente ensina o contrário
-   * do que a feature quer (`docs/06-publicacao-mcp.md` §3.2).
+   * Entra no vMCP `public`, nas ferramentas. Uma skill só é exibida onde está
+   * vinculada, então a que fica de fora é a demonstração da skill flutuante:
+   * existe no painel e em lugar nenhum mais.
    */
-  useAsSkill: boolean;
-  useAsPrompt: boolean;
-  useAsResource: boolean;
+  inPublicMcp: boolean;
   skillMd: string;
   extraFiles?: { path: string; content: string }[];
 };
@@ -43,10 +37,7 @@ const SEEDS: Seed[] = [
     description:
       'Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.',
     tags: ['git', 'workflow', 'produtividade'],
-    isPublic: true,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: true,
     skillMd: `---
 name: Conventional Commits
 description: Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.
@@ -116,10 +107,7 @@ fix(db): corrige contador de downloads em transações concorrentes
     description:
       'Revisa um diff procurando bugs de correção, casos de borda e simplificações possíveis.',
     tags: ['review', 'qualidade', 'workflow'],
-    isPublic: true,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: true,
     skillMd: `---
 name: Code Review Checklist
 description: Revisa um diff procurando bugs de correção, casos de borda e simplificações.
@@ -158,10 +146,7 @@ description: Revisa um diff procurando bugs de correção, casos de borda e simp
     description:
       'Modela busca textual em PostgreSQL com tsvector, pesos por coluna, índices GIN e ranking.',
     tags: ['postgres', 'banco-de-dados', 'busca'],
-    isPublic: true,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: true,
     skillMd: `---
 name: Busca Full-Text no PostgreSQL
 description: Modela busca textual com tsvector, pesos por coluna, índices GIN e ranking.
@@ -214,10 +199,7 @@ LIMIT 20;
     description:
       'Escreve Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.',
     tags: ['docker', 'nodejs', 'deploy'],
-    isPublic: true,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: true,
     skillMd: `---
 name: Dockerfile Node.js multi-stage
 description: Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.
@@ -261,10 +243,7 @@ CMD ["node", "dist/index.js"]
     description:
       'Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.',
     tags: ['mcp', 'typescript', 'agentes'],
-    isPublic: true,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: true,
     skillMd: `---
 name: Servidor MCP em TypeScript
 description: Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.
@@ -312,25 +291,23 @@ exceções para falhas realmente inesperadas.
   },
   {
     slug: 'rascunho-interno',
-    name: 'Rascunho interno (privado)',
-    description: 'Exemplo de skill privada — visível apenas no painel administrativo.',
+    name: 'Rascunho interno (sem vínculo)',
+    description: 'Exemplo de skill flutuante — sem vínculo com servidor nenhum, visível só no painel.',
     tags: ['interno'],
-    isPublic: false,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
+    inPublicMcp: false,
     skillMd: `# Rascunho interno
 
-Esta skill está marcada como **privada**: não aparece no site público, na API
-REST pública nem no MCP público. Serve para demonstrar o controle de
-visibilidade do painel administrativo.
+Esta skill **não está vinculada a nenhum MCP virtual**: não aparece no site,
+na API REST nem em servidor MCP algum. Serve para demonstrar que uma skill só
+é exibida onde alguém a publicou — vincule-a a um MCP virtual no painel para
+ela aparecer.
 `,
   },
 ];
 
 async function main() {
   for (const seed of SEEDS) {
-    const existing = await getSkillSummary(seed.slug, { includePrivate: true });
+    const existing = await getSkillSummary(seed.slug, { visibility: 'all' });
     if (existing) {
       console.log(`[seed] já existe: ${seed.slug}`);
       continue;
@@ -343,10 +320,6 @@ async function main() {
         description: seed.description,
         skillMd: seed.skillMd,
         tags: seed.tags,
-        isPublic: seed.isPublic,
-        useAsSkill: seed.useAsSkill,
-        useAsPrompt: seed.useAsPrompt,
-        useAsResource: seed.useAsResource,
       },
       'web-admin',
     );
@@ -364,9 +337,9 @@ async function main() {
 /**
  * O `/mcp` só responde quando há um vMCP padrão
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md`), então a demo cria o `public`:
- * aberto, sem dono, com as skills públicas de exemplo nas ferramentas. A
- * privada fica de fora — é o que a demonstra. Se a instalação já escolheu um
- * padrão, ele é respeitado.
+ * aberto, sem dono, com as skills de exemplo nas ferramentas. O rascunho fica
+ * de fora — é a skill flutuante. Se a instalação já escolheu um padrão, ele é
+ * respeitado.
  */
 async function seedDefaultMcp() {
   let mcp = await getVirtualMcp('public');
@@ -386,7 +359,7 @@ async function seedDefaultMcp() {
     );
     await setVirtualMcpSkills(
       mcp.uuid,
-      SEEDS.filter((seed) => seed.isPublic).map((seed) => ({
+      SEEDS.filter((seed) => seed.inPublicMcp).map((seed) => ({
         slug: seed.slug,
         asSkill: true,
         asPrompt: false,

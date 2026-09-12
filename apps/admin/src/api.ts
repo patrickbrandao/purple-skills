@@ -12,12 +12,10 @@ import {
   listAudit,
   listSkills,
   listTags,
-  listVirtualMcpsForSkill,
   readAllFiles,
   readFile,
   setFile,
   setFiles,
-  setVisibility,
   stats,
   updateSkillWithContent,
 } from '@purple-skills/db';
@@ -533,16 +531,7 @@ api.delete(
 api.put(
   '/api/mcps/:slug/skills',
   route(async (req, res) => {
-    res.json(
-      await mcps.setSkills(req.user!, param(req, 'slug'), req.body ?? {}, async (slugs) => {
-        // Quantas das que vão entrar são privadas — é o que dispara a
-        // confirmação num MCP aberto.
-        const found = await Promise.all(
-          slugs.map((slug) => getSkillSummary(slug, { includePrivate: true })),
-        );
-        return found.filter((skill) => skill && !skill.isPublic).length;
-      }),
-    );
+    res.json(await mcps.setSkills(req.user!, param(req, 'slug'), req.body ?? {}));
   }),
 );
 
@@ -613,7 +602,7 @@ api.get(
 api.get(
   '/api/tags',
   route(async (_req, res) => {
-    res.json({ items: await listTags({ includePrivate: true }) });
+    res.json({ items: await listTags({ visibility: 'all' }) });
   }),
 );
 
@@ -640,7 +629,7 @@ api.get(
         limit: Number(req.query.limit ?? 50),
         offset: Number(req.query.offset ?? 0),
         sort: (req.query.sort as never) ?? undefined,
-        includePrivate: true,
+        visibility: 'all',
       }),
     );
   }),
@@ -658,10 +647,8 @@ api.post(
       // abaixo é o primeiro a tocar o valor.
       skillMd?: unknown;
       tags?: string[];
-      isPublic?: boolean;
-      useAsSkill?: boolean;
-      useAsPrompt?: boolean;
-      useAsResource?: boolean;
+      /** Onde publicar já na criação: `[{ slug, asSkill, asPrompt, asResource }]`. */
+      mcps?: unknown;
     };
 
     // `stripFrontmatter` roda antes da validação da `@purple-skills/db`, então
@@ -681,10 +668,9 @@ api.post(
         // Um bloco `---` colado no início do prompt é descartado aqui.
         skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
-        isPublic: body.isPublic,
-        useAsSkill: body.useAsSkill,
-        useAsPrompt: body.useAsPrompt,
-        useAsResource: body.useAsResource,
+        // Só nos vMCPs que a sessão administra; um que não seja é 403 antes
+        // de criar qualquer coisa.
+        mcps: await mcps.resolveLinks(req.user!, body.mcps),
       },
       SOURCE,
       actorFrom(req),
@@ -716,10 +702,8 @@ api.post(
       name?: string;
       description?: string;
       tags?: string;
-      isPublic?: string;
-      useAsSkill?: string;
-      useAsPrompt?: string;
-      useAsResource?: string;
+      /** JSON: `[{ slug, asSkill, asPrompt, asResource }]`. */
+      mcps?: string;
     };
     const meta = skillMetaFromMarkdown(skillMd.textContent);
     const fallbackName = req.file.originalname.replace(/\.zip$/i, '');
@@ -738,18 +722,9 @@ api.post(
         description: body.description?.trim() || meta.description || '',
         skillMd: stripFrontmatter(skillMd.textContent),
         tags: tags.length > 0 ? tags : meta.tags,
-        isPublic: body.isPublic === 'true',
-        // Ao contrário de `isPublic`, estas o .zip pode ligar: o formulário
-        // continua sendo a única porta da visibilidade, então uma skill
-        // importada de terceiro nasce privada e as flags ficam inertes até
-        // alguém publicá-la.
-        //
-        // `useAsSkill` nasce ligada, então o espelho é um `&&`: o .zip só a
-        // **desliga**, e nunca a religa contra o formulário. Nos dois casos o
-        // .zip só consegue mover a flag para o lado de menos exposição.
-        useAsSkill: body.useAsSkill !== 'false' && meta.useAsSkill,
-        useAsPrompt: body.useAsPrompt === 'true' || meta.useAsPrompt,
-        useAsResource: body.useAsResource === 'true' || meta.useAsResource,
+        // Onde publicar vem só do formulário: nada no .zip de terceiro decide
+        // em que servidor a skill aparece.
+        mcps: await mcps.resolveLinks(req.user!, parseJsonList(body.mcps)),
         files: attachments.map((file) => ({
           relativePath: file.relativePath,
           content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
@@ -766,14 +741,33 @@ api.post(
 api.get(
   '/api/skills/:slug',
   route(async (req, res) => {
-    const detail = await getSkillDetail(param(req, 'slug'), { includePrivate: true });
+    // `visibility: 'all'`: o detalhe traz todos os vínculos, inclusive com
+    // vMCP fechado ou desligado — é o painel que lê.
+    const detail = await getSkillDetail(param(req, 'slug'), { visibility: 'all' });
     if (!detail) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
     }
-    // Só leitura: em quais MCPs virtuais a skill está. O vínculo é feito do
-    // lado do MCP (`docs/08-mcp-virtual.md`, decisão 12).
-    res.json({ ...bodyOnly(detail), virtualMcps: await listVirtualMcpsForSkill(detail.uuid) });
+    res.json(bodyOnly(detail));
+  }),
+);
+
+// Vínculo pelo lado da skill (`docs/09-mcp-padrao-e-skills-flutuantes.md`
+// §4.3). Sem guarda de papel de propósito, como nas rotas do MCP: quem
+// decide é `loadManaged` — o dono do vMCP alvo ou um admin.
+api.put(
+  '/api/skills/:slug/mcps/:mcp',
+  route(async (req, res) => {
+    res.json(
+      bodyOnly(await mcps.linkSkill(req.user!, param(req, 'mcp'), param(req, 'slug'), req.body)),
+    );
+  }),
+);
+
+api.delete(
+  '/api/skills/:slug/mcps/:mcp',
+  route(async (req, res) => {
+    res.json(bodyOnly(await mcps.unlinkSkill(req.user!, param(req, 'mcp'), param(req, 'slug'))));
   }),
 );
 
@@ -786,10 +780,6 @@ api.patch(
       slug?: string;
       description?: string;
       tags?: string[];
-      isPublic?: boolean;
-      useAsSkill?: boolean;
-      useAsPrompt?: boolean;
-      useAsResource?: boolean;
       skillMd?: string;
     };
 
@@ -802,25 +792,12 @@ api.patch(
         slug: body.slug,
         description: body.description,
         tags: body.tags,
-        isPublic: body.isPublic,
-        useAsSkill: body.useAsSkill,
-        useAsPrompt: body.useAsPrompt,
-        useAsResource: body.useAsResource,
         skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,
       },
       SOURCE,
       actorFrom(req),
     );
     res.json(bodyOnly(detail));
-  }),
-);
-
-api.post(
-  '/api/skills/:slug/visibility',
-  requireWrite,
-  route(async (req, res) => {
-    const isPublic = (req.body as { isPublic?: unknown })?.isPublic === true;
-    res.json(await setVisibility(param(req, 'slug'), isPublic, SOURCE, actorFrom(req)));
   }),
 );
 
@@ -842,7 +819,7 @@ api.delete(
  */
 const serveSkillPackage = (ext: 'zip' | 'skill') =>
   route(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: true });
+    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'all' });
     if (!skill) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
@@ -858,7 +835,7 @@ api.get('/api/skills/:slug/download.skill', serveSkillPackage('skill'));
 api.get(
   '/api/skills/:slug/files/*path',
   route(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: true });
+    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'all' });
     if (!skill) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
@@ -993,6 +970,16 @@ api.post(
     res.json({ files });
   }),
 );
+
+/** Campo multipart com JSON; ausente ou inválido é "nada", e a lista é conferida depois. */
+function parseJsonList(raw: string | undefined): unknown {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
 
 function parseTags(raw: string | undefined): string[] {
   if (!raw) return [];

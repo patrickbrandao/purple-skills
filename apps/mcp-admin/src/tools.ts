@@ -4,12 +4,12 @@ import {
   deleteFile,
   deleteSkill,
   getSkillDetail,
+  getVirtualMcp,
   listSkills,
   listTags,
   readFile,
   setFile,
   setFiles,
-  setVisibility,
   stats,
   updateSkill,
 } from '@purple-skills/db';
@@ -17,6 +17,7 @@ import {
   SKILL_MD,
   ZipError,
   canDelete,
+  canManageVirtualMcp,
   canWrite,
   composeSkillMd,
   extractZip,
@@ -24,6 +25,7 @@ import {
   normalizeRelativePath,
   readIntEnv,
   stripFrontmatter,
+  type SkillSummary,
 } from '@purple-skills/shared';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
@@ -59,7 +61,27 @@ export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult>
   }
 }
 
-const pageUrl = (slug: string) => `${config.siteBaseUrl}/skills/${slug}`;
+/** A página no site existe quando a skill está em algum vMCP aberto e ligado. */
+const pageUrl = (skill: SkillSummary): string | undefined =>
+  skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive)
+    ? `${config.siteBaseUrl}/skills/${skill.slug}`
+    : undefined;
+
+/** Os vínculos de uma skill, como as tools os mostram. */
+const mcpsOf = (skill: SkillSummary) =>
+  skill.mcps.map((mcp) => ({
+    slug: mcp.slug,
+    name: mcp.name,
+    isOpen: mcp.isOpen,
+    isActive: mcp.isActive,
+    isDefault: mcp.isDefault,
+    asSkill: mcp.asSkill,
+    asPrompt: mcp.asPrompt,
+    asResource: mcp.asResource,
+  }));
+
+/** Entrada de `create_skill.mcps`: o vMCP pelo slug e as três portas. */
+type McpLinkArg = { slug: string; asSkill: boolean; asPrompt: boolean; asResource: boolean };
 
 /**
  * Handlers das ferramentas administrativas, testáveis sem transporte HTTP.
@@ -85,9 +107,42 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       ? null
       : fail(`Apagar skill exige papel "admin"; sua credencial é "${caller.role}".`);
 
+  /**
+   * Resolve a lista "publicar em" de `create_skill`: cada vMCP pelo slug, e a
+   * mesma permissão de `set_virtual_mcp_skills` — dono ou admin. Um que a
+   * credencial não administre recusa a criação inteira.
+   */
+  async function resolveLinks(entries: McpLinkArg[] | undefined) {
+    const links = [];
+    for (const entry of entries ?? []) {
+      const mcp = await getVirtualMcp(entry.slug);
+      if (!mcp) throw new AppError(`MCP virtual não encontrado: "${entry.slug}"`, 404, 'not_found');
+      if (!canManageVirtualMcp(caller.role, mcp.ownerUserUuid, actor.userUuid)) {
+        throw new AppError(
+          `O MCP virtual "${entry.slug}" pertence a outra conta; só o dono ou um admin publicam nele.`,
+          403,
+          'forbidden',
+        );
+      }
+      if (!entry.asSkill && !entry.asPrompt && !entry.asResource) {
+        throw new AppError(
+          `"${entry.slug}": escolha ao menos uma superfície (asSkill, asPrompt ou asResource)`,
+          400,
+          'bad_request',
+        );
+      }
+      links.push({
+        virtualMcpUuid: mcp.uuid,
+        asSkill: entry.asSkill,
+        asPrompt: entry.asPrompt,
+        asResource: entry.asResource,
+      });
+    }
+    return links;
+  }
+
   return {
     async list_skills(args: {
-      includePrivate?: boolean;
       query?: string;
       tag?: string;
       limit?: number;
@@ -98,7 +153,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         tag: args.tag ?? null,
         limit: args.limit ?? 50,
         offset: args.offset ?? 0,
-        includePrivate: args.includePrivate !== false,
+        // O catálogo inteiro, inclusive as flutuantes: é o painel do agente.
+        visibility: 'all',
         sort: args.query ? undefined : 'recent',
       });
 
@@ -112,10 +168,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           slug: skill.slug,
           name: skill.name,
           description: skill.description,
-          visibility: skill.isPublic ? 'public' : 'private',
-          useAsSkill: skill.useAsSkill,
-          useAsPrompt: skill.useAsPrompt,
-          useAsResource: skill.useAsResource,
+          mcps: mcpsOf(skill),
           tags: skill.tags,
           files: skill.fileCount,
           views: skill.viewCount,
@@ -126,21 +179,18 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     },
 
     async get_skill(args: { slug: string }): Promise<ToolResult> {
-      const detail = await getSkillDetail(args.slug, { includePrivate: true });
+      const detail = await getSkillDetail(args.slug, { visibility: 'all' });
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
       return asJson({
         slug: detail.slug,
         name: detail.name,
         description: detail.description,
-        visibility: detail.isPublic ? 'public' : 'private',
-        useAsSkill: detail.useAsSkill,
-        useAsPrompt: detail.useAsPrompt,
-        useAsResource: detail.useAsResource,
+        mcps: mcpsOf(detail),
         tags: detail.tags,
         views: detail.viewCount,
         downloads: detail.downloadCount,
-        url: pageUrl(detail.slug),
+        url: pageUrl(detail),
         files: detail.files.map((file) => ({
           path: file.relativePath,
           mimeType: file.mimeType,
@@ -153,7 +203,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     },
 
     async get_file(args: { slug: string; path: string }): Promise<ToolResult> {
-      const detail = await getSkillDetail(args.slug, { includePrivate: true });
+      const detail = await getSkillDetail(args.slug, { visibility: 'all' });
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
       const path = normalizeRelativePath(args.path);
@@ -176,10 +226,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       skill_md_content: string;
       tags?: string[];
       slug?: string;
-      is_public?: boolean;
-      use_as_skill?: boolean;
-      use_as_prompt?: boolean;
-      use_as_resource?: boolean;
+      mcps?: McpLinkArg[];
     }): Promise<ToolResult> {
       const denied = denyWrite();
       if (denied) return denied;
@@ -192,22 +239,18 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           // Os metadados vêm dos campos; um frontmatter no corpo é descartado.
           skillMd: stripFrontmatter(args.skill_md_content),
           tags: args.tags,
-          isPublic: args.is_public === true,
-          // Espelho das outras duas: esta nasce ligada, então só o `false`
-          // explícito a desliga. Omitir mantém a skill nas ferramentas.
-          useAsSkill: args.use_as_skill !== false,
-          useAsPrompt: args.use_as_prompt === true,
-          useAsResource: args.use_as_resource === true,
+          mcps: await resolveLinks(args.mcps),
         },
         SOURCE,
         actor,
       );
 
-      return text(
-        `Skill criada: "${detail.name}" (slug: ${detail.slug}, ${
-          detail.isPublic ? 'pública' : 'privada'
-        }).\n${pageUrl(detail.slug)}`,
-      );
+      const onde =
+        detail.mcps.length > 0
+          ? `publicada em ${detail.mcps.map((mcp) => mcp.slug).join(', ')}`
+          : 'sem vínculo — use link_skill para publicá-la em um MCP virtual';
+      const page = pageUrl(detail);
+      return text(`Skill criada: "${detail.name}" (slug: ${detail.slug}, ${onde}).${page ? `\n${page}` : ''}`);
     },
 
     async edit_skill(args: {
@@ -216,40 +259,18 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       description?: string;
       tags?: string[];
       new_slug?: string;
-      use_as_skill?: boolean;
-      use_as_prompt?: boolean;
-      use_as_resource?: boolean;
     }): Promise<ToolResult> {
       const denied = denyWrite();
       if (denied) return denied;
 
       const detail = await updateSkill(
         args.slug,
-        {
-          name: args.name,
-          description: args.description,
-          tags: args.tags,
-          slug: args.new_slug,
-          useAsSkill: args.use_as_skill,
-          useAsPrompt: args.use_as_prompt,
-          useAsResource: args.use_as_resource,
-        },
+        { name: args.name, description: args.description, tags: args.tags, slug: args.new_slug },
         SOURCE,
         actor,
       );
 
       return text(`Skill atualizada: "${detail.name}" (slug: ${detail.slug}).`);
-    },
-
-    async set_visibility(args: {
-      slug: string;
-      visibility: 'public' | 'private';
-    }): Promise<ToolResult> {
-      const denied = denyWrite();
-      if (denied) return denied;
-
-      const summary = await setVisibility(args.slug, args.visibility === 'public', SOURCE, actor);
-      return text(`"${summary.name}" agora é ${summary.isPublic ? 'pública' : 'privada'}.`);
     },
 
     async set_file(args: { slug: string; path: string; content: string }): Promise<ToolResult> {
@@ -341,7 +362,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     },
 
     async list_tags(): Promise<ToolResult> {
-      return asJson({ tags: await listTags({ includePrivate: true }) });
+      return asJson({ tags: await listTags({ visibility: 'all' }) });
     },
 
     async get_stats(): Promise<ToolResult> {

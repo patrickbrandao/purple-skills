@@ -63,10 +63,6 @@ a implementação.
 | `slug`           | text, unique            | identificador legível usado em URLs/MCP |
 | `name`           | text                    |                                          |
 | `description`    | text                    |                                          |
-| `is_public`      | boolean                 | público/privado — **interruptor global** da publicação |
-| `use_as_skill`   | boolean, default true   | mantém a skill pública nas *ferramentas* do MCP (opt-out) |
-| `use_as_prompt`  | boolean, default false  | oferece a skill pública como *prompt* do MCP |
-| `use_as_resource`| boolean, default false  | oferece a skill pública como *resource* `skill://<slug>` |
 | `view_count`     | bigint, default 0       | incrementado a cada acesso ao SKILL.md   |
 | `download_count` | bigint, default 0       | incrementado a cada download do pacote   |
 | `search_vector`  | tsvector                | mantido por trigger (ver seção 5)        |
@@ -75,12 +71,13 @@ a implementação.
 - **Ranking/"votação de acesso"**: `ORDER BY (view_count + download_count) DESC`
   — soma simples, sem pesos, calculada em tempo de query (sem coluna de
   score armazenada).
-- **As três flags de superfície são independentes entre si e de `is_public`**,
-  sem CHECK amarrando uma à outra: `is_public` decide *se* a skill é publicada,
-  elas decidem *por onde*, e nenhuma publica nada sozinha. Desenho em
-  [`06-publicacao-mcp.md`](06-publicacao-mcp.md) (prompt e resource) e
-  [`07-superficie-de-ferramentas.md`](07-superficie-de-ferramentas.md)
-  (ferramentas, e `is_public` como interruptor global).
+- **A skill é flutuante: não há coluna de visibilidade.** Ela só é exibida —
+  no site e nos servidores MCP — onde está vinculada a um MCP virtual
+  (`virtual_mcp_skills`), e o vínculo carrega as três portas (`as_skill`,
+  `as_prompt`, `as_resource`). O site mostra o que está em ao menos um MCP
+  virtual aberto e ligado. `is_public` e as `use_as_*` existiram entre `001` e
+  `012`; o desenho está em
+  [`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md).
 
 ### 3.2 Tabela `files`
 
@@ -353,22 +350,24 @@ de grupo do IdP. Os motivos estão na §5 de
 
 CRUD completo, espelhando o painel administrativo:
 
-- `create_skill(name, description, skill_md_content, tags?, is_public?,
-  use_as_skill?, use_as_prompt?, use_as_resource?)`
-- `edit_skill(slug, { name?, description?, tags?, use_as_skill?,
-  use_as_prompt?, use_as_resource? })`
-- `set_visibility(slug, "public" | "private")`
+- `create_skill(name, description, skill_md_content, tags?, slug?,
+  mcps?: [{slug, asSkill, asPrompt, asResource}])` — nasce publicada onde a
+  credencial administra, ou sem vínculo
+- `edit_skill(slug, { name?, description?, tags?, new_slug? })`
+- `link_skill(skill, mcp, asSkill, asPrompt, asResource)` /
+  `unlink_skill(skill, mcp)` — o vínculo pelo lado da skill; a permissão é a
+  do MCP virtual alvo
 - `set_file(slug, path, content)`
 - `set_files_bulk(slug, zip_base64)`
 - `delete_file(slug, path)` (bloqueado para `path = "SKILL.md"`)
 - `delete_skill(slug)`
-- `list_skills(includePrivate = true)`
+- `list_skills()` — o catálogo inteiro, inclusive skills sem vínculo, cada
+  uma com `mcps`
 - MCPs virtuais ([`08`](08-mcp-virtual.md) §6.2): `list_virtual_mcps()`,
   `get_virtual_mcp(slug)`, `create_virtual_mcp(name, slug?, description?,
   is_open?)`, `update_virtual_mcp(slug, {name?, new_slug?, description?,
-  is_open?, is_active?, confirm_open?})`, `delete_virtual_mcp(slug, confirm)`,
-  `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}],
-  confirm_open?)`, `list_virtual_mcp_keys(slug)`,
+  is_open?, is_active?})`, `delete_virtual_mcp(slug, confirm)`,
+  `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])`, `list_virtual_mcp_keys(slug)`,
   `create_virtual_mcp_key(slug, name)`, `revoke_virtual_mcp_key(slug, key_id)`.
   Alcance por dono: o token global e as chaves de admin administram qualquer
   um; a chave de um usuário, os MCPs de que ele é dono.
@@ -450,8 +449,9 @@ protegida só pela confirmação explícita; a diferença 404/401 sob `/virtual/
 permite enumerar os slugs dos MCPs; e o virtual é a primeira entidade com dono
 — a exceção ao "papel limita a ação, não o escopo" da `§7.1`, restrita a ele.
 
-**Riscos introduzidos pelo MCP padrão** ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §5):
-o vMCP `public` criado na migração nasce aberto, e quem protegia o principal
-com `MCP_PUBLIC_KEY` é avisado só pela trava de boot; trocar o padrão derruba
-as sessões abertas na raiz até reconectar; e até o PR2 `is_public` e
-`use_as_*` existem sem efeito em MCP nenhum.
+**Riscos introduzidos pelo MCP padrão e pelas skills flutuantes**
+([`09`](09-mcp-padrao-e-skills-flutuantes.md) §5): o vMCP `public` criado na
+migração nasce aberto, e quem protegia o principal com `MCP_PUBLIC_KEY` é
+avisado só pela trava de boot; trocar o padrão derruba as sessões abertas na
+raiz até reconectar; todo MCP virtual aberto é público de fato e listado no
+site, sem a confirmação que `08` exigia.

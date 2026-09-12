@@ -113,34 +113,13 @@ export function McpsPage({ user }: { user: SessionUser }) {
                           </span>
                         )}
                         {mcp.isOpen && (
-                          <span
-                            className={`badge surface ${mcp.privateSkillCount > 0 ? 'off' : ''}`}
-                            title={
-                              mcp.privateSkillCount > 0
-                                ? `Aberto com ${mcp.privateSkillCount} skill(s) privada(s) legível(is) sem chave`
-                                : 'Sem chave: qualquer cliente conecta'
-                            }
-                          >
+                          <span className="badge surface" title="Sem chave: qualquer cliente conecta, e o site o lista">
                             aberto
                           </span>
                         )}
                       </div>
                     </td>
-                    <td
-                      className="num hidden whitespace-nowrap sm:table-cell"
-                      title={
-                        mcp.privateSkillCount > 0
-                          ? `${mcp.privateSkillCount} delas privada(s)`
-                          : undefined
-                      }
-                    >
-                      {mcp.skillCount}
-                      {mcp.privateSkillCount > 0 && (
-                        // `.row-sub` é `display: block` (é a segunda linha de
-                        // uma célula); aqui ela é o resto da mesma linha.
-                        <span className="row-sub !mt-0 inline"> · {mcp.privateSkillCount} priv.</span>
-                      )}
-                    </td>
+                    <td className="num hidden whitespace-nowrap sm:table-cell">{mcp.skillCount}</td>
                     <td className="num hidden sm:table-cell">{mcp.activeKeyCount}</td>
                     <td className="hidden md:table-cell">
                       <span className="row-sub">{mcp.ownerEmail ?? 'sem dono (só admin)'}</span>

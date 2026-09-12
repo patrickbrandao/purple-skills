@@ -5,6 +5,7 @@ import { Masthead } from '../components/catalog/Masthead.js';
 import { Connect } from '../components/catalog/Connect.js';
 import { ConnectAdmin } from '../components/catalog/ConnectAdmin.js';
 import { Endpoints } from '../components/catalog/Endpoints.js';
+import { OpenMcps } from '../components/catalog/OpenMcps.js';
 import { Catalog } from '../components/catalog/Catalog.js';
 
 export function HomePage() {
@@ -20,6 +21,7 @@ export function HomePage() {
       <Masthead />
       <Catalog />
       <Connect />
+      <OpenMcps />
       <ConnectAdmin />
       <Endpoints />
     </>

@@ -55,7 +55,7 @@ describe.skipIf(!url)('arquivos: unicidade de caminho sem diferenciar caixa', ()
     process.env.DATABASE_URL = url;
 
     const skill = await createSkill(
-      { name: 'Caso 003', slug: 'caso-003', skillMd: '# original', isPublic: true },
+      { name: 'Caso 003', slug: 'caso-003', skillMd: '# original' },
       SOURCE,
     );
     uuid = skill.uuid;
@@ -75,7 +75,7 @@ describe.skipIf(!url)('arquivos: unicidade de caminho sem diferenciar caixa', ()
     );
     expect(principais.map((file) => file.relativePath)).toEqual(['SKILL.md']);
 
-    const detail = await getSkillDetail('caso-003', { includePrivate: true });
+    const detail = await getSkillDetail('caso-003', { visibility: 'all' });
     expect(detail?.skillMd).toBe('# sobrescrito');
   });
 

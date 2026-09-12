@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ApiError,
-  CONFIRM_OPEN_REQUIRED,
   createMcpKey,
   deleteMcp,
   formatDateTime,
@@ -32,14 +30,9 @@ import {
   TrashIcon,
 } from '../components/Icons.js';
 import { useToast } from '../components/Toast.js';
+import { SURFACES } from '../components/SkillMcps.js';
 
-type SkillLink = VirtualMcpSkillInput & { name: string; isPublic: boolean };
-
-const SURFACES = [
-  { key: 'asSkill' as const, label: 'skill', title: 'Nas ferramentas: search_skills, get_skill…' },
-  { key: 'asPrompt' as const, label: 'prompt', title: 'Como prompt, pelo slug (slash-command)' },
-  { key: 'asResource' as const, label: 'resource', title: 'Como resource skill://<slug>' },
-];
+type SkillLink = VirtualMcpSkillInput & { name: string };
 
 /**
  * Um MCP virtual: configuração, skills vinculadas (com as três superfícies
@@ -99,7 +92,9 @@ export function McpPage({ session, user }: { session: Session; user: SessionUser
               </span>
             )}
             {mcp.isOpen && (
-              <span className={`badge surface ${mcp.privateSkillCount > 0 ? 'off' : ''}`}>aberto</span>
+              <span className="badge surface" title="Sem chave: qualquer cliente conecta, e o site o lista">
+                aberto
+              </span>
             )}
           </h1>
           <p className="sub mono flex flex-wrap items-center gap-x-3">
@@ -165,11 +160,11 @@ function SkillsPanel({
   const dirty = useMemo(() => JSON.stringify(links) !== JSON.stringify(fromDetail(mcp)), [links, mcp]);
 
   function add(skill: SkillSummary) {
-    // A escolha das superfícies é obrigatória: a linha entra sem nenhuma
-    // marcada, e salvar sem marcar ao menos uma é recusado abaixo.
+    // Nasce nas ferramentas — a porta que o agente descobre sozinho. As outras
+    // duas ficam para quem quiser; salvar sem nenhuma é recusado abaixo.
     setLinks((current) => [
       ...current,
-      { slug: skill.slug, name: skill.name, isPublic: skill.isPublic, asSkill: false, asPrompt: false, asResource: false },
+      { slug: skill.slug, name: skill.name, asSkill: true, asPrompt: false, asResource: false },
     ]);
   }
 
@@ -179,7 +174,7 @@ function SkillsPanel({
     );
   }
 
-  async function save(confirmOpen = false) {
+  async function save() {
     const semSuperficie = links.filter((link) => !link.asSkill && !link.asPrompt && !link.asResource);
     if (semSuperficie.length > 0) {
       toast.error(
@@ -193,16 +188,11 @@ function SkillsPanel({
       const saved = await setMcpSkills(
         mcp.slug,
         links.map(({ slug, asSkill, asPrompt, asResource }) => ({ slug, asSkill, asPrompt, asResource })),
-        confirmOpen,
       );
       onSaved(saved);
       toast.success('Skills do MCP virtual salvas.');
     } catch (err) {
-      if (err instanceof ApiError && err.code === CONFIRM_OPEN_REQUIRED) {
-        if (window.confirm(`${err.message}\n\nContinuar mesmo assim?`)) await save(true);
-      } else {
-        toast.error((err as Error).message);
-      }
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -211,9 +201,9 @@ function SkillsPanel({
   return (
     <Panel title="Skills publicadas" icon={<StackIcon />}>
       <p className="panel-hint">
-        Skills privadas entram — é para isso que o MCP virtual existe. Para cada uma, marque por
-        quais superfícies ela sai <strong>neste servidor</strong>; as flags de publicação da
-        própria skill não valem em nenhum MCP, nem no padrão.
+        Qualquer skill do catálogo entra. Para cada uma, marque por quais superfícies ela sai{' '}
+        <strong>neste servidor</strong>: é o vínculo que a exibe — uma skill sem vínculo nenhum não
+        aparece em lugar algum. A mesma lista também se edita na página de cada skill.
       </p>
 
       <div className="table-wrap">
@@ -235,9 +225,7 @@ function SkillsPanel({
                     <Link to={`/skills/${link.slug}`} className="row-title">
                       {link.name}
                     </Link>
-                    <span className="row-sub">
-                      {link.slug} · {link.isPublic ? 'pública' : 'privada'}
-                    </span>
+                    <span className="row-sub">{link.slug}</span>
                   </td>
                   <td>
                     <div className="flex flex-wrap gap-2">
@@ -299,7 +287,11 @@ function SkillsPanel({
             .map((skill) => (
               <li key={skill.uuid} className="flex items-center justify-between gap-3 text-sm">
                 <span className="min-w-0 truncate">
-                  {skill.name} <span className="row-sub">{skill.slug} · {skill.isPublic ? 'pública' : 'privada'}</span>
+                  {skill.name}{' '}
+                  <span className="row-sub">
+                    {skill.slug}
+                    {skill.mcps.length === 0 ? ' · sem vínculo' : ` · em ${skill.mcps.length} MCP(s)`}
+                  </span>
                 </span>
                 <button type="button" className="link-action" onClick={() => add(skill)}>
                   Adicionar
@@ -323,7 +315,6 @@ function fromDetail(mcp: VirtualMcpDetail): SkillLink[] {
   return mcp.skills.map((skill) => ({
     slug: skill.slug,
     name: skill.name,
-    isPublic: skill.isPublic,
     asSkill: skill.asSkill,
     asPrompt: skill.asPrompt,
     asResource: skill.asResource,
@@ -561,13 +552,7 @@ function SettingsPanel({
       if (saved.slug !== mcp.slug) navigate(`/mcps/${saved.slug}`, { replace: true });
       return true;
     } catch (err) {
-      if (err instanceof ApiError && err.code === CONFIRM_OPEN_REQUIRED) {
-        if (window.confirm(`${err.message}\n\nContinuar mesmo assim?`)) {
-          return patch({ ...body, confirmOpen: true }, successMessage);
-        }
-      } else {
-        toast.error((err as Error).message);
-      }
+      toast.error((err as Error).message);
       return false;
     } finally {
       setBusy(false);
@@ -640,10 +625,8 @@ function SettingsPanel({
           <span className="min-w-0">
             <span className="block text-sm">Aberto, sem chave</span>
             <span className="row-sub block">
-              Qualquer cliente conecta sem credencial.
-              {mcp.privateSkillCount > 0 && (
-                <strong> Há {mcp.privateSkillCount} skill(s) privada(s) aqui: abrir as torna públicas neste endereço.</strong>
-              )}
+              Qualquer cliente conecta sem credencial, e o site passa a listar este servidor e as
+              skills dele. Aberto é público.
             </span>
           </span>
         </label>

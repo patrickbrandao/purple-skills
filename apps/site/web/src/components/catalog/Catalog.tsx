@@ -89,8 +89,9 @@ export function Catalog() {
               O catálogo. <span className="grad-text">Aberto para leitura.</span>
             </h2>
             <p>
-              Tudo que está aqui é público: leia o SKILL.md renderizado, abra os arquivos auxiliares
-              ou baixe o pacote .zip. Seu agente faz o mesmo pelo MCP, sem passar por esta página.
+              Tudo que está aqui está publicado em um servidor MCP aberto: leia o SKILL.md
+              renderizado, abra os arquivos auxiliares ou baixe o pacote .zip. Seu agente faz o
+              mesmo pelo MCP, sem passar por esta página.
             </p>
           </div>
         </div>

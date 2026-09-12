@@ -12,26 +12,16 @@ export function SkillCard({ skill, className = '' }: { skill: SkillSummary; clas
           <span className="slug mono">{skill.slug}</span>
         </span>
 
-        {/* Diz que a skill não chega só pelas ferramentas: o cliente também a
-            vê como slash-command e como endereço skill://. E, quando ela está
-            fora das ferramentas, que essas são as únicas portas — buscar por
-            ela no agente não a encontraria. */}
-        {!skill.useAsSkill && (
+        {/* Em quantos servidores abertos a skill está: é por isso que ela
+            aparece aqui. A página diz quais, e por quais portas. */}
+        {skill.mcps.length > 1 && (
           <span
-            className="sk-surface off"
-            title="Fora das ferramentas do MCP: o agente não a encontra por search_skills"
+            className="sk-surface"
+            title={`Publicada em ${skill.mcps.length} servidores MCP abertos: ${skill.mcps
+              .map((mcp) => mcp.name)
+              .join(', ')}`}
           >
-            sem busca
-          </span>
-        )}
-        {skill.useAsPrompt && (
-          <span className="sk-surface" title="Disponível como prompt do MCP — o slug vira um comando no seu agente">
-            prompt
-          </span>
-        )}
-        {skill.useAsResource && (
-          <span className="sk-surface" title={`Disponível como resource do MCP: skill://${skill.slug}`}>
-            resource
+            {skill.mcps.length} MCPs
           </span>
         )}
       </div>

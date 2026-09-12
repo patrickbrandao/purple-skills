@@ -1,7 +1,14 @@
 # Publicação de skills como prompt e resource do MCP
 
-**Status: implementado.** Este documento registra o desenho fechado para os
-dois campos de `skills` — `use_as_prompt` e `use_as_resource` — que controlam
+**Status: revogado por [`09`](09-mcp-padrao-e-skills-flutuantes.md).** As
+colunas `use_as_prompt` e `use_as_resource` saíram no `012`; as duas
+superfícies continuam existindo, decididas **por vínculo** com um MCP virtual
+(`as_prompt` / `as_resource` de `virtual_mcp_skills`), e o que este documento
+fecha sobre prompt e resource — identidade, conteúdo, handlers de baixo nível,
+listas por requisição, erro indistinto — segue valendo em todo servidor.
+
+Este documento registrava o desenho fechado para os
+dois campos de `skills` — `use_as_prompt` e `use_as_resource` — que controlavam
 **como** uma skill pública é oferecida no MCP, além de *se* ela aparece. É a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra em
 [`02-architecture-decisions.md`](02-architecture-decisions.md), e os desvios

@@ -16,7 +16,7 @@ const { AppError } = vi.hoisted(() => ({
 const db = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
-  setVisibility: vi.fn(),
+  getVirtualMcp: vi.fn(),
   setFile: vi.fn(),
   setFiles: vi.fn(),
   deleteFile: vi.fn(),
@@ -48,10 +48,7 @@ const detail = {
   slug: 'minha-skill',
   name: 'Minha Skill',
   description: 'Faz coisas',
-  isPublic: false,
-  useAsSkill: true,
-  useAsPrompt: false,
-  useAsResource: false,
+  mcps: [],
   viewCount: 0,
   downloadCount: 0,
   score: 0,
@@ -75,23 +72,41 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/** Um vMCP do editor: quem administra publica nele; outro editor, não. */
+const timeA = {
+  uuid: 'mcp-1',
+  slug: 'time-a',
+  name: 'Time A',
+  description: '',
+  isActive: true,
+  isOpen: true,
+  ownerUserUuid: 'uuid-editor',
+  ownerEmail: 'editor@exemplo.com',
+  skillCount: 0,
+  activeKeyCount: 0,
+  isDefault: false,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  skills: [],
+};
+
 describe('create_skill', () => {
   it('encaminha o conteúdo do SKILL.md e marca a origem mcp-admin', async () => {
-    db.createSkill.mockResolvedValue({ ...detail, isPublic: true });
+    db.createSkill.mockResolvedValue(detail);
 
     const result = await handlers.create_skill({
       name: 'Minha Skill',
       skill_md_content: '# Minha Skill',
       tags: ['git'],
-      is_public: true,
     });
 
     expect(db.createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Minha Skill', skillMd: '# Minha Skill', isPublic: true }),
+      expect.objectContaining({ name: 'Minha Skill', skillMd: '# Minha Skill', mcps: [] }),
       'mcp-admin',
       ADMIN_ACTOR,
     );
     expect(result.content[0].text).toContain('Skill criada');
+    expect(result.content[0].text).toContain('sem vínculo');
   });
 
   it('descarta o frontmatter enviado no conteúdo — os campos mandam', async () => {
@@ -111,70 +126,70 @@ describe('create_skill', () => {
     );
   });
 
-  it('cria como privada quando is_public é omitido', async () => {
-    db.createSkill.mockResolvedValue(detail);
+  // Onde a skill aparece é o vínculo: `mcps` resolve o slug em uuid e a
+  // permissão é a do vMCP — o dono ou um admin.
+  it('publica nos vMCPs pedidos, com a permissão de quem os administra', async () => {
+    db.getVirtualMcp.mockResolvedValue(timeA);
+    db.createSkill.mockResolvedValue({
+      ...detail,
+      mcps: [{ ...timeA, asSkill: true, asPrompt: false, asResource: false }],
+    });
 
-    await handlers.create_skill({ name: 'X', skill_md_content: '# X' });
+    const result = await createHandlers(caller('editor')).create_skill({
+      name: 'X',
+      skill_md_content: '# X',
+      mcps: [{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }],
+    });
 
     expect(db.createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({ isPublic: false }),
+      expect.objectContaining({
+        mcps: [{ virtualMcpUuid: 'mcp-1', asSkill: true, asPrompt: false, asResource: false }],
+      }),
       'mcp-admin',
-      ADMIN_ACTOR,
+      expect.anything(),
     );
+    expect(result.content[0].text).toContain('publicada em time-a');
+    expect(result.content[0].text).toContain('/skills/minha-skill');
   });
 
-  // As três flags de superfície não têm o mesmo padrão: omitir prompt e
-  // resource desliga, omitir `use_as_skill` mantém a skill nas ferramentas.
-  it('nasce nas ferramentas do MCP público, e só o false explícito a tira de lá', async () => {
-    db.createSkill.mockResolvedValue(detail);
+  it('recusa um vMCP de outra conta, ou sem superfície, sem criar nada', async () => {
+    db.getVirtualMcp.mockResolvedValue({ ...timeA, ownerUserUuid: 'uuid-outra' });
 
-    await handlers.create_skill({ name: 'X', skill_md_content: '# X' });
-    expect(db.createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({ useAsSkill: true, useAsPrompt: false, useAsResource: false }),
-      'mcp-admin',
-      ADMIN_ACTOR,
+    const alheio = await guard(() =>
+      createHandlers(caller('editor')).create_skill({
+        name: 'X',
+        skill_md_content: '# X',
+        mcps: [{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }],
+      }),
     );
+    expect(alheio.isError).toBe(true);
+    expect(alheio.content[0].text).toMatch(/pertence a outra conta/);
 
-    await handlers.create_skill({ name: 'X', skill_md_content: '# X', use_as_skill: false });
-    expect(db.createSkill).toHaveBeenLastCalledWith(
-      expect.objectContaining({ useAsSkill: false }),
-      'mcp-admin',
-      ADMIN_ACTOR,
+    db.getVirtualMcp.mockResolvedValue(timeA);
+    const semPorta = await guard(() =>
+      handlers.create_skill({
+        name: 'X',
+        skill_md_content: '# X',
+        mcps: [{ slug: 'time-a', asSkill: false, asPrompt: false, asResource: false }],
+      }),
     );
+    expect(semPorta.isError).toBe(true);
+    expect(db.createSkill).not.toHaveBeenCalled();
   });
 });
 
 describe('edit_skill', () => {
-  // Aqui `undefined` é "não mexe" nas três, e é o `@purple-skills/db` que
-  // preserva o valor gravado — mandar `false` por omissão apagaria a escolha.
-  it('repassa as flags de superfície sem inventar padrão', async () => {
+  it('repassa só os metadados; onde a skill aparece é link_skill', async () => {
     db.updateSkill.mockResolvedValue(detail);
 
-    await handlers.edit_skill({ slug: 'minha-skill', use_as_skill: false });
+    await handlers.edit_skill({ slug: 'minha-skill', name: 'Novo nome', new_slug: 'novo' });
 
     expect(db.updateSkill).toHaveBeenCalledWith(
       'minha-skill',
-      expect.objectContaining({
-        useAsSkill: false,
-        useAsPrompt: undefined,
-        useAsResource: undefined,
-      }),
+      { name: 'Novo nome', description: undefined, tags: undefined, slug: 'novo' },
       'mcp-admin',
       ADMIN_ACTOR,
     );
-  });
-});
-
-describe('set_visibility', () => {
-  it('traduz "public"/"private" para o booleano do banco', async () => {
-    db.setVisibility.mockResolvedValue({ ...detail, isPublic: true });
-
-    await handlers.set_visibility({ slug: 'minha-skill', visibility: 'public' });
-    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', true, 'mcp-admin', ADMIN_ACTOR);
-
-    db.setVisibility.mockResolvedValue({ ...detail, isPublic: false });
-    await handlers.set_visibility({ slug: 'minha-skill', visibility: 'private' });
-    expect(db.setVisibility).toHaveBeenCalledWith('minha-skill', false, 'mcp-admin', ADMIN_ACTOR);
   });
 });
 
@@ -366,20 +381,30 @@ describe('get_skill', () => {
 });
 
 describe('list_skills', () => {
-  it('inclui skills privadas por padrão', async () => {
-    db.listSkills.mockResolvedValue({ items: [detail], total: 1, limit: 50, offset: 0 });
+  it('lê o catálogo inteiro, inclusive skills sem vínculo, e mostra onde cada uma está', async () => {
+    db.listSkills.mockResolvedValue({
+      items: [{ ...detail, mcps: [{ ...timeA, asSkill: true, asPrompt: true, asResource: false }] }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
 
-    await handlers.list_skills({});
+    const payload = JSON.parse((await handlers.list_skills({})).content[0].text);
 
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ includePrivate: true }));
-  });
-
-  it('respeita includePrivate: false', async () => {
-    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
-
-    await handlers.list_skills({ includePrivate: false });
-
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ includePrivate: false }));
+    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ visibility: 'all' }));
+    expect(payload.skills[0].mcps).toEqual([
+      {
+        slug: 'time-a',
+        name: 'Time A',
+        isOpen: true,
+        isActive: true,
+        isDefault: false,
+        asSkill: true,
+        asPrompt: true,
+        asResource: false,
+      },
+    ]);
+    expect(payload.skills[0]).not.toHaveProperty('visibility');
   });
 });
 
@@ -406,10 +431,10 @@ describe('guard', () => {
 // ---------------------------------------------------------------- papéis ---
 
 describe('papel da credencial', () => {
-  it('leitor lê o catálogo inteiro, inclusive privadas', async () => {
+  it('leitor lê o catálogo inteiro, inclusive skills sem vínculo', async () => {
     db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
     await createHandlers(caller('leitor')).list_skills({});
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ includePrivate: true }));
+    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ visibility: 'all' }));
   });
 
   it('leitor não escreve nada', async () => {
@@ -418,7 +443,6 @@ describe('papel da credencial', () => {
     for (const result of [
       await leitor.create_skill({ name: 'X', skill_md_content: '# X' }),
       await leitor.edit_skill({ slug: 'minha-skill', name: 'Y' }),
-      await leitor.set_visibility({ slug: 'minha-skill', visibility: 'public' }),
       await leitor.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' }),
       await leitor.set_files_bulk({ slug: 'minha-skill', zip_base64: makeZip({ 'a.md': 'a' }) }),
       await leitor.delete_file({ slug: 'minha-skill', path: 'a.md' }),

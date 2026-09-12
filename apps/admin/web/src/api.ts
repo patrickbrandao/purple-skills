@@ -1,13 +1,24 @@
+/** Um vMCP em que a skill está, com as três portas do vínculo. */
+export type SkillMcpRef = {
+  uuid: string;
+  slug: string;
+  name: string;
+  isOpen: boolean;
+  isActive: boolean;
+  isDefault: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
 /** Cópia manual do tipo de `@purple-skills/shared` — este bundle é de browser. */
 export type SkillSummary = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
-  isPublic: boolean;
-  useAsSkill: boolean;
-  useAsPrompt: boolean;
-  useAsResource: boolean;
+  /** Onde a skill está. Vazio = flutuante: não é exibida em lugar nenhum. */
+  mcps: SkillMcpRef[];
   viewCount: number;
   downloadCount: number;
   score: number;
@@ -35,8 +46,10 @@ export type SearchResult = {
 
 export type Stats = {
   totalSkills: number;
-  publicSkills: number;
-  privateSkills: number;
+  /** Em ao menos um vMCP aberto e ligado — o que o site mostra. */
+  openSkills: number;
+  /** Sem vínculo nenhum. */
+  unlinkedSkills: number;
   totalFiles: number;
   totalViews: number;
   totalDownloads: number;
@@ -155,7 +168,6 @@ export type VirtualMcpSummary = {
   ownerUserUuid: string | null;
   ownerEmail: string | null;
   skillCount: number;
-  privateSkillCount: number;
   activeKeyCount: number;
   /** É o vMCP que responde em `/mcp`. */
   isDefault: boolean;
@@ -168,7 +180,6 @@ export type VirtualMcpSkill = {
   slug: string;
   name: string;
   description: string;
-  isPublic: boolean;
   asSkill: boolean;
   asPrompt: boolean;
   asResource: boolean;
@@ -185,7 +196,13 @@ export type VirtualMcpSkillInput = {
   asResource: boolean;
 };
 
-export type VirtualMcpRef = { uuid: string; slug: string; name: string };
+/** Vínculo pedido pelo lado da skill: o vMCP pelo slug e as três portas. */
+export type SkillLinkInput = {
+  slug: string;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
 
 export type VirtualMcpKeySummary = {
   id: string;
@@ -205,9 +222,6 @@ export type InstallationSettings = {
     | { status: 'inactive'; uuid: string; slug: string; name: null; isOpen: null }
     | { status: 'none' | 'deleted'; uuid: null; slug: null; name: null; isOpen: null };
 };
-
-/** Código do 400 que pede confirmação para abrir um MCP com skill privada. */
-export const CONFIRM_OPEN_REQUIRED = 'confirm_open_required';
 
 export class ApiError extends Error {
   constructor(
@@ -323,8 +337,7 @@ export function listSkills(params: { q?: string; tag?: string; limit?: number; o
   return request<SearchResult>(`/api/skills?${query.toString()}`);
 }
 
-export const getSkill = (slug: string) =>
-  request<SkillDetail & { virtualMcps: VirtualMcpRef[] }>(`/api/skills/${encodeURIComponent(slug)}`);
+export const getSkill = (slug: string) => request<SkillDetail>(`/api/skills/${encodeURIComponent(slug)}`);
 
 export type CreateSkillBody = {
   name: string;
@@ -332,16 +345,14 @@ export type CreateSkillBody = {
   description?: string;
   skillMd: string;
   tags?: string[];
-  isPublic?: boolean;
-  useAsSkill?: boolean;
-  useAsPrompt?: boolean;
-  useAsResource?: boolean;
+  /** Onde publicar já na criação; só em vMCPs que a sessão administra. */
+  mcps?: SkillLinkInput[];
 };
 
 export const createSkill = (body: CreateSkillBody) =>
   request<SkillDetail>('/api/skills', { method: 'POST', body: json(body) });
 
-export type UpdateSkillBody = Partial<CreateSkillBody>;
+export type UpdateSkillBody = Partial<Omit<CreateSkillBody, 'mcps'>>;
 
 export const updateSkill = (slug: string, body: UpdateSkillBody) =>
   request<SkillDetail>(`/api/skills/${encodeURIComponent(slug)}`, {
@@ -349,11 +360,18 @@ export const updateSkill = (slug: string, body: UpdateSkillBody) =>
     body: json(body),
   });
 
-export const setVisibility = (slug: string, isPublic: boolean) =>
-  request<SkillSummary>(`/api/skills/${encodeURIComponent(slug)}/visibility`, {
-    method: 'POST',
-    body: json({ isPublic }),
-  });
+// Vínculo pelo lado da skill: a permissão é a do vMCP alvo (dono ou admin).
+const skillMcpPath = (slug: string, mcp: string) =>
+  `/api/skills/${encodeURIComponent(slug)}/mcps/${encodeURIComponent(mcp)}`;
+
+export const linkSkillToMcp = (
+  slug: string,
+  mcp: string,
+  flags: { asSkill: boolean; asPrompt: boolean; asResource: boolean },
+) => request<SkillDetail>(skillMcpPath(slug, mcp), { method: 'PUT', body: json(flags) });
+
+export const unlinkSkillFromMcp = (slug: string, mcp: string) =>
+  request<SkillDetail>(skillMcpPath(slug, mcp), { method: 'DELETE' });
 
 export const deleteSkill = (slug: string) =>
   request<unknown>(`/api/skills/${encodeURIComponent(slug)}`, { method: 'DELETE' });
@@ -388,10 +406,7 @@ export function importZip(
     name?: string;
     description?: string;
     tags?: string[];
-    isPublic?: boolean;
-    useAsSkill?: boolean;
-    useAsPrompt?: boolean;
-    useAsResource?: boolean;
+    mcps?: SkillLinkInput[];
   },
 ) {
   const form = new FormData();
@@ -399,11 +414,7 @@ export function importZip(
   if (fields.name) form.append('name', fields.name);
   if (fields.description) form.append('description', fields.description);
   if (fields.tags?.length) form.append('tags', JSON.stringify(fields.tags));
-  form.append('isPublic', String(fields.isPublic === true));
-  // Esta nasce ligada: quem omite quer o padrão, não o desligamento.
-  form.append('useAsSkill', String(fields.useAsSkill !== false));
-  form.append('useAsPrompt', String(fields.useAsPrompt === true));
-  form.append('useAsResource', String(fields.useAsResource === true));
+  if (fields.mcps?.length) form.append('mcps', JSON.stringify(fields.mcps));
   return request<SkillDetail>('/api/skills/import', { method: 'POST', body: form });
 }
 
@@ -444,7 +455,6 @@ export type UpdateMcpBody = {
   isOpen?: boolean;
   isActive?: boolean;
   ownerUserUuid?: string | null;
-  confirmOpen?: boolean;
 };
 
 export const updateMcp = (slug: string, body: UpdateMcpBody) =>
@@ -452,11 +462,8 @@ export const updateMcp = (slug: string, body: UpdateMcpBody) =>
 
 export const deleteMcp = (slug: string) => request<unknown>(mcpPath(slug), { method: 'DELETE' });
 
-export const setMcpSkills = (slug: string, skills: VirtualMcpSkillInput[], confirmOpen?: boolean) =>
-  request<VirtualMcpDetail>(`${mcpPath(slug)}/skills`, {
-    method: 'PUT',
-    body: json({ skills, confirmOpen }),
-  });
+export const setMcpSkills = (slug: string, skills: VirtualMcpSkillInput[]) =>
+  request<VirtualMcpDetail>(`${mcpPath(slug)}/skills`, { method: 'PUT', body: json({ skills }) });
 
 export const getMcpKeys = (slug: string) =>
   request<{ items: VirtualMcpKeySummary[] }>(`${mcpPath(slug)}/keys`);

@@ -18,7 +18,7 @@ import {
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { Badge, Button, Panel, PublicationBadges } from '../components/ui.js';
+import { Button, McpBadges, Panel, noSite } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import {
   ArrowLeftIcon,
@@ -59,10 +59,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     slug: '',
     description: '',
     tags: '',
-    isPublic: false,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
   });
   const [skillMd, setSkillMd] = useState('');
 
@@ -79,10 +75,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       slug: detail.slug,
       description: detail.description,
       tags: detail.tags.join(', '),
-      isPublic: detail.isPublic,
-      useAsSkill: detail.useAsSkill,
-      useAsPrompt: detail.useAsPrompt,
-      useAsResource: detail.useAsResource,
     });
     // Skills gravadas antes desta regra ainda podem trazer frontmatter no
     // arquivo: o editor mostra só o corpo, e o formulário manda nos metadados.
@@ -122,10 +114,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         slug: meta.slug !== skill.slug ? meta.slug : undefined,
         description: meta.description,
         tags: parseTags(meta.tags),
-        isPublic: meta.isPublic,
-        useAsSkill: meta.useAsSkill,
-        useAsPrompt: meta.useAsPrompt,
-        useAsResource: meta.useAsResource,
         skillMd: prompt !== skill.skillMd ? prompt : undefined,
       });
 
@@ -233,10 +221,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     meta.slug !== skill.slug ||
     meta.description !== skill.description ||
     meta.tags !== skill.tags.join(', ') ||
-    meta.isPublic !== skill.isPublic ||
-    meta.useAsSkill !== skill.useAsSkill ||
-    meta.useAsPrompt !== skill.useAsPrompt ||
-    meta.useAsResource !== skill.useAsResource ||
     skillMd !== stripFrontmatter(skill.skillMd);
 
   return (
@@ -248,14 +232,13 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           </Link>
           <h1 className="display mt-1 flex flex-wrap items-center gap-3">
             <span className="truncate">{skill.name}</span>
-            <Badge isPublic={skill.isPublic} />
-            <PublicationBadges skill={skill} />
+            <McpBadges skill={skill} />
           </h1>
           <p className="sub mono flex flex-wrap items-center gap-x-3">
             <span>{skill.slug}</span>
             <span>· {skill.viewCount} acessos</span>
             <span>· {skill.downloadCount} downloads</span>
-            {skill.isPublic && (
+            {noSite(skill) && (
               <a
                 href={`${session.siteBaseUrl}/skills/${skill.slug}`}
                 target="_blank"

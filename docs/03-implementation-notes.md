@@ -93,24 +93,17 @@ práticas evidentes:
 operação irreversível do conjunto e um agente não deveria conseguir disparar
 por engano.
 
-## As flags de publicação no import de `.zip`
+## Onde publicar, no import de `.zip`
 
-A `§6.4` de [`06-publicacao-mcp.md`](06-publicacao-mcp.md) decide que
-`skillMetaFromMarkdown` **lê** `use_as_prompt` e `use_as_resource` de um
-`.zip` externo, mas não diz como isso se combina com o formulário do import.
-Ficou `campo do formulário || frontmatter do .zip` — a mesma forma que nome,
-descrição e tags já usavam, com o formulário ganhando quando preenchido.
-
-`use_as_skill` ([`07`](07-superficie-de-ferramentas.md)) entrou depois e nasce
-**ligada**, então ficou espelhada nas duas pontas: a leitura desliga só com o
-literal `false` (`data.use_as_skill !== 'false'`), e a combinação é
-`formulário && .zip` em vez de `||`. A regra de fundo é a mesma das outras
-duas — **o `.zip` só move a flag para o lado de menos exposição**.
-
-`isPublic` continua fora dessa regra: vem **só** do formulário. É o que impede
-um `.zip` de terceiro de se autopublicar, e é o que torna a leitura das flags
-segura — no máximo elas chegam pré-configuradas e inertes, até um admin
-publicar a skill.
+Nada de publicação vem do frontmatter: `skillMetaFromMarkdown` lê nome,
+descrição, slug e tags, e ignora qualquer `is_public` ou `use_as_*` que um
+`.zip` de terceiro traga — desde o `012` essas colunas não existem, e onde a
+skill aparece é o vínculo com um MCP virtual, escolhido por quem importa. O
+formulário manda a lista `mcps` como JSON num campo do multipart, e a rota a
+resolve por `loadManaged` antes de criar qualquer coisa: um vMCP que a sessão
+não administra é 403, e a skill não é criada. É o que impede um `.zip` de se
+publicar sozinho, e o que faz o import e o formulário terem exatamente a mesma
+regra.
 
 ## Semântica de `set_files_bulk`
 
@@ -401,20 +394,17 @@ em aberto:
 - **Base das URLs de download.** `MCP_PUBLIC_URL` no mcp-public; sem ela, a
   origem da requisição (`req.protocol://host`, respeitando `trust proxy`). O
   painel recebe a mesma variável para o snippet de `mcp.json`.
-- **Confirmação de abertura.** O painel responde `400` com
-  `error: "confirm_open_required"` e o cliente reenvia com `confirmOpen: true`
-  depois do `window.confirm`; a tool devolve `isError` pedindo
-  `confirm_open: true`. A contagem de privadas usada na checagem do `PUT
-  …/skills` é feita na rota, por `getSkillSummary` slug a slug — a lista é
-  curta e a alternativa seria uma query só para isso.
 - **`setVirtualMcpSkills` trava o MCP** (`SELECT … FOR UPDATE`) dentro da
   transação: dois salvamentos concorrentes da lista não se sobrescrevem.
-- **Sem `.skill` nem página no site para skill privada.** O virtual serve
-  `download` e `download.skill`; a `url` da página só sai quando `is_public`.
+- **Sem `.skill` nem página no site para skill fora do site.** O virtual serve
+  `download` e `download.skill`; a `url` da página só sai quando a skill está
+  em algum vMCP aberto e ligado (`mcps` da própria leitura).
 - **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
   credencial, e o site continua sendo o único lugar com `max-age`.
-- **Selo na skill inclui MCPs desligados** — `listVirtualMcpsForSkill` não
-  filtra `is_active`: o vínculo existe, e o selo é sobre o vínculo.
+- **O painel enxerga todos os vínculos, inclusive com MCP desligado ou
+  fechado** — `SkillSummary.mcps` numa leitura `'all'` traz tudo, com o estado
+  de cada vMCP: o vínculo existe, e o painel é sobre o vínculo. Numa leitura
+  pública a lista só traz os abertos e ligados.
 
 ## MCP padrão
 
@@ -443,6 +433,35 @@ deixou em aberto:
 - **`DefaultMcpResolution.inactive` carrega `uuid` e `slug`.** O painel
   precisa pré-selecionar o vMCP desligado no seletor e dizer qual é; `deleted`
   não tem linha para apontar.
+
+## Skills flutuantes
+
+Decisões de implementação do PR2 de
+[`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md):
+
+- **`mcps` vem na mesma consulta.** `skillColumns` agrega os vínculos em
+  `json_agg` por linha, com o filtro de visibilidade da própria leitura:
+  `'all'` traz todos, o resto só os abertos e ligados. Uma segunda consulta
+  por skill dobraria o custo da listagem do painel, e uma lista sem filtro
+  revelaria ao site em que servidor fechado uma skill está.
+- **`visibility` padrão é `'open'`.** O restritivo: quem esquece a opção
+  mostra de menos. `requireSkill` e todas as escritas passam `'all'`
+  explicitamente.
+- **`createSkill({ mcps })` resolve os vínculos antes da transação**
+  (`resolveLinks`): uuid torto, desconhecido, repetido ou flag ausente é 400
+  sem nada gravado. Cada vínculo audita `mcp.update` no vMCP, como
+  `setVirtualMcpSkills`, e não uma ação própria — o painel do MCP mostra a
+  mesma trilha independente de qual lado vinculou.
+- **A permissão fica no app.** `resolveLinks` do banco não sabe quem chama;
+  o painel (`mcps.resolveLinks` → `loadManaged`) e o mcp-admin
+  (`canManageVirtualMcp`) recusam antes de chamar.
+- **`unlinkSkill` de um vínculo inexistente é 404**, e nada é auditado — um
+  `DELETE` repetido não cria linha de trilha.
+- **O painel "Publicada em" salva por linha**, não a página inteira: cada
+  vMCP é um `PUT`/`DELETE` próprio, com a permissão daquele vMCP. O picker da
+  skill nova e do import é controlado e vai no corpo da criação.
+- **`skills_score_idx`** substitui o índice prefixado por `is_public`: é a
+  ordenação padrão de toda listagem, com ou sem vínculo.
 
 ## Portas
 

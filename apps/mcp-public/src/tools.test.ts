@@ -15,15 +15,25 @@ vi.mock('@purple-skills/db', () => db);
 
 const { createHandlers, createSurfaces } = await import('./tools.js');
 
+/** O vínculo com o vMCP padrão, aberto: é o que põe a skill no site. */
+const noPublic = {
+  uuid: 'mcp-1',
+  slug: 'public',
+  name: 'Public',
+  isOpen: true,
+  isActive: true,
+  isDefault: true,
+  asSkill: true,
+  asPrompt: false,
+  asResource: false,
+};
+
 const summary = {
   uuid: 'uuid-1',
   slug: 'minha-skill',
   name: 'Minha Skill',
   description: 'Faz coisas',
-  isPublic: true,
-  useAsSkill: true,
-  useAsPrompt: false,
-  useAsResource: false,
+  mcps: [noPublic],
   viewCount: 10,
   downloadCount: 3,
   score: 13,
@@ -71,14 +81,13 @@ describe('search_skills', () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it('lê só pelo vínculo do vMCP: nem is_public nem flag da skill entram', async () => {
+  it('lê só pelo vínculo do vMCP: nenhuma visibilidade além dele', async () => {
     db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
 
     await handlers.search_skills({ query: 'x' });
 
     expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining(recorte));
-    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('includePrivate');
-    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('onlyAsSkill');
+    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('visibility');
   });
 
   it('responde com texto amigável quando não há resultados', async () => {
@@ -270,8 +279,8 @@ describe('prompts/list e resources/list', () => {
     const prompts = await surfaces.listPrompts();
     const resources = await surfaces.listResources();
 
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', { virtualMcpUuid: 'mcp-1' });
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', { virtualMcpUuid: 'mcp-1' });
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', 'mcp-1');
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', 'mcp-1');
     expect(prompts.prompts).toEqual([
       { name: 'minha-skill', title: 'Minha Skill', description: 'Faz coisas' },
     ]);
@@ -373,7 +382,11 @@ describe('escopo de outro MCP virtual', () => {
   const mcp = { uuid: 'mcp-2', slug: 'time-a', name: 'Time A', description: '', isOpen: false };
   const scope = { mcp, baseUrl: 'https://mcp.exemplo.dev/virtual/time-a' };
   const virtual = createHandlers(scope);
-  const privada = { ...summary, isPublic: false };
+  // Só neste vMCP fechado: não existe no site.
+  const privada = {
+    ...summary,
+    mcps: [{ ...noPublic, uuid: 'mcp-2', slug: 'time-a', name: 'Time A', isOpen: false, isDefault: false }],
+  };
 
   it('toda leitura passa o recorte do próprio vínculo', async () => {
     db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 });
@@ -405,7 +418,7 @@ describe('escopo de outro MCP virtual', () => {
     expect(result.content[0].text).not.toContain('página:');
   });
 
-  it('mantém a página do site quando a skill vinculada é pública', async () => {
+  it('mantém a página do site quando a skill também está num vMCP aberto', async () => {
     db.listSkills.mockResolvedValue({ items: [summary, privada], total: 2, limit: 10, offset: 0 });
 
     const payload = JSON.parse((await virtual.search_skills({})).content[0].text);
@@ -446,8 +459,8 @@ describe('escopo de outro MCP virtual', () => {
     await surfacesVirtual.getPrompt('minha-skill');
     await surfacesVirtual.readResource('skill://minha-skill');
 
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', { virtualMcpUuid: 'mcp-2' });
-    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', { virtualMcpUuid: 'mcp-2' });
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', 'mcp-2');
+    expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', 'mcp-2');
     expect(db.getSkillDetail).toHaveBeenNthCalledWith(1, 'minha-skill', {
       virtualMcp: { uuid: 'mcp-2', surface: 'prompt' },
     });

@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { SkillMcpRef } from '../api.js';
 
 export function Button({
   children,
@@ -45,64 +46,44 @@ export function Panel({
   );
 }
 
-export function Badge({ isPublic }: { isPublic: boolean }) {
-  return (
-    <span className={`badge ${isPublic ? 'public' : 'private'}`}>
-      <span className="dot" />
-      {isPublic ? 'pública' : 'privada'}
-    </span>
-  );
-}
+/** O site mostra a skill quando ela está em algum vMCP aberto e ligado. */
+export const noSite = (skill: { mcps: SkillMcpRef[] }): boolean =>
+  skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
 
 /**
- * As superfícies do MCP público, ao lado da visibilidade. Só leitura: quem liga
- * e desliga é o formulário de edição — aqui elas apenas informam, e numa skill
- * privada aparecem apagadas, porque a flag está guardada e não valendo
- * (`docs/06-publicacao-mcp.md` §3.1).
- *
- * `prompt` e `resource` aparecem quando **ligados**; a superfície de
- * ferramentas, ao contrário, aparece quando **desligada**. É o que informa: ela
- * nasce ligada, então um selo por skill flagada estaria em quase toda linha
- * sem dizer nada, enquanto a ausência é a exceção que o operador precisa ver.
+ * Onde a skill está, em selos: "sem vínculo" (flutuante, exibida em lugar
+ * nenhum), "em N MCPs" e, quando algum é aberto e ligado, "no site". Só
+ * leitura: quem publica é o painel "Publicada em" da página da skill, ou a
+ * página do MCP.
  */
-export function PublicationBadges({
-  skill,
-}: {
-  skill: { isPublic: boolean; useAsSkill: boolean; useAsPrompt: boolean; useAsResource: boolean };
-}) {
-  const surfaces = [
-    skill.useAsPrompt && 'prompt',
-    skill.useAsResource && 'resource',
-  ].filter((surface): surface is string => Boolean(surface));
-
+export function McpBadges({ skill }: { skill: { mcps: SkillMcpRef[] } }) {
+  if (skill.mcps.length === 0) {
+    return (
+      <span className="badge private" title="Não está em nenhum MCP virtual: não é exibida no site nem em servidor algum">
+        <span className="dot" />
+        sem vínculo
+      </span>
+    );
+  }
+  const abertos = skill.mcps.filter((mcp) => mcp.isOpen && mcp.isActive).length;
   return (
     <>
-      {!skill.useAsSkill && (
-        <span
-          className={`badge surface ${skill.isPublic ? 'off' : 'idle'}`}
-          title={
-            skill.isPublic
-              ? 'Fora das ferramentas do MCP público: search_skills e get_skill não a encontram'
-              : 'Ficará fora das ferramentas do MCP público quando a skill for tornada pública'
-          }
-        >
-          sem ferramentas
+      <span
+        className="badge public"
+        title={`Publicada em: ${skill.mcps.map((mcp) => mcp.name).join(', ')}`}
+      >
+        <span className="dot" />
+        em {skill.mcps.length} MCP{skill.mcps.length === 1 ? '' : 's'}
+      </span>
+      {abertos > 0 ? (
+        <span className="badge surface" title={`${abertos} deles aberto(s) e ligado(s): a skill aparece no site`}>
+          no site
+        </span>
+      ) : (
+        <span className="badge surface off" title="Só em MCPs fechados ou desligados: não aparece no site">
+          fora do site
         </span>
       )}
-
-      {surfaces.map((surface) => (
-        <span
-          key={surface}
-          className={`badge surface ${skill.isPublic ? '' : 'idle'}`.trim()}
-          title={
-            skill.isPublic
-              ? `Publicada no MCP como ${surface}`
-              : `Será publicada como ${surface} quando a skill for tornada pública`
-          }
-        >
-          {surface}
-        </span>
-      ))}
     </>
   );
 }

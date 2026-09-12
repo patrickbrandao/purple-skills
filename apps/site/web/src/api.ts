@@ -1,18 +1,25 @@
+/** Um MCP virtual em que a skill está — só os abertos e ligados chegam ao site. */
+export type SkillMcpRef = {
+  uuid: string;
+  slug: string;
+  name: string;
+  isOpen: boolean;
+  isActive: boolean;
+  /** Responde também em `/mcp`, o MCP público. */
+  isDefault: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
 /** Cópia manual do tipo de `@purple-skills/shared` — este bundle é de browser. */
 export type SkillSummary = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
-  isPublic: boolean;
-  /**
-   * Por quais superfícies do MCP público a skill é oferecida: as ferramentas
-   * (`useAsSkill`, ligada por padrão), o prompt pelo slug e o resource
-   * `skill://<slug>`.
-   */
-  useAsSkill: boolean;
-  useAsPrompt: boolean;
-  useAsResource: boolean;
+  /** Onde a skill está: é por estar em um MCP aberto que ela aparece aqui. */
+  mcps: SkillMcpRef[];
   viewCount: number;
   downloadCount: number;
   score: number;
@@ -55,6 +62,18 @@ export type PublicMcpInfo =
       requiresKey: null;
     };
 
+/** Um MCP virtual aberto e ligado, como o site o lista. */
+export type PublicVirtualMcp = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  skillCount: number;
+  isDefault: boolean;
+  /** `<MCP_PUBLIC_URL>/virtual/<slug>/mcp`, ou nulo sem a variável. */
+  url: string | null;
+};
+
 export type SiteMeta = {
   name: string;
   tagline: string;
@@ -96,6 +115,7 @@ export function searchSkills(params: SearchParams): Promise<SearchResult> {
 export const fetchSkill = (slug: string) => get<SkillDetail>(`/api/skills/${encodeURIComponent(slug)}`);
 export const fetchTags = () => get<{ items: { name: string; count: number }[] }>('/api/tags');
 export const fetchMeta = () => get<SiteMeta>('/api/meta');
+export const fetchOpenMcps = () => get<{ items: PublicVirtualMcp[] }>('/api/mcps');
 
 export const downloadUrl = (slug: string) => `/skills/${encodeURIComponent(slug)}/download`;
 

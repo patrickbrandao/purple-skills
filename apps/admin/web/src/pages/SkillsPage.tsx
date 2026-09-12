@@ -6,12 +6,11 @@ import {
   deleteSkill,
   formatDateTime,
   listSkills,
-  setVisibility,
   type SessionUser,
   type SkillSummary,
 } from '../api.js';
 import { PlusIcon, SearchIcon, TrashIcon } from '../components/Icons.js';
-import { PublicationBadges } from '../components/ui.js';
+import { McpBadges } from '../components/ui.js';
 import { useToast } from '../components/Toast.js';
 
 export function SkillsPage({ user }: { user: SessionUser }) {
@@ -48,23 +47,6 @@ export function SkillsPage({ user }: { user: SessionUser }) {
     const timer = setTimeout(() => void load(query), query ? 300 : 0);
     return () => clearTimeout(timer);
   }, [query, load]);
-
-  async function toggleVisibility(skill: SkillSummary) {
-    setBusy(skill.slug);
-    try {
-      const updated = await setVisibility(skill.slug, !skill.isPublic);
-      setItems((current) =>
-        current.map((item) =>
-          item.uuid === skill.uuid ? { ...item, isPublic: updated.isPublic } : item,
-        ),
-      );
-      toast.success(`"${skill.name}" agora é ${updated.isPublic ? 'pública' : 'privada'}.`);
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }
 
   async function remove(skill: SkillSummary) {
     if (!window.confirm(`Remover a skill "${skill.name}" e todos os seus arquivos?`)) return;
@@ -116,7 +98,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
             <tr>
               <th>Skill</th>
               <th className="hidden md:table-cell">Tags</th>
-              <th>Estado</th>
+              <th>Publicada em</th>
               <th className="num hidden sm:table-cell">Acessos</th>
               <th className="num hidden sm:table-cell">Downloads</th>
               <th className="hidden lg:table-cell">Atualizada</th>
@@ -142,24 +124,10 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                   </div>
                 </td>
                 <td>
+                  {/* Onde a skill está se muda na página dela ("Publicada em")
+                      ou na do MCP; aqui os selos só informam. */}
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={busy === skill.slug || !podeEscrever}
-                      onClick={() => toggleVisibility(skill)}
-                      title={
-                        podeEscrever
-                          ? 'Alternar visibilidade'
-                          : 'Seu papel não permite publicar ou despublicar'
-                      }
-                      className={`badge ${skill.isPublic ? 'public' : 'private'}`}
-                    >
-                      <span className="dot" />
-                      {skill.isPublic ? 'pública' : 'privada'}
-                    </button>
-                    {/* Prompt e resource são configuração secundária: mudam no
-                        formulário de edição, aqui só informam. */}
-                    <PublicationBadges skill={skill} />
+                    <McpBadges skill={skill} />
                   </div>
                 </td>
                 <td className="num hidden sm:table-cell">{skill.viewCount}</td>

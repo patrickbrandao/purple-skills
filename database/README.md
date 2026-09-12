@@ -50,6 +50,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `009-mcp-virtual.sql` | `virtual_mcps`, `virtual_mcp_skills`, `virtual_mcp_keys` e o `CHECK` de `action` com os eventos `mcp.*` |
 | `010-public-mcp-keys.sql` | `public_mcp_keys` — chaves `psp_` gerenciadas do antigo MCP principal — e o `CHECK` de `action` com `public.key.*` |
 | `011-mcp-padrao.sql` | `settings` (o vMCP padrão que responde em `/mcp`), `mcp.default` no `CHECK` de `action`, backfill do vMCP `public` e remoção de `public_mcp_keys` |
+| `012-skills-flutuantes.sql` | remove `skills.is_public` e as três `use_as_*`, os índices parciais de `007` e o `skills_public_score_idx`; cria `skills_score_idx` |
 
 Regras:
 
@@ -69,7 +70,7 @@ Regras:
 
 | Tabela | Papel |
 |--------|-------|
-| `skills` | catálogo: `slug`, `name`, `description`, `is_public`, `use_as_skill`, `use_as_prompt`, `use_as_resource`, contadores e `search_vector` |
+| `skills` | catálogo: `slug`, `name`, `description`, contadores e `search_vector`. Sem coluna de visibilidade: a skill é exibida onde está vinculada |
 | `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
@@ -96,54 +97,34 @@ O desenho de contas, papéis e credenciais está em
 - **o ator pode não ser uma conta.** `audit_log.actor_user_uuid` é nulo para o
   `MCP_ADMIN_TOKEN` e para o bootstrap; quem sempre existe é `actor_label`.
 
-### Publicação no MCP
+### Onde uma skill é exibida
 
-`is_public` é o **interruptor global**: em `false` a skill não sai do painel e
-não é publicada no MCP público de jeito nenhum — nem como skill, nem como
-prompt, nem como resource. As outras três colunas dizem **por quais
-superfícies** uma skill pública sai:
+Uma skill é **flutuante** (`012`,
+[`docs/09-mcp-padrao-e-skills-flutuantes.md`](../docs/09-mcp-padrao-e-skills-flutuantes.md)):
+não tem coluna de visibilidade e só é exibida — no site e nos servidores MCP
+— onde está **vinculada** a um MCP virtual. O vínculo (`virtual_mcp_skills`)
+carrega as três portas, `as_skill`, `as_prompt` e `as_resource`,
+obrigatórias e sem default, e contadores próprios; o contador global da
+skill continua somando junto.
 
-| Coluna | Superfície | Padrão |
-|--------|-----------|--------|
-| `use_as_skill` | as cinco ferramentas (`search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags`) | `true` |
-| `use_as_prompt` | prompt com o nome do slug | `false` |
-| `use_as_resource` | resource `skill://<slug>` | `false` |
+Toda leitura de skill recebe uma `visibility`:
 
-`use_as_skill` nasce `true` porque é **opt-out**: a superfície de ferramentas
-já é o comportamento de toda skill pública, e ligá-la por padrão é o que
-preserva o catálogo existente. As outras duas nascem `false` porque são
-**opt-in**: ligar prompt e resource no catálogo inteiro entope a lista de
-slash-commands de todo cliente conectado — evitar isso é a razão de a feature
-existir. Com `use_as_skill` em `false` a skill continua pública no site e na
-API REST, some das ferramentas e ainda pode ser publicada como prompt e/ou
-resource.
+| `visibility` | Enxerga | Quem passa |
+|--------------|---------|------------|
+| `'open'` (padrão) | skills com vínculo a ao menos um vMCP **aberto e ligado** | site e API REST |
+| `'all'` | o catálogo inteiro, inclusive flutuantes | painel e mcp-admin |
+| `virtualMcp: { uuid, surface }` | o vínculo daquele vMCP com a flag da superfície; sobrepõe `visibility` | mcp-public |
 
-As quatro colunas são independentes no banco — nenhum CHECK amarra as três
-flags a `is_public`, para que despublicar e republicar não apague a
-configuração. Quem condiciona é a leitura: `listPublishedSkills` filtra
-`is_public AND use_as_prompt` (ou `use_as_resource`) e as leituras do
-`apps/mcp-public` passam `onlyAsSkill: true`. **A flag sozinha não publica
-nada.** O desenho está em dois documentos:
-[`docs/06-publicacao-mcp.md`](../docs/06-publicacao-mcp.md) fecha prompt e
-resource, e `007` é a parte dele que vive aqui;
-[`docs/07-superficie-de-ferramentas.md`](../docs/07-superficie-de-ferramentas.md)
-fecha `use_as_skill` e a promoção de `is_public` a interruptor global, e `008`
-é a parte dele que vive aqui.
+O padrão é o restritivo de propósito: quem esquece a opção mostra de menos,
+nunca de mais. O filtro mora no SQL porque o `total` de `listSkills` e a
+contagem de `listTags` não têm conserto depois da consulta. `SkillSummary`
+traz `mcps`, os vínculos da skill: numa leitura `'all'` todos; nas demais só
+os com vMCP aberto e ligado — o site não revela em que servidor fechado uma
+skill está.
 
-> **Desde o `011` não existe mais um "MCP principal"**
-> ([`docs/09-mcp-padrao-e-skills-flutuantes.md`](../docs/09-mcp-padrao-e-skills-flutuantes.md)).
-> O que responde em `/mcp` é o **vMCP padrão** escolhido em `settings`, e ele
-> lê pelo vínculo como qualquer outro. As três colunas `use_as_*` continuam
-> gravadas e o site continua filtrando por `is_public`, mas **nenhum MCP as
-> lê**; as quatro saem no PR2. A tabela `public_mcp_keys` foi removida.
-
-Um **MCP virtual**
-([`docs/08-mcp-virtual.md`](../docs/08-mcp-virtual.md), `009`) publica um
-recorte próprio em `/virtual/<slug>/mcp` e decide as superfícies **por
-vínculo**: `virtual_mcp_skills` carrega suas próprias `as_skill`, `as_prompt`
-e `as_resource` (obrigatórias, sem default) e seus próprios contadores. Nele
-`is_public` e as `use_as_*` da skill são ignorados — skill privada vinculada
-sai —, e o contador global da skill continua somando junto com o do vínculo.
+`is_public`, `use_as_skill`, `use_as_prompt` e `use_as_resource` existiram
+entre `001` e `012`; `007` e `008` são a história delas, e o `011` copiou o
+que valia para o vínculo com o vMCP `public` antes de o `012` as apagar.
 
 ### MCP padrão
 
@@ -214,17 +195,18 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 |-------|-------------|
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
 | Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail`, `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
-| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent`, `setVisibility`, `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
+| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent`, `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
+| Vínculo pelo lado da skill | `linkSkill`, `unlinkSkill` (e `mcps` em `createSkill`) |
 | Contadores | `incrementViewCount`, `incrementDownloadCount` |
 | Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
-| MCP virtual | `listVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpsForSkill`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
+| MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
 | Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `settings`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `SettingRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -239,47 +221,52 @@ O ator é `AuditActor` de `@purple-skills/shared` (`{ userUuid, label }`).
 Omiti-lo grava a linha sem ator, como antes — nenhuma chamada existente quebra.
 Em `createSkill` ele também preenche `skills.created_by_user_uuid`.
 
-### Leitura restrita à superfície de ferramentas
+### Leitura por vMCP e vínculo pelo lado da skill
 
-`listSkills` (via `ListOptions`), `getSkillSummary`, `getSkillDetail` e
-`listTags` aceitam `onlyAsSkill?: boolean` — omitida ou `false`, não filtra
-nada. Ligada, acrescenta `AND s.use_as_skill` ao `WHERE` e a leitura passa a
-enxergar só o que a superfície de ferramentas publica:
-
-```ts
-// apps/mcp-public — o único que passa a opção
-const resultado = await listSkills({ query, onlyAsSkill: true });
-const tags = await listTags({ onlyAsSkill: true });
-```
-
-Site, painel e MCP administrativo continuam sem passar nada e enxergando tudo.
-O filtro é do SQL, e não do app, porque duas respostas não têm conserto depois
-da consulta: o `total` de `listSkills` é um `count(*)` sobre o mesmo `WHERE` da
-página — descartar linhas em JavaScript deixaria a paginação mentindo — e a
-contagem por tag de `listTags` é um `GROUP BY`.
-
-As mesmas quatro funções aceitam `virtualMcp?: VirtualScope`
-(`{ uuid, surface: 'skill' | 'prompt' | 'resource' }`) — o recorte de um MCP
-virtual. Com ela o `WHERE` vira um `EXISTS` sobre `virtual_mcp_skills` com a
-flag da superfície pedida, e **ignora** `includePrivate` e `onlyAsSkill`:
-skill privada vinculada entra, e as `use_as_*` da skill não contam.
-`listPublishedSkills(surface, { virtualMcpUuid })` faz o mesmo para
+`listSkills`, `getSkillSummary`, `getSkillDetail` e `listTags` aceitam
+`virtualMcp?: VirtualScope` (`{ uuid, surface: 'skill' | 'prompt' |
+'resource' }`) — o recorte de um MCP virtual. Com ela o `WHERE` vira um
+`EXISTS` sobre `virtual_mcp_skills` com a flag da superfície pedida e ignora
+`visibility`. `listPublishedSkills(surface, virtualMcpUuid)` faz o mesmo para
 `prompts/list` e `resources/list`, e `incrementViewCount(skill, mcp)` /
 `incrementDownloadCount(skill, mcp)` somam no vínculo **e** no global:
 
 ```ts
-// apps/mcp-public — rota /virtual/<slug>/mcp
-const mcp = await resolveVirtualMcp(slug);            // null = inativo ou inexistente → 404
+// apps/mcp-public — a raiz (vMCP padrão) e /virtual/<slug>/mcp
 const resultado = await listSkills({ query, virtualMcp: { uuid: mcp.uuid, surface: 'skill' } });
-const prompts = await listPublishedSkills('prompt', { virtualMcpUuid: mcp.uuid });
+const prompts = await listPublishedSkills('prompt', mcp.uuid);
 await incrementViewCount(skill.uuid, mcp.uuid);
+
+// apps/site — só o que está em vMCP aberto e ligado (o padrão)
+const catalogo = await listSkills({ query });
+
+// apps/admin, apps/mcp-admin — tudo
+const tudo = await listSkills({ query, visibility: 'all' });
 ```
+
+O vínculo se escreve pelos dois lados. Pelo lado do MCP,
+`setVirtualMcpSkills` (declarativa, abaixo). Pelo lado da skill:
+
+- `createSkill({ …, mcps: [{ virtualMcpUuid, asSkill, asPrompt, asResource }] })`
+  grava os vínculos na mesma transação da criação; uuid torto ou
+  desconhecido, repetido ou flag ausente é 400 e nada é gravado;
+- `linkSkill(slug, virtualMcpUuid, flags, source, actor)` cria ou reescreve
+  um vínculo (contadores de um vínculo existente ficam) e devolve o
+  `SkillDetail` com `mcps`;
+- `unlinkSkill(slug, virtualMcpUuid, source, actor)` desfaz; vínculo
+  inexistente é 404.
+
+Os três auditam `mcp.update` no vMCP, com o slug dele em `targetLabel`, como
+`setVirtualMcpSkills`. **A permissão é do app**: conferir que o chamador
+administra o vMCP (`canManageVirtualMcp`) vem antes de chamar.
 
 ### MCP virtual
 
 - `listVirtualMcps()` sem opção é a visão do admin (todos, inclusive inativos
   e órfãos); `{ ownerUserUuid }` restringe ao dono; `{ ownerUserUuid: null }`
   devolve `[]` — a sessão de bootstrap não é dona de nada.
+  `listOpenVirtualMcps()` é a lista do site: só abertos e ligados, sem dono
+  nem chaves, com `skillCount` e `isDefault`.
 - `getVirtualMcp(slug)` / `getVirtualMcpByUuid(uuid)` devolvem
   `VirtualMcpDetail` (resumo + skills vinculadas, com as flags e os contadores
   **do vínculo**) e incluem inativos: é o painel que lê. `resolveVirtualMcp`
@@ -379,7 +366,8 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
-| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o backfill idempotente do `011` e o CHECK com `mcp.default` |
+| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (backfill do `011` e `DROP` do `012`, idempotentes) |
+| `virtual-mcps.integration.test.ts` também cobre | a visibilidade `'open'` do site (só vMCP aberto e ligado), `mcps` na skill e `listPublishedSkills` por vMCP |
 
 As quatro recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o

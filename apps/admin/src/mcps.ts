@@ -5,6 +5,7 @@ import {
   createVirtualMcpKey,
   deleteVirtualMcp,
   getVirtualMcp,
+  linkSkill as dbLinkSkill,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
@@ -13,14 +14,18 @@ import {
   revokeVirtualMcpKey,
   setDefaultVirtualMcp,
   setVirtualMcpSkills,
+  unlinkSkill as dbUnlinkSkill,
   updateVirtualMcp,
   type DefaultMcpResolution,
+  type SkillLinkFlags,
 } from '@purple-skills/db';
 import {
   VIRTUAL_KEY_SCHEME,
   canManageVirtualMcp,
   generateApiKey,
   type InstallationSettings,
+  type SkillDetail,
+  type SkillLinkInput,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
   type VirtualMcpSkillInput,
@@ -31,27 +36,6 @@ import { actorOf, type AuthUser } from './auth.js';
 const SOURCE = 'web-admin' as const;
 
 const forbidden = (message: string) => new AppError(message, 403, 'forbidden');
-
-/**
- * Pede confirmação explícita antes de deixar skill privada legível sem chave.
- *
- * É a decisão 6 de `docs/08-mcp-virtual.md`: um virtual aberto com skill
- * privada dentro é publicação de fato, e o sistema **permite** — mas só com
- * `confirmOpen: true` no corpo, que o painel manda depois de a pessoa marcar
- * que entendeu. Sem o campo, a resposta é um 400 com código próprio, que a UI
- * usa para abrir o aviso em vez de mostrar um erro genérico.
- */
-const CONFIRM_REQUIRED = 'confirm_open_required';
-
-function exigirConfirmacao(willBeOpen: boolean, privateCount: number, confirmed: unknown): void {
-  if (!willBeOpen || privateCount === 0 || confirmed === true) return;
-  throw new AppError(
-    `Este MCP virtual ficará aberto (sem chave) com ${privateCount} skill(s) privada(s) dentro: ` +
-      'qualquer pessoa que souber o endereço passa a lê-las. Confirme para continuar.',
-    400,
-    CONFIRM_REQUIRED,
-  );
-}
 
 /** Os MCPs que a sessão enxerga: todos para admin, os próprios para os demais. */
 export function listMine(user: AuthUser): Promise<VirtualMcpSummary[]> {
@@ -104,7 +88,6 @@ export async function update(
     isOpen?: unknown;
     isActive?: unknown;
     ownerUserUuid?: unknown;
-    confirmOpen?: unknown;
   },
 ): Promise<VirtualMcpDetail> {
   const current = await loadManaged(user, slug);
@@ -125,10 +108,6 @@ export async function update(
     patch.ownerUserUuid = body.ownerUserUuid;
   }
 
-  if (patch.isOpen === true && !current.isOpen) {
-    exigirConfirmacao(true, current.privateSkillCount, body.confirmOpen);
-  }
-
   return updateVirtualMcp(current.uuid, patch, SOURCE, actorOf(user));
 }
 
@@ -145,8 +124,7 @@ export async function remove(user: AuthUser, slug: string): Promise<void> {
 export async function setSkills(
   user: AuthUser,
   slug: string,
-  body: { skills?: unknown; confirmOpen?: unknown },
-  privateSlugs: (slugs: string[]) => Promise<number>,
+  body: { skills?: unknown },
 ): Promise<VirtualMcpDetail> {
   const current = await loadManaged(user, slug);
 
@@ -169,11 +147,72 @@ export async function setSkills(
     };
   });
 
-  if (current.isOpen) {
-    exigirConfirmacao(true, await privateSlugs(skills.map((skill) => skill.slug)), body.confirmOpen);
-  }
-
   return setVirtualMcpSkills(current.uuid, skills, SOURCE, actorOf(user));
+}
+
+// ------------------------------------------- vínculo pelo lado da skill ---
+
+/** As três portas do vínculo, obrigatórias e ao menos uma ligada. */
+function flagsFrom(body: unknown): SkillLinkFlags {
+  const item = (body ?? {}) as Record<string, unknown>;
+  for (const flag of ['asSkill', 'asPrompt', 'asResource'] as const) {
+    if (typeof item[flag] !== 'boolean') throw badRequest(`"${flag}" precisa ser true ou false`);
+  }
+  const flags = {
+    asSkill: item.asSkill as boolean,
+    asPrompt: item.asPrompt as boolean,
+    asResource: item.asResource as boolean,
+  };
+  if (!flags.asSkill && !flags.asPrompt && !flags.asResource) {
+    throw badRequest('Escolha ao menos uma superfície: asSkill, asPrompt ou asResource');
+  }
+  return flags;
+}
+
+/**
+ * Publica a skill num vMCP a partir da página dela
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3). A permissão é a do
+ * vMCP alvo — dono ou admin — exatamente como no `PUT …/skills` do MCP.
+ */
+export async function linkSkill(
+  user: AuthUser,
+  mcpSlug: string,
+  skillSlug: string,
+  body: unknown,
+): Promise<SkillDetail> {
+  const mcp = await loadManaged(user, mcpSlug);
+  return dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user));
+}
+
+export async function unlinkSkill(
+  user: AuthUser,
+  mcpSlug: string,
+  skillSlug: string,
+): Promise<SkillDetail> {
+  const mcp = await loadManaged(user, mcpSlug);
+  return dbUnlinkSkill(skillSlug, mcp.uuid, SOURCE, actorOf(user));
+}
+
+/**
+ * A lista "publicar em" de uma skill nova: slugs de vMCP e flags, vindos do
+ * formulário ou do import, resolvidos em uuids. Cada vMCP passa por
+ * `loadManaged`: quem não o administra não publica nele, e a skill não é
+ * criada.
+ */
+export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillLinkInput[]> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw badRequest('Envie "mcps" como uma lista');
+
+  const links: SkillLinkInput[] = [];
+  for (const [index, entry] of raw.entries()) {
+    const item = (entry ?? {}) as Record<string, unknown>;
+    if (typeof item.slug !== 'string' || !item.slug.trim()) {
+      throw badRequest(`mcps[${index}]: informe o slug do MCP virtual`);
+    }
+    const mcp = await loadManaged(user, item.slug.trim());
+    links.push({ virtualMcpUuid: mcp.uuid, ...flagsFrom(item) });
+  }
+  return links;
 }
 
 // ------------------------------------------------------------------ chaves ---

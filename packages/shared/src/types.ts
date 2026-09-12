@@ -1,29 +1,35 @@
 import type { Role } from './roles.js';
 
+/**
+ * Um vMCP em que a skill está, visto da skill: o servidor e as três portas
+ * do vínculo (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4). É a única
+ * forma de uma skill ser exibida — no MCP e no site.
+ */
+export type SkillMcpRef = {
+  uuid: string;
+  slug: string;
+  name: string;
+  isOpen: boolean;
+  isActive: boolean;
+  /** Responde também em `/mcp`. */
+  isDefault: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
 export type SkillSummary = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
   /**
-   * Interruptor global da publicação: em `false` a skill não aparece em
-   * superfície nenhuma do MCP público — nem ferramentas, nem prompt, nem
-   * resource — nem no site. Ver `docs/07-superficie-de-ferramentas.md` §3.3.
+   * Em quais vMCPs a skill está. Numa leitura de visibilidade `'all'`
+   * (painel, mcp-admin) vêm todos; nas demais, só os abertos e ligados — que
+   * é o que o site pode mostrar. Vazio = skill flutuante, exibida em lugar
+   * nenhum.
    */
-  isPublic: boolean;
-  /**
-   * Por quais superfícies do MCP público a skill é oferecida: as ferramentas
-   * (`search_skills`, `get_skill`, …), o *prompt* pelo slug e o *resource*
-   * `skill://<slug>`. As três são ortogonais a `isPublic`: sozinhas não
-   * publicam nada — quem decide a visibilidade continua sendo `isPublic`.
-   *
-   * `useAsSkill` nasce `true` (opt-out: a superfície de ferramentas é o
-   * comportamento histórico de toda skill pública); as outras duas nascem
-   * `false` (opt-in). Ver `docs/07-superficie-de-ferramentas.md` §3.1.
-   */
-  useAsSkill: boolean;
-  useAsPrompt: boolean;
-  useAsResource: boolean;
+  mcps: SkillMcpRef[];
   viewCount: number;
   downloadCount: number;
   score: number;
@@ -162,8 +168,6 @@ export type VirtualMcpSummary = {
   ownerUserUuid: string | null;
   ownerEmail: string | null;
   skillCount: number;
-  /** Quantas das vinculadas são privadas — o painel avisa quando `isOpen`. */
-  privateSkillCount: number;
   activeKeyCount: number;
   /** É o vMCP que responde em `/mcp` (`settings.default_virtual_mcp`). */
   isDefault: boolean;
@@ -177,7 +181,6 @@ export type VirtualMcpSkill = {
   slug: string;
   name: string;
   description: string;
-  isPublic: boolean;
   asSkill: boolean;
   asPrompt: boolean;
   asResource: boolean;
@@ -195,11 +198,26 @@ export type VirtualMcpSkillInput = {
   asResource: boolean;
 };
 
-/** Referência curta — o selo "publicada em" da página da skill. */
-export type VirtualMcpRef = {
+/**
+ * Vínculo visto do lado da skill (`createSkill({ mcps })`, `link_skill`):
+ * o vMCP alvo e as três portas, obrigatórias como em `VirtualMcpSkillInput`.
+ */
+export type SkillLinkInput = {
+  virtualMcpUuid: string;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
+/** Um vMCP aberto e ligado, como o site o lista: sem dono, sem chaves. */
+export type PublicVirtualMcp = {
   uuid: string;
   slug: string;
   name: string;
+  description: string;
+  skillCount: number;
+  /** Responde também em `/mcp`. */
+  isDefault: boolean;
 };
 
 /**

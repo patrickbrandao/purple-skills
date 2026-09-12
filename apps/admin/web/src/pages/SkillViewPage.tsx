@@ -11,11 +11,11 @@ import {
   type Session,
   type SessionUser,
   type SkillDetail,
-  type VirtualMcpRef,
 } from '../api.js';
-import { Badge, Button, Panel, PublicationBadges } from '../components/ui.js';
+import { Button, McpBadges, Panel, noSite } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
+import { SkillMcpsPanel } from '../components/SkillMcps.js';
 import {
   ArrowLeftIcon,
   DownloadIcon,
@@ -28,8 +28,9 @@ import { useToast } from '../components/Toast.js';
 
 /**
  * Leitura da skill no painel: o SKILL.md renderizado e a árvore de arquivos,
- * como o visitante vê no site. A edição fica atrás do botão "Editar", para que
- * abrir uma skill não signifique estar prestes a mudá-la.
+ * como o visitante vê no site. A edição dos metadados fica atrás do botão
+ * "Editar"; onde a skill está publicada se decide aqui mesmo, no painel
+ * "Publicada em" (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3).
  */
 export function SkillViewPage({ session, user }: { session: Session; user: SessionUser }) {
   const podeEscrever = canWrite(user.role);
@@ -38,7 +39,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [skill, setSkill] = useState<(SkillDetail & { virtualMcps: VirtualMcpRef[] }) | null>(null);
+  const [skill, setSkill] = useState<SkillDetail | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -79,15 +80,14 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
           </Link>
           <h1 className="display mt-1 flex flex-wrap items-center gap-3">
             <span className="truncate">{skill.name}</span>
-            <Badge isPublic={skill.isPublic} />
-            <PublicationBadges skill={skill} />
+            <McpBadges skill={skill} />
           </h1>
           <p className="sub mono flex flex-wrap items-center gap-x-3">
             <span>{skill.slug}</span>
             <span>· {skill.viewCount} acessos</span>
             <span>· {skill.downloadCount} downloads</span>
             <span>· atualizada em {formatDateTime(skill.updatedAt)}</span>
-            {skill.isPublic && (
+            {noSite(skill) && (
               <a
                 href={`${session.siteBaseUrl}/skills/${skill.slug}`}
                 target="_blank"
@@ -133,17 +133,9 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         </div>
       )}
 
-      {/* Só leitura: o vínculo é feito na página do MCP virtual. */}
-      {skill.virtualMcps.length > 0 && (
-        <p className="row-sub mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span>Publicada nos MCPs virtuais:</span>
-          {skill.virtualMcps.map((mcp) => (
-            <Link key={mcp.uuid} to={`/mcps/${mcp.slug}`} className="tag">
-              {mcp.name}
-            </Link>
-          ))}
-        </p>
-      )}
+      {/* Quem administra ao menos um MCP publica por aqui; quem não administra
+          nenhum vê onde a skill está, só leitura. */}
+      <SkillMcpsPanel skill={skill} onChanged={setSkill} />
 
       <div className="skill-read mt-5">
         <div className="min-w-0">

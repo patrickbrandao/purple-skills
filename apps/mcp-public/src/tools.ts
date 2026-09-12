@@ -48,18 +48,21 @@ export type VirtualScope = {
 
 const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/');
 
+/** O site mostra a skill quando ela está em algum vMCP aberto e ligado. */
+const noSite = (skill: SkillSummary) => skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
+
 /**
  * As URLs que as ferramentas devolvem.
  *
  * Download e arquivo apontam para o mcp-public, que os serve com a mesma
- * credencial do MCP — uma skill privada não existe no site. A página é do
- * site, e só quando a skill é pública.
+ * credencial do MCP — uma skill que só existe em vMCP fechado não está no
+ * site. A página é do site, e só quando a skill está lá.
  */
 function urlsFor(scope: VirtualScope) {
   const base = scope.baseUrl;
   return {
     page: (skill: SkillSummary): string | undefined =>
-      skill.isPublic ? `${config.siteBaseUrl}/skills/${skill.slug}` : undefined,
+      noSite(skill) ? `${config.siteBaseUrl}/skills/${skill.slug}` : undefined,
     download: (slug: string) => `${base}/skills/${encodeURIComponent(slug)}/download`,
     file: (slug: string, path: string) =>
       `${base}/skills/${encodeURIComponent(slug)}/files/${encodePath(path)}`,
@@ -239,7 +242,6 @@ const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams
  */
 export function createSurfaces(scope: VirtualScope) {
   const mcpUuid = scope.mcp.uuid;
-  const listOptions = { virtualMcpUuid: mcpUuid };
 
   /** A skill oferecida na superfície, ou nada — a consulta já filtra pelo vínculo. */
   const skillPublicada = (slug: string, surface: 'prompt' | 'resource'): Promise<SkillDetail | null> =>
@@ -247,7 +249,7 @@ export function createSurfaces(scope: VirtualScope) {
 
   return {
     async listPrompts() {
-      const skills = await listPublishedSkills('prompt', listOptions);
+      const skills = await listPublishedSkills('prompt', mcpUuid);
 
       return {
         prompts: skills.map((skill) => ({
@@ -288,7 +290,7 @@ export function createSurfaces(scope: VirtualScope) {
     },
 
     async listResources() {
-      const skills = await listPublishedSkills('resource', listOptions);
+      const skills = await listPublishedSkills('resource', mcpUuid);
 
       return {
         resources: skills.map((skill) => ({

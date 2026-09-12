@@ -4,8 +4,8 @@ import {
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
-  getSkillSummary,
   getVirtualMcp,
+  linkSkill,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
@@ -14,6 +14,7 @@ import {
   revokeVirtualMcpKey,
   setDefaultVirtualMcp,
   setVirtualMcpSkills,
+  unlinkSkill,
   updateVirtualMcp,
   type DefaultMcpResolution,
 } from '@purple-skills/db';
@@ -56,7 +57,6 @@ const view = (mcp: VirtualMcpDetail) => ({
   skills: mcp.skills.map((skill) => ({
     slug: skill.slug,
     name: skill.name,
-    visibility: skill.isPublic ? 'public' : 'private',
     asSkill: skill.asSkill,
     asPrompt: skill.asPrompt,
     asResource: skill.asResource,
@@ -92,18 +92,6 @@ export function createMcpHandlers(caller: Caller) {
     return mcp;
   }
 
-  /**
-   * Abrir um MCP com skill privada dentro é publicação: exige `confirm_open`
-   * (`docs/08-mcp-virtual.md`, decisão 6).
-   */
-  function exigirConfirmacao(privateCount: number, confirmed: boolean | undefined): ToolResult | null {
-    if (privateCount === 0 || confirmed === true) return null;
-    return fail(
-      `Este MCP virtual ficará aberto (sem chave) com ${privateCount} skill(s) privada(s) dentro: ` +
-        'qualquer pessoa que souber o endereço passa a lê-las. Passe confirm_open: true para continuar.',
-    );
-  }
-
   return {
     async list_virtual_mcps(): Promise<ToolResult> {
       const items = await listVirtualMcps(
@@ -118,7 +106,6 @@ export function createMcpHandlers(caller: Caller) {
           isDefault: mcp.isDefault,
           owner: mcp.ownerEmail,
           skills: mcp.skillCount,
-          privateSkills: mcp.privateSkillCount,
           activeKeys: mcp.activeKeyCount,
           path: `/virtual/${mcp.slug}/mcp`,
         })),
@@ -165,14 +152,8 @@ export function createMcpHandlers(caller: Caller) {
       description?: string;
       is_open?: boolean;
       is_active?: boolean;
-      confirm_open?: boolean;
     }): Promise<ToolResult> {
       const current = await managed(args.slug);
-
-      if (args.is_open === true && !current.isOpen) {
-        const denied = exigirConfirmacao(current.privateSkillCount, args.confirm_open);
-        if (denied) return denied;
-      }
 
       const mcp = await updateVirtualMcp(
         current.uuid,
@@ -201,7 +182,6 @@ export function createMcpHandlers(caller: Caller) {
     async set_virtual_mcp_skills(args: {
       slug: string;
       skills: VirtualMcpSkillInput[];
-      confirm_open?: boolean;
     }): Promise<ToolResult> {
       const current = await managed(args.slug);
 
@@ -215,22 +195,13 @@ export function createMcpHandlers(caller: Caller) {
         );
       }
 
-      if (current.isOpen) {
-        const found = await Promise.all(
-          args.skills.map((skill) => getSkillSummary(skill.slug, { includePrivate: true })),
-        );
-        const privadas = found.filter((skill) => skill && !skill.isPublic).length;
-        const denied = exigirConfirmacao(privadas, args.confirm_open);
-        if (denied) return denied;
-      }
-
       const mcp = await setVirtualMcpSkills(current.uuid, args.skills, SOURCE, actor);
       return text(
         `${mcp.skills.length} skill(s) no MCP virtual "${mcp.slug}":\n` +
           mcp.skills
             .map(
               (skill) =>
-                `- ${skill.slug} (${skill.isPublic ? 'pública' : 'privada'}): ${[
+                `- ${skill.slug}: ${[
                   skill.asSkill && 'skill',
                   skill.asPrompt && 'prompt',
                   skill.asResource && 'resource',
@@ -239,6 +210,52 @@ export function createMcpHandlers(caller: Caller) {
                   .join(', ')}`,
             )
             .join('\n'),
+      );
+    },
+
+    /**
+     * Vínculo pelo lado da skill (`docs/09-mcp-padrao-e-skills-flutuantes.md`
+     * §4.3): a permissão é a do vMCP alvo, como em `set_virtual_mcp_skills`.
+     */
+    async link_skill(args: {
+      skill: string;
+      mcp: string;
+      asSkill: boolean;
+      asPrompt: boolean;
+      asResource: boolean;
+    }): Promise<ToolResult> {
+      const current = await managed(args.mcp);
+      if (!args.asSkill && !args.asPrompt && !args.asResource) {
+        return fail('Escolha ao menos uma superfície: asSkill, asPrompt ou asResource.');
+      }
+
+      const detail = await linkSkill(
+        args.skill,
+        current.uuid,
+        { asSkill: args.asSkill, asPrompt: args.asPrompt, asResource: args.asResource },
+        SOURCE,
+        actor,
+      );
+      return text(
+        `"${detail.slug}" publicada em "${current.slug}" como ${[
+          args.asSkill && 'skill',
+          args.asPrompt && 'prompt',
+          args.asResource && 'resource',
+        ]
+          .filter(Boolean)
+          .join(', ')}. Agora está em ${detail.mcps.length} MCP(s) virtual(is).`,
+      );
+    },
+
+    async unlink_skill(args: { skill: string; mcp: string }): Promise<ToolResult> {
+      const current = await managed(args.mcp);
+      const detail = await unlinkSkill(args.skill, current.uuid, SOURCE, actor);
+      return text(
+        `"${detail.slug}" saiu de "${current.slug}". ${
+          detail.mcps.length > 0
+            ? `Continua em ${detail.mcps.map((mcp) => mcp.slug).join(', ')}.`
+            : 'Ficou sem vínculo: não é exibida em lugar nenhum.'
+        }`,
       );
     },
 

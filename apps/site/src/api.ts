@@ -10,6 +10,7 @@ import {
   readFile,
   getSkillDetail,
   healthCheck,
+  listOpenVirtualMcps,
   resolveDefaultVirtualMcp,
 } from '@purple-skills/db';
 import {
@@ -100,7 +101,28 @@ api.get(
   }),
 );
 
-/** Lista/busca de skills públicas. */
+/**
+ * Os MCPs virtuais abertos e ligados (`docs/09-mcp-padrao-e-skills-flutuantes.md`
+ * §4.2): o que o site lista, com o endereço de cada um. Sem `MCP_PUBLIC_URL`
+ * o endereço fica nulo, como o do MCP público.
+ */
+api.get(
+  '/api/mcps',
+  asyncRoute(async (_req, res) => {
+    const base = config.mcpPublicBaseUrl;
+    const items = (await listOpenVirtualMcps()).map((mcp) => ({
+      ...mcp,
+      url: base ? `${base}/virtual/${encodeURIComponent(mcp.slug)}/mcp` : null,
+    }));
+    res.json({ items });
+  }),
+);
+
+/**
+ * Lista/busca das skills exibidas: as vinculadas a ao menos um MCP virtual
+ * aberto e ligado (a visibilidade padrão do `@purple-skills/db`). Toda
+ * leitura do site passa por essa regra — inclusive tags, arquivos e downloads.
+ */
 api.get(
   '/api/skills',
   asyncRoute(async (req, res) => {
@@ -110,7 +132,7 @@ api.get(
       limit: asInt(req.query.limit, 24),
       offset: asInt(req.query.offset, 0),
       sort: (req.query.sort as never) ?? undefined,
-      includePrivate: false,
+      visibility: 'open',
     });
     res.json(result);
   }),
@@ -119,15 +141,15 @@ api.get(
 api.get(
   '/api/tags',
   asyncRoute(async (_req, res) => {
-    res.json({ items: await listTags({ includePrivate: false }) });
+    res.json({ items: await listTags({ visibility: 'open' }) });
   }),
 );
 
-/** Detalhe da skill — conta um acesso (view_count). */
+/** Detalhe da skill — conta um acesso (view_count). `mcps` traz só os abertos. */
 api.get(
   '/api/skills/:slug',
   asyncRoute(async (req, res) => {
-    const detail = await getSkillDetail(param(req, 'slug'), { includePrivate: false });
+    const detail = await getSkillDetail(param(req, 'slug'), { visibility: 'open' });
     if (!detail) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
@@ -150,7 +172,7 @@ api.get(
  * são servidos sem incrementar contador.
  */
 const serveFile = asyncRoute(async (req, res) => {
-  const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
+  const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'open' });
   if (!skill) {
     res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
     return;
@@ -197,7 +219,7 @@ api.get('/skills/:slug/files/*path', serveFile);
  */
 const serveZip = (ext: 'zip' | 'skill') =>
   asyncRoute(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
+    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'open' });
     if (!skill) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;

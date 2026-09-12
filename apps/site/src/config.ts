@@ -28,6 +28,8 @@ export const config = {
   // mostrado aqui precisa acrescentar esse sufixo — a variável em si nunca o
   // contém, senão o painel duplicaria "mcp" ao montar os MCPs virtuais.
   mcpPublicUrl: mcpBaseUrl(readTextEnv('MCP_PUBLIC_URL', '')),
+  /** A mesma base, crua: monta `<base>/virtual/<slug>/mcp` na lista de MCPs abertos. */
+  mcpPublicBaseUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
   mcpAdminUrl: readTextEnv('MCP_ADMIN_URL', '').replace(/\/+$/, ''),
   adminUrl: readTextEnv('ADMIN_URL', '').replace(/\/+$/, ''),
   isProduction: process.env.NODE_ENV === 'production',

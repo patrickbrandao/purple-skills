@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createSkill, importZip } from '../api.js';
+import { createSkill, importZip, type SkillLinkInput } from '../api.js';
 import { Button, Panel } from '../components/ui.js';
 import { UploadIcon } from '../components/Icons.js';
 import {
@@ -8,6 +8,7 @@ import {
   SkillMetaForm,
   type SkillMetaValues,
 } from '../components/SkillMetaForm.js';
+import { PublishInPicker } from '../components/SkillMcps.js';
 import { PromptEditor } from '../components/PromptEditor.js';
 import { parseTags, stripFrontmatter } from '../frontmatter.js';
 import { slugify } from '../slug.js';
@@ -42,14 +43,9 @@ export function NewSkillPage() {
     slug: '',
     description: '',
     tags: '',
-    // Nasce privada, como o default do schema, do MCP admin e da documentação;
-    // as superfícies seguem o mesmo default — ferramentas ligadas (opt-out),
-    // prompt e resource desligados (opt-in).
-    isPublic: false,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
   });
+  // Onde publicar já na criação. Vazio = a skill nasce flutuante.
+  const [links, setLinks] = useState<SkillLinkInput[]>([]);
   // Enquanto o slug não for editado à mão, ele acompanha o nome.
   const [slugTocado, setSlugTocado] = useState(false);
   const [skillMd, setSkillMd] = useState(TEMPLATE);
@@ -79,10 +75,7 @@ export function NewSkillPage() {
               name: meta.name || undefined,
               description: meta.description,
               tags,
-              isPublic: meta.isPublic,
-              useAsSkill: meta.useAsSkill,
-              useAsPrompt: meta.useAsPrompt,
-              useAsResource: meta.useAsResource,
+              mcps: links,
             })
           : await createSkill({
               name: meta.name,
@@ -91,10 +84,7 @@ export function NewSkillPage() {
               // Nunca sai daqui com frontmatter: o formulário é a fonte da verdade.
               skillMd: stripFrontmatter(skillMd),
               tags,
-              isPublic: meta.isPublic,
-              useAsSkill: meta.useAsSkill,
-              useAsPrompt: meta.useAsPrompt,
-              useAsResource: meta.useAsResource,
+              mcps: links,
             });
 
       toast.success(`Skill "${detail.name}" criada.`);
@@ -137,8 +127,9 @@ export function NewSkillPage() {
           slugPlaceholder="gerado a partir do nome"
           slugRequired={false}
           nameRequired={mode === 'form'}
-          publicLabel="Publicar no site agora (dá para publicar depois, aqui mesmo)"
         />
+
+        <PublishInPicker value={links} onChange={setLinks} />
 
         {mode === 'form' ? (
           <>

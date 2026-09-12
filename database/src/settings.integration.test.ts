@@ -10,18 +10,20 @@
  * O banco apontado é **recriado do zero** (DROP SCHEMA public CASCADE) a cada
  * execução: aponte para um banco descartável, nunca para o de desenvolvimento.
  */
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { closeDb } from './client.js';
-import { runMigrations } from './migrate.js';
+import { runMigrations, schemaDir } from './migrate.js';
 import { AppError } from './errors.js';
 import {
-  createSkill,
   createUser,
   createVirtualMcp,
   deleteVirtualMcp,
   getVirtualMcp,
   listAudit,
+  listSkills,
   listVirtualMcps,
   resolveDefaultVirtualMcp,
   setDefaultVirtualMcp,
@@ -41,6 +43,28 @@ const SCHEMA_LOCK = 8_200_004;
 
 let raw: pg.Client;
 let anaUuid = '';
+
+/**
+ * Aplica `schema/*.sql` até o número dado, como o runner faria numa base
+ * daquela época — inclusive registrando em `schema_migrations`.
+ */
+async function applyUpTo(client: pg.Client, last: string): Promise<void> {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name       TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  const files = readdirSync(schemaDir())
+    .filter((file) => file.endsWith('.sql') && file.slice(0, 3) <= last)
+    .sort();
+  for (const file of files) {
+    await client.query('BEGIN');
+    await client.query(readFileSync(join(schemaDir(), file), 'utf8'));
+    await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file]);
+    await client.query('COMMIT');
+  }
+}
 
 async function capture(promise: Promise<unknown>): Promise<AppError> {
   try {
@@ -137,25 +161,35 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     expect(rows[0]?.value).toBe(mcp.uuid);
   });
 
-  it('o backfill do 011 cria o "public" aberto com as skills públicas e as flags copiadas', async () => {
-    // Estado de uma instalação que sobe de versão: skills com `is_public` e
-    // `use_as_*`, e nenhum padrão escolhido. Reaplicar o 011 é o que o runner
-    // faria numa base parada no 010.
-    await createSkill(
-      { name: 'Publica', slug: 'publica', skillMd: '# p', isPublic: true, useAsSkill: true, useAsPrompt: true },
-      SOURCE,
-    );
-    await createSkill(
-      { name: 'Sem porta', slug: 'sem-porta', skillMd: '# s', isPublic: true, useAsSkill: false },
-      SOURCE,
-    );
-    await createSkill({ name: 'Privada', slug: 'privada', skillMd: '# x', isPublic: false }, SOURCE);
-    // Um vMCP `public` já existente força o sufixo.
-    await createVirtualMcp({ name: 'Public', slug: 'public', ownerUserUuid: null }, SOURCE, ana);
-    await raw.query("DELETE FROM settings WHERE key = 'default_virtual_mcp'");
-    await raw.query("DELETE FROM schema_migrations WHERE name = '011-mcp-padrao.sql'");
+  it('o CHECK aceita mcp.default e continua recusando o que não está na lista', async () => {
+    await expect(
+      raw.query(
+        `INSERT INTO audit_log (action, source, actor_label, target_label)
+         VALUES ('mcp.inventada', 'web-admin', 'x', 'y')`,
+      ),
+    ).rejects.toThrow(/audit_log_action_check/);
+  });
+  /**
+   * O caminho de quem sobe de versão: uma base parada no `010`, com skills no
+   * formato antigo (`is_public` e `use_as_*`), recebe o `011` e o `012` de uma
+   * vez. As migrations até o `010` são aplicadas à mão porque o runner aplica
+   * tudo o que houver — e o `012` apaga as colunas que o `011` lê.
+   */
+  it('o backfill do 011 cria o "public" aberto com as skills públicas e as flags copiadas, e o 012 apaga as colunas', async () => {
+    await raw.query('DROP SCHEMA IF EXISTS public CASCADE');
+    await raw.query('CREATE SCHEMA public');
+    await applyUpTo(raw, '010');
 
-    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql']);
+    await raw.query(`
+      INSERT INTO skills (slug, name, is_public, use_as_skill, use_as_prompt, use_as_resource) VALUES
+        ('publica', 'Publica', true, true, true, false),
+        ('sem-porta', 'Sem porta', true, false, false, false),
+        ('privada', 'Privada', false, true, false, false)
+    `);
+    // Um vMCP `public` já existente força o sufixo.
+    await raw.query("INSERT INTO virtual_mcps (slug, name) VALUES ('public', 'Public')");
+
+    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql', '012-skills-flutuantes.sql']);
 
     const resolved = await resolveDefaultVirtualMcp();
     expect(resolved.status).toBe('ok');
@@ -169,19 +203,33 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
       ['sem-porta', false, false, false],
     ]);
 
-    // Rodar de novo não faz nada: a chave já existe.
-    await raw.query("DELETE FROM schema_migrations WHERE name = '011-mcp-padrao.sql'");
-    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql']);
+    // A que era privada ficou flutuante: existe, e não está em servidor nenhum.
+    expect((await listSkills({ visibility: 'all' })).total).toBe(3);
+    expect((await listSkills({ visibility: 'open' })).items.map((s) => s.slug).sort()).toEqual([
+      'publica',
+      'sem-porta',
+    ]);
+
+    // As quatro colunas foram embora, e os índices que dependiam delas também.
+    const { rows: colunas } = await raw.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'skills'
+          AND column_name IN ('is_public', 'use_as_skill', 'use_as_prompt', 'use_as_resource')`,
+    );
+    expect(colunas).toEqual([]);
+    const { rows: indices } = await raw.query(
+      "SELECT indexname FROM pg_indexes WHERE tablename = 'skills' ORDER BY indexname",
+    );
+    expect(indices.map((r) => r.indexname)).not.toContain('skills_public_score_idx');
+    expect(indices.map((r) => r.indexname)).toContain('skills_score_idx');
+
+    // Rodar de novo não faz nada: o backfill vê a chave e sai antes de tocar
+    // nas colunas que já não existem, e o 012 é todo `IF EXISTS`.
+    await raw.query(
+      "DELETE FROM schema_migrations WHERE name IN ('011-mcp-padrao.sql', '012-skills-flutuantes.sql')",
+    );
+    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql', '012-skills-flutuantes.sql']);
     expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('public'))).toHaveLength(2);
     expect((await resolveDefaultVirtualMcp()).mcp?.slug).toBe('public-2');
-  });
-
-  it('o CHECK aceita mcp.default e continua recusando o que não está na lista', async () => {
-    await expect(
-      raw.query(
-        `INSERT INTO audit_log (action, source, actor_label, target_label)
-         VALUES ('mcp.inventada', 'web-admin', 'x', 'y')`,
-      ),
-    ).rejects.toThrow(/audit_log_action_check/);
   });
 });

@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const criar = vi.hoisted(() => vi.fn());
+const { criar, lerMcp } = vi.hoisted(() => ({ criar: vi.fn(), lerMcp: vi.fn() }));
 
-// Só `createSkill` é trocado: o resto do pacote entra de verdade, e nada nele
-// abre conexão em tempo de import.
+// Só `createSkill` e `getVirtualMcp` são trocados: o resto do pacote entra de
+// verdade, e nada nele abre conexão em tempo de import.
 vi.mock('@purple-skills/db', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   createSkill: criar,
+  getVirtualMcp: lerMcp,
 }));
 
 const { api } = await import('./api.js');
@@ -33,16 +34,47 @@ function zipCom(skillMd: string): Buffer {
   return zip.toBuffer();
 }
 
-async function importar(skillMd: string, campos: Record<string, string> = {}) {
-  const req = { file: { buffer: zipCom(skillMd), originalname: 'pacote.zip' }, body: campos };
-  const res = { status: () => res, json: () => res };
+const admin = { uuid: 'uuid-admin', email: 'admin@exemplo.dev', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+const editor = { ...admin, uuid: 'uuid-editor', email: 'editor@exemplo.dev', role: 'editor' };
+
+const timeA = {
+  uuid: 'mcp-1',
+  slug: 'time-a',
+  name: 'Time A',
+  description: '',
+  isActive: true,
+  isOpen: false,
+  ownerUserUuid: 'uuid-editor',
+  ownerEmail: 'editor@exemplo.dev',
+  skillCount: 0,
+  activeKeyCount: 0,
+  isDefault: false,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  skills: [],
+};
+
+async function importar(skillMd: string, campos: Record<string, string> = {}, user = admin) {
+  const req = { file: { buffer: zipCom(skillMd), originalname: 'pacote.zip' }, body: campos, user };
+  const res = {
+    statusCode: 200,
+    body: undefined as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: unknown) {
+      this.body = payload;
+      return this;
+    },
+  };
 
   await rota('post', '/api/skills/import')(req as never, res as never, (() => {}) as never);
   await new Promise((resolve) => setImmediate(resolve));
 
   // A última chamada, não a primeira: um teste que importa mais de um .zip
   // compara cada resultado com a importação que acabou de fazer.
-  return criar.mock.calls.at(-1)?.[0];
+  return { input: criar.mock.calls.at(-1)?.[0], res };
 }
 
 beforeEach(() => {
@@ -50,44 +82,52 @@ beforeEach(() => {
   // `skillMd` entra porque a rota passa o retorno por `bodyOnly` antes de
   // responder: sem ele cada importação despeja um TypeError no stderr do teste.
   criar.mockResolvedValue({ slug: 'minha-skill', skillMd: '', files: [] });
+  lerMcp.mockResolvedValue(timeA);
 });
 
 describe('POST /api/skills/import', () => {
-  it('lê as flags de publicação do frontmatter do .zip', async () => {
-    const input = await importar(
-      '---\nname: minha-skill\nuse_as_prompt: true\nuse_as_resource: true\n---\n# Corpo\n',
-    );
-
-    expect(input).toMatchObject({ useAsPrompt: true, useAsResource: true });
-  });
-
-  // A porta da visibilidade é só o formulário: um .zip de terceiro pré-configura
-  // as flags, mas elas ficam inertes até um admin publicar a skill.
-  it('não deixa o .zip se autopublicar', async () => {
-    const input = await importar(
+  // Onde a skill aparece é decidido pelo vínculo, escolhido por quem importa:
+  // um .zip de terceiro não se publica sozinho, por flag nenhuma.
+  it('ignora qualquer flag de publicação do frontmatter e nasce flutuante', async () => {
+    const { input } = await importar(
       '---\nname: minha-skill\nis_public: true\nuse_as_prompt: true\n---\n# Corpo\n',
     );
 
-    expect(input).toMatchObject({ isPublic: false, useAsPrompt: true });
+    expect(input).toMatchObject({ slug: 'minha-skill', mcps: [] });
+    expect(input).not.toHaveProperty('isPublic');
+    expect(input).not.toHaveProperty('useAsPrompt');
   });
 
-  it('sem nada no frontmatter, as flags vêm dos campos do formulário', async () => {
-    const input = await importar('# Corpo\n', { useAsResource: 'true' });
+  it('publica nos vMCPs do formulário, resolvendo o slug em uuid', async () => {
+    const { input } = await importar('# Corpo\n', {
+      mcps: JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }]),
+    });
 
-    expect(input).toMatchObject({ useAsPrompt: false, useAsResource: true });
+    expect(lerMcp).toHaveBeenCalledWith('time-a');
+    expect(input.mcps).toEqual([
+      { virtualMcpUuid: 'mcp-1', asSkill: true, asPrompt: false, asResource: false },
+    ]);
   });
 
-  // `use_as_skill` é a única que nasce ligada: o .zip calado não a desliga, e
-  // o desligamento vale venha ele do formulário ou do frontmatter.
-  it('a superfície de ferramentas só é desligada por quem disser `false`', async () => {
-    expect(await importar('# Corpo\n')).toMatchObject({ useAsSkill: true });
+  it('recusa um vMCP que a sessão não administra, sem criar a skill', async () => {
+    const outro = { ...editor, uuid: 'uuid-outro' };
 
-    expect(await importar('---\nname: a\nuse_as_skill: false\n---\n# Corpo\n')).toMatchObject({
-      useAsSkill: false,
+    const { res } = await importar(
+      '# Corpo\n',
+      { mcps: JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }]) },
+      outro,
+    );
+
+    expect(res.statusCode).toBe(403);
+    expect(criar).not.toHaveBeenCalled();
+  });
+
+  it('recusa um vínculo sem nenhuma superfície', async () => {
+    const { res } = await importar('# Corpo\n', {
+      mcps: JSON.stringify([{ slug: 'time-a', asSkill: false, asPrompt: false, asResource: false }]),
     });
 
-    expect(await importar('# Corpo\n', { useAsSkill: 'false' })).toMatchObject({
-      useAsSkill: false,
-    });
+    expect(res.statusCode).toBe(400);
+    expect(criar).not.toHaveBeenCalled();
   });
 });
