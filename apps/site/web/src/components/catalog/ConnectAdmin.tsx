@@ -56,8 +56,8 @@ export function ConnectAdmin() {
           </h2>
           <p>
             Cole o bloco abaixo no arquivo de configuração MCP do seu agente. O servidor
-            administrativo cria e edita skills, e exige o token no cabeçalho{' '}
-            <code className="mono">Authorization</code>.
+            administrativo cria e edita skills e as publica nos servidores MCP, e exige o token no
+            cabeçalho <code className="mono">Authorization</code>.
           </p>
         </div>
 
@@ -82,7 +82,7 @@ export function ConnectAdmin() {
               <span className="tl" />
               <span className="tl" />
               <span className="tl" />
-              <span>mcp.json — create_skill · set_file · set_visibility</span>
+              <span>mcp.json — create_skill · set_file · link_skill</span>
             </div>
             <div className="code-body">
               <JsonBlock text={json} />

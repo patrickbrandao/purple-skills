@@ -47,6 +47,9 @@ x-app-env: &app-env
   # Sessões MCP mantidas em memória.
   MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
   MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}
+  # Janela de "online" das sessões do MCP público: o painel conta com ela e o
+  # mcp-public agrupa o stateless por ela (docs/10-admin-canvas-e-sessoes.md).
+  MCP_SESSION_ONLINE_WINDOW_MS: ${MCP_SESSION_ONLINE_WINDOW_MS:-120000}
 
 x-app-common: &app-common
   restart: unless-stopped
@@ -115,6 +118,13 @@ services:
       # Endereço público do painel: base do redirect_uri do SSO e do link de
       # redefinição de senha. Vazio = deduzido do Host da requisição.
       ADMIN_PUBLIC_URL: ${ADMIN_PUBLIC_URL:-}
+      # Links externos da sidebar; vazio some do menu.
+      ADMIN_DOCS_URL: ${ADMIN_DOCS_URL:-}
+      ADMIN_SUPPORT_URL: ${ADMIN_SUPPORT_URL:-}
+      ADMIN_CHAT_URL: ${ADMIN_CHAT_URL:-}
+      # Marca do painel (nome e ícone); vazio = SITE_NAME e o chapéu padrão.
+      ADMIN_BRAND_NAME: ${ADMIN_BRAND_NAME:-}
+      ADMIN_BRAND_ICON_URL: ${ADMIN_BRAND_ICON_URL:-}
       # Rate limiting do login (janela por IP + trava por conta).
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-}
       LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-}
@@ -147,12 +157,11 @@ services:
     environment:
       <<: *app-env
       PORT: 3002
-      # open | key | managed. Vazio = key com MCP_PUBLIC_KEY, open sem ela.
-      MCP_PUBLIC_AUTH: ${MCP_PUBLIC_AUTH:-}
-      MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
-      MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
-      # Base das URLs de download dos MCPs virtuais. Vazio = deduzida de cada
-      # requisição (proto://host), o que funciona atrás do Traefik do override.
+      # O acesso a /mcp é decidido pelo MCP virtual padrão, escolhido no
+      # painel: não há variável de autenticação aqui.
+      # Base das URLs de download que as ferramentas devolvem. Vazio = deduzida
+      # de cada requisição (proto://host), o que funciona atrás do Traefik do
+      # override.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
@@ -180,7 +189,7 @@ services:
   # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
   # do container — `localhost` ali é o próprio inspector, não o seu host:
   #
-  #   http://mcp-public:3002/mcp    (Streamable HTTP; /sse para o transporte antigo)
+  #   http://mcp-public:3002/mcp    (o MCP virtual padrão; /sse para o transporte antigo)
   #   http://mcp-admin:3003/mcp     + header `Authorization: Bearer $MCP_ADMIN_TOKEN`
   #
   # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a

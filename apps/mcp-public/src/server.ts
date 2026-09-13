@@ -23,22 +23,16 @@ então uma skill pode estar publicada só como prompt ou só como resource e nã
 aparecer em search_skills — consulte as três listagens antes de concluir que uma
 skill não existe aqui.`;
 
-const INSTRUCTIONS = `Servidor MCP do Purple Skills — um catálogo de skills (instruções
-reutilizáveis) para agentes de IA.
-
-${FLUXO}
-
-Somente skills marcadas como públicas são expostas aqui.`;
-
 /**
- * As instruções de um MCP virtual: o mesmo fluxo, mais o que o dono escreveu
- * na descrição — é por ela que ele contextualiza o agente ("skills do
- * projeto X") sem um campo de instruções à parte (`08`, decisão 15).
+ * As instruções de um vMCP: o fluxo, mais o que o dono escreveu na descrição
+ * — é por ela que ele contextualiza o agente ("skills do projeto X") sem um
+ * campo de instruções à parte (`08`, decisão 15). O mesmo texto vale na raiz,
+ * que é o vMCP padrão: não há mais um "catálogo completo" em outro lugar.
  */
-const instrucoesDoVirtual = (scope: VirtualScope) =>
-  `Servidor MCP "${scope.mcp.name}" — um recorte do catálogo de skills do Purple
-Skills feito para um time ou projeto. As skills aqui foram escolhidas por quem
-administra este servidor; o catálogo completo vive no MCP principal.
+const instrucoes = (scope: VirtualScope) =>
+  `Servidor MCP "${scope.mcp.name}" — um catálogo de skills (instruções
+reutilizáveis) para agentes de IA, servido pelo Purple Skills. As skills aqui
+foram escolhidas por quem administra este servidor.
 
 ${FLUXO}
 
@@ -48,36 +42,31 @@ servidor e aceitam a mesma credencial usada para conectar.${
   }`;
 
 /**
- * Cria uma instância do servidor MCP público com as ferramentas registradas.
+ * Cria uma instância do servidor MCP de um vMCP, com as ferramentas e as
+ * superfícies registradas.
  *
- * Sem `scope`, é o MCP principal. Com ele, é um MCP virtual: mesmo conjunto
- * de ferramentas e superfícies, com as leituras recortadas pelo vínculo e o
- * nome do servidor sufixado pelo slug, para o cliente distinguir os dois no
- * `serverInfo`.
+ * O nome do servidor é sufixado pelo slug em qualquer ponto de montagem —
+ * inclusive na raiz — para o cliente que conecta a vários vMCPs distingui-los
+ * no `serverInfo`.
  */
-export function createMcpServer(scope?: VirtualScope): McpServer {
+export function createMcpServer(scope: VirtualScope): McpServer {
   const handlers = createHandlers(scope);
   const surfaces = createSurfaces(scope);
 
   const server = new McpServer(
-    {
-      name: scope ? `${config.serverName}-${scope.mcp.slug}` : config.serverName,
-      version: config.version,
-    },
-    { instructions: scope ? instrucoesDoVirtual(scope) : INSTRUCTIONS },
+    { name: `${config.serverName}-${scope.mcp.slug}`, version: config.version },
+    { instructions: instrucoes(scope) },
   );
 
   registrarSuperficies(server, surfaces);
-
-  const busca = scope
-    ? 'Busca as skills deste MCP virtual por texto livre (nome, descrição e conteúdo do SKILL.md), '
-    : 'Busca skills públicas por texto livre (nome, descrição e conteúdo do SKILL.md), ';
 
   server.registerTool(
     'search_skills',
     {
       title: 'Buscar skills',
-      description: busca + 'opcionalmente filtrando por tag. Retorna os slugs a usar em get_skill.',
+      description:
+        'Busca as skills deste servidor por texto livre (nome, descrição e conteúdo do SKILL.md), ' +
+        'opcionalmente filtrando por tag. Retorna os slugs a usar em get_skill.',
       inputSchema: {
         query: z.string().describe('Termos de busca. Vazio lista as mais acessadas.').optional(),
         tag: z.string().describe('Filtra por uma tag exata.').optional(),
@@ -129,7 +118,7 @@ export function createMcpServer(scope?: VirtualScope): McpServer {
     'list_tags',
     {
       title: 'Listar tags',
-      description: 'Lista as tags disponíveis no catálogo, com a quantidade de skills em cada uma.',
+      description: 'Lista as tags disponíveis neste servidor, com a quantidade de skills em cada uma.',
       inputSchema: {},
     },
     () => handlers.list_tags(),
@@ -145,7 +134,7 @@ export function createMcpServer(scope?: VirtualScope): McpServer {
  * vinda do banco exigiria um `registerPrompt` por skill na criação do servidor,
  * o que tornaria esta fábrica assíncrona — três call sites em cada `http.ts` —
  * e congelaria a lista pelo tempo da sessão (`MCP_SESSION_TTL_MS`, 30 min por
- * padrão). Aqui ela é computada por requisição, e uma skill flagada agora
+ * padrão). Aqui ela é computada por requisição, e uma skill vinculada agora
  * aparece na chamada seguinte, mesmo em sessão antiga. Resources vão pelo mesmo
  * caminho por simetria: um estilo só no arquivo.
  *
@@ -159,7 +148,7 @@ function registrarSuperficies(server: McpServer, surfaces: ReturnType<typeof cre
   // em processo para disparar a notificação, e um cliente que confiasse na
   // promessa cacharia a lista pela sessão inteira. Precisa vir antes do
   // `connect`, depois do qual o SDK recusa. Vale mesmo sem nenhuma skill
-  // flagada: a fábrica é síncrona e não consulta o banco.
+  // vinculada: a fábrica é síncrona e não consulta o banco.
   server.server.registerCapabilities({ prompts: {}, resources: {} });
 
   server.server.setRequestHandler(ListPromptsRequestSchema, () => surfaces.listPrompts());

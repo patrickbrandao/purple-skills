@@ -20,26 +20,27 @@ Regras importantes:
 - O slug é o nome oficial da skill: é ele que vai no campo name: do frontmatter.
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
   arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
-- Skills recém-criadas nascem privadas, a menos que is_public=true.
-- is_public é o interruptor global da publicação: com ela em false a skill não
-  aparece em superfície nenhuma do MCP público.
-- Com ela em true, três flags dizem por onde a skill é oferecida, e são
-  independentes entre si: use_as_skill (padrão true) a mantém nas ferramentas
-  do MCP público — search_skills, get_skill e as demais; use_as_prompt a
-  oferece como prompt, pelo slug; use_as_resource, como resource
-  skill://<slug>. Desligar use_as_skill publica a skill só nas outras duas.
+- Uma skill é um elemento flutuante: existe no catálogo e só é exibida — no
+  site e nos servidores MCP — onde está vinculada a um MCP virtual. Skill
+  recém-criada nasce sem vínculo, a menos que create_skill receba mcps; depois,
+  link_skill / unlink_skill publicam e despublicam pelo lado da skill, e
+  set_virtual_mcp_skills define a lista inteira pelo lado do MCP. Cada vínculo
+  escolhe as três superfícies (asSkill, asPrompt, asResource). Publicar em um
+  MCP virtual exige administrá-lo: o dono, ou um admin.
+- O site lista o que está em ao menos um MCP virtual aberto e ligado; list_skills
+  e get_skill mostram, em mcps, onde cada skill está.
 - delete_skill é irreversível e exige confirm=true.
 - As ferramentas de escrita dependem do papel da credencial: uma chave de
   usuário "leitor" só lê, e apagar skill exige papel "admin".
 - MCPs virtuais (tools *_virtual_mcp*): servidores de leitura em
-  /virtual/<slug>/mcp que publicam um recorte de skills — inclusive privadas —
-  com chaves próprias (psv_…). Cada vínculo escolhe as três superfícies
-  (asSkill, asPrompt, asResource) por conta própria; as flags use_as_* da
-  skill valem só para o MCP principal. O MCP virtual tem dono: quem cria é o
-  dono, e só o dono ou um admin o administra. Abrir um MCP (is_open) com
-  skill privada dentro exige confirm_open=true.
-- Chaves do MCP principal (tools *_public_mcp_key): chaves psp_ que abrem o
-  MCP público principal quando ele roda com MCP_PUBLIC_AUTH=managed. Só admin.`;
+  /virtual/<slug>/mcp com chaves próprias (psv_…), ou abertos (is_open) — um
+  MCP aberto é público: o site o lista, com suas skills. O MCP virtual tem
+  dono: quem cria é o dono, e só o dono ou um admin o administra.
+- O MCP público (/mcp) é o MCP virtual escolhido como padrão
+  (get_default_virtual_mcp / set_default_virtual_mcp, só admin). Ele continua
+  respondendo em /virtual/<slug>/mcp e não tem tratamento especial: pode ser
+  fechado, desligado ou apagado como qualquer um, e aí /mcp responde 404.
+  Sem MCP padrão, /mcp responde 404.`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -61,9 +62,9 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     'list_skills',
     {
       title: 'Listar skills',
-      description: 'Lista as skills do catálogo, incluindo as privadas por padrão.',
+      description:
+        'Lista o catálogo inteiro, inclusive skills sem vínculo. Cada uma traz em mcps os MCPs virtuais em que está.',
       inputSchema: {
-        includePrivate: z.boolean().describe('Inclui skills privadas (padrão true).').optional(),
         query: z.string().describe('Filtro por texto livre.').optional(),
         tag: z.string().describe('Filtro por tag.').optional(),
         limit: z
@@ -109,11 +110,15 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Criar skill',
       description:
-        'Cria uma skill nova. O conteúdo do SKILL.md é obrigatório. A skill nasce privada ' +
-        'a menos que is_public seja true. O frontmatter é gerado a partir dos campos abaixo.',
+        'Cria uma skill nova. O conteúdo do SKILL.md é obrigatório. Sem mcps a skill nasce sem ' +
+        'vínculo, exibida em lugar nenhum. O frontmatter é gerado a partir dos campos abaixo.',
       inputSchema: {
         name: z.string().describe('Nome legível da skill.'),
         description: z.string().describe('Resumo de uma linha.').optional(),
+        icon: z
+          .string()
+          .describe('Ícone no painel: um único emoji (🐘) ou a URL http(s) de uma imagem.')
+          .optional(),
         skill_md_content: z
           .string()
           .describe('Corpo do SKILL.md (markdown), sem frontmatter — ele é gerado dos metadados.'),
@@ -122,22 +127,18 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .string()
           .describe('Nome oficial da skill (a-z, 0-9 e hífen). Gerado a partir do nome se omitido.')
           .optional(),
-        is_public: z.boolean().describe('Publicar imediatamente (padrão false).').optional(),
-        use_as_skill: z
-          .boolean()
-          .describe(
-            'Mantém a skill nas ferramentas do MCP público — search_skills, get_skill, ' +
-              'get_skill_file, download_skill e list_tags (padrão true). Em false, ela só ' +
-              'aparece pelas superfícies abaixo que estiverem ligadas.',
+        mcps: z
+          .array(
+            z.object({
+              slug: z.string().describe('Slug do MCP virtual.'),
+              asSkill: z.boolean().describe('Nas ferramentas (search_skills, get_skill…).'),
+              asPrompt: z.boolean().describe('Como prompt, pelo slug.'),
+              asResource: z.boolean().describe('Como resource skill://<slug>.'),
+            }),
           )
-          .optional(),
-        use_as_prompt: z
-          .boolean()
-          .describe('Oferece a skill como prompt do MCP público, pelo slug (padrão false).')
-          .optional(),
-        use_as_resource: z
-          .boolean()
-          .describe('Oferece a skill como resource skill://<slug> do MCP público (padrão false).')
+          .describe(
+            'Onde publicar já na criação. Só em MCPs virtuais que a credencial administra; omitido, a skill nasce sem vínculo.',
+          )
           .optional(),
       },
     },
@@ -149,28 +150,20 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Editar metadados',
       description:
-        'Altera nome, descrição, tags ou slug de uma skill existente. É por aqui que se muda ' +
-        'o frontmatter do SKILL.md, gerado a partir destes campos.',
+        'Altera nome, descrição, ícone, tags ou slug de uma skill existente. É por aqui que se muda ' +
+        'o frontmatter do SKILL.md, gerado a partir destes campos. Onde ela aparece é link_skill.',
       inputSchema: {
         slug: z.string().describe('Slug atual da skill.'),
         name: z.string().optional(),
         description: z.string().optional(),
+        icon: z
+          .string()
+          .describe('Ícone no painel: um único emoji ou a URL http(s) de uma imagem. Vazio limpa.')
+          .optional(),
         tags: z.array(z.string()).describe('Substitui a lista de tags inteira.').optional(),
         new_slug: z
           .string()
           .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
-          .optional(),
-        use_as_skill: z
-          .boolean()
-          .describe('Mantém a skill nas ferramentas do MCP público (padrão true).')
-          .optional(),
-        use_as_prompt: z
-          .boolean()
-          .describe('Oferece a skill como prompt do MCP público, pelo slug.')
-          .optional(),
-        use_as_resource: z
-          .boolean()
-          .describe('Oferece a skill como resource skill://<slug> do MCP público.')
           .optional(),
       },
     },
@@ -178,16 +171,35 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
   );
 
   server.registerTool(
-    'set_visibility',
+    'link_skill',
     {
-      title: 'Definir visibilidade',
-      description: 'Torna a skill pública (visível no site e no MCP público) ou privada.',
+      title: 'Publicar skill em um MCP virtual',
+      description:
+        'Vincula a skill ao MCP virtual, escolhendo as três superfícies; um vínculo existente é ' +
+        'reescrito. Exige administrar o MCP (dono ou admin).',
       inputSchema: {
-        slug: z.string(),
-        visibility: z.enum(['public', 'private']),
+        skill: z.string().describe('Slug da skill.'),
+        mcp: z.string().describe('Slug do MCP virtual.'),
+        asSkill: z.boolean().describe('Nas ferramentas (search_skills, get_skill…).'),
+        asPrompt: z.boolean().describe('Como prompt, pelo slug.'),
+        asResource: z.boolean().describe('Como resource skill://<slug>.'),
       },
     },
-    (args) => guard(() => handlers.set_visibility(args)),
+    (args) => guard(() => mcps.link_skill(args)),
+  );
+
+  server.registerTool(
+    'unlink_skill',
+    {
+      title: 'Tirar skill de um MCP virtual',
+      description:
+        'Desfaz o vínculo. Uma skill sem vínculo nenhum deixa de ser exibida no site e em qualquer MCP.',
+      inputSchema: {
+        skill: z.string().describe('Slug da skill.'),
+        mcp: z.string().describe('Slug do MCP virtual.'),
+      },
+    },
+    (args) => guard(() => mcps.unlink_skill(args)),
   );
 
   server.registerTool(
@@ -317,7 +329,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Alterar MCP virtual',
       description:
-        'Altera nome, slug, descrição, is_open ou is_active. Abrir (is_open=true) com skill privada dentro exige confirm_open=true.',
+        'Altera nome, slug, descrição, is_open ou is_active. Aberto (is_open), o MCP é público: o site o lista, com suas skills.',
       inputSchema: {
         slug: z.string().describe('Slug atual.'),
         name: z.string().optional(),
@@ -325,7 +337,6 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         description: z.string().optional(),
         is_open: z.boolean().optional(),
         is_active: z.boolean().describe('false desliga: tudo sob /virtual/<slug> responde 404.').optional(),
-        confirm_open: z.boolean().optional(),
       },
     },
     (args) => guard(() => mcps.update_virtual_mcp(args)),
@@ -350,8 +361,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       title: 'Definir skills do MCP virtual',
       description:
         'Substitui a lista inteira de skills do MCP virtual: a lista é o estado desejado, e quem não ' +
-        'está nela sai. Cada entrada escolhe as três superfícies. Num MCP aberto, vincular skill privada ' +
-        'exige confirm_open=true.',
+        'está nela sai. Cada entrada escolhe as três superfícies. Para uma skill só, use link_skill.',
       inputSchema: {
         slug: z.string(),
         skills: z
@@ -364,7 +374,6 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
             }),
           )
           .describe('Lista completa. Vazia esvazia o MCP.'),
-        confirm_open: z.boolean().optional(),
       },
     },
     (args) => guard(() => mcps.set_virtual_mcp_skills(args)),
@@ -403,37 +412,31 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
   );
 
-  // ------------------------------------------ chaves do MCP principal ---
+  // ------------------------------------------------------- MCP padrão ---
 
   server.registerTool(
-    'list_public_mcp_keys',
+    'get_default_virtual_mcp',
     {
-      title: 'Listar chaves do MCP principal',
+      title: 'Ler o MCP padrão',
       description:
-        'Chaves psp_ do MCP público principal (só valem com MCP_PUBLIC_AUTH=managed). Só admin. Nunca mostra o segredo.',
+        'Qual MCP virtual responde em /mcp — o MCP público desta instalação — ou por que nenhum responde.',
       inputSchema: {},
     },
-    () => guard(() => mcps.list_public_mcp_keys()),
+    () => guard(() => mcps.get_default_virtual_mcp()),
   );
 
   server.registerTool(
-    'create_public_mcp_key',
+    'set_default_virtual_mcp',
     {
-      title: 'Emitir chave do MCP principal',
-      description: 'Emite uma chave psp_ para o MCP público principal. Só admin. O token aparece uma única vez.',
-      inputSchema: { name: z.string().describe('Nome da chave (ex.: "agentes do time X").') },
+      title: 'Escolher o MCP padrão',
+      description:
+        'Faz um MCP virtual responder também em /mcp, com as próprias skills, chaves e regra de acesso. ' +
+        'slug null limpa: /mcp passa a responder 404. Só admin.',
+      inputSchema: {
+        slug: z.string().nullable().describe('Slug do MCP virtual, ou null para nenhum.'),
+      },
     },
-    (args) => guard(() => mcps.create_public_mcp_key(args)),
-  );
-
-  server.registerTool(
-    'revoke_public_mcp_key',
-    {
-      title: 'Revogar chave do MCP principal',
-      description: 'Revoga uma chave psp_ pelo id (de list_public_mcp_keys). Só admin.',
-      inputSchema: { key_id: z.string() },
-    },
-    (args) => guard(() => mcps.revoke_public_mcp_key(args)),
+    (args) => guard(() => mcps.set_default_virtual_mcp(args)),
   );
 
   return server;

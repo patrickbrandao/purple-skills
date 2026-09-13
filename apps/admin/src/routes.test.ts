@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { requireAdmin, requireDelete, requireVirtualMcpCreate, requireWrite } = await import('./auth.js');
+const { requireAdmin, requireDelete, requireSettingsAdmin, requireVirtualMcpCreate, requireWrite } =
+  await import('./auth.js');
 const { api } = await import('./api.js');
 
 /**
@@ -33,19 +34,22 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/users'],
     ['patch', '/api/users/:uuid'],
     ['post', '/api/users/:uuid/reset-password'],
-    // Uma chave do principal abre o catálogo público inteiro: só admin.
-    ['get', '/api/public-mcp/keys'],
-    ['post', '/api/public-mcp/keys'],
-    ['delete', '/api/public-mcp/keys/:id'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireAdmin);
+  });
+
+  // O vMCP padrão responde em /mcp para a instalação inteira: só admin escolhe.
+  it.each([
+    ['get', '/api/settings'],
+    ['put', '/api/settings/default-mcp'],
+  ])('%s %s exige admin', (method, path) => {
+    expect(handlers(method, path)).toContain(requireSettingsAdmin);
   });
 
   it.each([
     ['post', '/api/skills'],
     ['post', '/api/skills/import'],
     ['patch', '/api/skills/:slug'],
-    ['post', '/api/skills/:slug/visibility'],
     ['post', '/api/skills/:slug/upload'],
     ['post', '/api/skills/:slug/files'],
   ])('%s %s exige papel de escrita', (method, path) => {
@@ -60,14 +64,31 @@ describe('papéis exigidos pelas rotas', () => {
     expect(handlers('post', '/api/mcps')).toContain(requireVirtualMcpCreate);
     // Sem guarda de papel de propósito: `loadManaged` deixa passar o dono ou
     // um admin, e um leitor que virou dono por transferência administra o seu.
+    // O vínculo pelo lado da skill segue a mesma regra: a permissão é a do
+    // vMCP alvo.
     for (const [method, path] of [
       ['patch', '/api/mcps/:slug'],
       ['put', '/api/mcps/:slug/skills'],
       ['post', '/api/mcps/:slug/keys'],
+      ['put', '/api/skills/:slug/mcps/:mcp'],
+      ['delete', '/api/skills/:slug/mcps/:mcp'],
     ] as const) {
       expect(handlers(method, path)).not.toContain(requireWrite);
       expect(handlers(method, path)).not.toContain(requireAdmin);
     }
+  });
+
+  // O canvas e as sessões de um servidor seguem a regra do servidor: dono ou
+  // admin, decidido por `loadManaged`. A lista global recorta por dono dentro
+  // de `listSessions` — também sem guarda de papel.
+  it.each([
+    ['put', '/api/mcps/:slug/canvas'],
+    ['get', '/api/mcps/:slug/online'],
+    ['get', '/api/mcps/:slug/sessions'],
+    ['get', '/api/sessions'],
+  ])('%s %s é decidido pelo dono, não pelo papel', (method, path) => {
+    expect(handlers(method, path)).not.toContain(requireWrite);
+    expect(handlers(method, path)).not.toContain(requireAdmin);
   });
 
   it('leitura do catálogo não exige papel além da sessão', () => {

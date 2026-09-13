@@ -77,6 +77,8 @@ export function SkillPage() {
   }
 
   const publicUrl = `${meta?.baseUrl ?? window.location.origin}/skills/${skill.slug}`;
+  // `mcpUrl` é `<base>/mcp`; os virtuais ficam em `<base>/virtual/<slug>/mcp`.
+  const mcpBase = meta?.mcpUrl ? meta.mcpUrl.replace(/\/mcp$/, '') : null;
 
   return (
     <section className="skill-page">
@@ -146,29 +148,48 @@ export function SkillPage() {
               </p>
             </section>
 
-            {meta?.mcpUrl && (
-              <section className="aside-card">
-                <h2>
-                  <PlugIcon /> Via MCP
-                </h2>
-                <p className="mt-2 text-xs" style={{ color: 'var(--text-faint)' }}>
-                  Conecte seu agente e peça pelo slug:
-                </p>
-                <div className="code-card" style={{ marginTop: '10px' }}>
-                  <div className="code-body" style={{ padding: '12px 14px', fontSize: '.76rem' }}>
-                    <span className="k">get_skill</span>
-                    {'('}
-                    <span className="s">"{skill.slug}"</span>
-                    {')'}
-                  </div>
+            {/* Onde a skill está: os servidores abertos que a publicam, e por
+                quais portas em cada um. O padrão responde também em /mcp. */}
+            <section className="aside-card">
+              <h2>
+                <PlugIcon /> Via MCP
+              </h2>
+              <p className="mt-2 text-xs" style={{ color: 'var(--text-faint)' }}>
+                Publicada em {skill.mcps.length} servidor{skill.mcps.length === 1 ? '' : 'es'}{' '}
+                aberto{skill.mcps.length === 1 ? '' : 's'}. Conecte seu agente a um deles e peça pelo
+                slug:
+              </p>
+              <div className="code-card" style={{ marginTop: '10px' }}>
+                <div className="code-body" style={{ padding: '12px 14px', fontSize: '.76rem' }}>
+                  <span className="k">get_skill</span>
+                  {'('}
+                  <span className="s">"{skill.slug}"</span>
+                  {')'}
                 </div>
-                <CopyButton
-                  value={meta.mcpUrl}
-                  label="Copiar URL do MCP"
-                  className="btn btn-ghost btn-sm mt-3 w-full"
-                />
-              </section>
-            )}
+              </div>
+              <ul className="mt-3 grid gap-2 text-xs">
+                {skill.mcps.map((mcp) => {
+                  const url = mcpBase
+                    ? mcp.isDefault
+                      ? `${mcpBase}/mcp`
+                      : `${mcpBase}/virtual/${mcp.slug}/mcp`
+                    : null;
+                  const portas = [mcp.asSkill && 'skill', mcp.asPrompt && 'prompt', mcp.asResource && 'resource']
+                    .filter(Boolean)
+                    .join(' · ');
+                  return (
+                    <li key={mcp.uuid} className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        <strong>{mcp.name}</strong>
+                        {mcp.isDefault && ' (padrão)'}
+                        <span style={{ color: 'var(--text-faint)' }}> — {portas || 'sem porta'}</span>
+                      </span>
+                      {url && <CopyButton value={url} label="Copiar URL" className="btn btn-ghost btn-sm" />}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
           </aside>
         </div>
       </div>

@@ -1,71 +1,48 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Download, ExternalLink, Eye, FileText, Save, Trash2, Upload } from 'lucide-react';
 import {
+  canDelete,
+  canWrite,
   deleteFile,
   deleteSkill,
   getFile,
   getSkill,
   rawFileUrl,
+  setFile as putFile,
   skillDownloadUrl,
   skillPackageUrl,
-  setFile as putFile,
   updateSkill,
   uploadFiles,
   uploadZip,
-  canDelete,
-  canWrite,
   type Session,
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { Badge, Button, Panel, PublicationBadges } from '../components/ui.js';
+import { Button, McpChips, Panel, Skel, Tabs, noSite, useConfirm } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
-import {
-  ArrowLeftIcon,
-  DownloadIcon,
-  ExternalIcon,
-  EyeIcon,
-  FileIcon,
-  SaveIcon,
-  TrashIcon,
-  UploadIcon,
-} from '../components/Icons.js';
-import {
-  FrontmatterPreview,
-  SkillMetaForm,
-  type SkillMetaValues,
-} from '../components/SkillMetaForm.js';
+import { SkillIcon } from '../components/SkillIcon.js';
+import { FrontmatterPreview, SkillMetaForm, type SkillMetaValues } from '../components/SkillMetaForm.js';
 import { PromptEditor } from '../components/PromptEditor.js';
 import { parseTags, stripFrontmatter } from '../frontmatter.js';
 import { useToast } from '../components/Toast.js';
+import { useRegisterCommands } from '../components/commands.js';
 
 type Tab = 'skill' | 'files';
 
 export function SkillEditorPage({ session, user }: { session: Session; user: SessionUser }) {
-  // O servidor recusa a escrita de qualquer forma; esconder aqui evita
-  // oferecer um botão que só devolve 403.
   const podeEscrever = canWrite(user.role);
   const podeApagar = canDelete(user.role);
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const confirm = useConfirm();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
   const [tab, setTab] = useState<Tab>('skill');
   const [saving, setSaving] = useState(false);
-
-  const [meta, setMeta] = useState<SkillMetaValues>({
-    name: '',
-    slug: '',
-    description: '',
-    tags: '',
-    isPublic: false,
-    useAsSkill: true,
-    useAsPrompt: false,
-    useAsResource: false,
-  });
+  const [meta, setMeta] = useState<SkillMetaValues>({ name: '', slug: '', description: '', tags: '', icon: '' });
   const [skillMd, setSkillMd] = useState('');
-
   const [replaceTree, setReplaceTree] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -74,18 +51,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
   const hydrate = useCallback((detail: SkillDetail) => {
     setSkill(detail);
-    setMeta({
-      name: detail.name,
-      slug: detail.slug,
-      description: detail.description,
-      tags: detail.tags.join(', '),
-      isPublic: detail.isPublic,
-      useAsSkill: detail.useAsSkill,
-      useAsPrompt: detail.useAsPrompt,
-      useAsResource: detail.useAsResource,
-    });
-    // Skills gravadas antes desta regra ainda podem trazer frontmatter no
-    // arquivo: o editor mostra só o corpo, e o formulário manda nos metadados.
+    setMeta({ name: detail.name, slug: detail.slug, description: detail.description, tags: detail.tags.join(', '), icon: detail.icon ?? '' });
     setSkillMd(stripFrontmatter(detail.skillMd));
   }, []);
 
@@ -102,44 +68,57 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     void reload();
   }, [reload]);
 
-  const patchMeta = useCallback(
-    (patch: Partial<SkillMetaValues>) => setMeta((current) => ({ ...current, ...patch })),
-    [],
-  );
+  const patchMeta = useCallback((patch: Partial<SkillMetaValues>) => setMeta((current) => ({ ...current, ...patch })), []);
 
-  async function save() {
+  const dirty =
+    skill !== null &&
+    (meta.name !== skill.name ||
+      meta.slug !== skill.slug ||
+      meta.description !== skill.description ||
+      meta.tags !== skill.tags.join(', ') ||
+      meta.icon.trim() !== (skill.icon ?? '') ||
+      skillMd !== stripFrontmatter(skill.skillMd));
+
+  const save = useCallback(async () => {
     if (!skill) return;
     setSaving(true);
-
-    // Nunca sai daqui com frontmatter: os metadados são os do formulário.
-    // Só vai no payload quando muda, para não gravar o arquivo (e uma linha de
-    // auditoria) a cada ajuste de metadado.
     const prompt = stripFrontmatter(skillMd);
-
     try {
       const updated = await updateSkill(skill.slug, {
         name: meta.name,
         slug: meta.slug !== skill.slug ? meta.slug : undefined,
         description: meta.description,
+        icon: meta.icon.trim() !== (skill.icon ?? '') ? meta.icon.trim() || null : undefined,
         tags: parseTags(meta.tags),
-        isPublic: meta.isPublic,
-        useAsSkill: meta.useAsSkill,
-        useAsPrompt: meta.useAsPrompt,
-        useAsResource: meta.useAsResource,
         skillMd: prompt !== skill.skillMd ? prompt : undefined,
       });
-
       hydrate(updated);
       toast.success('Alterações salvas.');
-      if (updated.slug !== skill.slug) navigate(`/skills/${updated.slug}`, { replace: true });
+      if (updated.slug !== skill.slug) navigate(`/skills/${updated.slug}/editar`, { replace: true });
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
       setSaving(false);
     }
-  }
+  }, [skill, skillMd, meta, hydrate, toast, navigate]);
 
-  /** O SKILL.md não abre no editor cru: ele é feito na aba ao lado. */
+  useRegisterCommands(
+    skill && podeEscrever ? [{ id: 'skill-save', label: 'Salvar alterações', group: 'Recurso', icon: <Save />, shortcut: '⌘ S', disabled: dirty ? false : 'nada a salvar', run: save }] : [],
+    [skill?.slug, dirty, save, podeEscrever],
+  );
+
+  // ⌘S salva; o navegador não abre o "salvar página".
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        if (dirty && !saving) void save();
+      }
+    };
+    document.addEventListener('keydown', down);
+    return () => document.removeEventListener('keydown', down);
+  }, [dirty, saving, save]);
+
   function pickFile(path: string) {
     if (path.toLowerCase() === 'skill.md') {
       setTab('skill');
@@ -171,7 +150,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   }
 
   async function removeFile(path: string) {
-    if (!window.confirm(`Remover o arquivo "${path}"?`)) return;
+    const ok = await confirm({ title: `Remover o arquivo "${path}"?`, confirmLabel: 'Remover', danger: true });
+    if (!ok) return;
     try {
       await deleteFile(slug, path);
       if (selectedFile === path) setSelectedFile(null);
@@ -185,9 +165,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   async function handleZip(file: File, replace: boolean) {
     try {
       await uploadZip(slug, file, replace);
-      toast.success(
-        replace ? 'Árvore de arquivos substituída pelo .zip.' : 'Arquivos importados do .zip.',
-      );
+      toast.success(replace ? 'Árvore de arquivos substituída pelo .zip.' : 'Arquivos importados do .zip.');
       await reload();
     } catch (err) {
       toast.error((err as Error).message);
@@ -206,7 +184,13 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
   async function removeSkill() {
     if (!skill) return;
-    if (!window.confirm(`Remover a skill "${skill.name}" e todos os seus arquivos?`)) return;
+    const ok = await confirm({
+      title: `Remover a skill "${skill.name}"?`,
+      description: 'Todos os arquivos dela e os vínculos com servidores somem. Não dá para desfazer.',
+      confirmLabel: 'Remover',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteSkill(skill.slug);
       toast.success('Skill removida.');
@@ -216,96 +200,70 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }
 
-  // A aba conta só os anexos: o SKILL.md aparece na árvore, mas clicar nele
-  // leva para a aba ao lado — ali a edição é crua, e o conteúdo dele é montado
-  // a partir do formulário desta mesma tela.
-  const attachments = useMemo(
-    () => skill?.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md') ?? [],
-    [skill],
-  );
+  const attachments = useMemo(() => skill?.files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md') ?? [], [skill]);
 
   if (!skill) {
-    return <div className="skel-block" style={{ height: '18rem' }} />;
+    return (
+      <div className="page wide">
+        <Skel h={20} w={120} className="mb-3" />
+        <Skel h={40} w={360} className="mb-6" />
+        <Skel h={420} />
+      </div>
+    );
   }
 
-  const dirty =
-    meta.name !== skill.name ||
-    meta.slug !== skill.slug ||
-    meta.description !== skill.description ||
-    meta.tags !== skill.tags.join(', ') ||
-    meta.isPublic !== skill.isPublic ||
-    meta.useAsSkill !== skill.useAsSkill ||
-    meta.useAsPrompt !== skill.useAsPrompt ||
-    meta.useAsResource !== skill.useAsResource ||
-    skillMd !== stripFrontmatter(skill.skillMd);
-
   return (
-    <>
+    <div className="page wide">
       <div className="page-head">
         <div className="min-w-0">
           <Link to={`/skills/${skill.slug}`} className="back-link">
-            <ArrowLeftIcon /> {skill.name}
+            <ArrowLeft /> {skill.name}
           </Link>
-          <h1 className="display mt-1 flex flex-wrap items-center gap-3">
-            <span className="truncate">{skill.name}</span>
-            <Badge isPublic={skill.isPublic} />
-            <PublicationBadges skill={skill} />
-          </h1>
-          <p className="sub mono flex flex-wrap items-center gap-x-3">
-            <span>{skill.slug}</span>
-            <span>· {skill.viewCount} acessos</span>
-            <span>· {skill.downloadCount} downloads</span>
-            {skill.isPublic && (
-              <a
-                href={`${session.siteBaseUrl}/skills/${skill.slug}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1"
-                style={{ color: 'var(--brand)' }}
-              >
-                <ExternalIcon className="h-3 w-3" /> ver no site
-              </a>
-            )}
-          </p>
+          <div className="flex items-center gap-3">
+            <SkillIcon icon={meta.icon.trim() || null} name={meta.name || skill.name} slug={skill.slug} size="lg" />
+            <div className="min-w-0">
+              <h1 className="truncate">{skill.name}</h1>
+              <p className="sub mono flex flex-wrap items-center gap-x-3">
+                <span>{skill.slug}</span>
+                <McpChips skill={skill} compact />
+              </p>
+            </div>
+          </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="page-actions">
+          {noSite(skill) && (
+            <a href={`${session.siteBaseUrl}/skills/${skill.slug}`} target="_blank" rel="noreferrer" className="btn btn-quiet btn-sm">
+              <ExternalLink /> ver no site
+            </a>
+          )}
           <Link to={`/skills/${skill.slug}`} className="btn btn-ghost">
-            <EyeIcon /> Visualizar
+            <Eye /> Visualizar
           </Link>
           {podeApagar && (
-            <Button variant="danger" onClick={removeSkill}>
-              <TrashIcon /> Remover
+            <Button variant="danger" onClick={() => void removeSkill()}>
+              <Trash2 /> Remover
             </Button>
           )}
           {podeEscrever && (
-            <Button onClick={save} disabled={saving || !dirty}>
-              <SaveIcon /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
+            <Button onClick={() => void save()} disabled={saving || !dirty}>
+              <Save /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
             </Button>
           )}
         </div>
       </div>
 
-      <div className="tabs">
-        {(
-          [
-            ['skill', 'SKILL.md'],
-            ['files', `Arquivos (${attachments.length})`],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={tab === value ? 'active' : ''}
-            onClick={() => setTab(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        value={tab}
+        onChange={(key) => setTab(key as Tab)}
+        items={[
+          { key: 'skill', label: 'SKILL.md' },
+          { key: 'files', label: 'Arquivos', count: attachments.length },
+        ]}
+      />
 
       {tab === 'skill' && (
-        <Panel className="mt-5">
+        <Panel>
           <SkillMetaForm values={meta} onChange={patchMeta} />
           <FrontmatterPreview values={meta} />
           <PromptEditor value={skillMd} onChange={setSkillMd} />
@@ -313,77 +271,46 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       )}
 
       {tab === 'files' && (
-        <div className="mt-5 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <Panel className="aside-sticky">
-            <div className="panel-head">
-              <h2>
-                <FileIcon /> Arquivos
-              </h2>
-              {podeEscrever && (
-                <button
-                  type="button"
-                  onClick={() => filesInput.current?.click()}
-                  title="Enviar arquivos"
-                  className="row-action"
-                  style={{ color: 'var(--text-faint)' }}
-                >
-                  <UploadIcon />
+        <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+          <Panel
+            className="aside-sticky"
+            title="Arquivos"
+            icon={<FileText />}
+            actions={
+              podeEscrever ? (
+                <button type="button" onClick={() => filesInput.current?.click()} title="Enviar arquivos" className="row-action">
+                  <Upload />
                 </button>
-              )}
-            </div>
-
+              ) : undefined
+            }
+          >
             <p className="panel-hint">
-              A pasta da skill como ela sai do <code>.zip</code>. Clique em um arquivo de texto
-              para editá-lo aqui; o <code>SKILL.md</code> leva para a aba ao lado, com os
-              metadados que geram as suas primeiras linhas.
+              A pasta da skill como ela sai do <code>.zip</code>. Clique em um arquivo de texto para editá-lo aqui; o{' '}
+              <code>SKILL.md</code> leva para a aba ao lado.
             </p>
 
-            <FileTree
-              slug={skill.slug}
-              files={skill.files}
-              selected={selectedFile}
-              onPick={pickFile}
-              onDelete={podeEscrever ? removeFile : undefined}
-            />
+            <FileTree slug={skill.slug} files={skill.files} selected={selectedFile} onPick={pickFile} onDelete={podeEscrever ? removeFile : undefined} />
 
-            <div
-              className="mt-4 flex flex-col gap-3 pt-4"
-              style={{ borderTop: '1px solid var(--border)' }}
-            >
+            <div className="mt-4 flex flex-col gap-3 border-t pt-4" style={{ borderColor: 'var(--surface-3)' }}>
               <div className="flex flex-wrap gap-2">
-                <a
-                  href={skillDownloadUrl(skill.slug)}
-                  className="btn btn-ghost btn-sm"
-                  download
-                >
-                  <DownloadIcon /> Baixar .zip
+                <a href={skillDownloadUrl(skill.slug)} className="btn btn-ghost btn-sm" download>
+                  <Download /> .zip
                 </a>
-                <a
-                  href={skillPackageUrl(skill.slug)}
-                  className="btn btn-ghost btn-sm"
-                  download
-                >
-                  <DownloadIcon /> Baixar .skill
+                <a href={skillPackageUrl(skill.slug)} className="btn btn-ghost btn-sm" download>
+                  <Download /> .skill
                 </a>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => zipInput.current?.click()}>
-                <UploadIcon /> Importar .zip
-              </Button>
-              <label
-                className="flex cursor-pointer items-start gap-2 text-[11px] leading-relaxed"
-                style={{ color: 'var(--text-faint)' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={replaceTree}
-                  onChange={(event) => setReplaceTree(event.target.checked)}
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                />
-                <span>
-                  Substituir toda a árvore — arquivos ausentes no .zip são removidos (o SKILL.md é
-                  sempre preservado). Desmarcado, o .zip apenas adiciona e sobrescreve.
-                </span>
-              </label>
+              {podeEscrever && (
+                <>
+                  <Button variant="ghost" size="sm" onClick={() => zipInput.current?.click()}>
+                    <Upload /> Importar .zip
+                  </Button>
+                  <label className="check items-start text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
+                    <input type="checkbox" className="mt-0.5" checked={replaceTree} onChange={(event) => setReplaceTree(event.target.checked)} />
+                    <span>Substituir toda a árvore — arquivos ausentes no .zip são removidos (o SKILL.md é sempre preservado).</span>
+                  </label>
+                </>
+              )}
             </div>
 
             <input
@@ -410,44 +337,30 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           </Panel>
 
           <Panel>
-            {!selectedFile && (
-              <p className="list-empty">Selecione um arquivo de texto à esquerda para editar.</p>
-            )}
-
+            {!selectedFile && <p className="list-empty">Selecione um arquivo de texto à esquerda para editar.</p>}
             {selectedFile && (
               <>
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <code className="mono truncate text-xs" style={{ color: 'var(--brand)' }}>
+                  <code className="mono truncate text-xs" style={{ color: 'var(--accent-soft)' }}>
                     {selectedFile}
                   </code>
                   <div className="flex shrink-0 gap-2">
-                    <a
-                      href={rawFileUrl(slug, selectedFile)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-ghost btn-sm"
-                    >
+                    <a href={rawFileUrl(slug, selectedFile)} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
                       Abrir cru
                     </a>
                     {podeEscrever && (
-                      <Button size="sm" onClick={saveFile} disabled={fileContent === null}>
+                      <Button size="sm" onClick={() => void saveFile()} disabled={fileContent === null}>
                         Salvar arquivo
                       </Button>
                     )}
                   </div>
                 </div>
-                <textarea
-                  value={fileContent ?? ''}
-                  onChange={(event) => setFileContent(event.target.value)}
-                  rows={24}
-                  spellCheck={false}
-                  className="field field-mono resize-y"
-                />
+                <textarea value={fileContent ?? ''} onChange={(event) => setFileContent(event.target.value)} rows={24} spellCheck={false} className="field field-mono" />
               </>
             )}
           </Panel>
         </div>
       )}
-    </>
+    </div>
   );
 }

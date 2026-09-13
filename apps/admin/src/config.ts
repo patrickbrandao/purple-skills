@@ -1,5 +1,6 @@
 import { scryptSync } from 'node:crypto';
 import {
+  isBrandIconUrl,
   parseDomainList,
   readIntEnv,
   readPortEnv,
@@ -11,17 +12,41 @@ import {
  * Configuração do painel admin. Os segredos seguem o padrão
  * `<NOME>` / `<NOME>_FILE` (o arquivo tem prioridade).
  */
+const siteName = readTextEnv('SITE_NAME', 'Purple Skills');
+
 export const config = {
   port: readPortEnv('PORT', 3001),
   host: readTextEnv('HOST', '0.0.0.0'),
   siteBaseUrl: readTextEnv('SITE_BASE_URL', 'http://localhost:3000').replace(/\/+$/, ''),
-  siteName: readTextEnv('SITE_NAME', 'Purple Skills'),
+  siteName,
+  /**
+   * A marca do painel: o nome e o ícone no topo da sidebar, no login e na aba
+   * do navegador. O nome acompanha `SITE_NAME` quando não é informado; o
+   * ícone aceita URL http(s) ou caminho do próprio painel.
+   */
+  brandName: readTextEnv('ADMIN_BRAND_NAME', siteName),
+  brandIconUrl: readBrandIconUrl(),
   /**
    * Endereço público do MCP público — base das URLs `/virtual/<slug>/mcp`
    * que o painel mostra no snippet de conexão de cada MCP virtual. Vazio = o
    * painel mostra o caminho e avisa que falta configurar.
    */
   mcpPublicUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
+  /**
+   * Links externos da sidebar do painel (`docs/10-admin-canvas-e-sessoes.md`).
+   * Vazio some da tela; a documentação aponta para o GitHub por padrão.
+   */
+  docsUrl: readTextEnv('ADMIN_DOCS_URL', 'https://github.com/patrickbrandao/purple-skills#readme'),
+  supportUrl: readTextEnv('ADMIN_SUPPORT_URL', ''),
+  chatUrl: readTextEnv('ADMIN_CHAT_URL', ''),
+  /**
+   * Janela em que um cliente do MCP público conta como online: é o que o
+   * contador do canvas e a lista de sessões usam (`docs/10`). O mcp-public lê
+   * a mesma variável para agrupar as requisições stateless.
+   */
+  onlineWindowMs: readIntEnv('MCP_SESSION_ONLINE_WINDOW_MS', 120_000, { min: 1000 }),
+  /** Versão mostrada em Configurações; vazia quando o ambiente não informa. */
+  version: readTextEnv('APP_VERSION', ''),
   isProduction: process.env.NODE_ENV === 'production',
   /** Duração da sessão do painel, em segundos (padrão: 12h). */
   sessionTtlSeconds: readIntEnv('ADMIN_SESSION_TTL', 12 * 3600, { min: 60 }),
@@ -177,4 +202,13 @@ export function getSessionSecret(): string {
 /** Base pública do painel, com fallback no `Host` da requisição. */
 export function panelBaseUrl(proto: string, host: string): string {
   return config.publicUrl || `${proto}://${host}`;
+}
+
+/** Valor inválido derruba o boot, em vez de virar um ícone quebrado em silêncio. */
+function readBrandIconUrl(): string {
+  const value = readTextEnv('ADMIN_BRAND_ICON_URL', '/assets/images/purple-hat-256.png');
+  if (!isBrandIconUrl(value)) {
+    throw new Error('ADMIN_BRAND_ICON_URL precisa ser uma URL http(s) ou um caminho que comece com "/"');
+  }
+  return value;
 }

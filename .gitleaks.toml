@@ -51,6 +51,17 @@ condition = "AND"
 commits = ["a01fdaf4d1b7b941ad9ee75761daeb293cdfcfe3"]
 paths = ['''^\.env\.example$''']
 
+# O `b317e0f` trouxe um texto de ajuda do painel em que o nome da variável da
+# senha de bootstrap vinha seguido de dois-pontos e da palavra "saia", que a
+# regra abaixo lê como a senha. Não é segredo; o texto já foi reescrito, mas o
+# commit fica no histórico. Mesma forma da exceção acima: fechada no commit E
+# no arquivo.
+[[allowlists]]
+description = "Layout.tsx de b317e0f — texto de ajuda que menciona ADMIN_PASSWORD, sem valor"
+condition = "AND"
+commits = ["b317e0faf2901a1b982a1d6e604ff6a7cd4ab724"]
+paths = ['''^apps/admin/web/src/components/shell/Layout\.tsx$''']
+
 [[rules]]
 id = "purple-skills-env-secret"
 description = "Segredo do Purple Skills com valor preenchido (.env commitado?)"

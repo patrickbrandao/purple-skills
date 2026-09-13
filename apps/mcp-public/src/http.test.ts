@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@purple-skills/db', () => ({ healthCheck: vi.fn(async () => true) }));
 
 const { createHttpApp } = await import('./http.js');
+import type { SessionTracker } from './sessions.js';
 
 /**
  * Dois pontos de montagem no mesmo app — a raiz e `/virtual/:slug` — com um
@@ -20,8 +21,26 @@ const IDENTITY_HEADER = 'x-identidade';
 let running: Server | undefined;
 const abortControllers: AbortController[] = [];
 
+/** Um rastreador que só anota as chamadas — o de verdade grava no banco. */
+function fakeTracker(): SessionTracker & { events: string[] } {
+  const events: string[] = [];
+  return {
+    events,
+    opened: (transport, id) => void events.push(`opened:${transport}:${id.length > 0}`),
+    seen: (transport) => void events.push(`seen:${transport}`),
+    closed: (transport, _id, reason) => void events.push(`closed:${transport}:${reason}`),
+    stateless: () => void events.push('stateless'),
+    flush: async () => undefined,
+    sweep: async () => undefined,
+    shutdown: async () => void events.push('shutdown'),
+  };
+}
+
+let tracker: ReturnType<typeof fakeTracker> | undefined;
+
 function startApp() {
   const app = createHttpApp({
+    sessions: tracker,
     mounts: [
       {
         basePath: '',
@@ -49,7 +68,8 @@ function startApp() {
     ],
     jsonLimit: '1mb',
     openCors: true,
-    info: { name: 'teste', version: '0.0.0', description: 'teste', requiresAuth: false },
+    info: { name: 'teste', version: '0.0.0', description: 'teste' },
+    describe: async () => ({ defaultMcp: { status: 'ok', slug: 'time-a' } }),
   });
 
   return new Promise<string>((resolve) => {
@@ -96,6 +116,70 @@ afterEach(() => {
   for (const controller of abortControllers.splice(0)) controller.abort();
   running?.close();
   running = undefined;
+  tracker = undefined;
+});
+
+describe('contabilidade de sessões', () => {
+  const initialize = (url: string) =>
+    fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'teste', version: '1' } },
+      }),
+    });
+
+  it('avisa o rastreador em cada transporte: abertura, atividade, fechamento e stateless', async () => {
+    tracker = fakeTracker();
+    const base = await startApp();
+
+    // Streamable: o initialize abre a sessão; a mensagem seguinte é atividade.
+    const first = await initialize(`${base}/virtual/time-a/mcp`);
+    expect(first.status).toBe(200);
+    const sessionId = first.headers.get('mcp-session-id')!;
+    expect(sessionId).toBeTruthy();
+    await fetch(`${base}/virtual/time-a/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    await fetch(`${base}/virtual/time-a/mcp`, { method: 'DELETE', headers: { 'mcp-session-id': sessionId } });
+
+    // Stateless: uma linha sintética por requisição.
+    await fetch(`${base}/mcp/stateless`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }),
+    });
+
+    // SSE: abrir o stream é abrir a sessão; o POST em /messages é atividade.
+    const endpoint = await openSse(`${base}/virtual/time-a/sse`, 'maria');
+    await post(`${base}${endpoint}`, 'maria');
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(tracker.events).toContain('opened:streamable:true');
+    expect(tracker.events).toContain('seen:streamable');
+    expect(tracker.events).toContain('closed:streamable:closed');
+    expect(tracker.events).toContain('stateless');
+    expect(tracker.events).toContain('opened:sse:true');
+    expect(tracker.events).toContain('seen:sse');
+  });
+});
+
+describe('GET /', () => {
+  it('anuncia os metadados fixos e o que `describe` calcula por requisição', async () => {
+    const base = await startApp();
+
+    const payload = await (await fetch(`${base}/`)).json();
+
+    expect(payload.name).toBe('teste');
+    expect(payload.transports).toBeDefined();
+    expect(payload.defaultMcp).toEqual({ status: 'ok', slug: 'time-a' });
+  });
 });
 
 describe('montagem sob /virtual/:slug', () => {

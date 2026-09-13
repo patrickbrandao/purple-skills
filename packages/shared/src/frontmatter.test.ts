@@ -143,9 +143,6 @@ describe('skillMetaFromMarkdown', () => {
       description: 'Faz X',
       slug: 'minha-skill',
       tags: ['git', 'ci'],
-      useAsSkill: true,
-      useAsPrompt: false,
-      useAsResource: false,
     });
   });
 
@@ -168,9 +165,6 @@ describe('skillMetaFromMarkdown', () => {
       description: null,
       slug: null,
       tags: [],
-      useAsSkill: true,
-      useAsPrompt: false,
-      useAsResource: false,
     });
   });
 
@@ -187,47 +181,15 @@ describe('skillMetaFromMarkdown', () => {
       description: original.description,
       slug: original.slug,
       tags: original.tags,
-      // `buildFrontmatter` não escreve as flags: o `.zip` gerado aqui volta
-      // sempre no padrão do schema — ligada como skill, desligada nas outras
-      // duas — ainda que a skill de origem estivesse configurada de outro jeito.
-      useAsSkill: true,
-      useAsPrompt: false,
-      useAsResource: false,
     });
   });
 
-  it('lê as flags de publicação de um SKILL.md externo, na raiz ou em metadata', () => {
-    const raiz = skillMetaFromMarkdown('---\nname: a\nuse_as_prompt: true\n---\ncorpo');
-    expect(raiz.useAsPrompt).toBe(true);
-    expect(raiz.useAsResource).toBe(false);
-
-    const emMetadata = skillMetaFromMarkdown(
-      '---\nname: a\nmetadata:\n  use_as_resource: true\n---\ncorpo',
+  // Onde a skill aparece é decidido pelo vínculo a um vMCP, nunca pelo
+  // arquivo: um `.zip` de terceiro não se publica sozinho.
+  it('ignora qualquer flag de publicação que venha no frontmatter', () => {
+    const meta = skillMetaFromMarkdown(
+      '---\nname: a\nis_public: true\nuse_as_prompt: true\nmetadata:\n  use_as_resource: true\n---\ncorpo',
     );
-    expect(emMetadata.useAsResource).toBe(true);
-  });
-
-  it('só o texto `true` liga uma flag', () => {
-    for (const valor of ['false', 'sim', '1', 'yes', 'True']) {
-      expect(skillMetaFromMarkdown(`---\nname: a\nuse_as_prompt: ${valor}\n---\ncorpo`).useAsPrompt).toBe(
-        false,
-      );
-    }
-  });
-
-  it('`use_as_skill` é o espelho: nasce ligada e só o texto `false` a desliga', () => {
-    expect(skillMetaFromMarkdown('---\nname: a\n---\ncorpo').useAsSkill).toBe(true);
-    expect(skillMetaFromMarkdown('---\nname: a\nuse_as_skill: false\n---\ncorpo').useAsSkill).toBe(
-      false,
-    );
-    expect(
-      skillMetaFromMarkdown('---\nname: a\nmetadata:\n  use_as_skill: false\n---\ncorpo').useAsSkill,
-    ).toBe(false);
-
-    for (const valor of ['true', 'nao', '0', 'no', 'False']) {
-      expect(skillMetaFromMarkdown(`---\nname: a\nuse_as_skill: ${valor}\n---\ncorpo`).useAsSkill).toBe(
-        true,
-      );
-    }
+    expect(meta).toEqual({ name: 'a', description: 'corpo', slug: 'a', tags: [] });
   });
 });

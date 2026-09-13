@@ -14,25 +14,29 @@ import {
   safeContentType,
   writeZip,
 } from '@purple-skills/shared';
-import { virtualAuth } from './auth.js';
 
 /**
  * Downloads de um MCP virtual — o `.zip` da skill e os arquivos avulsos —
- * servidos pelo próprio mcp-public, sob `/virtual/<slug>/skills/<skill>/…`,
- * com a mesma autenticação do MCP (`docs/08-mcp-virtual.md` §4.3).
+ * servidos pelo próprio mcp-public, sob `<mount>/skills/<skill>/…`, com a
+ * mesma autenticação do MCP (`docs/08-mcp-virtual.md` §4.3). Valem nos dois
+ * pontos de montagem: `/virtual/<slug>` e a raiz, que é o vMCP padrão.
  *
  * Existem porque o site só serve skill **pública**, e um virtual pode carregar
  * skill privada: as URLs que `download_skill` e `get_skill_file` devolvem
  * precisam funcionar com a chave que o agente já tem. Espelham as rotas do
  * site, com uma diferença: só a superfície de ferramentas (`as_skill`) entra
- * — quem está no virtual só como prompt ou resource não tem `.zip` aqui, do
- * mesmo jeito que não tem no principal.
+ * — quem está no MCP só como prompt ou resource não tem `.zip` aqui.
+ *
+ * `auth` é o middleware do ponto de montagem (`rootAuth` ou `virtualAuth`):
+ * ele é quem põe `req.virtual`.
  */
-export function registrarDownloads(router: Router): void {
-  router.get('/skills/:skill/download', virtualAuth, servirZip('zip'));
-  router.get('/skills/:skill/download.skill', virtualAuth, servirZip('skill'));
-  router.get('/skills/:skill/files/*path', virtualAuth, servirArquivo);
-}
+export const registrarDownloads =
+  (auth: RequestHandler) =>
+  (router: Router): void => {
+    router.get('/skills/:skill/download', auth, servirZip('zip'));
+    router.get('/skills/:skill/download.skill', auth, servirZip('skill'));
+    router.get('/skills/:skill/files/*path', auth, servirArquivo);
+  };
 
 const param = (req: Request, name: string): string => {
   const value = (req.params as Record<string, unknown>)[name];
@@ -62,7 +66,7 @@ const servirZip = (ext: 'zip' | 'skill') =>
   asyncRoute(async (req, res) => {
     const skill = await skillDoVirtual(req);
     if (!skill) {
-      notFound(res, 'Skill não encontrada neste MCP virtual');
+      notFound(res, 'Skill não encontrada neste MCP');
       return;
     }
 
@@ -90,7 +94,7 @@ const servirZip = (ext: 'zip' | 'skill') =>
 const servirArquivo = asyncRoute(async (req, res) => {
   const skill = await skillDoVirtual(req);
   if (!skill) {
-    notFound(res, 'Skill não encontrada neste MCP virtual');
+    notFound(res, 'Skill não encontrada neste MCP');
     return;
   }
 

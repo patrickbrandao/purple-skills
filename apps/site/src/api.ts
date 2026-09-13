@@ -10,6 +10,8 @@ import {
   readFile,
   getSkillDetail,
   healthCheck,
+  listOpenVirtualMcps,
+  resolveDefaultVirtualMcp,
 } from '@purple-skills/db';
 import {
   composeSkillMd,
@@ -64,6 +66,26 @@ api.get(
   }),
 );
 
+/**
+ * O MCP público é o vMCP padrão da instalação
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`): o site diz qual é, se exige
+ * chave e, quando não há nenhum em pé, por quê — em vez de anunciar um
+ * endereço que responde 404. Resolvido a cada chamada, como no mcp-public.
+ */
+async function mcpPublico() {
+  const resolved = await resolveDefaultVirtualMcp();
+  if (resolved.status === 'ok') {
+    return {
+      status: 'ok' as const,
+      slug: resolved.mcp.slug,
+      name: resolved.mcp.name,
+      description: resolved.mcp.description,
+      requiresKey: !resolved.mcp.isOpen,
+    };
+  }
+  return { status: resolved.status, slug: resolved.slug, name: null, description: null, requiresKey: null };
+}
+
 api.get(
   '/api/meta',
   asyncRoute(async (_req, res) => {
@@ -72,13 +94,35 @@ api.get(
       tagline: config.siteTagline,
       baseUrl: config.siteBaseUrl,
       mcpUrl: config.mcpPublicUrl || null,
+      mcp: await mcpPublico(),
       mcpAdminUrl: config.mcpAdminUrl || null,
       adminUrl: config.adminUrl || null,
     });
   }),
 );
 
-/** Lista/busca de skills públicas. */
+/**
+ * Os MCPs virtuais abertos e ligados (`docs/09-mcp-padrao-e-skills-flutuantes.md`
+ * §4.2): o que o site lista, com o endereço de cada um. Sem `MCP_PUBLIC_URL`
+ * o endereço fica nulo, como o do MCP público.
+ */
+api.get(
+  '/api/mcps',
+  asyncRoute(async (_req, res) => {
+    const base = config.mcpPublicBaseUrl;
+    const items = (await listOpenVirtualMcps()).map((mcp) => ({
+      ...mcp,
+      url: base ? `${base}/virtual/${encodeURIComponent(mcp.slug)}/mcp` : null,
+    }));
+    res.json({ items });
+  }),
+);
+
+/**
+ * Lista/busca das skills exibidas: as vinculadas a ao menos um MCP virtual
+ * aberto e ligado (a visibilidade padrão do `@purple-skills/db`). Toda
+ * leitura do site passa por essa regra — inclusive tags, arquivos e downloads.
+ */
 api.get(
   '/api/skills',
   asyncRoute(async (req, res) => {
@@ -88,7 +132,7 @@ api.get(
       limit: asInt(req.query.limit, 24),
       offset: asInt(req.query.offset, 0),
       sort: (req.query.sort as never) ?? undefined,
-      includePrivate: false,
+      visibility: 'open',
     });
     res.json(result);
   }),
@@ -97,15 +141,15 @@ api.get(
 api.get(
   '/api/tags',
   asyncRoute(async (_req, res) => {
-    res.json({ items: await listTags({ includePrivate: false }) });
+    res.json({ items: await listTags({ visibility: 'open' }) });
   }),
 );
 
-/** Detalhe da skill — conta um acesso (view_count). */
+/** Detalhe da skill — conta um acesso (view_count). `mcps` traz só os abertos. */
 api.get(
   '/api/skills/:slug',
   asyncRoute(async (req, res) => {
-    const detail = await getSkillDetail(param(req, 'slug'), { includePrivate: false });
+    const detail = await getSkillDetail(param(req, 'slug'), { visibility: 'open' });
     if (!detail) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;
@@ -128,7 +172,7 @@ api.get(
  * são servidos sem incrementar contador.
  */
 const serveFile = asyncRoute(async (req, res) => {
-  const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
+  const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'open' });
   if (!skill) {
     res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
     return;
@@ -175,7 +219,7 @@ api.get('/skills/:slug/files/*path', serveFile);
  */
 const serveZip = (ext: 'zip' | 'skill') =>
   asyncRoute(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { includePrivate: false });
+    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'open' });
     if (!skill) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
       return;

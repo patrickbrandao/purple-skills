@@ -1,7 +1,14 @@
 # A superfície de ferramentas como flag: `use_as_skill`
 
-**Status: implementado.** Este documento registra o desenho de
-`skills.use_as_skill` — a coluna que decide se uma skill pública aparece nas
+**Status: revogado por [`09`](09-mcp-padrao-e-skills-flutuantes.md).**
+`use_as_skill` e `is_public` saíram no `012`. A superfície de ferramentas
+continua sendo uma escolha por skill, mas **por vínculo** (`as_skill` de
+`virtual_mcp_skills`), e a visibilidade no site passou a ser "está em algum
+MCP virtual aberto". O que este documento fecha sobre o recorte morar na
+consulta (`§4.1`) e sobre a recusa indistinta (`§3.2`) segue valendo.
+
+Este documento registrava o desenho de
+`skills.use_as_skill` — a coluna que decidia se uma skill pública aparecia nas
 **ferramentas** do MCP público — e a promoção de `is_public` a interruptor
 global dito com todas as letras.
 

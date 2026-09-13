@@ -26,12 +26,18 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
     "@types/compression": "^1.7.5",
+    "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.0",
+    "@types/multer": "^2.0.0",
+    "@types/nodemailer": "^7.0.4",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^5.0.4",
+    "@xyflow/react": "^12.11.6",
+    "cmdk": "^1.1.1",
     "concurrently": "^9.1.0",
     "highlight.js": "^11.11.1",
+    "lucide-react": "^1.45.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
@@ -39,9 +45,6 @@
     "rehype-highlight": "^7.0.1",
     "remark-gfm": "^4.0.0",
     "tailwindcss": "^4.1.13",
-    "vite": "^7.1.5",
-    "@types/cookie-parser": "^1.4.8",
-    "@types/multer": "^2.0.0",
-    "@types/nodemailer": "^7.0.4"
+    "vite": "^7.1.5"
   }
 }

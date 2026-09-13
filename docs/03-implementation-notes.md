@@ -93,24 +93,17 @@ práticas evidentes:
 operação irreversível do conjunto e um agente não deveria conseguir disparar
 por engano.
 
-## As flags de publicação no import de `.zip`
+## Onde publicar, no import de `.zip`
 
-A `§6.4` de [`06-publicacao-mcp.md`](06-publicacao-mcp.md) decide que
-`skillMetaFromMarkdown` **lê** `use_as_prompt` e `use_as_resource` de um
-`.zip` externo, mas não diz como isso se combina com o formulário do import.
-Ficou `campo do formulário || frontmatter do .zip` — a mesma forma que nome,
-descrição e tags já usavam, com o formulário ganhando quando preenchido.
-
-`use_as_skill` ([`07`](07-superficie-de-ferramentas.md)) entrou depois e nasce
-**ligada**, então ficou espelhada nas duas pontas: a leitura desliga só com o
-literal `false` (`data.use_as_skill !== 'false'`), e a combinação é
-`formulário && .zip` em vez de `||`. A regra de fundo é a mesma das outras
-duas — **o `.zip` só move a flag para o lado de menos exposição**.
-
-`isPublic` continua fora dessa regra: vem **só** do formulário. É o que impede
-um `.zip` de terceiro de se autopublicar, e é o que torna a leitura das flags
-segura — no máximo elas chegam pré-configuradas e inertes, até um admin
-publicar a skill.
+Nada de publicação vem do frontmatter: `skillMetaFromMarkdown` lê nome,
+descrição, slug e tags, e ignora qualquer `is_public` ou `use_as_*` que um
+`.zip` de terceiro traga — desde o `012` essas colunas não existem, e onde a
+skill aparece é o vínculo com um MCP virtual, escolhido por quem importa. O
+formulário manda a lista `mcps` como JSON num campo do multipart, e a rota a
+resolve por `loadManaged` antes de criar qualquer coisa: um vMCP que a sessão
+não administra é 403, e a skill não é criada. É o que impede um `.zip` de se
+publicar sozinho, e o que faz o import e o formulário terem exatamente a mesma
+regra.
 
 ## Semântica de `set_files_bulk`
 
@@ -401,25 +394,132 @@ em aberto:
 - **Base das URLs de download.** `MCP_PUBLIC_URL` no mcp-public; sem ela, a
   origem da requisição (`req.protocol://host`, respeitando `trust proxy`). O
   painel recebe a mesma variável para o snippet de `mcp.json`.
-- **Confirmação de abertura.** O painel responde `400` com
-  `error: "confirm_open_required"` e o cliente reenvia com `confirmOpen: true`
-  depois do `window.confirm`; a tool devolve `isError` pedindo
-  `confirm_open: true`. A contagem de privadas usada na checagem do `PUT
-  …/skills` é feita na rota, por `getSkillSummary` slug a slug — a lista é
-  curta e a alternativa seria uma query só para isso.
 - **`setVirtualMcpSkills` trava o MCP** (`SELECT … FOR UPDATE`) dentro da
   transação: dois salvamentos concorrentes da lista não se sobrescrevem.
-- **Sem `.skill` nem página no site para skill privada.** O virtual serve
-  `download` e `download.skill`; a `url` da página só sai quando `is_public`.
+- **Sem `.skill` nem página no site para skill fora do site.** O virtual serve
+  `download` e `download.skill`; a `url` da página só sai quando a skill está
+  em algum vMCP aberto e ligado (`mcps` da própria leitura).
 - **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
   credencial, e o site continua sendo o único lugar com `max-age`.
-- **`MCP_PUBLIC_AUTH` ausente é deduzida**, não `open` (`08` §7): a
-  entrevista escolheu `open` como padrão, mas isso abriria em silêncio toda
-  instalação protegida por `MCP_PUBLIC_KEY` que subisse de versão. `key` sem
-  chave e um valor desconhecido derrubam o boot; `open` com chave definida
-  avisa no log e a ignora.
-- **Selo na skill inclui MCPs desligados** — `listVirtualMcpsForSkill` não
-  filtra `is_active`: o vínculo existe, e o selo é sobre o vínculo.
+- **O painel enxerga todos os vínculos, inclusive com MCP desligado ou
+  fechado** — `SkillSummary.mcps` numa leitura `'all'` traz tudo, com o estado
+  de cada vMCP: o vínculo existe, e o painel é sobre o vínculo. Numa leitura
+  pública a lista só traz os abertos e ligados.
+
+## MCP padrão
+
+Decisões de implementação que
+[`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md)
+deixou em aberto:
+
+- **Um `auth` por mount, uma autenticação.** `rootAuth` e `virtualAuth`
+  diferem só em como acham o vMCP (`settings` vs. slug da URL); a conferência
+  de `is_open` e da chave `psv_` é a mesma função, `authenticateAgainst`. As
+  rotas de download recebem o `auth` do mount por parâmetro
+  (`registrarDownloads(auth)`), em vez de importar `virtualAuth` fixo.
+- **Prefixo das URLs vem de `req.baseUrl`.** É o prefixo do mount já
+  resolvido pelo Express (`''` na raiz, `/virtual/<slug>` no outro), então o
+  mesmo vMCP ganha URLs sob o caminho por onde foi chamado, sem um segundo
+  parâmetro para dizer "estou na raiz".
+- **`GET /` calcula por requisição.** `createHttpApp` ganhou `describe`, uma
+  função assíncrona mesclada aos metadados fixos; uma falha nela devolve só
+  os fixos, para o endpoint de descoberta nunca depender do banco.
+- **A trava de boot olha as três variáveis crua**, não por `readTextEnv`:
+  vazia é ausente, qualquer outra coisa derruba, e a mensagem nomeia todas as
+  que encontrou.
+- **O seed audita como `seed`.** `createVirtualMcp` e `setDefaultVirtualMcp`
+  exigem ator; o seed passa `{ userUuid: null, label: 'seed' }`, no mesmo
+  espírito de `bootstrap` e `token-global`.
+- **`DefaultMcpResolution.inactive` carrega `uuid` e `slug`.** O painel
+  precisa pré-selecionar o vMCP desligado no seletor e dizer qual é; `deleted`
+  não tem linha para apontar.
+
+## Skills flutuantes
+
+Decisões de implementação do PR2 de
+[`09-mcp-padrao-e-skills-flutuantes.md`](09-mcp-padrao-e-skills-flutuantes.md):
+
+- **`mcps` vem na mesma consulta.** `skillColumns` agrega os vínculos em
+  `json_agg` por linha, com o filtro de visibilidade da própria leitura:
+  `'all'` traz todos, o resto só os abertos e ligados. Uma segunda consulta
+  por skill dobraria o custo da listagem do painel, e uma lista sem filtro
+  revelaria ao site em que servidor fechado uma skill está.
+- **`visibility` padrão é `'open'`.** O restritivo: quem esquece a opção
+  mostra de menos. `requireSkill` e todas as escritas passam `'all'`
+  explicitamente.
+- **`createSkill({ mcps })` resolve os vínculos antes da transação**
+  (`resolveLinks`): uuid torto, desconhecido, repetido ou flag ausente é 400
+  sem nada gravado. Cada vínculo audita `mcp.update` no vMCP, como
+  `setVirtualMcpSkills`, e não uma ação própria — o painel do MCP mostra a
+  mesma trilha independente de qual lado vinculou.
+- **A permissão fica no app.** `resolveLinks` do banco não sabe quem chama;
+  o painel (`mcps.resolveLinks` → `loadManaged`) e o mcp-admin
+  (`canManageVirtualMcp`) recusam antes de chamar.
+- **`unlinkSkill` de um vínculo inexistente é 404**, e nada é auditado — um
+  `DELETE` repetido não cria linha de trilha.
+- **O painel "Publicada em" salva por linha**, não a página inteira: cada
+  vMCP é um `PUT`/`DELETE` próprio, com a permissão daquele vMCP. O picker da
+  skill nova e do import é controlado e vai no corpo da criação.
+- **`skills_score_idx`** substitui o índice prefixado por `is_public`: é a
+  ordenação padrão de toda listagem, com ou sem vínculo.
+
+## Painel: canvas e sessões
+
+Desenho em [`10-admin-canvas-e-sessoes.md`](10-admin-canvas-e-sessoes.md).
+O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
+
+- **Sidebar com rótulos, não trilho de 56px.** A referência visual tinha
+  rótulos; ela venceu a skill.
+- **Recolher a sidebar anima a coluna do grid.** `grid-template-columns` vai
+  de 220px a 0, e o conteúdo mora num `.sidebar-inner` de largura fixa: a
+  borda corta os rótulos em vez de espremê-los. `visibility: hidden` entra
+  só no fim da animação, e é o que tira a navegação recolhida do Tab. O
+  menu da conta abre dentro da própria sidebar (que tem `overflow: hidden`),
+  por isso ocupa a largura do rodapé em vez dos 210px mínimos dos menus.
+- **Stack mínima.** Só `@xyflow/react`, `cmdk` e `lucide-react` entraram.
+  react-router e Tailwind v4 continuam; a rampa espelhada foi mapeada por
+  `@theme inline`, sem voltar ao v3. A filtragem da paleta é nossa
+  (`fuzzyScore`), porque parte dos itens vem do servidor já filtrada.
+- **Grade de 24px, nó de skill de 264×66.** O cartão de 288×144 da skill
+  serve a recursos com três linhas de status; a skill só precisa de ícone,
+  nome, slug e os três handles de porta, a 25/50/75% da altura.
+- **Arestas do servidor para a skill**, com handles à direita e à esquerda
+  (a skill manda topo/base). O grafo é horizontal: Internet → servidor →
+  skills.
+- **Nós reaproveitados, nunca recriados.** O efeito que reconcilia o palco
+  com o detalhe do servidor roda a cada contagem de online (5 s). Recriar o
+  objeto do nó apaga `measured` e `dragging`: o React Flow mede de novo e o
+  arraste em curso cai. Por isso quem já existe só recebe `data` nova, e a
+  seleção da gaveta mexe só em `selected`.
+- **Clique abre a gaveta, arraste não.** `selectNodesOnDrag` ligado (o
+  padrão) seleciona o nó no começo do arraste, e a gaveta abria no meio do
+  gesto. Com ele desligado, a gaveta abre por `onNodeClick`, e o d3-drag
+  descarta o clique que encerra um arraste.
+- **Rótulo de aresta com `z-index: 2`.** Cada aresta é um `<svg>` com o
+  próprio `z-index` (1 aqui), e os rótulos moram num portal irmão sem
+  `z-index`: sem ele a linha passa por cima do contador. Com 2 o rótulo fica
+  acima das arestas e abaixo dos nós, que vêm depois no DOM.
+- **Hover do handle repete o `translate`.** O React Flow centraliza o handle
+  com `transform: translate(...)`; um `scale` sozinho no hover descartava o
+  deslocamento e o handle pulava para longe do cursor.
+- **Sem `parentId`, sem grupos, sem undo.** Fora do escopo do `10`.
+- **O `remove-edge` do rótulo da aresta chega por `CustomEvent`.** O
+  componente da aresta é memoizado e não recebe callbacks por props (o
+  React Flow os recriaria a cada render); um evento no `window` mantém a
+  aresta pura.
+- **Recarga do detalhe depois de cada escrita.** `linkSkill` devolve o
+  detalhe da skill, não o do servidor; o canvas refaz `GET /api/mcps/:slug`
+  depois de cada gesto, o que também traz os contadores por porta.
+- **Sessões: o `onclose` do transporte pode disparar depois do `timeout`.**
+  O rastreador só conhece uma sessão até o primeiro `closed`; o segundo
+  motivo é ignorado, e é por isso que o TTL avisa `timeout` **antes** de
+  fechar o transporte, e o desligamento chama `shutdown` antes de fechar os
+  transportes.
+- **`req.ip` como IP de origem.** O Express já resolve o `X-Forwarded-For`
+  pelo `trust proxy` (`TRUST_PROXY`); o rastreador não reimplementa isso.
+- **Vite em dev usa `ADMIN_API_PORT`.** O proxy do `/api` aponta para a
+  porta do servidor do painel (`3001` por padrão), configurável para rodar um
+  segundo painel ao lado do do compose.
 
 ## Portas
 

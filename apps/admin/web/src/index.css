@@ -1,7 +1,10 @@
 @import 'tailwindcss';
 @import 'highlight.js/styles/github-dark.css' layer(base);
+@import '@xyflow/react/dist/style.css' layer(base);
 
 @import './styles/tokens.css';
 @import './styles/base.css';
+@import './styles/shell.css';
+@import './styles/skill.css';
+@import './styles/canvas.css';
 @import './styles/markdown.css';
-@import './styles/admin.css';

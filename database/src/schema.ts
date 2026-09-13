@@ -13,6 +13,7 @@ import {
   customType,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -20,6 +21,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { VirtualMcpLayout } from '@purple-skills/shared';
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => 'bytea',
@@ -36,16 +38,14 @@ export const skills = pgTable(
     slug: text('slug').notNull().unique(),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
-    /** Interruptor global: em `false` não há publicação em superfície alguma. */
-    isPublic: boolean('is_public').notNull().default(false),
-    // Por quais superfícies do MCP público a skill sai: as ferramentas, o
-    // prompt (pelo slug) e o resource `skill://<slug>`. Ortogonais entre si e a
-    // `is_public` — sozinhas não publicam nada. Ver `schema/007-publicacao-mcp.sql`
-    // e `schema/008-publicacao-como-skill.sql`.
-    /** Opt-out: nasce `true` porque as ferramentas são o padrão de toda skill pública. */
-    useAsSkill: boolean('use_as_skill').notNull().default(true),
-    useAsPrompt: boolean('use_as_prompt').notNull().default(false),
-    useAsResource: boolean('use_as_resource').notNull().default(false),
+    /**
+     * Um emoji ou a URL http(s) de uma imagem (`schema/013-skill-icon.sql`).
+     * A regra é `normalizeSkillIcon` de shared; o banco só limita o tamanho.
+     * Nulo cai no monograma do painel.
+     */
+    icon: text('icon'),
+    // Nada de visibilidade aqui: uma skill é flutuante e só é exibida onde
+    // está vinculada (`virtual_mcp_skills`). Ver `schema/012-skills-flutuantes.sql`.
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
     downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
     searchVector: tsvector('search_vector'),
@@ -193,6 +193,12 @@ export const virtualMcps = pgTable(
     /** Aberto: sem chave. Com skill privada dentro, é publicação de fato. */
     isOpen: boolean('is_open').notNull().default(false),
     ownerUserUuid: uuid('owner_user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
+    /**
+     * Posições dos nós fixos do canvas do painel (`server`, `internet`), cada
+     * chave opcional; `{}` é auto-layout (`schema/014-canvas-do-vmcp.sql`). O
+     * CHECK que exige um objeto fica só no SQL.
+     */
+    layout: jsonb('layout').$type<VirtualMcpLayout>().notNull().default(sql`'{}'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -218,6 +224,13 @@ export const virtualMcpSkills = pgTable(
     asResource: boolean('as_resource').notNull(),
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
     downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
+    /**
+     * Posição do nó da skill no canvas **deste** vMCP, em pixels; as duas nulas
+     * é auto-layout (`schema/014-canvas-do-vmcp.sql`). O CHECK que exige as
+     * duas juntas fica só no SQL.
+     */
+    posX: integer('pos_x'),
+    posY: integer('pos_y'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -249,30 +262,63 @@ export const virtualMcpKeys = pgTable(
   (table) => [index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid)],
 );
 
-// ------------------------------------------ chaves do MCP público principal ---
+// --------------------------------------------------------------- settings ---
 
 /**
- * Chaves `psp_` do MCP principal (`docs/08-mcp-virtual.md` §7, modo
- * `MCP_PUBLIC_AUTH=managed`). Sem FK de servidor: o principal é um só. A chave
- * é do servidor, não de um usuário — `createdByUserUuid` é informativo.
+ * Configuração da instalação, chave-valor
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`). A chave `default_virtual_mcp`
+ * guarda o uuid do vMCP que responde em `/mcp`, como texto e sem FK de
+ * propósito: um vMCP apagado deixa o valor pendurado, e é assim que o servidor
+ * distingue "nenhum padrão" de "o padrão foi removido".
  */
-export const publicMcpKeys = pgTable(
-  'public_mcp_keys',
+export const settings = pgTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ----------------------------------------------------------- sessões MCP ---
+
+/**
+ * Uma linha por cliente conectado a um vMCP (`docs/10-admin-canvas-e-sessoes.md`,
+ * `schema/015-mcp-sessions.sql`). "Online" não é coluna: é `ended_at IS NULL`
+ * com `last_seen_at` dentro da janela que o chamador informa. Nunca é podada.
+ * Os CHECKs de `transport`, `mount`, `auth` e `end_reason` e os índices
+ * parciais sobre as abertas ficam só no SQL.
+ */
+export const mcpSessions = pgTable(
+  'mcp_sessions',
   {
     id: uuid('id').primaryKey().default(sql`uuidv7()`),
-    name: text('name').notNull(),
-    /** Público e indexado: é por ele que a autenticação encontra a linha. */
-    prefix: text('prefix').notNull().unique(),
-    keyHash: text('key_hash').notNull(),
-    /** Informativo: quem emitiu. Sobrevive à remoção da conta. */
-    createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
+    /** `mcp-session-id`, o `sessionId` do SSE ou a chave sintética do stateless. Não é única. */
+    sessionId: text('session_id').notNull(),
+    transport: text('transport').notNull(),
+    /** Por onde chegou: `root` (`/mcp`) ou `virtual` (`/virtual/<slug>`). */
+    mount: text('mount').notNull(),
+    /** Nulo depois que o vMCP é apagado; o slug abaixo é a cópia que fica. */
+    virtualMcpUuid: uuid('virtual_mcp_uuid').references(() => virtualMcps.uuid, {
       onDelete: 'set null',
     }),
-    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
-    revokedAt: timestamp('revoked_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    virtualMcpSlug: text('virtual_mcp_slug').notNull(),
+    auth: text('auth').notNull(),
+    keyId: uuid('key_id').references(() => virtualMcpKeys.id, { onDelete: 'set null' }),
+    /** Já resolvido pelo `trust proxy` do app. */
+    ip: text('ip').notNull(),
+    userAgent: text('user_agent'),
+    clientName: text('client_name'),
+    clientVersion: text('client_version'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Fim real (`closed`, `shutdown`) ou presumido pela varredura (`timeout`). */
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    endReason: text('end_reason'),
+    requestCount: integer('request_count').notNull().default(0),
   },
-  (table) => [index('public_mcp_keys_created_by_user_uuid_idx').on(table.createdByUserUuid)],
+  (table) => [
+    index('mcp_sessions_virtual_mcp_last_seen_idx').on(table.virtualMcpUuid, table.lastSeenAt),
+    index('mcp_sessions_last_seen_idx').on(table.lastSeenAt),
+    index('mcp_sessions_key_id_idx').on(table.keyId),
+  ],
 );
 
 export type SkillRow = typeof skills.$inferSelect;
@@ -285,4 +331,5 @@ export type ResetTokenRow = typeof resetTokens.$inferSelect;
 export type VirtualMcpRow = typeof virtualMcps.$inferSelect;
 export type VirtualMcpSkillRow = typeof virtualMcpSkills.$inferSelect;
 export type VirtualMcpKeyRow = typeof virtualMcpKeys.$inferSelect;
-export type PublicMcpKeyRow = typeof publicMcpKeys.$inferSelect;
+export type SettingRow = typeof settings.$inferSelect;
+export type McpSessionRow = typeof mcpSessions.$inferSelect;

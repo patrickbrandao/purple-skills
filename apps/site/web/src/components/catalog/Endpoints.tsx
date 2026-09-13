@@ -17,12 +17,31 @@ const McpIcon = () => <img src="/assets/images/icon-mcp-64.png" alt="" />;
 export function Endpoints() {
   const meta = useMeta();
 
+  // O MCP público é o MCP virtual padrão: o que o cartão diz sobre chave e
+  // disponibilidade vem dele, e não de uma configuração do site.
+  const mcp = meta?.mcp;
+  const mcpAuth = !meta?.mcpUrl
+    ? 'não divulgado'
+    : mcp?.status === 'ok'
+      ? mcp.requiresKey
+        ? 'leitura · chave psv_'
+        : 'leitura · sem token'
+      : 'sem MCP padrão';
+  const mcpText =
+    mcp?.status === 'ok'
+      ? `Endpoint que os agentes consultam para buscar, ler e baixar as skills do MCP virtual "${mcp.name}", o padrão desta instalação.`
+      : mcp?.status === 'inactive'
+        ? 'O MCP virtual escolhido como padrão está desligado: este endereço responde 404 até ser religado.'
+        : mcp?.status === 'deleted'
+          ? 'O MCP virtual escolhido como padrão foi removido: este endereço responde 404 até outro ser escolhido.'
+          : 'Nenhum MCP virtual foi escolhido como padrão: este endereço responde 404 até um administrador escolher.';
+
   const endpoints: Endpoint[] = [
     {
       id: 'mcp',
       title: 'MCP público',
-      auth: meta?.mcpUrl ? 'leitura · sem token' : 'não divulgado',
-      text: 'Endpoint que os agentes consultam para buscar, ler e baixar as skills públicas do catálogo.',
+      auth: mcpAuth,
+      text: mcpText,
       url: meta?.mcpUrl ?? null,
       icon: <McpIcon />,
     },

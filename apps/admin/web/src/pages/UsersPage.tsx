@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { UserPlus, Users } from 'lucide-react';
 import {
   ROLE_LABEL,
   createUser,
@@ -10,8 +11,8 @@ import {
   type SessionUser,
   type UserSummary,
 } from '../api.js';
-import { Button, Field, Panel } from '../components/ui.js';
-import { CopyIcon, PlusIcon, UsersIcon } from '../components/Icons.js';
+import { Badge, Button, CopyButton, Field, Panel, useConfirm } from '../components/ui.js';
+import { initials } from '../components/SkillIcon.js';
 import { useToast } from '../components/Toast.js';
 
 const ROLES: Role[] = ['admin', 'editor', 'leitor'];
@@ -19,11 +20,12 @@ const ROLES: Role[] = ['admin', 'editor', 'leitor'];
 const ROLE_HINT: Record<Role, string> = {
   admin: 'Faz tudo, inclusive apagar skills e gerenciar contas.',
   editor: 'Cria e edita qualquer skill; não apaga nem gerencia contas.',
-  leitor: 'Só lê — inclusive as skills privadas.',
+  leitor: 'Só lê — inclusive o que não está em servidor aberto nenhum.',
 };
 
 export function UsersPage({ me }: { me: SessionUser }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
@@ -78,9 +80,12 @@ export function UsersPage({ me }: { me: SessionUser }) {
   }
 
   async function reset(user: UserSummary) {
-    if (!window.confirm(`Gerar uma senha temporária para ${user.email}? A senha atual deixa de valer.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: `Gerar uma senha temporária para ${user.email}?`,
+      description: 'A senha atual deixa de valer e a pessoa é obrigada a trocá-la no primeiro acesso.',
+      confirmLabel: 'Gerar senha',
+    });
+    if (!ok) return;
     try {
       const result = await resetUserPassword(user.uuid);
       setSecret({ email: user.email, password: result.temporaryPassword });
@@ -90,37 +95,29 @@ export function UsersPage({ me }: { me: SessionUser }) {
     }
   }
 
+  const active = users.filter((u) => u.isActive).length;
+
   return (
-    <>
+    <div className="page">
       <div className="page-head">
         <div>
-          <h1 className="display">Contas</h1>
+          <h1>Usuários</h1>
           <p className="sub">
-            {users.length} conta{users.length === 1 ? '' : 's'} — o papel vale para o catálogo
-            inteiro, não por skill.
+            {users.length} conta{users.length === 1 ? '' : 's'}, {active} ativa{active === 1 ? '' : 's'} · o papel vale
+            para o catálogo inteiro, não por skill.
           </p>
         </div>
       </div>
 
       {secret && (
-        <div className="key-reveal mb-5">
+        <div className="key-reveal mb-4" style={{ marginTop: 0 }}>
           <p className="t">
-            Senha temporária de <strong>{secret.email}</strong> — anote agora, ela não volta a
-            aparecer. No primeiro acesso a pessoa é obrigada a trocá-la.
+            Senha temporária de <strong>{secret.email}</strong> — anote agora, ela não volta a aparecer. No
+            primeiro acesso a pessoa é obrigada a trocá-la.
           </p>
           <div className="row">
             <code>{secret.password}</code>
-            <button
-              type="button"
-              className="row-action"
-              title="Copiar"
-              onClick={() => {
-                void navigator.clipboard?.writeText(secret.password);
-                toast.success('Senha copiada.');
-              }}
-            >
-              <CopyIcon />
-            </button>
+            <CopyButton text={secret.password} />
           </div>
           <button type="button" className="dismiss" onClick={() => setSecret(null)}>
             Já anotei, pode esconder
@@ -128,8 +125,8 @@ export function UsersPage({ me }: { me: SessionUser }) {
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
-        <Panel title="Quem tem acesso" icon={<UsersIcon />}>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <Panel title="Quem tem acesso" icon={<Users />}>
           <div className="table-wrap">
             <table className="data">
               <thead>
@@ -146,26 +143,30 @@ export function UsersPage({ me }: { me: SessionUser }) {
                   return (
                     <tr key={user.uuid} className={user.isActive ? undefined : 'is-off'}>
                       <td>
-                        <span className="row-title">
-                          {user.name}
-                          {self && <span className="tag ml-2">você</span>}
-                          {!user.isActive && <span className="tag ml-2">desativada</span>}
-                        </span>
-                        <span className="row-sub">
-                          {user.email}
-                          {user.oidcIssuer && ' · SSO'}
-                          {user.mustChangePassword && ' · senha temporária'}
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <span className="avatar">{initials(user.name)}</span>
+                          <div className="min-w-0">
+                            <span className="row-title">
+                              {user.name}
+                              {self && <Badge className="ml-2">você</Badge>}
+                              {!user.isActive && <Badge tone="danger" className="ml-2">desativada</Badge>}
+                              {user.mustChangePassword && <Badge tone="warn" className="ml-2">senha temporária</Badge>}
+                            </span>
+                            <span className="row-sub">
+                              {user.email}
+                              {user.oidcIssuer && ' · SSO'}
+                            </span>
+                          </div>
+                        </div>
                       </td>
                       <td>
                         <select
                           className="field field-sm"
+                          style={{ width: 'auto' }}
                           value={user.role}
                           disabled={self}
                           title={self ? 'Você não pode mudar o próprio papel' : ROLE_HINT[user.role]}
-                          onChange={(event) =>
-                            void patch(user, { role: event.target.value as Role })
-                          }
+                          onChange={(event) => void patch(user, { role: event.target.value as Role })}
                         >
                           {ROLES.map((option) => (
                             <option key={option} value={option}>
@@ -175,25 +176,14 @@ export function UsersPage({ me }: { me: SessionUser }) {
                         </select>
                       </td>
                       <td className="hidden md:table-cell">
-                        <span className="row-sub">
-                          {user.lastLoginAt ? formatDateTime(user.lastLoginAt) : 'nunca entrou'}
-                        </span>
+                        <span className="row-sub">{user.lastLoginAt ? formatDateTime(user.lastLoginAt) : 'nunca entrou'}</span>
                       </td>
                       <td className="num">
                         <div className="row-actions">
-                          <button
-                            type="button"
-                            className="link-action"
-                            onClick={() => void reset(user)}
-                          >
+                          <button type="button" className="link-action" onClick={() => void reset(user)}>
                             Resetar senha
                           </button>
-                          <button
-                            type="button"
-                            className="link-action"
-                            disabled={self}
-                            onClick={() => void patch(user, { isActive: !user.isActive })}
-                          >
+                          <button type="button" className="link-action" disabled={self} onClick={() => void patch(user, { isActive: !user.isActive })}>
                             {user.isActive ? 'Desativar' : 'Reativar'}
                           </button>
                         </div>
@@ -213,31 +203,16 @@ export function UsersPage({ me }: { me: SessionUser }) {
           </div>
         </Panel>
 
-        <Panel title="Convidar alguém" icon={<PlusIcon />}>
+        <Panel title="Convidar alguém" icon={<UserPlus />}>
           <form onSubmit={submit} className="grid gap-4">
             <Field label="E-mail">
-              <input
-                type="email"
-                className="field"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="pessoa@exemplo.com"
-              />
+              <input type="email" className="field" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="pessoa@exemplo.com" />
             </Field>
             <Field label="Nome">
-              <input
-                className="field"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Nome de quem vai usar"
-              />
+              <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Nome de quem vai usar" />
             </Field>
             <Field label="Papel" hint={ROLE_HINT[role]}>
-              <select
-                className="field"
-                value={role}
-                onChange={(event) => setRole(event.target.value as Role)}
-              >
+              <select className="field" value={role} onChange={(event) => setRole(event.target.value as Role)}>
                 {ROLES.map((option) => (
                   <option key={option} value={option}>
                     {ROLE_LABEL[option]}
@@ -245,16 +220,18 @@ export function UsersPage({ me }: { me: SessionUser }) {
                 ))}
               </select>
             </Field>
-            <Button type="submit" disabled={busy || !email || !name}>
-              Criar conta
-            </Button>
+            <div>
+              <Button type="submit" disabled={busy || !email || !name}>
+                Criar conta
+              </Button>
+            </div>
             <p className="panel-hint">
-              A conta nasce com uma senha temporária, mostrada uma vez aqui. Contas nunca são
-              apagadas — quem sai é desativado, para a auditoria continuar fazendo sentido.
+              A conta nasce com uma senha temporária, mostrada uma vez aqui. Contas nunca são apagadas — quem sai é
+              desativado, para a auditoria continuar fazendo sentido.
             </p>
           </form>
         </Panel>
       </div>
-    </>
+    </div>
   );
 }

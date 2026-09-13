@@ -7,6 +7,16 @@ Roxo**, mascote do Purple Skills.
 Este documento diz onde cada peça mora e como mexer nela sem quebrar as
 outras superfícies.
 
+> **O painel diverge.** Desde [`10`](10-admin-canvas-e-sessoes.md) o painel
+> administrativo é um console com paleta própria — `tokens.css` escuro
+> primeiro e espelhado no claro, sidebar, palco, raio de 8/12px, sem sombra
+> — e **deixou de ser cópia byte a byte** do site. Os arquivos dele vivem em
+> `apps/admin/web/src/styles/` (`tokens.css`, `base.css`, `shell.css`,
+> `skill.css`, `canvas.css`); só o `markdown.css` continua o mesmo do site,
+> apoiado em aliases (`--brand`, `--surface`, `--jade`…) declarados no
+> `tokens.css` do painel. A regra de cópia abaixo vale para **homepage e
+> site**; ao mudar o `markdown.css`, copie para os três.
+
 ## Onde ficam os arquivos
 
 ```
@@ -24,14 +34,14 @@ apps/homepage/web/src/styles/
   chrome.css     ← cópia idêntica à do site
   landing.css    seções de apresentação (hero, diagramas, ecossistema, finale)
 
-apps/admin/web/src/styles/
-  tokens.css     ← cópia idêntica à do site
-  base.css       ← cópia idêntica à do site
+apps/admin/web/src/styles/          (o console — ver docs/10; não é cópia do site)
+  tokens.css     paleta própria, escuro primeiro e espelhada no claro, com os
+                 aliases (--brand, --surface, --jade…) que o markdown.css usa
+  base.css       primitivos: botões de 34px, campos, selos, tabela, esqueletos
+  shell.css      sidebar, barra superior, palco, cards, menus, paleta ⌘K, sino
+  skill.css      árvore de arquivos, prompt em duas guias, editor, login
+  canvas.css     o palco React Flow: nós, arestas, barra de ferramentas
   markdown.css   ← cópia idêntica à do site
-  admin.css      barra, painéis, tabela, abas, dropzone, toasts, login
-                 e a árvore de arquivos (bloco copiado do app.css do site,
-                 com a paleta por tipo de arquivo e um trecho a mais para
-                 escolher e remover arquivo)
 ```
 
 `tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **byte a byte
@@ -41,7 +51,7 @@ padrão que o projeto já usava para o `index.css`. **Ao mudar um, copie para os
 outros:**
 
 ```bash
-cp apps/site/web/src/styles/{tokens,base,markdown}.css apps/admin/web/src/styles/
+cp apps/site/web/src/styles/markdown.css apps/admin/web/src/styles/
 cp apps/site/web/src/styles/{tokens,base,chrome}.css apps/homepage/web/src/styles/
 ```
 

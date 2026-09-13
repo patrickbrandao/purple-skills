@@ -20,7 +20,7 @@ superfícies:
 |---------|-----------|--------------|
 | **homepage** | Apresentação do projeto, estática — não fala com o banco | `3004` |
 | **site** | Catálogo do usuário: busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
-| **admin** | Painel de administração com contas e papéis | `3001` |
+| **admin** | Painel de administração: canvas dos servidores MCP, sessões, contas e papéis | `3001` |
 | **mcp-public** | Servidor MCP para agentes descobrirem e baixarem skills | `3002` |
 | **mcp-admin** | Servidor MCP para administrar o catálogo (CRUD completo) | `3003` |
 
@@ -76,7 +76,7 @@ dentro da rede `internal`.
 
 | Servidor | URL | Autenticação |
 |----------|-----|--------------|
-| mcp-public | `http://mcp-public:3002/mcp` | `Authorization: Bearer $MCP_PUBLIC_KEY`, se definida |
+| mcp-public | `http://mcp-public:3002/mcp` | A do MCP virtual padrão: nenhuma se ele está aberto, `Authorization: Bearer psv_…` se exige chave |
 | mcp-admin | `http://mcp-admin:3003/mcp` | `Authorization: Bearer $MCP_ADMIN_TOKEN` (obrigatório) |
 
 O inspector sobe **sem autenticação própria** (`DANGEROUSLY_OMIT_AUTH`), o que
@@ -184,66 +184,80 @@ Exemplo de configuração em um cliente MCP:
 }
 ```
 
-### Por onde cada skill é publicada
+### Onde uma skill é exibida
 
-`is_public` é o **interruptor global**: com ela desligada a skill não aparece
-no site, na API REST nem em superfície nenhuma do MCP público. Com ela ligada,
-três flags independentes dizem por quais superfícies do protocolo a skill sai —
-qualquer combinação vale, inclusive nenhuma:
+Uma skill é **flutuante**: existe no catálogo e só é exibida — no site e nos
+servidores MCP — onde estiver **vinculada a um MCP virtual**. Não há mais
+"pública" ou "privada": o site lista o que está em ao menos um MCP virtual
+**aberto e ligado**, e uma skill sem vínculo fica visível só no painel. Cada
+vínculo escolhe por quais portas a skill sai **naquele servidor**:
 
-| Flag | Padrão | Como aparece no cliente |
-|------|--------|-------------------------|
-| `use_as_skill` | **ligada** | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags`. Desligada, some das cinco |
-| `use_as_prompt` | desligada | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
-| `use_as_resource` | desligada | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
+| Porta | O que faz |
+|-------|-----------|
+| `skill` | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags` |
+| `prompt` | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
+| `resource` | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
 
-As três superfícies **contam acesso** (`view_count`). Numa skill privada as
-flags ficam guardadas e nada aparece; uma skill fora de uma superfície responde
-por ela o mesmo "não encontrada" de um slug inexistente. As listas de prompts e
-resources são montadas por requisição, então publicar uma skill a faz aparecer
-sem reiniciar o servidor nem reabrir a sessão; não há `listChanged`, o cliente
-re-lista quando quiser.
+As três portas **contam acesso** (`view_count`), no vínculo e no total da
+skill. Uma skill fora de uma porta responde por ela o mesmo "não encontrada"
+de um slug inexistente. As listas de prompts e resources são montadas por
+requisição, então vincular uma skill a faz aparecer sem reiniciar o servidor
+nem reabrir a sessão; não há `listChanged`, o cliente re-lista quando quiser.
 
-Desligar `use_as_skill` não tira a skill do site nem da API REST: ela continua
-com página, `.zip` e tudo mais — só sai do alcance da busca do agente. O
-desenho está em [`docs/06-publicacao-mcp.md`](docs/06-publicacao-mcp.md) e
-[`docs/07-superficie-de-ferramentas.md`](docs/07-superficie-de-ferramentas.md).
+O vínculo se faz pelos dois lados: na página da skill ("Publicada em") ou na
+do MCP virtual, e por `link_skill` / `set_virtual_mcp_skills` no mcp-admin.
+Publicar em um MCP virtual exige administrá-lo — o dono ou um admin. O
+desenho está em
+[`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
 ### Ferramentas do MCP público
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills públicas com `use_as_skill` |
+| `search_skills(query?, tag?, limit?, offset?)` | Busca full-text nas skills vinculadas ao servidor como `skill` |
 | `get_skill(slug)` | SKILL.md completo + metadados. **Conta um acesso** |
 | `get_skill_file(slug, path)` | Lê um arquivo auxiliar da skill |
 | `download_skill(slug)` | Devolve a URL do pacote `.zip` |
 | `list_tags()` | Tags disponíveis, com contagem |
 
-A autenticação do servidor principal é escolhida por `MCP_PUBLIC_AUTH`:
-`open` (sem autenticação), `key` (só a `MCP_PUBLIC_KEY`) ou `managed` (chaves
-`psp_…` emitidas por administradores no painel, e também a `MCP_PUBLIC_KEY`
-se estiver definida). Sem a variável, o modo é `key` quando há
-`MCP_PUBLIC_KEY` e `open` quando não há — o comportamento de sempre. O
-`GET /` anuncia o modo.
+### O MCP público é o MCP virtual padrão
+
+Não existe mais um servidor "principal" à parte: o que responde em `/mcp` é o
+**MCP virtual escolhido como padrão** em Configurações, no painel (ou por
+`set_default_virtual_mcp` no mcp-admin, só admin). Ele continua respondendo
+em `/virtual/<slug>/mcp`, e não tem nenhum tratamento especial — pode ser
+fechado, desligado ou apagado como qualquer outro. Quem decide o acesso a
+`/mcp` é ele: aberto, ou chaves `psv_` emitidas na página dele. `GET /`
+anuncia qual é o padrão, e sem um em pé `/mcp` responde 404 dizendo a causa
+(nenhum escolhido, removido ou desligado).
+
+Quem sobe de versão recebe o MCP virtual `public`, aberto, com toda skill
+pública vinculada nas mesmas superfícies de antes. `MCP_PUBLIC_AUTH`,
+`MCP_PUBLIC_KEY` e as chaves `psp_` deixaram de existir; o mcp-public recusa
+subir enquanto as variáveis estiverem no `.env`, para quem protegia o servidor
+fechar o `public` (ou emitir chaves `psv_` para ele) antes de removê-las. O
+desenho está em
+[`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
 ### MCPs virtuais: um servidor por time
 
 Um **MCP virtual** é um recorte do catálogo servido pelo mesmo mcp-public em
 `/virtual/<slug>/mcp` (e `/mcp/stateless`, `/sse` + `/messages`), com
 endereço, chaves e dono próprios. Serve para um time ou projeto conectar o
-agente só às skills que lhe interessam — **inclusive skills privadas**, que
-nunca aparecem no MCP principal nem no site.
+agente só às skills que lhe interessam — inclusive skills que não estão em
+nenhum servidor aberto, e por isso não aparecem no site. Um deles é o
+**padrão**, e responde também em `/mcp`.
 
-- Cria quem é `editor` ou `admin`, no painel (seção "MCPs virtuais") ou pelo
+- Cria quem é `editor` ou `admin`, no painel (Servidores MCP) ou pelo
   MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
   nele, ninguém mais. Admin transfere o dono.
 - Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
-  prompt, resource) **naquele servidor** — as flags `use_as_*` da skill valem
-  só para o MCP principal.
-- O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a
-  `MCP_PUBLIC_KEY` não abre um virtual e a chave de um virtual não abre outro.
-  Um MCP pode ser marcado **aberto** (sem chave) — com skill privada dentro,
-  isso a torna pública naquele endereço, e o sistema pede confirmação.
+  prompt, resource) **naquele servidor**. Vincular é o único jeito de uma
+  skill ser exibida.
+- O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a chave de
+  um virtual não abre outro.
+  Um MCP pode ser marcado **aberto** (sem chave): aberto é público — o site o
+  lista, com suas skills.
 - `download_skill` e os arquivos binários apontam para o próprio servidor,
   atrás da mesma chave. Cada MCP tem contadores próprios por skill; o total da
   skill também soma.
@@ -274,27 +288,28 @@ e `delete_skill` exige `admin`.
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `list_skills(includePrivate?, query?, tag?, limit?, offset?)` | Lista tudo, inclusive privadas |
+| `list_skills(query?, tag?, limit?, offset?)` | Lista tudo, inclusive skills sem vínculo, cada uma com `mcps` |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, is_public?, use_as_skill?, use_as_prompt?, use_as_resource?)` | Cria a skill e o SKILL.md na mesma transação. `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?, use_as_skill?, use_as_prompt?, use_as_resource?})` | Edita metadados — é por aqui que muda o frontmatter e as três flags de publicação |
-| `set_visibility(slug, "public" \| "private")` | Publica/despublica |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, mcps?)` | Cria a skill e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial administra). `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados — é por aqui que muda o frontmatter |
+| `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill; a permissão é a do MCP virtual |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`) |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
 | `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
-| `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}], confirm_open?)` | Substitui a lista inteira de skills do MCP virtual |
+| `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
-| `list_public_mcp_keys()` / `create_public_mcp_key(name)` / `revoke_public_mcp_key(key_id)` | Chaves `psp_` do MCP principal (`MCP_PUBLIC_AUTH=managed`); só admin |
+| `get_default_virtual_mcp()` / `set_default_virtual_mcp(slug \| null)` | Qual MCP virtual responde em `/mcp`; escolher é só admin |
 
 ## API REST pública
 
 A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
 
 ```
-GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (só públicas)
+GET  /api/mcps                                  MCPs virtuais abertos, com endereço
+GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (o que está em MCP virtual aberto)
 GET  /api/skills/:slug                          detalhe + corpo do SKILL.md (conta acesso)
 GET  /api/skills/:slug/files/<caminho>          arquivo avulso
 GET  /api/tags                                  tags com contagem
@@ -342,7 +357,7 @@ a ser sempre por e-mail e senha.
 
 | Ação | admin | editor | leitor |
 |------|:-----:|:------:|:------:|
-| Ver skills, inclusive privadas | ✅ | ✅ | ✅ |
+| Ver skills, inclusive sem vínculo | ✅ | ✅ | ✅ |
 | Criar / editar skill e arquivos | ✅ | ✅ | ❌ |
 | Publicar / despublicar | ✅ | ✅ | ❌ |
 | Apagar skill | ✅ | ❌ | ❌ |
@@ -363,8 +378,9 @@ o escopo.
   `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` e registre no provedor o
   `redirect_uri` `<ADMIN_PUBLIC_URL>/api/auth/oidc/callback`. **Defina
   `OIDC_ALLOWED_DOMAINS`**: com a lista vazia, o auto-provisionamento fica
-  desligado de propósito — um `leitor` enxerga as skills privadas, e sem
-  allowlist qualquer conta do provedor entraria.
+  desligado de propósito — um `leitor` enxerga o catálogo inteiro, inclusive
+  o que não está em servidor aberto nenhum, e sem allowlist qualquer conta do
+  provedor entraria.
 - **Redefinição de senha por e-mail** exige `SMTP_URL` + `SMTP_FROM`. Sem SMTP
   o painel continua completo: o administrador gera uma senha temporária, e a
   pessoa é obrigada a trocá-la no primeiro acesso.
@@ -388,12 +404,13 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 |----------|-------------|-----------|
 | `DATABASE_URL` | sim* | Conexão com o Postgres (senha percent-encodada). *Alternativa sem escape: `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` — é o que o compose usa |
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
+| `ADMIN_DOCS_URL`, `ADMIN_SUPPORT_URL`, `ADMIN_CHAT_URL` | não | Links externos da sidebar do painel; vazio some do menu (a documentação aponta para este README por padrão) |
+| `ADMIN_BRAND_NAME`, `ADMIN_BRAND_ICON_URL` | não | Marca do painel: nome e ícone da sidebar, do login e da aba. O nome cai em `SITE_NAME`; o ícone aceita URL http(s) ou caminho do painel, e valor inválido derruba o boot |
+| `MCP_SESSION_ONLINE_WINDOW_MS` | não | Janela em que um cliente do MCP público conta como online no painel (padrão 2 min); agrupa as requisições stateless de um mesmo cliente numa sessão |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
-| `MCP_PUBLIC_AUTH` | não | `open`, `key` ou `managed` para o MCP público **principal**; vazio = `key` com `MCP_PUBLIC_KEY`, `open` sem |
-| `MCP_PUBLIC_KEY` / `_FILE` | com `key` | A chave dos modos `key` e `managed` (não abre os virtuais) |
-| `SITE_BASE_URL` | recomendada | Base das URLs de download geradas pelo MCP |
-| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP principal, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
+| `SITE_BASE_URL` | recomendada | Base da URL da página de uma skill pública, devolvida pelo MCP |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP público, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
 | `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
@@ -423,8 +440,9 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 - Busca vetorial deixada para uma versão futura.
 - Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
   no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.
-- Um MCP virtual aberto com skill privada dentro é publicação: o painel e a
-  tool pedem confirmação, e só.
+- Um MCP virtual aberto é público: o site o lista, com suas skills, sem
+  confirmação. Endereço obscuro nunca foi proteção; quem não quer aparecer
+  fecha o servidor e emite chaves.
 
 ## Licença
 

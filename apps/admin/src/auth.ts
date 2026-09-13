@@ -209,6 +209,12 @@ export const requireDelete = guard(canDelete, 'Só um administrador pode apagar 
 /** Gerenciar contas — só admin. */
 export const requireAdmin = guard(canManageUsers, 'Só um administrador pode gerenciar contas');
 
+/** Alterar a configuração da instalação (o MCP padrão) — só admin. */
+export const requireSettingsAdmin = guard(
+  canManageUsers,
+  'Só um administrador altera a configuração da instalação',
+);
+
 /** Criar um MCP virtual — admin e editor; o dono é quem cria. */
 export const requireVirtualMcpCreate = guard(
   canCreateVirtualMcp,

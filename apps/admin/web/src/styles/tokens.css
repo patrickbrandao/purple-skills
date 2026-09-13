@@ -1,158 +1,172 @@
 /* ============================================================
-   PURPLE SKILLS — Paleta de cores & tokens de design
-   Variáveis CSS por tema (claro / escuro) + @font-face.
+   PURPLE SKILLS — Painel administrativo: tokens de design.
 
-   SISTEMA DE CORES
-   • Cor predominante: ROXO (--brand, --brand-soft, --brand-deep)
-     — a cor do MAGO ROXO, o mascote do projeto.
-   • Âmbar  (--gold, --gold-deep) : acento quente, downloads e destaques
-   • Vermelho (--ember)           : erros e ações destrutivas
-   • Verde  (--jade)              : sucesso, skills públicas
-   • Diagramas (--diag-*)         : fios e fluxos das ilustrações
+   A paleta foi extraída da referência do redesign
+   (tmp/admin-page-01.png): chassi #14121B, cartão #1A1924, campo
+   #1E1D28, fio #26252D/#312F37, roxo de ação #7934C7, verde de
+   estado #3A8963, texto #F2F1F5 → #61606F. O escuro é o tema
+   padrão; o claro é a mesma rampa espelhada — as classes
+   significam o mesmo nos dois temas e não existe variante `dark:`.
 
-   Este arquivo é idêntico em apps/site e apps/admin — ao mudar um,
-   copie para o outro.
+   Este arquivo DIVERGE de propósito do tokens.css do site e da
+   homepage (docs/04-design-system.md): o painel é um console e
+   não usa mais a linguagem de pílulas e sombras do catálogo.
+   Nenhum componente escreve hex direto — sempre var(--token).
    ============================================================ */
 
-@font-face {
-  font-family: 'Aeonik';
-  src: url('/assets/fonts/Aeonik-Medium.woff2') format('woff2');
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Aeonik';
-  src: url('/assets/fonts/Aeonik-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-/* ---- Tema claro (padrão) ---- */
 :root,
-:root[data-theme='light'] {
-  /* fundos */
-  --bg: #faf8ff;
-  --bg-2: #f4efff;
-  --surface: #ffffff;
-  --surface-2: #f5efff;
-  --surface-3: #e7daff;
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* fundos: do chassi ao mais elevado */
+  --bg: #14121b;
+  --bg-sunken: #16141d;
+  --bg-elev: #1a1924;
+  --surface-2: #1e1d28;
+  --surface-3: #26252d;
+  --surface-4: #2c2a34;
+
+  /* fios */
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: #312f37;
+  --grid-dot: #2b2a33;
 
   /* texto */
-  --text: #17082e;
-  --text-dim: #43356a;
-  --text-faint: #6a5f88;
+  --text: #f2f1f5;
+  --text-dim: #b0afb5;
+  --text-muted: #797782;
+  --text-faint: #61606f;
 
-  /* bordas */
-  --border: rgba(23, 8, 46, 0.1);
-  --border-strong: rgba(23, 8, 46, 0.17);
+  /* roxo — a única cor de ação */
+  --accent: #7934c7;
+  --accent-hover: #8b47d9;
+  --accent-soft: #935cd2;
+  --accent-deep: #5a22a0;
+  --accent-tint: rgba(121, 52, 199, 0.16);
+  --on-accent: #ffffff;
 
-  /* ── ROXO — cor predominante ── */
-  --brand: #7c24b4;
-  --brand-soft: #a742ed;
-  --brand-deep: #470696;
+  /* estados */
+  --ok: #3a8963;
+  --ok-tint: rgba(58, 137, 99, 0.16);
+  --warn: #c9922b;
+  --warn-tint: rgba(201, 146, 43, 0.16);
+  --danger: #d7322d;
+  --danger-tint: rgba(215, 50, 45, 0.16);
+  --info: #5d74aa;
+  --info-tint: rgba(93, 116, 170, 0.18);
 
-  /* acentos */
-  --gold: #ff8e30;
-  --gold-deep: #e6a704;
-  --ember: #f2545b;
-  --jade: #00a35f;
+  /* portas do MCP no canvas */
+  --port-tools: #935cd2;
+  --port-resources: #4f9fd8;
+  --port-prompts: #d8a24f;
 
-  /* efeitos */
-  --glow: rgba(124, 36, 180, 0.2);
-  --atmos-1: rgba(167, 66, 237, 0.12);
-  --atmos-2: rgba(255, 142, 48, 0.07);
-  --code-bg: #170a2b;
+  /* anel difuso de foco/hover e a única sombra "de verdade" (flutuantes) */
+  --ring: 0 0 0 4px rgba(255, 255, 255, 0.06);
+  --ring-accent: 0 0 0 3px rgba(121, 52, 199, 0.35);
+  --shadow-float: 0 10px 15px -3px rgba(0, 0, 0, 0.45), 0 4px 6px -4px rgba(0, 0, 0, 0.45);
+  --overlay: rgba(0, 0, 0, 0.72);
 
-  /* sombras */
-  --shadow: 0 1px 3px rgba(71, 6, 150, 0.16), 0 0 0 1px rgba(71, 6, 150, 0.06);
-  --shadow-hover: 0 8px 28px rgba(167, 66, 237, 0.3), 0 1px 3px rgba(124, 36, 180, 0.35),
-    0 0 0 1px rgba(167, 66, 237, 0.06);
-  --code-glow: 0 0 120px rgba(167, 66, 237, 0.24), 0 0 5px rgba(167, 66, 237, 0.28);
-
-  /* ── DIAGRAMAS ── */
-  --diag-wire: #b6a3ca;
-  --diag-flow: #5b2a8e;
-  --diag-flow-out: #7c3fb0;
-
-  color-scheme: light;
+  /* aliases para os blocos herdados do site (markdown.css, árvore de arquivos) */
+  --surface: var(--bg-elev);
+  --brand: var(--accent-soft);
+  --brand-soft: #b48ae6;
+  --brand-deep: var(--accent);
+  --code-bg: var(--bg-sunken);
+  --jade: var(--ok);
+  --ember: var(--danger);
+  --gold: var(--warn);
+  --gold-deep: var(--warn);
+  --glow: var(--accent-tint);
 }
 
-/* ---- Tema escuro ---- */
-:root[data-theme='dark'] {
-  /* fundos */
-  --bg: #0a0418;
-  --bg-2: #100722;
-  --surface: #180c2e;
-  --surface-2: #21123d;
-  --surface-3: #2e1a52;
+:root[data-theme='light'] {
+  color-scheme: light;
 
-  /* texto */
-  --text: #fdfbff;
-  --text-dim: #cfc4e2;
-  --text-faint: #a294bd;
+  --bg: #f5f4f8;
+  --bg-sunken: #eeedf3;
+  --bg-elev: #ffffff;
+  --surface-2: #f1f0f5;
+  --surface-3: #e6e5ec;
+  --surface-4: #dddce4;
 
-  /* bordas */
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.18);
+  --border: rgba(20, 18, 27, 0.08);
+  --border-strong: rgba(20, 18, 27, 0.16);
+  --grid-dot: #d5d4dc;
 
-  /* ── ROXO — cor predominante ── */
-  --brand: #c88ffb;
-  --brand-soft: #e0c7ff;
-  --brand-deep: #a742ed;
+  --text: #14121b;
+  --text-dim: #3e3c46;
+  --text-muted: #6b6975;
+  --text-faint: #8f8d98;
 
-  /* acentos */
-  --gold: #ffc976;
-  --gold-deep: #ff8e30;
-  --ember: #f6a8aa;
-  --jade: #34d399;
+  --accent: #7934c7;
+  --accent-hover: #6a2bb3;
+  --accent-soft: #8e4fd0;
+  --accent-deep: #4e1c8c;
+  --accent-tint: rgba(121, 52, 199, 0.1);
+  --on-accent: #ffffff;
 
-  /* efeitos */
-  --glow: rgba(167, 66, 237, 0.42);
-  --atmos-1: rgba(167, 66, 237, 0.22);
-  --atmos-2: rgba(255, 142, 48, 0.09);
-  --code-bg: #0b0418;
+  --ok: #2e7a55;
+  --ok-tint: rgba(46, 122, 85, 0.12);
+  --warn: #a8741c;
+  --warn-tint: rgba(168, 116, 28, 0.12);
+  --danger: #c42b27;
+  --danger-tint: rgba(196, 43, 39, 0.1);
+  --info: #4a63a0;
+  --info-tint: rgba(74, 99, 160, 0.12);
 
-  /* sombras */
-  --shadow: 0 24px 70px -28px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  --shadow-hover: 0 0 0 1px rgba(200, 143, 251, 0.45), 0 18px 50px -18px rgba(167, 66, 237, 0.5);
-  --code-glow: 0 0 120px rgba(167, 66, 237, 0.3), 0 0 5px rgba(167, 66, 237, 0.34);
+  --port-tools: #7934c7;
+  --port-resources: #2f7fbf;
+  --port-prompts: #b47a1c;
 
-  /* ── DIAGRAMAS ── */
-  --diag-wire: #5a4a70;
-  --diag-flow: #b98ee0;
-  --diag-flow-out: #9b6fd0;
+  --ring: 0 0 0 4px rgba(20, 18, 27, 0.05);
+  --ring-accent: 0 0 0 3px rgba(121, 52, 199, 0.25);
+  --shadow-float: 0 10px 15px -3px rgba(20, 18, 27, 0.12), 0 4px 6px -4px rgba(20, 18, 27, 0.1);
+  --overlay: rgba(20, 18, 27, 0.45);
 
-  color-scheme: dark;
+  --surface: var(--bg-elev);
+  --brand: var(--accent);
+  --brand-soft: var(--accent-soft);
+  --brand-deep: var(--accent-deep);
+  --code-bg: #1a1924;
+  --jade: var(--ok);
+  --ember: var(--danger);
+  --gold: var(--warn);
+  --gold-deep: var(--warn);
+  --glow: var(--accent-tint);
 }
 
 /* Tokens expostos ao Tailwind. `inline` faz as utilities emitirem
-   `var(--surface)` em vez de congelar o valor do tema claro. */
+   `var(--x)` em vez de congelar o valor do tema padrão. */
 @theme inline {
   --color-bg: var(--bg);
-  --color-bg-2: var(--bg-2);
-  --color-surface: var(--surface);
-  --color-surface-2: var(--surface-2);
-  --color-surface-3: var(--surface-3);
+  --color-sunken: var(--bg-sunken);
+  --color-elev: var(--bg-elev);
+  --color-s2: var(--surface-2);
+  --color-s3: var(--surface-3);
+  --color-s4: var(--surface-4);
 
   --color-ink: var(--text);
   --color-dim: var(--text-dim);
+  --color-muted: var(--text-muted);
   --color-faint: var(--text-faint);
 
   --color-line: var(--border);
   --color-line-strong: var(--border-strong);
 
-  --color-brand: var(--brand);
-  --color-brand-soft: var(--brand-soft);
-  --color-brand-deep: var(--brand-deep);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-deep: var(--accent-deep);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
 
-  --color-gold: var(--gold);
-  --color-gold-deep: var(--gold-deep);
-  --color-ember: var(--ember);
-  --color-jade: var(--jade);
-
-  --font-display: 'Aeonik', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-display: var(--font-sans);
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-control: 6px;
+  --radius-surface: 8px;
+  --radius-node: 12px;
 }
