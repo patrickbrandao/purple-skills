@@ -7,7 +7,7 @@ import { Button } from '../components/ui.js';
  * Tela obrigatória de quem entrou com senha temporária. Enquanto
  * `mustChangePassword` estiver ligado, o servidor recusa todas as outras rotas.
  */
-export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
+export function ChangePasswordPage({ iconUrl, onDone }: { iconUrl: string; onDone: () => void }) {
   const [currentPassword, setCurrent] = useState('');
   const [newPassword, setNew] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
     <div className="login-shell">
       <form onSubmit={submit} className="login-card">
         <div className="brand">
-          <img src="/assets/images/purple-hat-256.png" alt="" />
+          <img src={iconUrl} alt="" />
           <span>
             <span className="nm">Escolha uma senha</span>
             <br />

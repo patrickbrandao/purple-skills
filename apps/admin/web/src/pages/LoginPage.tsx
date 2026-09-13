@@ -97,9 +97,9 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
     <div className="login-shell">
       <form onSubmit={submit} className="login-card">
         <div className="brand">
-          <img src="/assets/images/purple-hat-256.png" alt="" />
+          <img src={session.brand.iconUrl} alt="" />
           <span>
-            <span className="nm">{session.siteName}</span>
+            <span className="nm">{session.brand.name}</span>
             <br />
             <span className="sb">administração</span>
           </span>

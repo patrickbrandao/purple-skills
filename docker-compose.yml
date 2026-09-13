@@ -122,6 +122,9 @@ services:
       ADMIN_DOCS_URL: ${ADMIN_DOCS_URL:-}
       ADMIN_SUPPORT_URL: ${ADMIN_SUPPORT_URL:-}
       ADMIN_CHAT_URL: ${ADMIN_CHAT_URL:-}
+      # Marca do painel (nome e ícone); vazio = SITE_NAME e o chapéu padrão.
+      ADMIN_BRAND_NAME: ${ADMIN_BRAND_NAME:-}
+      ADMIN_BRAND_ICON_URL: ${ADMIN_BRAND_ICON_URL:-}
       # Rate limiting do login (janela por IP + trava por conta).
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-}
       LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-}

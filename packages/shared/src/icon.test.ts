@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isValidSkillIcon, normalizeSkillIcon } from './icon.js';
+import { isBrandIconUrl, isValidSkillIcon, normalizeSkillIcon } from './icon.js';
 
 describe('isValidSkillIcon', () => {
   it.each(['🐘', '🚀', '👩‍💻', '🇧🇷', '1️⃣', '☁️', '🏳️‍🌈', '👍🏽'])('aceita o emoji %s', (icon) => {
@@ -36,5 +36,26 @@ describe('normalizeSkillIcon', () => {
     expect(normalizeSkillIcon(' 🐘 ')).toBe('🐘');
     expect(normalizeSkillIcon('abc')).toBe(false);
     expect(normalizeSkillIcon(42)).toBe(false);
+  });
+});
+
+describe('isBrandIconUrl', () => {
+  it.each(['/assets/images/purple-hat-256.png', '/logo.svg', 'https://cdn.exemplo.com/marca.png', 'http://intranet/icone.svg'])(
+    'aceita %s',
+    (value) => {
+      expect(isBrandIconUrl(value)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['caminho relativo', 'assets/logo.png'],
+    ['protocolo relativo', '//cdn.exemplo.com/logo.png'],
+    ['javascript:', 'javascript:alert(1)'],
+    ['data:', 'data:image/png;base64,AAAA'],
+    ['espaço', '/assets/meu logo.png'],
+    ['barra invertida', '/\\evil.example/logo.png'],
+    ['longo demais', `/${'a'.repeat(600)}.png`],
+  ])('recusa %s', (_label, value) => {
+    expect(isBrandIconUrl(value)).toBe(false);
   });
 });

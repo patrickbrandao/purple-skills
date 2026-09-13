@@ -203,6 +203,7 @@ api.get(
       oidc: oidcEnabled() ? { enabled: true, name: config.oidcProviderName } : { enabled: false },
       passwordResetByEmail: smtpEnabled(),
       siteName: config.siteName,
+      brand: { name: config.brandName, iconUrl: config.brandIconUrl },
       siteBaseUrl: config.siteBaseUrl,
       mcpPublicUrl: config.mcpPublicUrl,
       links: {

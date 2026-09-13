@@ -35,6 +35,17 @@ export function isValidSkillIcon(value: string): boolean {
 }
 
 /**
+ * O ícone da marca do painel (`ADMIN_BRAND_ICON_URL`): URL http(s) ou um
+ * caminho servido pelo próprio painel, começando por uma única `/`. Diferente
+ * do ícone de skill, o caminho local vale — é assim que o padrão aponta para
+ * o chapéu em `/assets`.
+ */
+export function isBrandIconUrl(value: string): boolean {
+  if (isUrlIcon(value)) return true;
+  return value.length <= SKILL_ICON_MAX_LENGTH && /^\/(?!\/)[^\s\\]*$/.test(value);
+}
+
+/**
  * Normaliza o que chegou do formulário ou de uma tool: `undefined` é "não
  * mexe", vazio (ou `null`) é "apaga", texto válido é o ícone. Devolve `false`
  * quando o valor não é emoji nem URL — quem chama decide a mensagem.

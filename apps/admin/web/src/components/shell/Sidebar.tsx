@@ -9,6 +9,7 @@ import {
   ListChecks,
   MessageSquare,
   MoreVertical,
+  PanelLeftClose,
   Settings,
   SlidersHorizontal,
   Table2,
@@ -19,10 +20,14 @@ import { ROLE_LABEL, canManageUsers, type Session, type SessionUser } from '../.
 import { initials } from '../SkillIcon.js';
 import { UserMenu } from './UserMenu.js';
 
+/** Mesma quebra do CSS: abaixo dela a sidebar é gaveta, não coluna. */
+export const NARROW = '(max-width: 900px)';
+
 /**
- * A sidebar da referência: marca, quem está logado, a navegação em dois
- * blocos (o que se administra; os links externos) e o rodapé com o menu da
- * conta. Abaixo de 900px vira uma gaveta aberta pelo botão da barra superior.
+ * A sidebar da referência: a marca, a navegação em dois blocos (o que se
+ * administra; os links externos) e, no rodapé, a conta com o seu menu. O
+ * botão ao lado da marca recolhe a sidebar para a esquerda; abaixo de 900px
+ * ela vira uma gaveta, e o mesmo botão a fecha.
  */
 export function Sidebar({
   session,
@@ -30,12 +35,14 @@ export function Sidebar({
   onLogout,
   open,
   onClose,
+  onCollapse,
 }: {
   session: Session;
   user: SessionUser;
   onLogout: () => void;
   open: boolean;
   onClose: () => void;
+  onCollapse: () => void;
 }) {
   const location = useLocation();
   const admin = canManageUsers(user.role);
@@ -55,102 +62,100 @@ export function Sidebar({
   const links = session.links;
   const hasExternal = Boolean(links.docs || links.support || links.chat);
 
-  const userTrigger = (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu' }) => (
-    <button type="button" className="sidebar-user" {...props}>
+  // O rodapé inteiro é o botão: avatar, nome, papel e o ⋮ abrem o mesmo menu.
+  const accountTrigger = (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu' }) => (
+    <button type="button" className="sidebar-account" title={user.email || 'sessão de bootstrap'} {...props}>
       <span className="avatar">{initials(user.name)}</span>
       <span className="min-w-0 flex-1">
         <span className="nm">{user.name}</span>
         <span className="role">{user.legacy ? 'bootstrap' : ROLE_LABEL[user.role]}</span>
       </span>
-      <ChevronDown className="chev" />
-    </button>
-  );
-
-  const footTrigger = (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu' }) => (
-    <button type="button" className="icon-btn" title="Menu da conta" {...props}>
-      <MoreVertical />
+      <MoreVertical className="more" />
     </button>
   );
 
   return (
     <aside className={`sidebar${open ? ' open' : ''}`}>
-      <Link to="/mcps" className="sidebar-brand">
-        <img src="/assets/images/purple-hat-256.png" alt="" />
-        <span>
-          {session.siteName} <span className="sub">- Admin</span>
-        </span>
-      </Link>
+      <div className="sidebar-inner">
+        <div className="sidebar-head">
+          <Link to="/mcps" className="sidebar-brand">
+            <img src={session.brand.iconUrl} alt="" />
+            <span className="nm">{session.brand.name}</span>
+          </Link>
+          <button
+            type="button"
+            className="icon-btn sidebar-collapse"
+            title="Recolher o menu"
+            aria-label="Recolher o menu"
+            onClick={() => (window.matchMedia(NARROW).matches ? onClose() : onCollapse())}
+          >
+            <PanelLeftClose />
+          </button>
+        </div>
 
-      <UserMenu session={session} user={user} onLogout={onLogout} trigger={userTrigger} />
-
-      <nav className="nav" aria-label="Principal">
-        <NavLink to="/mcps" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-          <LayoutGrid /> Servidores MCP
-        </NavLink>
-        <NavLink to="/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-          <Table2 /> Skills
-        </NavLink>
-
-        <div className="nav-sep" />
-
-        {admin && (
-          <NavLink to="/auditoria" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-            <ListChecks /> Auditoria
+        <nav className="nav" aria-label="Principal">
+          <NavLink to="/mcps" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+            <LayoutGrid /> Servidores MCP
           </NavLink>
-        )}
-        {admin && !user.legacy && (
-          <NavLink to="/users" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-            <Users /> Usuários
+          <NavLink to="/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+            <Table2 /> Skills
           </NavLink>
-        )}
-        <button
-          type="button"
-          className={`nav-item${inConfig ? ' active' : ''}`}
-          aria-expanded={configOpen}
-          onClick={() => setConfigOpen((o) => !o)}
-        >
-          <Settings /> Configurações
-          <ChevronDown className="chev" />
-        </button>
-        {configOpen && (
-          <div className="nav-sub">
-            {admin && (
-              <NavLink to="/configuracoes" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-                <SlidersHorizontal /> Instalação
-              </NavLink>
-            )}
-            {!user.legacy && (
-              <NavLink to="/account" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-                <UserRound /> Minha conta
-              </NavLink>
-            )}
-          </div>
-        )}
 
-        {hasExternal && <div className="nav-sep" />}
-        {links.docs && (
-          <a className="nav-item ext" href={links.docs} target="_blank" rel="noreferrer">
-            <BookOpen /> Documentação <ExternalLink className="out" />
-          </a>
-        )}
-        {links.support && (
-          <a className="nav-item ext" href={links.support} target="_blank" rel="noreferrer">
-            <Bot /> Agente de suporte <ExternalLink className="out" />
-          </a>
-        )}
-        {links.chat && (
-          <a className="nav-item ext" href={links.chat} target="_blank" rel="noreferrer">
-            <MessageSquare /> Chat with skills <ExternalLink className="out" />
-          </a>
-        )}
-      </nav>
+          <div className="nav-sep" />
 
-      <div className="sidebar-foot">
-        <span className="avatar">{initials(user.name)}</span>
-        <span className="nm" title={user.email || 'sessão de bootstrap'}>
-          {user.name}
-        </span>
-        <UserMenu session={session} user={user} onLogout={onLogout} trigger={footTrigger} align="right" up />
+          {admin && (
+            <NavLink to="/auditoria" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <ListChecks /> Auditoria
+            </NavLink>
+          )}
+          {admin && !user.legacy && (
+            <NavLink to="/users" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <Users /> Usuários
+            </NavLink>
+          )}
+          <button
+            type="button"
+            className={`nav-item${inConfig ? ' active' : ''}`}
+            aria-expanded={configOpen}
+            onClick={() => setConfigOpen((o) => !o)}
+          >
+            <Settings /> Configurações
+            <ChevronDown className="chev" />
+          </button>
+          {configOpen && (
+            <div className="nav-sub">
+              {admin && (
+                <NavLink to="/configuracoes" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                  <SlidersHorizontal /> Instalação
+                </NavLink>
+              )}
+              {!user.legacy && (
+                <NavLink to="/account" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                  <UserRound /> Minha conta
+                </NavLink>
+              )}
+            </div>
+          )}
+
+          {hasExternal && <div className="nav-sep" />}
+          {links.docs && (
+            <a className="nav-item ext" href={links.docs} target="_blank" rel="noreferrer">
+              <BookOpen /> Documentação <ExternalLink className="out" />
+            </a>
+          )}
+          {links.support && (
+            <a className="nav-item ext" href={links.support} target="_blank" rel="noreferrer">
+              <Bot /> Agente de suporte <ExternalLink className="out" />
+            </a>
+          )}
+          {links.chat && (
+            <a className="nav-item ext" href={links.chat} target="_blank" rel="noreferrer">
+              <MessageSquare /> Chat with skills <ExternalLink className="out" />
+            </a>
+          )}
+        </nav>
+
+        <UserMenu session={session} user={user} onLogout={onLogout} trigger={accountTrigger} up className="sidebar-foot" />
       </div>
     </aside>
   );

@@ -1,11 +1,11 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronRight, Menu as MenuIcon, Search } from 'lucide-react';
+import { ChevronRight, PanelLeftOpen, Search } from 'lucide-react';
 import type { Session, SessionUser } from '../../api.js';
 import { usePalette } from '../commands.js';
-import { Badge, Kbd } from '../ui.js';
+import { Badge, Kbd, useStored } from '../ui.js';
 import { Notifications } from './Notifications.js';
-import { Sidebar } from './Sidebar.js';
+import { NARROW, Sidebar } from './Sidebar.js';
 
 type Crumb = { label: string; to?: string };
 
@@ -52,17 +52,32 @@ export function Layout({
 }) {
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  // Recolher é preferência de quem usa, por navegador; na tela estreita não se aplica.
+  const [collapsed, setCollapsed] = useStored('purple-skills-admin:sidebar-collapsed', false);
   const { open: openPalette } = usePalette();
   const crumbs = crumbsFor(location.pathname);
 
   return (
-    <div className="shell">
-      <Sidebar session={session} user={user} onLogout={onLogout} open={menuOpen} onClose={() => setMenuOpen(false)} />
+    <div className={`shell${collapsed ? ' sidebar-collapsed' : ''}`}>
+      <Sidebar
+        session={session}
+        user={user}
+        onLogout={onLogout}
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onCollapse={() => setCollapsed(true)}
+      />
       {menuOpen && <div className="overlay" style={{ zIndex: 45 }} onClick={() => setMenuOpen(false)} />}
 
       <header className="topbar">
-        <button type="button" className="icon-btn menu-btn" onClick={() => setMenuOpen(true)} aria-label="Abrir menu">
-          <MenuIcon />
+        <button
+          type="button"
+          className="icon-btn menu-btn"
+          onClick={() => (window.matchMedia(NARROW).matches ? setMenuOpen(true) : setCollapsed(false))}
+          title="Exibir o menu"
+          aria-label="Exibir o menu"
+        >
+          <PanelLeftOpen />
         </button>
         <nav className="crumbs" aria-label="Trilha">
           {crumbs.map((crumb, index) => (

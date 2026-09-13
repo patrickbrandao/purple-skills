@@ -470,6 +470,12 @@ O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
 
 - **Sidebar com rótulos, não trilho de 56px.** A referência visual tinha
   rótulos; ela venceu a skill.
+- **Recolher a sidebar anima a coluna do grid.** `grid-template-columns` vai
+  de 220px a 0, e o conteúdo mora num `.sidebar-inner` de largura fixa: a
+  borda corta os rótulos em vez de espremê-los. `visibility: hidden` entra
+  só no fim da animação, e é o que tira a navegação recolhida do Tab. O
+  menu da conta abre dentro da própria sidebar (que tem `overflow: hidden`),
+  por isso ocupa a largura do rodapé em vez dos 210px mínimos dos menus.
 - **Stack mínima.** Só `@xyflow/react`, `cmdk` e `lucide-react` entraram.
   react-router e Tailwind v4 continuam; a rampa espelhada foi mapeada por
   `@theme inline`, sem voltar ao v3. A filtragem da paleta é nossa

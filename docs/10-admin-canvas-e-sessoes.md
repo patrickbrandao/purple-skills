@@ -83,11 +83,20 @@ Fechadas por derivação:
 
 ### 3.1 Shell
 
-Três zonas: sidebar de 220px (marca, quem está logado, navegação, links
-externos, rodapé com o menu da conta), barra superior de 56px (trilha,
-atalho da paleta e o sino) e o palco — um painel com fio e raio de 12px que
-ocupa o resto e rola por dentro. A página inteira nunca rola. Abaixo de
-900px a sidebar vira gaveta.
+Três zonas: sidebar de 220px sem borda (a marca com o botão de recolher,
+navegação, links externos e, no rodapé, a conta — o rodapé inteiro é o
+botão que abre o menu da conta), barra superior de 56px (trilha, atalho da
+paleta e o sino) e o palco — um painel com fio e raio de 12px que ocupa o
+resto e rola por dentro. A página inteira nunca rola.
+
+A sidebar recolhe para a esquerda pelo botão ao lado da marca e volta pelo
+botão que aparece no início da barra superior; a escolha fica no
+`localStorage` de cada navegador. Abaixo de 900px ela vira gaveta, aberta
+pelo mesmo botão da barra e fechada pelo de recolher.
+
+A marca é só o ícone e o nome, sem sufixo, e os dois vêm do servidor
+(`ADMIN_BRAND_NAME`, `ADMIN_BRAND_ICON_URL`), junto com o título e o favicon
+da aba e o cartão do login.
 
 Os tokens vivem em `apps/admin/web/src/styles/tokens.css`, declarados
 **escuro primeiro** e espelhados no claro: `--bg`, `--bg-elev`, `--surface-2`
@@ -272,6 +281,8 @@ frontmatter do `SKILL.md`, porque é um atributo do catálogo, não da skill.
 | `MCP_SESSION_ONLINE_WINDOW_MS` | admin e mcp-public | `120000` |
 | `ADMIN_DOCS_URL` | admin | o README no GitHub |
 | `ADMIN_SUPPORT_URL`, `ADMIN_CHAT_URL` | admin | vazias (somem do menu) |
+| `ADMIN_BRAND_NAME` | admin | `SITE_NAME` (`Purple Skills`) |
+| `ADMIN_BRAND_ICON_URL` | admin | `/assets/images/purple-hat-256.png`; URL http(s) ou caminho, inválido derruba o boot |
 | `APP_VERSION` | admin (só exibição) | vazia |
 
 ## 8. Riscos aceitos

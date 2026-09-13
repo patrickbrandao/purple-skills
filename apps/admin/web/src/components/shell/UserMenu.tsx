@@ -5,7 +5,7 @@ import { logout, type Session, type SessionUser } from '../../api.js';
 import { Menu, MenuHeading, MenuItem, MenuSeparator } from '../ui.js';
 import { useTheme } from '../../useTheme.js';
 
-/** O mesmo menu atrás do bloco do usuário no topo da sidebar e do ⋮ do rodapé. */
+/** O menu da conta, aberto pelo botão do rodapé da sidebar. */
 export function UserMenu({
   session,
   user,
@@ -13,6 +13,7 @@ export function UserMenu({
   trigger,
   align = 'left',
   up,
+  className,
 }: {
   session: Session;
   user: SessionUser;
@@ -20,6 +21,7 @@ export function UserMenu({
   trigger: (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu' }) => ReactNode;
   align?: 'left' | 'right';
   up?: boolean;
+  className?: string;
 }) {
   const navigate = useNavigate();
   const [theme, toggleTheme] = useTheme();
@@ -31,7 +33,7 @@ export function UserMenu({
   }
 
   return (
-    <Menu trigger={trigger} align={align} up={up}>
+    <Menu trigger={trigger} align={align} up={up} className={className}>
       <MenuHeading>{user.legacy ? 'sessão de bootstrap' : user.email}</MenuHeading>
       {!user.legacy && (
         <MenuItem to="/account" icon={<UserRound />}>

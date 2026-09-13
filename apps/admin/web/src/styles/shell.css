@@ -1,8 +1,9 @@
 /* ============================================================
    PURPLE SKILLS — Painel: o shell.
-   Sidebar de 220px com rótulos (como na referência), barra
-   superior de 56px só com o sino, e o palco: um painel com fio e
-   raio de 12px que ocupa o resto da tela e rola por dentro.
+   Sidebar de 220px com rótulos (como na referência), recolhível
+   para a esquerda; barra superior de 56px só com o sino; e o
+   palco: um painel com fio e raio de 12px que ocupa o resto da
+   tela e rola por dentro.
    ============================================================ */
 
 .shell {
@@ -11,22 +12,39 @@
   grid-template-rows: 56px minmax(0, 1fr);
   height: 100dvh;
   background: var(--bg);
+  transition: grid-template-columns 0.2s ease;
 }
 
 /* ---- sidebar ---- */
 .sidebar {
   grid-row: 1 / -1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+/* Largura fixa por dentro: ao recolher, a coluna encolhe e o conteúdo é
+   cortado pela borda, em vez de espremido. */
+.sidebar-inner {
   display: flex;
   flex-direction: column;
+  width: 220px;
+  height: 100%;
   min-height: 0;
-  border-right: 1px solid var(--surface-3);
-  background: var(--bg);
+}
+.sidebar-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 56px;
+  padding: 0 10px 0 16px;
 }
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 14px 16px 0;
+  min-width: 0;
   color: var(--text);
   text-decoration: none;
   font-size: 14px;
@@ -37,53 +55,16 @@
   width: 22px;
   height: 22px;
   object-fit: contain;
+  flex: none;
 }
-.sidebar-brand .sub {
-  color: var(--text-muted);
-}
-
-.sidebar-user {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: calc(100% - 20px);
-  margin: 10px 10px 0;
-  padding: 6px;
-  border: 0;
-  border-radius: var(--radius-surface);
-  background: transparent;
-  text-align: left;
-  color: var(--text);
-  transition: background 0.15s ease;
-}
-.sidebar-user:hover,
-.sidebar-user[aria-expanded='true'] {
-  background: var(--surface-2);
-}
-.sidebar-user .nm {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.2;
+.sidebar-brand .nm {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sidebar-user .role {
-  display: block;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--info);
-  margin-top: 2px;
-}
-.sidebar-user .chev {
-  width: 14px;
-  height: 14px;
-  color: var(--text-faint);
+.sidebar-collapse {
   margin-left: auto;
-  flex: none;
+  color: var(--text-faint);
 }
 
 .avatar {
@@ -188,22 +169,58 @@
   margin-left: 2px;
 }
 
+/* O rodapé é a âncora do menu da conta; o botão ocupa a área inteira. */
 .sidebar-foot {
   margin-top: auto;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-foot .menu {
+  left: 8px;
+  right: 8px;
+  min-width: 0;
+}
+.sidebar-account {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 12px 12px 14px;
-  border-top: 1px solid var(--border);
+  width: 100%;
+  padding: 7px 6px 7px 8px;
+  border: 0;
+  border-radius: var(--radius-surface);
+  background: transparent;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
-.sidebar-foot .nm {
+.sidebar-account:hover,
+.sidebar-account[aria-expanded='true'] {
+  background: var(--surface-2);
+}
+.sidebar-account .nm {
+  display: block;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
-  min-width: 0;
+}
+.sidebar-account .role {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--info);
+  margin-top: 2px;
+}
+.sidebar-account .more {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  flex: none;
 }
 
 /* ---- barra superior ---- */
@@ -270,6 +287,7 @@
   min-height: 0;
   min-width: 0;
   padding: 0 12px 12px 0;
+  transition: padding-left 0.2s ease;
 }
 .main-panel {
   position: relative;
@@ -1188,7 +1206,9 @@
     width: 260px;
     transform: translateX(-100%);
     transition: transform 0.2s ease-out;
-    border-right: 1px solid var(--surface-4);
+  }
+  .sidebar-inner {
+    width: 100%;
   }
   .sidebar.open {
     transform: none;
@@ -1214,9 +1234,37 @@
 .menu-btn {
   display: none;
 }
+/* Recolhida: a coluna vai a zero e o palco ganha a margem que a sidebar dava.
+   `visibility` sai só no fim da animação, e tira a navegação do Tab. */
+@media (min-width: 901px) {
+  .shell.sidebar-collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+  .shell .sidebar {
+    transition: visibility 0s;
+  }
+  .shell.sidebar-collapsed .sidebar {
+    visibility: hidden;
+    transition: visibility 0s 0.2s;
+  }
+  .shell.sidebar-collapsed .main {
+    padding-left: 12px;
+  }
+  .shell.sidebar-collapsed .menu-btn {
+    display: inline-grid;
+    margin-left: -6px;
+  }
+}
 @media (max-width: 900px) {
   .menu-btn {
     display: inline-grid;
     margin-right: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell,
+  .shell .sidebar,
+  .shell.sidebar-collapsed .sidebar {
+    transition: none;
   }
 }

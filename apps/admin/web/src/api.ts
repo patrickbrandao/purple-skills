@@ -148,6 +148,9 @@ export type SessionUser = {
 /** Links externos da sidebar; nulos somem da tela. */
 export type AdminLinks = { docs: string | null; support: string | null; chat: string | null };
 
+/** A marca do painel (ADMIN_BRAND_NAME / ADMIN_BRAND_ICON_URL). */
+export type AdminBrand = { name: string; iconUrl: string };
+
 export type Session = {
   authenticated: boolean;
   user: SessionUser | null;
@@ -156,6 +159,7 @@ export type Session = {
   oidc: { enabled: boolean; name?: string };
   passwordResetByEmail: boolean;
   siteName: string;
+  brand: AdminBrand;
   siteBaseUrl: string;
   /** Base pública do MCP público — vazia quando `MCP_PUBLIC_URL` não foi configurada. */
   mcpPublicUrl: string;

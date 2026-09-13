@@ -54,6 +54,7 @@ const OFFLINE: Session = {
   oidc: { enabled: false },
   passwordResetByEmail: false,
   siteName: 'Purple Skills',
+  brand: { name: 'Purple Skills', iconUrl: '/assets/images/purple-hat-256.png' },
   siteBaseUrl: '/',
   mcpPublicUrl: '',
   links: { docs: null, support: null, chat: null },
@@ -79,6 +80,14 @@ export default function App() {
     void refresh();
   }, [refresh]);
 
+  // A aba do navegador acompanha a marca configurada no servidor.
+  const brandName = session?.brand.name;
+  const brandIcon = session?.brand.iconUrl;
+  useEffect(() => {
+    if (brandName) document.title = brandName;
+    if (brandIcon) document.querySelector('link[rel="icon"]')?.setAttribute('href', brandIcon);
+  }, [brandName, brandIcon]);
+
   if (loading) {
     return (
       <div className="flex h-dvh items-center justify-center">
@@ -102,7 +111,7 @@ export default function App() {
   if (current.user.mustChangePassword) {
     return (
       <ToastProvider>
-        <ChangePasswordPage onDone={refresh} />
+        <ChangePasswordPage iconUrl={current.brand.iconUrl} onDone={refresh} />
       </ToastProvider>
     );
   }

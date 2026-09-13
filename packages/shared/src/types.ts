@@ -336,3 +336,6 @@ export type McpSessionPage = {
 
 /** Links externos da sidebar do painel; nulos somem da tela. */
 export type AdminLinks = { docs: string | null; support: string | null; chat: string | null };
+
+/** A marca do painel: o nome e o ícone da sidebar, do login e da aba do navegador. */
+export type AdminBrand = { name: string; iconUrl: string };
