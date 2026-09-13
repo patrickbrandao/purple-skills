@@ -3,7 +3,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Globe, Server } from 'lucide-react';
 import { Badge } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
-import { PORTS, PORT_HANDLE, PORT_LABEL, type InternetNode, type ServerNode, type SkillNode } from './types.js';
+import { PORTS, PORT_HANDLE, PORT_LABEL, SKILL_HANDLE, type InternetNode, type ServerNode, type SkillNode } from './types.js';
 
 /*
  * Os três tipos de nó do palco. `memo` é obrigatório: sem ele, arrastar um
@@ -46,16 +46,21 @@ function ServerNodeImpl({ data, selected }: NodeProps<ServerNode>) {
 function SkillNodeImpl({ data, selected }: NodeProps<SkillNode>) {
   return (
     <div className={`node-skill${selected ? ' selected' : ''}`} title={data.name}>
-      <Handle type="target" position={Position.Left} id="in" />
+      {/* Um handle por porta, na ordem das portas do servidor: cheio quando a porta está ligada. */}
+      {PORTS.map((port) => (
+        <Handle
+          key={port}
+          type="target"
+          position={Position.Left}
+          id={SKILL_HANDLE[port]}
+          className={`${port}${data.ports.includes(port) ? ' on' : ''}`}
+          title={PORT_LABEL[port]}
+        />
+      ))}
       <SkillIcon icon={data.icon} name={data.name} slug={data.slug} />
       <span className="tx">
         <span className="nm block">{data.name}</span>
         <span className="sl block">{data.slug}</span>
-        <span className="pp">
-          {PORTS.map((port) => (
-            <i key={port} className={`${port}${data.ports.includes(port) ? ' on' : ''}`} title={PORT_LABEL[port]} />
-          ))}
-        </span>
       </span>
       {data.busy && <span className="busy" aria-label="salvando" />}
     </div>

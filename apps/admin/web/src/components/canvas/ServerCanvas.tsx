@@ -8,10 +8,11 @@ import {
   type IsValidConnection,
   type Node,
   type NodeChange,
+  type NodeMouseHandler,
   type OnBeforeDelete,
   type OnNodesDelete,
 } from '@xyflow/react';
-import { LayoutTemplate, Maximize, Minus, Plus, Sparkles } from 'lucide-react';
+import { LayoutTemplate, Maximize, Minus, Plus } from 'lucide-react';
 import {
   getMcpOnline,
   linkSkillToMcp,
@@ -25,7 +26,7 @@ import {
 } from '../../api.js';
 import { usePalette, useRegisterCommands } from '../commands.js';
 import { useToast } from '../Toast.js';
-import { Button, EmptyState, isTypingTarget, useConfirm, usePolling } from '../ui.js';
+import { Button, isTypingTarget, useConfirm, usePolling } from '../ui.js';
 import { useTheme } from '../../useTheme.js';
 import { nodeTypes } from './nodes.js';
 import { edgeTypes } from './edges.js';
@@ -36,9 +37,11 @@ import {
   INTERNET_ID,
   PORTS,
   SERVER_ID,
+  SKILL_HANDLE,
   flagsToPorts,
   portEdgeId,
   portOfHandle,
+  portOfSkillHandle,
   portsToFlags,
   skillNodeId,
   slugOfNodeId,
@@ -49,6 +52,12 @@ import {
 } from './types.js';
 
 type Pending = { slug: string; port: Port; kind: 'add' | 'remove' };
+
+const isSelectedNode = (id: string, selection: Selection): boolean => {
+  if (!selection) return false;
+  if (selection.kind === 'skill') return slugOfNodeId(id) === selection.slug;
+  return id === (selection.kind === 'server' ? SERVER_ID : INTERNET_ID);
+};
 
 /**
  * O palco de um servidor: o vMCP com as três portas, as skills vinculadas e o
@@ -100,53 +109,68 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
   }, 5000);
 
   // ----------------------------------------------------------------- nodes --
-  // Reconcilia com `detail`: mantém a posição de quem já estava, coloca quem
-  // entrou num vão livre, tira quem saiu.
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  // Reconcilia com `detail`: quem já estava é reaproveitado (só `data` muda),
+  // quem entrou ganha um vão livre, quem saiu some. Recriar o objeto do nó
+  // apagaria `measured` e `dragging`, o React Flow mediria de novo e o arraste
+  // em curso cairia — e este efeito roda a cada contagem de online (5 s).
   useEffect(() => {
     setNodes((current) => {
+      const previous = new Map(current.map((node) => [node.id, node]));
       const known = new Map<string, CanvasPoint>();
-      let server: CanvasPoint | undefined;
-      let internet: CanvasPoint | undefined;
       for (const node of current) {
         const slug = slugOfNodeId(node.id);
         if (slug) known.set(slug, node.position);
-        else if (node.id === SERVER_ID) server = node.position;
-        else if (node.id === INTERNET_ID) internet = node.position;
       }
       const positions = placeSkills(detail, known);
       const counts = { tools: detail.toolCount, resources: detail.resourceCount, prompts: detail.promptCount };
+      const upsert = <N extends CanvasNode>(fresh: N): N => {
+        const prev = previous.get(fresh.id);
+        if (prev) return { ...prev, data: fresh.data, deletable: fresh.deletable } as N;
+        return { ...fresh, selected: isSelectedNode(fresh.id, selectionRef.current) };
+      };
 
-      const next: CanvasNode[] = [
-        {
+      return [
+        upsert({
           id: INTERNET_ID,
           type: 'internet',
-          position: internet ?? detail.layout.internet ?? DEFAULT_INTERNET,
+          position: detail.layout.internet ?? DEFAULT_INTERNET,
           data: { online: online?.total ?? detail.onlineSessions },
           deletable: false,
-          selected: selection?.kind === 'internet',
-        },
-        {
+        }),
+        upsert({
           id: SERVER_ID,
           type: 'server',
-          position: server ?? detail.layout.server ?? DEFAULT_SERVER,
+          position: detail.layout.server ?? DEFAULT_SERVER,
           data: { name: detail.name, slug: detail.slug, isActive: detail.isActive, isOpen: detail.isOpen, isDefault: detail.isDefault, counts },
           deletable: false,
           zIndex: 2,
-          selected: selection?.kind === 'server',
-        },
-        ...detail.skills.map((skill): CanvasNode => ({
-          id: skillNodeId(skill.slug),
-          type: 'skill',
-          position: positions.get(skill.slug)!,
-          data: { slug: skill.slug, name: skill.name, icon: skill.icon, ports: flagsToPorts(skill), busy: busySlug === skill.slug },
-          zIndex: 2,
-          deletable: canEdit,
-          selected: selection?.kind === 'skill' && selection.slug === skill.slug,
-        })),
+        }),
+        ...detail.skills.map((skill) =>
+          upsert<CanvasNode>({
+            id: skillNodeId(skill.slug),
+            type: 'skill',
+            position: positions.get(skill.slug)!,
+            data: { slug: skill.slug, name: skill.name, icon: skill.icon, ports: flagsToPorts(skill), busy: busySlug === skill.slug },
+            zIndex: 2,
+            deletable: canEdit,
+          }),
+        ),
       ];
-      return next;
     });
-  }, [detail, online?.total, busySlug, selection, canEdit, setNodes]);
+  }, [detail, online?.total, busySlug, canEdit, setNodes]);
+
+  // A seleção da gaveta manda no destaque dos nós, sem tocar no resto.
+  useEffect(() => {
+    setNodes((current) =>
+      current.map((node) => {
+        const selected = isSelectedNode(node.id, selection);
+        return node.selected === selected ? node : { ...node, selected };
+      }),
+    );
+  }, [selection, setNodes]);
 
   useEffect(() => {
     if (fitted.current || nodes.length === 0) return;
@@ -189,7 +213,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
           source: SERVER_ID,
           sourceHandle: `port-${port}`,
           target: skillNodeId(skill.slug),
-          targetHandle: 'in',
+          targetHandle: SKILL_HANDLE[port],
           className: `edge-port ${port}${saving ? ' saving' : ''}`,
           data: { port, slug: skill.slug, saving },
           deletable: canEdit && !saving,
@@ -206,7 +230,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         source: SERVER_ID,
         sourceHandle: `port-${item.port}`,
         target: skillNodeId(item.slug),
-        targetHandle: 'in',
+        targetHandle: SKILL_HANDLE[item.port],
         className: `edge-port ${item.port} saving`,
         data: { port: item.port, slug: item.slug, saving: true },
         deletable: false,
@@ -341,12 +365,14 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
     [applyPorts, confirm],
   );
 
-  // Conectar uma porta do servidor a uma skill = ligar a flag.
+  // Conectar uma porta do servidor ao handle da mesma porta na skill = ligar a
+  // flag. O modo estrito aceita começar por qualquer ponta; a conexão chega
+  // sempre orientada servidor → skill.
   const onConnect = useCallback(
     (connection: Connection) => {
       const port = portOfHandle(connection.sourceHandle);
       const slug = slugOfNodeId(connection.target);
-      if (!port || !slug || connection.source !== SERVER_ID) return;
+      if (!port || !slug || connection.source !== SERVER_ID || portOfSkillHandle(connection.targetHandle) !== port) return;
       const skill = detail.skills.find((item) => item.slug === slug);
       if (!skill) return;
       const current = flagsToPorts(skill);
@@ -361,7 +387,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       if (!canEdit) return false;
       const port = portOfHandle(connection.sourceHandle);
       const slug = slugOfNodeId(connection.target ?? '');
-      if (!port || !slug || connection.source !== SERVER_ID) return false;
+      if (!port || !slug || connection.source !== SERVER_ID || portOfSkillHandle(connection.targetHandle) !== port) return false;
       return !edges.some((edge) => edge.id === portEdgeId(port, slug));
     },
     [canEdit, edges],
@@ -516,18 +542,25 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
     return () => document.removeEventListener('keydown', down);
   }, [addSkill, canEdit, fitView]);
 
-  // Seleção: um clique no nó abre a gaveta; no fundo, fecha.
+  // Seleção: só um clique abre a gaveta; no fundo, fecha. Com
+  // `selectNodesOnDrag` desligado, arrastar não seleciona, e o React Flow
+  // descarta o clique que termina um arraste — então clicar e arrastar não se
+  // confundem. O `select` que ainda chega por aqui vem do teclado (Enter).
+  const selectNode = useCallback((id: string) => {
+    const slug = slugOfNodeId(id);
+    setSelection(slug ? { kind: 'skill', slug } : id === SERVER_ID ? { kind: 'server' } : { kind: 'internet' });
+  }, []);
+
+  const onNodeClick = useCallback<NodeMouseHandler<CanvasNode>>((_event, node) => selectNode(node.id), [selectNode]);
+
   const handleNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       onNodesChange(changes);
       for (const change of changes) {
-        if (change.type === 'select' && change.selected) {
-          const slug = slugOfNodeId(change.id);
-          setSelection(slug ? { kind: 'skill', slug } : change.id === SERVER_ID ? { kind: 'server' } : { kind: 'internet' });
-        }
+        if (change.type === 'select' && change.selected) selectNode(change.id);
       }
     },
-    [onNodesChange],
+    [onNodesChange, selectNode],
   );
 
   const empty = detail.skills.length === 0 && pending.length === 0;
@@ -540,6 +573,8 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
+        onNodeClick={onNodeClick}
+        selectNodesOnDrag={false}
         onConnect={onConnect}
         isValidConnection={isValidConnection}
         onBeforeDelete={onBeforeDelete}
@@ -598,27 +633,6 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
           <i className="prompts" /> Prompts
         </span>
       </div>
-
-      {empty && (
-        <div className="stage-empty">
-          <EmptyState
-            icon={<Sparkles />}
-            title="Nenhuma skill neste servidor"
-            description={
-              canEdit
-                ? 'Adicione uma skill do catálogo e ligue-a às portas Tools, Resources ou Prompts. Cada aresta é uma porta.'
-                : 'O dono deste servidor ou um administrador pode adicionar skills.'
-            }
-            action={
-              canEdit ? (
-                <Button onClick={addSkill}>
-                  <Plus /> Adicionar skill
-                </Button>
-              ) : undefined
-            }
-          />
-        </div>
-      )}
 
       {!empty && canEdit && <p className="stage-hint">Arraste de uma porta até uma skill para ligá-la · Delete tira a aresta · a última aresta tira a skill</p>}
 

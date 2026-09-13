@@ -140,13 +140,17 @@ Três tipos de nó, cada um um componente memoizado:
 - **servidor** — 288px, com nome, endereço, selos e três portas à direita,
   cada uma com um handle de origem e a contagem de skills que saem por ela;
   um handle de entrada à esquerda, para a Internet;
-- **skill** — ícone, nome, slug e três pontos que dizem por quais portas ela
-  sai; um handle de destino à esquerda;
+- **skill** — ícone, nome e slug, com três handles de destino à esquerda,
+  um por porta e na mesma ordem do servidor: cheio quando a porta está
+  ligada, só o contorno quando não;
 - **Internet** — o globo, à esquerda do servidor, com um handle de saída.
 
 Duas arestas, uma por relação. A de **porta** (servidor → skill) é estática,
-colorida pela porta, com o rótulo e o ✕ aparecendo ao passar o mouse. A de
-**tráfego** (Internet → servidor) é a única viva: brilho e partículas
+uma curva Bézier — a mesma da linha de conexão em andamento — que liga a
+porta do servidor ao handle da mesma porta na skill, colorida pela porta,
+com o rótulo e o ✕ aparecendo quando selecionada. A de **tráfego**
+(Internet → servidor) é em ângulos retos com cantos arredondados e é a única
+viva: brilho e partículas
 proporcionais aos clientes online (desligadas em `prefers-reduced-motion`)
 e, no meio, o contador "N sessões online", que abre a aba de sessões. O
 contador vem de `GET /api/mcps/:slug/online` a cada 5 s enquanto a aba
@@ -161,7 +165,8 @@ recarregado:
 
 | Gesto | Efeito |
 |-------|--------|
-| Arrastar de uma porta até uma skill | liga a flag daquela porta (`PUT` com as flags atuais + a nova) |
+| Arrastar de uma porta até o handle da mesma porta na skill (ou o contrário) | liga a flag daquela porta (`PUT` com as flags atuais + a nova); porta trocada é recusada |
+| Clicar num nó | abre a gaveta de detalhe; arrastar não seleciona nem abre a gaveta |
 | Delete/Backspace numa aresta, ou o ✕ do rótulo | desliga a flag; se era a última, **tira a skill do servidor** (`DELETE`), com confirmação |
 | Delete num nó de skill, ou "Tirar do servidor" na gaveta | `DELETE` do vínculo, com confirmação |
 | "Adicionar skill" (botão, paleta ou `a`) | a paleta busca o catálogo; escolher abre o diálogo das portas (Tools pré-marcada) e o `PUT` cria o vínculo já com a posição do vão livre |
@@ -182,6 +187,9 @@ vão livre). `virtual_mcps.layout` (JSONB) guarda as posições do servidor e
 do globo. Tudo em múltiplos de 24 (`snapGrid`). A posição cai junto com o
 vínculo, e `setVirtualMcpSkills` preserva a de quem ficou. O viewport
 (pan/zoom) não é persistido: o palco enquadra ao abrir.
+
+Servidor sem skill abre só com o globo e o servidor: não há estado vazio no
+palco, porque o botão "Adicionar skill" já fica fixo no canto.
 
 Mover um nó **não** audita nem toca `updated_at`: é estado de tela, não
 publicação. A escolha de gravar no banco, e não no navegador, é a decisão

@@ -9,8 +9,14 @@ export const PORT_LABEL: Record<Port, string> = { tools: 'Tools', resources: 'Re
 export const PORT_FLAG: Record<Port, keyof LinkFlags> = { tools: 'asSkill', resources: 'asResource', prompts: 'asPrompt' };
 export const PORT_HANDLE: Record<Port, string> = { tools: 'port-tools', resources: 'port-resources', prompts: 'port-prompts' };
 
+/** Os três handles de destino da skill, um por porta, na mesma ordem do servidor. */
+export const SKILL_HANDLE: Record<Port, string> = { tools: 'in-tools', resources: 'in-resources', prompts: 'in-prompts' };
+
 export const portOfHandle = (handle: string | null | undefined): Port | null =>
   (PORTS.find((port) => PORT_HANDLE[port] === handle) ?? null);
+
+export const portOfSkillHandle = (handle: string | null | undefined): Port | null =>
+  (PORTS.find((port) => SKILL_HANDLE[port] === handle) ?? null);
 
 export const flagsToPorts = (flags: LinkFlags): Port[] => PORTS.filter((port) => flags[PORT_FLAG[port]]);
 

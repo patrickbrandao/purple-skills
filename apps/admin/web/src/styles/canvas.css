@@ -32,16 +32,23 @@
   background: var(--text-faint);
   transition: transform 0.12s ease, background 0.12s ease;
 }
-.react-flow__handle:hover,
-.react-flow__handle.connectingfrom,
-.react-flow__handle.valid {
-  transform: scale(1.35);
-}
 .react-flow__handle-right {
   right: -6px;
 }
 .react-flow__handle-left {
   left: -6px;
+}
+/* O React Flow centraliza o handle com translate: o scale precisa repeti-lo,
+   senão o handle pula para longe do cursor ao receber o hover. */
+.react-flow__handle-right:hover,
+.react-flow__handle-right.connectingfrom,
+.react-flow__handle-right.valid {
+  transform: translate(50%, -50%) scale(1.35);
+}
+.react-flow__handle-left:hover,
+.react-flow__handle-left.connectingfrom,
+.react-flow__handle-left.valid {
+  transform: translate(-50%, -50%) scale(1.35);
 }
 .react-flow__connection-path {
   stroke: var(--accent-soft);
@@ -164,6 +171,7 @@
 .node-skill {
   position: relative;
   width: 264px;
+  min-height: 66px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -202,23 +210,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.node-skill .pp {
-  display: flex;
-  gap: 4px;
-  margin-top: 5px;
+/* Três handles de destino, na ordem das portas do servidor: cheios quando a
+   porta está ligada, só o contorno quando não. */
+.node-skill .react-flow__handle.tools { --port: var(--port-tools); top: 25%; }
+.node-skill .react-flow__handle.resources { --port: var(--port-resources); top: 50%; }
+.node-skill .react-flow__handle.prompts { --port: var(--port-prompts); top: 75%; }
+.node-skill .react-flow__handle {
+  background: var(--bg-elev);
+  border-color: var(--port);
 }
-.node-skill .pp i {
-  display: block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--surface-4);
-}
-.node-skill .pp i.on.tools { background: var(--port-tools); }
-.node-skill .pp i.on.resources { background: var(--port-resources); }
-.node-skill .pp i.on.prompts { background: var(--port-prompts); }
-.node-skill .react-flow__handle-left {
-  background: var(--text-muted);
+.node-skill .react-flow__handle.on {
+  background: var(--port);
+  border-color: var(--bg-elev);
 }
 .node-skill .busy {
   position: absolute;
@@ -318,7 +321,12 @@
     opacity: 0;
   }
 }
+/* Os rótulos moram num portal irmão das arestas, e cada aresta é um <svg> com
+   o próprio z-index (1 aqui): sem este z-index a linha passa por cima do
+   rótulo. Com 2, fica acima das arestas e ainda abaixo dos nós, que vêm
+   depois no DOM. */
 .edge-label {
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -432,17 +440,6 @@
   .stage-hint {
     display: none;
   }
-}
-.stage-empty {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-.stage-empty > * {
-  pointer-events: auto;
 }
 .stage-legend {
   position: absolute;

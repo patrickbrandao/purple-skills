@@ -68,9 +68,6 @@ export function NodeDrawer({
                     disabled={!canEdit || busySlug === skill.slug}
                     onChange={(event) => onTogglePort(skill, port, event.target.checked)}
                   />
-                  <span className="stage-legend">
-                    <i className={port} />
-                  </span>
                   {PORT_LABEL[port]}
                 </label>
               ))}

@@ -58,9 +58,6 @@ export function AddSkillDialog({
                 />
                 <span>
                   <span className="flex items-center gap-2 text-[13px] font-medium">
-                    <span className="stage-legend">
-                      <i className={port} />
-                    </span>
                     {PORT_LABEL[port]}
                   </span>
                   <span className="hint">{PORT_HINT[port]}</span>

@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
 import { X } from 'lucide-react';
 import { PORT_LABEL, type PortEdge, type TrafficEdge } from './types.js';
 
@@ -10,7 +10,8 @@ import { PORT_LABEL, type PortEdge, type TrafficEdge } from './types.js';
  */
 
 function PortEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected }: EdgeProps<PortEdge>) {
-  const [path, labelX, labelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, borderRadius: 8 });
+  // Bézier, a mesma curva da linha de conexão em andamento.
+  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
 
   return (
     <>

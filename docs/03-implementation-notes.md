@@ -474,12 +474,28 @@ O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
   react-router e Tailwind v4 continuam; a rampa espelhada foi mapeada por
   `@theme inline`, sem voltar ao v3. A filtragem da paleta é nossa
   (`fuzzyScore`), porque parte dos itens vem do servidor já filtrada.
-- **Grade de 24px, nó de skill de 264×~64.** O cartão de 288×144 da skill
+- **Grade de 24px, nó de skill de 264×66.** O cartão de 288×144 da skill
   serve a recursos com três linhas de status; a skill só precisa de ícone,
-  nome, slug e três pontos de porta.
+  nome, slug e os três handles de porta, a 25/50/75% da altura.
 - **Arestas do servidor para a skill**, com handles à direita e à esquerda
   (a skill manda topo/base). O grafo é horizontal: Internet → servidor →
   skills.
+- **Nós reaproveitados, nunca recriados.** O efeito que reconcilia o palco
+  com o detalhe do servidor roda a cada contagem de online (5 s). Recriar o
+  objeto do nó apaga `measured` e `dragging`: o React Flow mede de novo e o
+  arraste em curso cai. Por isso quem já existe só recebe `data` nova, e a
+  seleção da gaveta mexe só em `selected`.
+- **Clique abre a gaveta, arraste não.** `selectNodesOnDrag` ligado (o
+  padrão) seleciona o nó no começo do arraste, e a gaveta abria no meio do
+  gesto. Com ele desligado, a gaveta abre por `onNodeClick`, e o d3-drag
+  descarta o clique que encerra um arraste.
+- **Rótulo de aresta com `z-index: 2`.** Cada aresta é um `<svg>` com o
+  próprio `z-index` (1 aqui), e os rótulos moram num portal irmão sem
+  `z-index`: sem ele a linha passa por cima do contador. Com 2 o rótulo fica
+  acima das arestas e abaixo dos nós, que vêm depois no DOM.
+- **Hover do handle repete o `translate`.** O React Flow centraliza o handle
+  com `transform: translate(...)`; um `scale` sozinho no hover descartava o
+  deslocamento e o handle pulava para longe do cursor.
 - **Sem `parentId`, sem grupos, sem undo.** Fora do escopo do `10`.
 - **O `remove-edge` do rótulo da aresta chega por `CustomEvent`.** O
   componente da aresta é memoizado e não recebe callbacks por props (o
