@@ -1,6 +1,7 @@
 import express, { Router, type Request, type Response } from 'express';
 import {
   AppError,
+  badRequest,
   countUsers,
   createSkill,
   deleteFile,
@@ -9,7 +10,7 @@ import {
   getSkillSummary,
   getUserByUuid,
   healthCheck,
-  listAudit,
+  listAuditPage,
   listSkills,
   listTags,
   readAllFiles,
@@ -204,6 +205,13 @@ api.get(
       siteName: config.siteName,
       siteBaseUrl: config.siteBaseUrl,
       mcpPublicUrl: config.mcpPublicUrl,
+      links: {
+        docs: config.docsUrl || null,
+        support: config.supportUrl || null,
+        chat: config.chatUrl || null,
+      },
+      onlineWindowMs: config.onlineWindowMs,
+      version: config.version,
     });
   }),
 );
@@ -535,6 +543,40 @@ api.put(
   }),
 );
 
+// O canvas: posições dos nós, estado de tela compartilhado — sem auditoria.
+api.put(
+  '/api/mcps/:slug/canvas',
+  route(async (req, res) => {
+    await mcps.setCanvas(req.user!, param(req, 'slug'), req.body ?? {});
+    res.json({ ok: true });
+  }),
+);
+
+// Sessões do MCP público (`docs/10-admin-canvas-e-sessoes.md`): o contador do
+// globo e a lista por servidor. Mesma permissão do resto: dono ou admin.
+api.get(
+  '/api/mcps/:slug/online',
+  route(async (req, res) => {
+    res.json(await mcps.online(req.user!, param(req, 'slug')));
+  }),
+);
+
+api.get(
+  '/api/mcps/:slug/sessions',
+  route(async (req, res) => {
+    res.json(await mcps.sessionsOf(req.user!, param(req, 'slug'), req.query as Record<string, unknown>));
+  }),
+);
+
+// A lista global: admin vê tudo, os demais só os próprios vMCPs — o recorte é
+// de `listSessions`, não de um guarda de papel.
+api.get(
+  '/api/sessions',
+  route(async (req, res) => {
+    res.json(await mcps.listSessions(req.user!, req.query as Record<string, unknown>));
+  }),
+);
+
 api.get(
   '/api/mcps/:slug/keys',
   route(async (req, res) => {
@@ -595,7 +637,26 @@ api.get(
   '/api/audit',
   requireAdmin,
   route(async (req, res) => {
-    res.json({ items: await listAudit(Number(req.query.limit ?? 60)) });
+    const q = req.query as Record<string, unknown>;
+    const text = (key: string) => (typeof q[key] === 'string' && (q[key] as string).trim() ? (q[key] as string).trim() : undefined);
+    const date = (key: string) => {
+      const raw = text(key);
+      if (!raw) return undefined;
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) throw badRequest(`"${key}" precisa ser uma data válida`);
+      return parsed;
+    };
+    res.json(
+      await listAuditPage({
+        limit: Number(q.limit ?? 50),
+        offset: Number(q.offset ?? 0),
+        action: text('action') as never,
+        actor: text('actor'),
+        q: text('q'),
+        since: date('since'),
+        until: date('until'),
+      }),
+    );
   }),
 );
 
@@ -647,6 +708,8 @@ api.post(
       // abaixo é o primeiro a tocar o valor.
       skillMd?: unknown;
       tags?: string[];
+      /** Emoji ou URL de imagem; nulo ou vazio limpa. A forma é validada no banco. */
+      icon?: unknown;
       /** Onde publicar já na criação: `[{ slug, asSkill, asPrompt, asResource }]`. */
       mcps?: unknown;
     };
@@ -668,6 +731,7 @@ api.post(
         // Um bloco `---` colado no início do prompt é descartado aqui.
         skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
+        icon: body.icon as string | null | undefined,
         // Só nos vMCPs que a sessão administra; um que não seja é 403 antes
         // de criar qualquer coisa.
         mcps: await mcps.resolveLinks(req.user!, body.mcps),
@@ -702,6 +766,7 @@ api.post(
       name?: string;
       description?: string;
       tags?: string;
+      icon?: string;
       /** JSON: `[{ slug, asSkill, asPrompt, asResource }]`. */
       mcps?: string;
     };
@@ -722,6 +787,7 @@ api.post(
         description: body.description?.trim() || meta.description || '',
         skillMd: stripFrontmatter(skillMd.textContent),
         tags: tags.length > 0 ? tags : meta.tags,
+        icon: body.icon?.trim() || undefined,
         // Onde publicar vem só do formulário: nada no .zip de terceiro decide
         // em que servidor a skill aparece.
         mcps: await mcps.resolveLinks(req.user!, parseJsonList(body.mcps)),
@@ -781,6 +847,8 @@ api.patch(
       description?: string;
       tags?: string[];
       skillMd?: string;
+      /** `undefined` não mexe; `null` ou vazio limpa. */
+      icon?: string | null;
     };
 
     // Conteúdo e metadados numa transação só: se o slug colidir ou o nome vier
@@ -792,6 +860,7 @@ api.patch(
         slug: body.slug,
         description: body.description,
         tags: body.tags,
+        icon: body.icon,
         skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,
       },
       SOURCE,

@@ -1,4 +1,5 @@
 import { Field } from './ui.js';
+import { SkillIcon } from './SkillIcon.js';
 import { buildFrontmatter, parseTags } from '../frontmatter.js';
 
 export type SkillMetaValues = {
@@ -6,16 +7,14 @@ export type SkillMetaValues = {
   slug: string;
   description: string;
   tags: string;
+  /** Emoji ou URL de imagem; vazio = monograma. */
+  icon: string;
 };
 
 /**
- * Formulário dos metadados da skill.
- *
- * Estes campos são a **fonte da verdade**: eles é que viram as primeiras
- * linhas do SKILL.md (o frontmatter). Por isso ficam na mesma tela do prompt,
- * acima dele — e não numa aba separada, onde seria fácil salvar um prompt com
- * metadados contraditórios. Onde a skill aparece não é metadado: é o vínculo
- * a um MCP virtual, escolhido em "Publicada em".
+ * Formulário dos metadados da skill. Estes campos são a **fonte da verdade**:
+ * eles é que viram as primeiras linhas do SKILL.md (o frontmatter). O ícone
+ * é do catálogo (cards e canvas), não do arquivo.
  */
 export function SkillMetaForm({
   values,
@@ -31,8 +30,8 @@ export function SkillMetaForm({
   nameRequired?: boolean;
 }) {
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 sm:grid-cols-2">
+    <div className="grid gap-4">
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Field label="Slug — nome oficial da skill" hint="Identifica a skill no name: do SKILL.md, na URL e nas ferramentas MCP. Só minúsculas, números e hífen.">
           <input
             className="field field-mono"
@@ -59,7 +58,7 @@ export function SkillMetaForm({
 
       <Field label="Descrição" hint="Diz o que a skill faz e quando usá-la — é por ela que o agente decide acionar a skill.">
         <textarea
-          className="field resize-y"
+          className="field"
           value={values.description}
           onChange={(event) => onChange({ description: event.target.value })}
           rows={3}
@@ -67,14 +66,29 @@ export function SkillMetaForm({
         />
       </Field>
 
-      <Field label="Tags (separadas por vírgula)">
-        <input
-          className="field"
-          value={values.tags}
-          onChange={(event) => onChange({ tags: event.target.value })}
-          placeholder="git, workflow, produtividade"
-        />
-      </Field>
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <Field label="Tags (separadas por vírgula)">
+          <input
+            className="field"
+            value={values.tags}
+            onChange={(event) => onChange({ tags: event.target.value })}
+            placeholder="git, workflow, produtividade"
+          />
+        </Field>
+
+        <Field label="Ícone" hint="Um emoji (🐘) ou a URL https de uma imagem. Vazio usa as iniciais.">
+          <div className="flex items-center gap-2">
+            <SkillIcon icon={values.icon.trim() || null} name={values.name || values.slug} slug={values.slug || values.name} />
+            <input
+              className="field"
+              value={values.icon}
+              onChange={(event) => onChange({ icon: event.target.value })}
+              placeholder="🐘 ou https://…/logo.png"
+              spellCheck={false}
+            />
+          </div>
+        </Field>
+      </div>
     </div>
   );
 }

@@ -47,6 +47,9 @@ x-app-env: &app-env
   # Sessões MCP mantidas em memória.
   MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
   MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}
+  # Janela de "online" das sessões do MCP público: o painel conta com ela e o
+  # mcp-public agrupa o stateless por ela (docs/10-admin-canvas-e-sessoes.md).
+  MCP_SESSION_ONLINE_WINDOW_MS: ${MCP_SESSION_ONLINE_WINDOW_MS:-120000}
 
 x-app-common: &app-common
   restart: unless-stopped
@@ -115,6 +118,10 @@ services:
       # Endereço público do painel: base do redirect_uri do SSO e do link de
       # redefinição de senha. Vazio = deduzido do Host da requisição.
       ADMIN_PUBLIC_URL: ${ADMIN_PUBLIC_URL:-}
+      # Links externos da sidebar; vazio some do menu.
+      ADMIN_DOCS_URL: ${ADMIN_DOCS_URL:-}
+      ADMIN_SUPPORT_URL: ${ADMIN_SUPPORT_URL:-}
+      ADMIN_CHAT_URL: ${ADMIN_CHAT_URL:-}
       # Rate limiting do login (janela por IP + trava por conta).
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-}
       LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-}

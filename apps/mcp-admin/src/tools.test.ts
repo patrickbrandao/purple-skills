@@ -44,6 +44,7 @@ const handlers = createHandlers(caller('admin'));
 const ADMIN_ACTOR = { userUuid: null, label: 'admin@exemplo.com' };
 
 const detail = {
+  icon: null,
   uuid: 'uuid-1',
   slug: 'minha-skill',
   name: 'Minha Skill',
@@ -85,6 +86,12 @@ const timeA = {
   skillCount: 0,
   activeKeyCount: 0,
   isDefault: false,
+  toolCount: 0,
+  promptCount: 0,
+  resourceCount: 0,
+  onlineSessions: 0,
+  preview: [],
+  layout: {},
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   skills: [],

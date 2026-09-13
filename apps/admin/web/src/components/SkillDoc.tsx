@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { composeSkillMd } from '../frontmatter.js';
 import { Markdown } from './Markdown.js';
-import { CheckIcon, CopyIcon } from './Icons.js';
+import { Check, Copy } from 'lucide-react';
 
 /* ============================================================
    O PROMPT DA SKILL, EM DUAS GUIAS
@@ -98,7 +98,7 @@ export function SkillDoc({ slug, name, description, tags, skillMd }: Props) {
 
         {tab === 'source' && (
           <button type="button" className="doc-copy" onClick={copy} aria-live="polite">
-            {copied ? <CheckIcon /> : <CopyIcon />}
+            {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? 'Copiado!' : 'Copiar'}
           </button>
         )}

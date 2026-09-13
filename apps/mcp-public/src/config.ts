@@ -1,4 +1,4 @@
-import { readPortEnv, readTextEnv } from '@purple-skills/shared';
+import { readIntEnv, readPortEnv, readTextEnv } from '@purple-skills/shared';
 
 export const config = {
   port: readPortEnv('PORT', 3002),
@@ -15,6 +15,12 @@ export const config = {
   publicUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
   serverName: readTextEnv('MCP_SERVER_NAME', 'purple-skills'),
   version: readTextEnv('APP_VERSION', '1.0.0-beta.1'),
+  /**
+   * Janela em que um cliente conta como online no painel
+   * (`docs/10-admin-canvas-e-sessoes.md`). Aqui ela agrupa as requisições
+   * stateless de um mesmo cliente numa sessão só e presume o fim delas.
+   */
+  onlineWindowMs: readIntEnv('MCP_SESSION_ONLINE_WINDOW_MS', 120_000, { min: 1000 }),
 };
 
 /**

@@ -2,6 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+// Em dev o Vite encaminha a API para o servidor do painel. `ADMIN_API_PORT`
+// permite rodar um segundo painel ao lado do do compose (que ocupa a 3001).
+const api = `http://localhost:${process.env.ADMIN_API_PORT ?? '3001'}`;
+
 export default defineConfig({
   root: 'web',
   plugins: [react(), tailwindcss()],
@@ -10,11 +14,10 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5174,
+    port: Number(process.env.ADMIN_WEB_PORT ?? 5174),
     proxy: {
-      '/api': 'http://localhost:3001',
-      
-      '/healthz': 'http://localhost:3001',
+      '/api': api,
+      '/healthz': api,
     },
   },
 });

@@ -21,3 +21,6 @@ docker-compose-builder.yml
 
 # Material de referência local (a página do LangWizard usada no redesign)
 tmp/
+
+# Servidores de smoke test do Claude Code (portas e banco descartáveis locais)
+.claude/launch.json

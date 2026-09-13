@@ -18,6 +18,8 @@ const SEED_ACTOR = { userUuid: null, label: 'seed' };
 type Seed = {
   slug: string;
   name: string;
+  /** Um emoji coerente com o tema: é o que o canvas e os cards do painel desenham. */
+  icon: string;
   description: string;
   tags: string[];
   /**
@@ -34,6 +36,7 @@ const SEEDS: Seed[] = [
   {
     slug: 'commit-conventional',
     name: 'Conventional Commits',
+    icon: '📝',
     description:
       'Escreve mensagens de commit no padrão Conventional Commits a partir do diff em staging.',
     tags: ['git', 'workflow', 'produtividade'],
@@ -104,6 +107,7 @@ fix(db): corrige contador de downloads em transações concorrentes
   {
     slug: 'code-review-checklist',
     name: 'Code Review Checklist',
+    icon: '🔍',
     description:
       'Revisa um diff procurando bugs de correção, casos de borda e simplificações possíveis.',
     tags: ['review', 'qualidade', 'workflow'],
@@ -143,6 +147,7 @@ description: Revisa um diff procurando bugs de correção, casos de borda e simp
   {
     slug: 'postgres-full-text-search',
     name: 'Busca Full-Text no PostgreSQL',
+    icon: '🐘',
     description:
       'Modela busca textual em PostgreSQL com tsvector, pesos por coluna, índices GIN e ranking.',
     tags: ['postgres', 'banco-de-dados', 'busca'],
@@ -196,6 +201,7 @@ LIMIT 20;
   {
     slug: 'dockerfile-node-multi-stage',
     name: 'Dockerfile Node.js multi-stage',
+    icon: '🐳',
     description:
       'Escreve Dockerfiles Node.js enxutos com build multi-stage, usuário sem privilégios e healthcheck.',
     tags: ['docker', 'nodejs', 'deploy'],
@@ -240,6 +246,7 @@ CMD ["node", "dist/index.js"]
   {
     slug: 'mcp-server-typescript',
     name: 'Servidor MCP em TypeScript',
+    icon: '🔌',
     description:
       'Cria servidores MCP com o SDK TypeScript, cobrindo stdio, SSE e Streamable HTTP.',
     tags: ['mcp', 'typescript', 'agentes'],
@@ -292,6 +299,7 @@ exceções para falhas realmente inesperadas.
   {
     slug: 'rascunho-interno',
     name: 'Rascunho interno (sem vínculo)',
+    icon: '🗒️',
     description: 'Exemplo de skill flutuante — sem vínculo com servidor nenhum, visível só no painel.',
     tags: ['interno'],
     inPublicMcp: false,
@@ -317,6 +325,7 @@ async function main() {
       {
         slug: seed.slug,
         name: seed.name,
+        icon: seed.icon,
         description: seed.description,
         skillMd: seed.skillMd,
         tags: seed.tags,

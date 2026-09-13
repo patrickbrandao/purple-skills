@@ -223,6 +223,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     async create_skill(args: {
       name: string;
       description?: string;
+      icon?: string;
       skill_md_content: string;
       tags?: string[];
       slug?: string;
@@ -236,6 +237,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           name: args.name,
           slug: args.slug,
           description: args.description,
+          icon: args.icon,
           // Os metadados vêm dos campos; um frontmatter no corpo é descartado.
           skillMd: stripFrontmatter(args.skill_md_content),
           tags: args.tags,
@@ -257,6 +259,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       slug: string;
       name?: string;
       description?: string;
+      icon?: string;
       tags?: string[];
       new_slug?: string;
     }): Promise<ToolResult> {
@@ -265,7 +268,14 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
 
       const detail = await updateSkill(
         args.slug,
-        { name: args.name, description: args.description, tags: args.tags, slug: args.new_slug },
+        {
+          name: args.name,
+          description: args.description,
+          // Omitido não mexe; vazio limpa. A forma (emoji ou URL) é conferida no banco.
+          icon: args.icon === undefined ? undefined : args.icon.trim() || null,
+          tags: args.tags,
+          slug: args.new_slug,
+        },
         SOURCE,
         actor,
       );

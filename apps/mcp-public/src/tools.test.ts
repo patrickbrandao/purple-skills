@@ -37,6 +37,7 @@ const summary = {
   viewCount: 10,
   downloadCount: 3,
   score: 13,
+  icon: null,
   tags: ['git'],
   fileCount: 2,
   createdAt: '2026-01-01T00:00:00.000Z',

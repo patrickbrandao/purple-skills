@@ -1,0 +1,514 @@
+/* ============================================================
+   PURPLE SKILLS — Painel: o palco (React Flow).
+   Servidor à esquerda com as três portas à direita, skills ao
+   lado, globo da Internet mais à esquerda. Nós com raio de 12px,
+   fio de 1px, sem sombra; arestas coloridas por porta; a aresta
+   da Internet é a única viva (brilho + partículas).
+   ============================================================ */
+
+.stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background-color: var(--bg-sunken);
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 12px 12px;
+  overflow: hidden;
+}
+.stage-wrap .react-flow {
+  background: transparent;
+}
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__edge-path {
+  stroke-width: 1.5;
+}
+.react-flow__handle {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--bg-elev);
+  background: var(--text-faint);
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.react-flow__handle:hover,
+.react-flow__handle.connectingfrom,
+.react-flow__handle.valid {
+  transform: scale(1.35);
+}
+.react-flow__handle-right {
+  right: -6px;
+}
+.react-flow__handle-left {
+  left: -6px;
+}
+.react-flow__connection-path {
+  stroke: var(--accent-soft);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  stroke-width: 2.5;
+}
+.react-flow__nodesselection-rect,
+.react-flow__selection {
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-soft);
+}
+
+/* ---- nó do servidor ---- */
+.node-server {
+  position: relative;
+  width: 288px;
+  border-radius: var(--radius-node);
+  border: 1px solid var(--surface-4);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 13px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.node-server.selected,
+.node-server:hover {
+  border-color: var(--accent-soft);
+  box-shadow: var(--ring);
+}
+.node-server.off {
+  border-style: dashed;
+}
+.node-server .hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 10px;
+}
+.node-server .hd .ic {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--accent-tint);
+  color: var(--accent-soft);
+  flex: none;
+}
+.node-server .hd .ic svg {
+  width: 18px;
+  height: 18px;
+}
+.node-server .hd .nm {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-server .hd .sl {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-server .st {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 10px;
+}
+.node-server .ports {
+  border-top: 1px solid var(--surface-3);
+  padding: 6px 0 8px;
+}
+.node-server .port {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 16px 0 14px;
+  color: var(--text-dim);
+}
+.node-server .port .pd {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.node-server .port .pl {
+  font-weight: 500;
+}
+.node-server .port .pc {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.node-server .port.tools .pd { background: var(--port-tools); }
+.node-server .port.resources .pd { background: var(--port-resources); }
+.node-server .port.prompts .pd { background: var(--port-prompts); }
+.node-server .port .react-flow__handle {
+  top: 50%;
+}
+.node-server .port.tools .react-flow__handle { background: var(--port-tools); }
+.node-server .port.resources .react-flow__handle { background: var(--port-resources); }
+.node-server .port.prompts .react-flow__handle { background: var(--port-prompts); }
+.node-server .in-handle {
+  top: 32px;
+  background: var(--ok);
+}
+
+/* ---- nó de skill ---- */
+.node-skill {
+  position: relative;
+  width: 264px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 12px;
+  border-radius: var(--radius-node);
+  border: 1px solid var(--surface-4);
+  background: var(--bg-elev);
+  color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.node-skill:hover,
+.node-skill.selected {
+  border-color: var(--accent-soft);
+  box-shadow: var(--ring);
+}
+.node-skill.pending {
+  border-style: dashed;
+  border-color: var(--ok);
+}
+.node-skill .tx {
+  min-width: 0;
+  flex: 1;
+}
+.node-skill .nm {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-skill .sl {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node-skill .pp {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+}
+.node-skill .pp i {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--surface-4);
+}
+.node-skill .pp i.on.tools { background: var(--port-tools); }
+.node-skill .pp i.on.resources { background: var(--port-resources); }
+.node-skill .pp i.on.prompts { background: var(--port-prompts); }
+.node-skill .react-flow__handle-left {
+  background: var(--text-muted);
+}
+.node-skill .busy {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--surface-4);
+  border-top-color: var(--accent-soft);
+  animation: spin 0.8s linear infinite;
+}
+
+/* ---- nó da Internet ---- */
+.node-internet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 120px;
+  color: var(--text-dim);
+}
+.node-internet .globe {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 1px solid var(--surface-4);
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.node-internet .globe svg {
+  width: 32px;
+  height: 32px;
+}
+.node-internet.live .globe {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 4px var(--ok-tint);
+  color: var(--ok);
+}
+.node-internet .lb {
+  font-size: 12px;
+  font-weight: 500;
+}
+.node-internet .react-flow__handle {
+  top: 36px;
+  background: var(--ok);
+}
+
+/* ---- arestas ---- */
+.edge-port.tools .react-flow__edge-path { stroke: var(--port-tools); }
+.edge-port.resources .react-flow__edge-path { stroke: var(--port-resources); }
+.edge-port.prompts .react-flow__edge-path { stroke: var(--port-prompts); }
+.edge-port.saving .react-flow__edge-path {
+  stroke-dasharray: 5 4;
+  animation: dash 0.6s linear infinite;
+}
+@keyframes dash {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+.edge-traffic .react-flow__edge-path {
+  stroke: var(--surface-4);
+  stroke-width: 2;
+}
+.edge-traffic.live .react-flow__edge-path {
+  stroke: color-mix(in srgb, var(--ok) 55%, transparent);
+}
+.edge-traffic .glow {
+  fill: none;
+  stroke: var(--ok);
+  stroke-linecap: round;
+  stroke-width: 14;
+  stroke-opacity: 0.16;
+}
+.edge-traffic .particle {
+  fill: var(--ok);
+  opacity: 0.9;
+}
+@keyframes flow-in {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  4% {
+    opacity: 0.9;
+  }
+  96% {
+    opacity: 0.9;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+.edge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-4);
+  background: var(--bg-elev);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: nowrap;
+  pointer-events: all;
+}
+.edge-label .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.edge-label.live {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  color: var(--ok);
+}
+.edge-label.live .dot {
+  background: var(--ok);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.edge-label .n {
+  font-family: var(--font-mono);
+}
+.edge-label.port {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.react-flow__edge:hover .edge-label.port,
+.react-flow__edge.selected .edge-label.port {
+  opacity: 1;
+}
+.edge-label .x {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0;
+}
+.edge-label .x:hover {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+.edge-label .x svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ---- barra do palco (canto inferior esquerdo) e o cabeçalho ---- */
+.stage-toolbar {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: var(--radius-surface);
+  border: 1px solid var(--surface-3);
+  background: var(--bg-elev);
+}
+.stage-toolbar .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+.stage-toolbar .icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.stage-toolbar .sep {
+  height: 1px;
+  background: var(--surface-3);
+  margin: 2px 4px;
+}
+.stage-actions {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+}
+.stage-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 5;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: var(--text-faint);
+  pointer-events: none;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  /* Em tela estreita a dica passaria por baixo da legenda. */
+  .stage-hint {
+    display: none;
+  }
+}
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.stage-empty > * {
+  pointer-events: auto;
+}
+.stage-legend {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-surface);
+  border: 1px solid var(--surface-3);
+  background: var(--bg-elev);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.stage-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.stage-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.stage-legend i.tools { background: var(--port-tools); }
+.stage-legend i.resources { background: var(--port-resources); }
+.stage-legend i.prompts { background: var(--port-prompts); }
+
+/* o cabeçalho da página do servidor, dentro do palco */
+.stage-head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 24px 12px;
+}
+.stage-head .tt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.stage-head h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-head .url {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.stage-body .page {
+  padding-top: 20px;
+}

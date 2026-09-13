@@ -1,11 +1,13 @@
 import {
   AppError,
   badRequest,
+  countOnlineMcpSessions,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
   getVirtualMcp,
   linkSkill as dbLinkSkill,
+  listMcpSessions,
   listVirtualMcpKeys,
   listVirtualMcps,
   notFound,
@@ -13,6 +15,7 @@ import {
   resolveDefaultVirtualMcp,
   revokeVirtualMcpKey,
   setDefaultVirtualMcp,
+  setVirtualMcpCanvas,
   setVirtualMcpSkills,
   unlinkSkill as dbUnlinkSkill,
   updateVirtualMcp,
@@ -23,23 +26,34 @@ import {
   VIRTUAL_KEY_SCHEME,
   canManageVirtualMcp,
   generateApiKey,
+  type CanvasPoint,
   type InstallationSettings,
+  type McpSessionPage,
+  type McpSessionTransport,
   type SkillDetail,
   type SkillLinkInput,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
+  type VirtualMcpLayout,
   type VirtualMcpSkillInput,
   type VirtualMcpSummary,
 } from '@purple-skills/shared';
 import { actorOf, type AuthUser } from './auth.js';
+import { config } from './config.js';
 
 const SOURCE = 'web-admin' as const;
 
 const forbidden = (message: string) => new AppError(message, 403, 'forbidden');
 
+/** A janela de "online" do painel, em toda leitura de vMCP e de sessão. */
+const janela = () => ({ onlineWindowMs: config.onlineWindowMs });
+
 /** Os MCPs que a sessão enxerga: todos para admin, os próprios para os demais. */
 export function listMine(user: AuthUser): Promise<VirtualMcpSummary[]> {
-  return listVirtualMcps(user.role === 'admin' ? undefined : { ownerUserUuid: user.uuid });
+  return listVirtualMcps({
+    ...(user.role === 'admin' ? {} : { ownerUserUuid: user.uuid }),
+    ...janela(),
+  });
 }
 
 /**
@@ -49,7 +63,7 @@ export function listMine(user: AuthUser): Promise<VirtualMcpSummary[]> {
  * virtual tem dono. Admin passa em qualquer um; o dono, no seu.
  */
 export async function loadManaged(user: AuthUser, slug: string): Promise<VirtualMcpDetail> {
-  const mcp = await getVirtualMcp(slug);
+  const mcp = await getVirtualMcp(slug, janela());
   if (!mcp) throw notFound(`MCP virtual não encontrado: ${slug}`);
   if (!canManageVirtualMcp(user.role, mcp.ownerUserUuid, user.uuid)) {
     throw forbidden('Este MCP virtual pertence a outra conta');
@@ -181,7 +195,115 @@ export async function linkSkill(
   body: unknown,
 ): Promise<SkillDetail> {
   const mcp = await loadManaged(user, mcpSlug);
-  return dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user));
+  // A posição vem do canvas: o nó nasce onde foi solto. Ausente, fica onde estava.
+  const position = pointFrom((body as { position?: unknown } | null)?.position, 'position');
+  return dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user), position ? { position } : undefined);
+}
+
+/** Um ponto do canvas: `{ x, y }` finitos, arredondados para inteiro. Ausente é `undefined`. */
+function pointFrom(raw: unknown, field: string): CanvasPoint | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const point = raw as { x?: unknown; y?: unknown };
+  if (typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    throw badRequest(`"${field}" precisa ser um ponto { x, y } numérico`);
+  }
+  return { x: Math.round(point.x), y: Math.round(point.y) };
+}
+
+// ------------------------------------------------------------------ canvas ---
+
+/**
+ * O estado do canvas de um vMCP (`docs/10-admin-canvas-e-sessoes.md`): as
+ * posições dos nós fixos (servidor, Internet) e das skills. É estado de tela,
+ * compartilhado entre quem administra o servidor — sem auditoria.
+ */
+export async function setCanvas(
+  user: AuthUser,
+  slug: string,
+  body: { layout?: unknown; positions?: unknown },
+): Promise<void> {
+  const current = await loadManaged(user, slug);
+
+  let layout: VirtualMcpLayout | undefined;
+  if (body.layout !== undefined && body.layout !== null) {
+    if (typeof body.layout !== 'object') throw badRequest('"layout" precisa ser um objeto');
+    const raw = body.layout as { server?: unknown; internet?: unknown };
+    layout = {};
+    const server = pointFrom(raw.server, 'layout.server');
+    const internet = pointFrom(raw.internet, 'layout.internet');
+    if (server) layout.server = server;
+    if (internet) layout.internet = internet;
+  }
+
+  let positions: { slug: string; x: number; y: number }[] | undefined;
+  if (body.positions !== undefined && body.positions !== null) {
+    if (!Array.isArray(body.positions)) throw badRequest('"positions" precisa ser uma lista');
+    positions = body.positions.map((entry: unknown, index: number) => {
+      const item = (entry ?? {}) as { slug?: unknown; x?: unknown; y?: unknown };
+      if (typeof item.slug !== 'string' || !item.slug.trim()) {
+        throw badRequest(`positions[${index}]: informe o slug da skill`);
+      }
+      const point = pointFrom({ x: item.x, y: item.y }, `positions[${index}]`)!;
+      return { slug: item.slug.trim(), ...point };
+    });
+  }
+
+  await setVirtualMcpCanvas(current.uuid, { layout, positions });
+}
+
+// ----------------------------------------------------------------- sessões ---
+
+type SessionQuery = { online?: unknown; limit?: unknown; offset?: unknown };
+
+function pageOf(query: SessionQuery) {
+  const limit = Number(query.limit ?? 50);
+  const offset = Number(query.offset ?? 0);
+  return {
+    onlineOnly: query.online === '1' || query.online === 'true',
+    limit: Number.isFinite(limit) ? limit : 50,
+    offset: Number.isFinite(offset) ? offset : 0,
+  };
+}
+
+/** Clientes online agora num vMCP, por transporte — o contador do globo. */
+export async function online(
+  user: AuthUser,
+  slug: string,
+): Promise<{ total: number; byTransport: Record<McpSessionTransport, number> }> {
+  const current = await loadManaged(user, slug);
+  return countOnlineMcpSessions({ ...janela(), virtualMcpUuid: current.uuid });
+}
+
+/** As sessões de um vMCP que a sessão administra. */
+export async function sessionsOf(user: AuthUser, slug: string, query: SessionQuery): Promise<McpSessionPage> {
+  const current = await loadManaged(user, slug);
+  return listMcpSessions({ ...janela(), virtualMcpUuid: current.uuid, ...pageOf(query) });
+}
+
+/**
+ * A lista global de sessões: admin vê todas (inclusive de vMCPs já apagados);
+ * os demais só as dos vMCPs que administram. `mcp` filtra por slug.
+ */
+export async function listSessions(
+  user: AuthUser,
+  query: SessionQuery & { mcp?: unknown },
+): Promise<McpSessionPage> {
+  const wanted = typeof query.mcp === 'string' && query.mcp.trim() ? query.mcp.trim() : null;
+
+  if (user.role === 'admin') {
+    if (!wanted) return listMcpSessions({ ...janela(), ...pageOf(query) });
+    const mcp = await getVirtualMcp(wanted);
+    if (!mcp) throw notFound(`MCP virtual não encontrado: ${wanted}`);
+    return listMcpSessions({ ...janela(), virtualMcpUuid: mcp.uuid, ...pageOf(query) });
+  }
+
+  const mine = await listVirtualMcps({ ownerUserUuid: user.uuid });
+  if (wanted) {
+    const one = mine.find((mcp) => mcp.slug === wanted);
+    if (!one) throw forbidden('Este MCP virtual pertence a outra conta');
+    return listMcpSessions({ ...janela(), virtualMcpUuid: one.uuid, ...pageOf(query) });
+  }
+  return listMcpSessions({ ...janela(), virtualMcpUuids: mine.map((mcp) => mcp.uuid), ...pageOf(query) });
 }
 
 export async function unlinkSkill(

@@ -189,7 +189,14 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     // Um vMCP `public` já existente força o sufixo.
     await raw.query("INSERT INTO virtual_mcps (slug, name) VALUES ('public', 'Public')");
 
-    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql', '012-skills-flutuantes.sql']);
+    const NOVAS = [
+      '011-mcp-padrao.sql',
+      '012-skills-flutuantes.sql',
+      '013-skill-icon.sql',
+      '014-canvas-do-vmcp.sql',
+      '015-mcp-sessions.sql',
+    ];
+    expect(await runMigrations(url!)).toEqual(NOVAS);
 
     const resolved = await resolveDefaultVirtualMcp();
     expect(resolved.status).toBe('ok');
@@ -223,13 +230,27 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     expect(indices.map((r) => r.indexname)).not.toContain('skills_public_score_idx');
     expect(indices.map((r) => r.indexname)).toContain('skills_score_idx');
 
-    // Rodar de novo não faz nada: o backfill vê a chave e sai antes de tocar
-    // nas colunas que já não existem, e o 012 é todo `IF EXISTS`.
-    await raw.query(
-      "DELETE FROM schema_migrations WHERE name IN ('011-mcp-padrao.sql', '012-skills-flutuantes.sql')",
-    );
-    expect(await runMigrations(url!)).toEqual(['011-mcp-padrao.sql', '012-skills-flutuantes.sql']);
+    // Re-executar o SQL de todas não faz nada: o backfill vê a chave e sai
+    // antes de tocar nas colunas que já não existem, o 012 é todo `IF EXISTS`
+    // e 013–015 são `IF NOT EXISTS` (com os CHECKs inline, pulados junto).
+    // Apagar do histórico é o que força o runner a rodar o arquivo de novo —
+    // uma segunda chamada normal só o pularia.
+    await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
+    expect(await runMigrations(url!)).toEqual(NOVAS);
     expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('public'))).toHaveLength(2);
     expect((await resolveDefaultVirtualMcp()).mcp?.slug).toBe('public-2');
+    const { rows: objetos } = await raw.query<{ n: number }>(
+      `SELECT (
+         (SELECT count(*) FROM information_schema.columns
+           WHERE (table_name, column_name) IN (('skills', 'icon'), ('virtual_mcps', 'layout'),
+                                               ('virtual_mcp_skills', 'pos_x'), ('virtual_mcp_skills', 'pos_y')))
+         + (SELECT count(*) FROM pg_constraint
+             WHERE conname IN ('skills_icon_length_chk', 'virtual_mcps_layout_object_chk',
+                               'virtual_mcp_skills_pos_pair_chk'))
+         + (SELECT count(*) FROM pg_indexes WHERE tablename = 'mcp_sessions')
+       )::int AS n`,
+    );
+    // 4 colunas + 3 CHECKs + 6 índices (pkey e os cinco de `015`), sem duplicata.
+    expect(objetos[0]?.n).toBe(13);
   });
 });

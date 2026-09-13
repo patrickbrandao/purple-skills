@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { healthCheck } from '@purple-skills/db';
 import { readIntEnv, trustProxySetting } from '@purple-skills/shared';
+import type { SessionTracker } from './sessions.js';
 
 /**
  * Um ponto de montagem dos transportes MCP.
@@ -70,6 +71,11 @@ export type McpHttpOptions = {
   describe?: () => Promise<Record<string, unknown>>;
   /** CORS aberto (MCP público) ou restrito (MCP admin). */
   openCors: boolean;
+  /**
+   * Contabilidade de sessões (`sessions.ts`): avisada a cada abertura,
+   * requisição e fechamento nos três transportes. Ausente = não rastreia.
+   */
+  sessions?: SessionTracker;
 };
 
 const jsonRpcError = (code: number, message: string) => ({
@@ -85,7 +91,7 @@ const jsonRpcError = (code: number, message: string) => ({
  * exaustão de memória trivial de provocar. Daí o TTL e o teto abaixo.
  */
 const MAX_SESSIONS = readIntEnv('MCP_MAX_SESSIONS', 500);
-const SESSION_TTL_MS = readIntEnv('MCP_SESSION_TTL_MS', 30 * 60_000, { min: 1000 });
+export const SESSION_TTL_MS = readIntEnv('MCP_SESSION_TTL_MS', 30 * 60_000, { min: 1000 });
 const SESSION_SWEEP_MS = readIntEnv('MCP_SESSION_SWEEP_MS', 60_000, { min: 1000 });
 
 type TrackedStreamable = {
@@ -125,11 +131,13 @@ export function createHttpApp(options: McpHttpOptions): Express {
   const sseSessions = new Map<string, TrackedSse>();
 
   // Varredura periódica: fecha o que passou do TTL sem atividade.
+  const sessions = options.sessions;
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const [id, tracked] of streamableSessions) {
       if (now - tracked.lastSeen > SESSION_TTL_MS) {
         streamableSessions.delete(id);
+        sessions?.closed('streamable', id, 'timeout');
         void tracked.transport.close().catch(() => undefined);
       }
     }
@@ -190,6 +198,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
             return;
           }
           existing.lastSeen = Date.now();
+          sessions?.seen('streamable', sessionId!, req);
           await existing.transport.handleRequest(req, res, req.body);
           return;
         }
@@ -208,6 +217,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (id) => {
             streamableSessions.set(id, { transport, lastSeen: Date.now(), identity: identity(req) });
+            sessions?.opened('streamable', id, req);
           },
           onsessionclosed: (id) => {
             streamableSessions.delete(id);
@@ -215,7 +225,12 @@ export function createHttpApp(options: McpHttpOptions): Express {
         });
 
         transport.onclose = () => {
-          if (transport.sessionId) streamableSessions.delete(transport.sessionId);
+          if (transport.sessionId) {
+            streamableSessions.delete(transport.sessionId);
+            // O DELETE do cliente e o fechamento pelo SDK caem aqui; o TTL
+            // já avisou `timeout` antes de fechar, e o rastreador ignora repetição.
+            sessions?.closed('streamable', transport.sessionId, 'closed');
+          }
         };
 
         const server = mount.createServer(req);
@@ -241,6 +256,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       }
 
       tracked.lastSeen = Date.now();
+      sessions?.seen('streamable', sessionId!, req);
       await tracked.transport.handleRequest(req, res);
     };
 
@@ -250,6 +266,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     // ---------------------------------------------- Streamable HTTP stateless ---
 
     router.post('/mcp/stateless', mount.auth, json, async (req, res) => {
+      sessions?.stateless(req);
       const server = mount.createServer(req);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -283,12 +300,15 @@ export function createHttpApp(options: McpHttpOptions): Express {
       // resolvido — com o slug real, não com `:slug`.
       const transport = new SSEServerTransport(`${req.baseUrl}${TRANSPORTS.sse.messages}`, res);
       sseSessions.set(transport.sessionId, { transport, identity: identity(req) });
+      sessions?.opened('sse', transport.sessionId, req);
 
       transport.onclose = () => {
         sseSessions.delete(transport.sessionId);
+        sessions?.closed('sse', transport.sessionId, 'closed');
       };
       res.on('close', () => {
         sseSessions.delete(transport.sessionId);
+        sessions?.closed('sse', transport.sessionId, 'closed');
       });
 
       const server = mount.createServer(req);
@@ -308,6 +328,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
         return;
       }
 
+      sessions?.seen('sse', sessionId, req);
       await tracked.transport.handlePostMessage(req, res, req.body);
     });
 
@@ -348,6 +369,9 @@ export function createHttpApp(options: McpHttpOptions): Express {
   /** Fecha todas as sessões abertas — usado no shutdown gracioso. */
   (app as Express & { closeSessions: () => Promise<void> }).closeSessions = async () => {
     clearInterval(sweep);
+    // O rastreador fecha as linhas com `shutdown` antes de os transportes
+    // dispararem `onclose` com `closed`: o primeiro motivo é o que fica.
+    await sessions?.shutdown();
     await Promise.allSettled([
       ...[...streamableSessions.values()].map((tracked) => tracked.transport.close()),
       ...[...sseSessions.values()].map((tracked) => tracked.transport.close()),

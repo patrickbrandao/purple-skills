@@ -49,6 +49,12 @@ const timeA = {
   skillCount: 0,
   activeKeyCount: 0,
   isDefault: false,
+  toolCount: 0,
+  promptCount: 0,
+  resourceCount: 0,
+  onlineSessions: 0,
+  preview: [],
+  layout: {},
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   skills: [],
@@ -103,7 +109,8 @@ describe('POST /api/skills/import', () => {
       mcps: JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }]),
     });
 
-    expect(lerMcp).toHaveBeenCalledWith('time-a');
+    // A leitura leva a janela de "online" do painel junto (docs/10).
+    expect(lerMcp).toHaveBeenCalledWith('time-a', { onlineWindowMs: expect.any(Number) });
     expect(input.mcps).toEqual([
       { virtualMcpUuid: 'mcp-1', asSkill: true, asPrompt: false, asResource: false },
     ]);

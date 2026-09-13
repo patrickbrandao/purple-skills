@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { Lock, Mail, ShieldCheck, UserRound } from 'lucide-react';
 import {
   confirmPasswordReset,
   login,
@@ -7,14 +8,11 @@ import {
   type Session,
 } from '../api.js';
 import { Button } from '../components/ui.js';
-import { LockIcon, MailIcon, ShieldIcon, UserIcon } from '../components/Icons.js';
 
 /**
  * Tudo o que acontece **antes** de existir sessão: entrar, criar o primeiro
- * administrador, pedir e confirmar a redefinição de senha.
- *
- * Vive numa tela só porque as quatro dividem o mesmo cartão e o mesmo estado
- * de erro — separá-las em rotas exigiria um roteador antes da autenticação.
+ * administrador, pedir e confirmar a redefinição de senha. Uma tela só,
+ * porque as quatro dividem o mesmo cartão e o mesmo estado de erro.
  */
 type Mode = 'login' | 'setup' | 'forgot' | 'reset';
 
@@ -31,8 +29,6 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // A mensagem do SSO chega pela querystring; limpar a URL evita que um F5
-  // reapresente um erro já lido.
   useEffect(() => {
     if (ssoError) window.history.replaceState(null, '', window.location.pathname);
   }, [ssoError]);
@@ -52,9 +48,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
         onSuccess();
       } else if (mode === 'forgot') {
         await requestPasswordReset(email);
-        setNotice(
-          'Se existir uma conta com esse e-mail, o link de redefinição já está a caminho.',
-        );
+        setNotice('Se existir uma conta com esse e-mail, o link de redefinição já está a caminho.');
         setMode('login');
       } else if (mode === 'reset') {
         await confirmPasswordReset(resetToken ?? '', password);
@@ -75,7 +69,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
   }
 
   const title: Record<Mode, string> = {
-    login: 'Painel administrativo',
+    login: 'Entrar no painel',
     setup: 'Primeiro administrador',
     forgot: 'Recuperar acesso',
     reset: 'Nova senha',
@@ -101,19 +95,26 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
 
   return (
     <div className="login-shell">
-      <div className="atmos" aria-hidden />
-
       <form onSubmit={submit} className="login-card">
-        <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
-        <h1 className="display">
-          Purple<span style={{ color: 'var(--brand)' }}>Skills</span>
-        </h1>
-        <p className="sub">{title[mode]}</p>
+        <div className="brand">
+          <img src="/assets/images/purple-hat-256.png" alt="" />
+          <span>
+            <span className="nm">{session.siteName}</span>
+            <br />
+            <span className="sb">administração</span>
+          </span>
+        </div>
+        <h1>{title[mode]}</h1>
+        <p className="sub">
+          {mode === 'login' && (legacy ? 'Senha única de bootstrap.' : 'Use sua conta do catálogo.')}
+          {mode === 'setup' && 'A ADMIN_PASSWORD autoriza criar esta conta.'}
+          {mode === 'forgot' && 'Enviamos um link de redefinição para o seu e-mail.'}
+          {mode === 'reset' && 'Escolha a senha nova.'}
+        </p>
 
         {mode === 'setup' && (
           <div className="login-field">
-            <ShieldIcon />
-            <span className="sr-only">ADMIN_PASSWORD</span>
+            <ShieldCheck />
             <input
               type="password"
               className="field"
@@ -128,8 +129,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
 
         {mode === 'setup' && (
           <div className="login-field">
-            <UserIcon />
-            <span className="sr-only">Seu nome</span>
+            <UserRound />
             <input
               type="text"
               className="field"
@@ -144,8 +144,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
 
         {mode !== 'reset' && !legacy && (
           <div className="login-field">
-            <MailIcon />
-            <span className="sr-only">E-mail</span>
+            <Mail />
             <input
               type="email"
               className="field"
@@ -161,8 +160,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
 
         {mode !== 'forgot' && (
           <div className="login-field">
-            <LockIcon />
-            <span className="sr-only">Senha</span>
+            <Lock />
             <input
               type="password"
               className="field"
@@ -190,7 +188,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
         </Button>
 
         {mode === 'login' && session.oidc.enabled && (
-          <a className="btn btn-ghost mt-3 w-full" href="/api/auth/oidc/start">
+          <a className="btn btn-ghost mt-2 w-full" href="/api/auth/oidc/start">
             Entrar com {session.oidc.name}
           </a>
         )}
@@ -208,8 +206,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
           )}
           {mode === 'login' && !legacy && !session.passwordResetByEmail && (
             <span className="hint">
-              Esqueceu a senha? Este catálogo não envia e-mail — peça a redefinição a um
-              administrador.
+              Esqueceu a senha? Este catálogo não envia e-mail — peça a redefinição a um administrador.
             </span>
           )}
           {mode !== 'login' && (
@@ -221,8 +218,8 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
 
         {mode === 'setup' && (
           <p className="login-note">
-            A <code>ADMIN_PASSWORD</code> só serve para criar esta primeira conta. A partir dela,
-            o acesso ao painel passa a ser sempre por e-mail e senha.
+            A <code>ADMIN_PASSWORD</code> só serve para criar esta primeira conta. A partir dela, o
+            acesso ao painel passa a ser sempre por e-mail e senha.
           </p>
         )}
       </form>

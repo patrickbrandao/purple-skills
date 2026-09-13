@@ -115,6 +115,10 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       inputSchema: {
         name: z.string().describe('Nome legível da skill.'),
         description: z.string().describe('Resumo de uma linha.').optional(),
+        icon: z
+          .string()
+          .describe('Ícone no painel: um único emoji (🐘) ou a URL http(s) de uma imagem.')
+          .optional(),
         skill_md_content: z
           .string()
           .describe('Corpo do SKILL.md (markdown), sem frontmatter — ele é gerado dos metadados.'),
@@ -146,12 +150,16 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Editar metadados',
       description:
-        'Altera nome, descrição, tags ou slug de uma skill existente. É por aqui que se muda ' +
+        'Altera nome, descrição, ícone, tags ou slug de uma skill existente. É por aqui que se muda ' +
         'o frontmatter do SKILL.md, gerado a partir destes campos. Onde ela aparece é link_skill.',
       inputSchema: {
         slug: z.string().describe('Slug atual da skill.'),
         name: z.string().optional(),
         description: z.string().optional(),
+        icon: z
+          .string()
+          .describe('Ícone no painel: um único emoji ou a URL http(s) de uma imagem. Vazio limpa.')
+          .optional(),
         tags: z.array(z.string()).describe('Substitui a lista de tags inteira.').optional(),
         new_slug: z
           .string()

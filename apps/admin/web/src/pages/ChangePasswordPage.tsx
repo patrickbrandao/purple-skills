@@ -1,13 +1,11 @@
 import { useState, type FormEvent } from 'react';
+import { Lock } from 'lucide-react';
 import { changePassword, logout } from '../api.js';
 import { Button } from '../components/ui.js';
-import { LockIcon } from '../components/Icons.js';
 
 /**
- * Tela obrigatória de quem entrou com senha temporária.
- *
- * Enquanto `mustChangePassword` estiver ligado, o servidor recusa todas as
- * outras rotas — esta tela é a única saída além do logout.
+ * Tela obrigatória de quem entrou com senha temporária. Enquanto
+ * `mustChangePassword` estiver ligado, o servidor recusa todas as outras rotas.
  */
 export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
   const [currentPassword, setCurrent] = useState('');
@@ -31,16 +29,18 @@ export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="login-shell">
-      <div className="atmos" aria-hidden />
-
       <form onSubmit={submit} className="login-card">
-        <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
-        <h1 className="display">Escolha uma senha</h1>
-        <p className="sub">Você entrou com uma senha temporária.</p>
+        <div className="brand">
+          <img src="/assets/images/purple-hat-256.png" alt="" />
+          <span>
+            <span className="nm">Escolha uma senha</span>
+            <br />
+            <span className="sb">você entrou com uma senha temporária</span>
+          </span>
+        </div>
 
         <div className="login-field">
-          <LockIcon />
-          <span className="sr-only">Senha temporária</span>
+          <Lock />
           <input
             type="password"
             className="field"
@@ -54,8 +54,7 @@ export function ChangePasswordPage({ onDone }: { onDone: () => void }) {
         </div>
 
         <div className="login-field">
-          <LockIcon />
-          <span className="sr-only">Nova senha</span>
+          <Lock />
           <input
             type="password"
             className="field"

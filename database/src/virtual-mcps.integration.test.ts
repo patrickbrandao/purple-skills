@@ -20,6 +20,7 @@ import {
   createUser,
   createVirtualMcp,
   createVirtualMcpKey,
+  deleteSkill,
   deleteVirtualMcp,
   getSkillDetail,
   getSkillSummary,
@@ -28,6 +29,7 @@ import {
   getVirtualMcpKeyByPrefix,
   incrementDownloadCount,
   incrementViewCount,
+  linkSkill,
   listAudit,
   listPublishedSkills,
   listSkills,
@@ -37,8 +39,12 @@ import {
   recordAccountAudit,
   resolveVirtualMcp,
   revokeVirtualMcpKey,
+  setVirtualMcpCanvas,
   setVirtualMcpSkills,
   touchVirtualMcpKey,
+  unlinkSkill,
+  updateSkill,
+  updateSkillWithContent,
   updateVirtualMcp,
 } from './queries.js';
 
@@ -58,6 +64,7 @@ let anaUuid = '';
 let brunoUuid = '';
 let mcpUuid = '';
 let privadaUuid = '';
+let canvasUuid = '';
 
 async function capture(promise: Promise<unknown>): Promise<AppError> {
   try {
@@ -477,5 +484,283 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
 
     const linha = (await listAudit(20)).find((e) => e.action === 'mcp.delete');
     expect(linha?.targetLabel).toBe('dados');
+  });
+
+  // ------------------------------------------------- ícone e canvas (013/014) --
+
+  it('grava o ícone pela regra de shared e o devolve no resumo; inválido é 400', async () => {
+    const criada = await createSkill(
+      { name: 'Com ícone', slug: 'com-icone', skillMd: '# icone', icon: ' 🐘 ' },
+      SOURCE,
+    );
+    expect(criada.icon).toBe('🐘');
+    expect((await getSkillSummary('com-icone', { visibility: 'all' }))?.icon).toBe('🐘');
+    expect((await listSkills({ visibility: 'all', query: 'ícone' })).items[0]?.icon).toBe('🐘');
+    // Quem nasceu sem ícone tem nulo — e cai no monograma.
+    expect((await getSkillSummary('publica', { visibility: 'all' }))?.icon).toBeNull();
+
+    const url = await updateSkill('com-icone', { icon: 'https://exemplo.dev/logo.png' }, SOURCE);
+    expect(url.icon).toBe('https://exemplo.dev/logo.png');
+    // `undefined` não mexe; vazio (ou `null`) apaga.
+    expect((await updateSkill('com-icone', { name: 'Com ícone!' }, SOURCE)).icon).toBe(
+      'https://exemplo.dev/logo.png',
+    );
+    expect((await updateSkillWithContent('com-icone', { icon: '' }, SOURCE)).icon).toBeNull();
+    expect((await updateSkill('com-icone', { icon: '👩‍💻' }, SOURCE)).icon).toBe('👩‍💻');
+    expect((await updateSkill('com-icone', { icon: null }, SOURCE)).icon).toBeNull();
+
+    const criarInvalido = await capture(
+      createSkill({ name: 'Sem chance', skillMd: '# x', icon: 'abc' }, SOURCE),
+    );
+    expect(criarInvalido.status).toBe(400);
+    expect(criarInvalido.message).toMatch(/emoji/);
+    expect(await getSkillSummary('sem-chance', { visibility: 'all' })).toBeNull();
+
+    const doisEmojis = await capture(updateSkill('com-icone', { icon: '🐘🚀' }, SOURCE));
+    expect(doisEmojis.status).toBe(400);
+    const esquema = await capture(
+      updateSkillWithContent('com-icone', { icon: 'ftp://x/y.png', skillMd: '# não' }, SOURCE),
+    );
+    expect(esquema.status).toBe(400);
+    expect((await getSkillDetail('com-icone', { visibility: 'all' }))?.skillMd).toBe('# icone');
+    const tipoErrado = await capture(updateSkill('com-icone', { icon: 42 as never }, SOURCE));
+    expect(tipoErrado.status).toBe(400);
+
+    // O CHECK do banco é a última linha de defesa contra uma URL sem fim.
+    await expect(
+      raw.query("UPDATE skills SET icon = repeat('a', 513) WHERE slug = 'com-icone'"),
+    ).rejects.toThrow(/skills_icon_length_chk/);
+
+    await updateSkill('com-icone', { icon: '🐘' }, SOURCE);
+  });
+
+  it('conta por porta, monta o preview e lê posições e layout do canvas', async () => {
+    const canvas = await createVirtualMcp({ name: 'Canvas', ownerUserUuid: null }, SOURCE, ana);
+    canvasUuid = canvas.uuid;
+    expect(canvas).toMatchObject({
+      toolCount: 0,
+      promptCount: 0,
+      resourceCount: 0,
+      onlineSessions: 0,
+      preview: [],
+      layout: {},
+    });
+
+    const recorte = await setVirtualMcpSkills(
+      canvasUuid,
+      [
+        { slug: 'com-icone', asSkill: true, asPrompt: true, asResource: false },
+        { slug: 'privada', asSkill: true, asPrompt: false, asResource: true },
+        { slug: 'fora', asSkill: false, asPrompt: false, asResource: false },
+      ],
+      SOURCE,
+      ana,
+    );
+    expect(recorte.skillCount).toBe(3);
+    expect(recorte.toolCount).toBe(2);
+    expect(recorte.promptCount).toBe(1);
+    expect(recorte.resourceCount).toBe(1);
+    // O preview vem por nome, com o ícone de cada uma.
+    expect(recorte.preview).toEqual([
+      { slug: 'com-icone', name: 'Com ícone!', icon: '🐘' },
+      { slug: 'fora', name: 'Fora', icon: null },
+      { slug: 'privada', name: 'Privada', icon: null },
+    ]);
+    // Ícone na skill do vMCP; posições nascem nulas (auto-layout).
+    expect(recorte.skills.find((s) => s.slug === 'com-icone')?.icon).toBe('🐘');
+    expect(recorte.skills.map((s) => s.position)).toEqual([null, null, null]);
+
+    // A listagem traz os mesmos contadores e o preview.
+    const listado = (await listVirtualMcps()).find((m) => m.uuid === canvasUuid);
+    expect(listado?.toolCount).toBe(2);
+    expect(listado?.promptCount).toBe(1);
+    expect(listado?.resourceCount).toBe(1);
+    expect(listado?.preview.map((p) => p.slug)).toEqual(['com-icone', 'fora', 'privada']);
+
+    // Teto de 8 no preview: o `skillCount` continua contando tudo.
+    for (let i = 1; i <= 7; i += 1) {
+      await createSkill({ name: `Zz ${i}`, slug: `zz-${i}`, skillMd: '# z' }, SOURCE);
+      await linkSkill(`zz-${i}`, canvasUuid, { asSkill: false, asPrompt: false, asResource: false }, SOURCE, ana);
+    }
+    const cheio = (await getVirtualMcpByUuid(canvasUuid))!;
+    expect(cheio.skillCount).toBe(10);
+    expect(cheio.preview).toHaveLength(8);
+    expect(cheio.preview.map((p) => p.slug)).toEqual([
+      'com-icone', 'fora', 'privada', 'zz-1', 'zz-2', 'zz-3', 'zz-4', 'zz-5',
+    ]);
+    for (let i = 1; i <= 7; i += 1) await deleteSkill(`zz-${i}`, SOURCE);
+    expect((await getVirtualMcpByUuid(canvasUuid))?.skillCount).toBe(3);
+  });
+
+  it('grava o canvas: layout mesclado e posições por skill, sem auditar; slug não vinculado é 400', async () => {
+    const antes = (await getVirtualMcpByUuid(canvasUuid))!;
+    const auditadas = async () =>
+      Number((await raw.query<{ n: string }>('SELECT count(*) AS n FROM audit_log')).rows[0]?.n);
+    const linhasAntes = await auditadas();
+
+    await setVirtualMcpCanvas(canvasUuid, {
+      layout: { server: { x: 10.4, y: 20.6 } },
+      positions: [{ slug: 'privada', x: 100, y: 200.5 }],
+    });
+    let detail = (await getVirtualMcpByUuid(canvasUuid))!;
+    expect(detail.layout).toEqual({ server: { x: 10, y: 21 } });
+    expect(detail.skills.find((s) => s.slug === 'privada')?.position).toEqual({ x: 100, y: 201 });
+    expect(detail.skills.find((s) => s.slug === 'fora')?.position).toBeNull();
+
+    // Mescla chave a chave: `internet` entra, `server` fica.
+    await setVirtualMcpCanvas(canvasUuid, { layout: { internet: { x: -5, y: 0 } } });
+    detail = (await getVirtualMcpByUuid(canvasUuid))!;
+    expect(detail.layout).toEqual({ server: { x: 10, y: 21 }, internet: { x: -5, y: 0 } });
+
+    // Estado de tela: nem auditoria nem `updated_at`.
+    expect(await auditadas()).toBe(linhasAntes);
+    expect(detail.updatedAt).toBe(antes.updatedAt);
+
+    // Slug de skill que existe mas não está neste vMCP: 400 e **nada** gravado,
+    // nem o layout nem a posição da que estava certa.
+    const naoVinculado = await capture(
+      setVirtualMcpCanvas(canvasUuid, {
+        layout: { server: { x: 1, y: 1 } },
+        positions: [
+          { slug: 'privada', x: 1, y: 1 },
+          { slug: 'publica', x: 2, y: 2 },
+        ],
+      }),
+    );
+    expect(naoVinculado.status).toBe(400);
+    expect(naoVinculado.message).toMatch(/publica/);
+    detail = (await getVirtualMcpByUuid(canvasUuid))!;
+    expect(detail.layout.server).toEqual({ x: 10, y: 21 });
+    expect(detail.skills.find((s) => s.slug === 'privada')?.position).toEqual({ x: 100, y: 201 });
+
+    const inexistente = await capture(
+      setVirtualMcpCanvas(canvasUuid, { positions: [{ slug: 'nao-existe', x: 0, y: 0 }] }),
+    );
+    expect(inexistente.status).toBe(400);
+    const repetido = await capture(
+      setVirtualMcpCanvas(canvasUuid, {
+        positions: [
+          { slug: 'privada', x: 0, y: 0 },
+          { slug: 'privada', x: 1, y: 1 },
+        ],
+      }),
+    );
+    expect(repetido.status).toBe(400);
+
+    // Coordenada torta, tipo errado, vMCP inexistente ou uuid torto.
+    const nan = await capture(
+      setVirtualMcpCanvas(canvasUuid, { layout: { server: { x: Number.NaN, y: 0 } } }),
+    );
+    expect(nan.status).toBe(400);
+    const texto = await capture(
+      setVirtualMcpCanvas(canvasUuid, { positions: [{ slug: 'privada', x: '1', y: 2 } as never] }),
+    );
+    expect(texto.status).toBe(400);
+    const chaveTorta = await capture(
+      setVirtualMcpCanvas(canvasUuid, { layout: { server: null } as never }),
+    );
+    expect(chaveTorta.status).toBe(400);
+    const fantasma = await capture(
+      setVirtualMcpCanvas('00000000-0000-0000-0000-000000000000', { layout: {} }),
+    );
+    expect(fantasma.status).toBe(404);
+    expect((await capture(setVirtualMcpCanvas('torto', { layout: {} }))).status).toBe(404);
+
+    // Lixo no JSON é ignorado na leitura: só `server`/`internet` com `x`/`y` numéricos.
+    await raw.query(
+      `UPDATE virtual_mcps SET layout = '{"server": {"x": 1, "y": "b"}, "internet": {"x": 3, "y": 4}, "outro": {"x": 1, "y": 1}, "lixo": 42}'::jsonb
+        WHERE uuid = $1`,
+      [canvasUuid],
+    );
+    expect((await getVirtualMcpByUuid(canvasUuid))!.layout).toEqual({ internet: { x: 3, y: 4 } });
+    // A mescla preserva o que a leitura ignora — o app só grava o que conhece.
+    await setVirtualMcpCanvas(canvasUuid, { layout: { server: { x: 9, y: 9 } } });
+    const { rows } = await raw.query<{ layout: Record<string, unknown> }>(
+      'SELECT layout FROM virtual_mcps WHERE uuid = $1',
+      [canvasUuid],
+    );
+    expect(rows[0]?.layout).toEqual({
+      server: { x: 9, y: 9 },
+      internet: { x: 3, y: 4 },
+      outro: { x: 1, y: 1 },
+      lixo: 42,
+    });
+
+    // Os CHECKs: o layout precisa ser um objeto, e meio ponto não é ponto.
+    await expect(
+      raw.query("UPDATE virtual_mcps SET layout = '[]'::jsonb WHERE uuid = $1", [canvasUuid]),
+    ).rejects.toThrow(/virtual_mcps_layout_object_chk/);
+    await expect(
+      raw.query(
+        'UPDATE virtual_mcp_skills SET pos_x = 1, pos_y = NULL WHERE virtual_mcp_uuid = $1',
+        [canvasUuid],
+      ),
+    ).rejects.toThrow(/virtual_mcp_skills_pos_pair_chk/);
+  });
+
+  it('setVirtualMcpSkills preserva a posição de quem ficou; linkSkill grava a posição só quando informada', async () => {
+    // Re-salvar o recorte com flags novas mantém a posição de `privada`; `fora` sai.
+    const salvo = await setVirtualMcpSkills(
+      canvasUuid,
+      [
+        { slug: 'privada', asSkill: false, asPrompt: true, asResource: false },
+        { slug: 'com-icone', asSkill: true, asPrompt: false, asResource: false },
+      ],
+      SOURCE,
+      ana,
+    );
+    expect(salvo.skills.map((s) => s.slug)).toEqual(['com-icone', 'privada']);
+    const privada = salvo.skills.find((s) => s.slug === 'privada');
+    expect(privada?.asPrompt).toBe(true);
+    expect(privada?.position).toEqual({ x: 100, y: 201 });
+
+    // Quem saiu levou a posição junto: voltar é entrar sem posição.
+    const voltou = await setVirtualMcpSkills(
+      canvasUuid,
+      [
+        { slug: 'privada', asSkill: false, asPrompt: true, asResource: false },
+        { slug: 'com-icone', asSkill: true, asPrompt: false, asResource: false },
+        { slug: 'fora', asSkill: true, asPrompt: false, asResource: false },
+      ],
+      SOURCE,
+      ana,
+    );
+    expect(voltou.skills.find((s) => s.slug === 'fora')?.position).toBeNull();
+    expect(voltou.skills.find((s) => s.slug === 'privada')?.position).toEqual({ x: 100, y: 201 });
+
+    const flags = { asSkill: true, asPrompt: false, asResource: false };
+    const posicaoDe = async (slug: string) =>
+      (await getVirtualMcpByUuid(canvasUuid))!.skills.find((s) => s.slug === slug)?.position;
+
+    // Com posição, o INSERT já grava (`publica` entra pelo canvas)…
+    await linkSkill('publica', canvasUuid, flags, SOURCE, ana, { position: { x: 7.2, y: 7.8 } });
+    expect(await posicaoDe('publica')).toEqual({ x: 7, y: 8 });
+    // …reescrever as flags sem posição não zera a existente…
+    const reescrita = await linkSkill(
+      'publica',
+      canvasUuid,
+      { ...flags, asPrompt: true },
+      SOURCE,
+      ana,
+    );
+    expect(reescrita.mcps.find((m) => m.uuid === canvasUuid)?.asPrompt).toBe(true);
+    expect(await posicaoDe('publica')).toEqual({ x: 7, y: 8 });
+    // …e com posição, substitui.
+    await linkSkill('publica', canvasUuid, flags, SOURCE, ana, { position: { x: 70, y: 80 } });
+    expect(await posicaoDe('publica')).toEqual({ x: 70, y: 80 });
+
+    const torta = await capture(
+      linkSkill('publica', canvasUuid, flags, SOURCE, ana, { position: { x: 1 } as never }),
+    );
+    expect(torta.status).toBe(400);
+    expect(await posicaoDe('publica')).toEqual({ x: 70, y: 80 });
+
+    // A posição cai junto com o vínculo: desvincular e vincular de novo é auto-layout.
+    await unlinkSkill('publica', canvasUuid, SOURCE, ana);
+    await linkSkill('publica', canvasUuid, flags, SOURCE, ana);
+    expect(await posicaoDe('publica')).toBeNull();
+
+    await deleteVirtualMcp(canvasUuid, SOURCE, ana);
+    await deleteSkill('com-icone', SOURCE);
   });
 });

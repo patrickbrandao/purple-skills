@@ -64,6 +64,10 @@ const view = (mcp: VirtualMcpDetail) => ({
     downloads: skill.downloadCount,
   })),
   activeKeys: mcp.activeKeyCount,
+  // Quantas skills saem por cada porta — os mesmos contadores do card do painel.
+  tools: mcp.toolCount,
+  prompts: mcp.promptCount,
+  resources: mcp.resourceCount,
 });
 
 /**
@@ -106,6 +110,9 @@ export function createMcpHandlers(caller: Caller) {
           isDefault: mcp.isDefault,
           owner: mcp.ownerEmail,
           skills: mcp.skillCount,
+          tools: mcp.toolCount,
+          prompts: mcp.promptCount,
+          resources: mcp.resourceCount,
           activeKeys: mcp.activeKeyCount,
           path: `/virtual/${mcp.slug}/mcp`,
         })),

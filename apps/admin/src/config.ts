@@ -22,6 +22,21 @@ export const config = {
    * painel mostra o caminho e avisa que falta configurar.
    */
   mcpPublicUrl: readTextEnv('MCP_PUBLIC_URL', '').replace(/\/+$/, ''),
+  /**
+   * Links externos da sidebar do painel (`docs/10-admin-canvas-e-sessoes.md`).
+   * Vazio some da tela; a documentação aponta para o GitHub por padrão.
+   */
+  docsUrl: readTextEnv('ADMIN_DOCS_URL', 'https://github.com/patrickbrandao/purple-skills#readme'),
+  supportUrl: readTextEnv('ADMIN_SUPPORT_URL', ''),
+  chatUrl: readTextEnv('ADMIN_CHAT_URL', ''),
+  /**
+   * Janela em que um cliente do MCP público conta como online: é o que o
+   * contador do canvas e a lista de sessões usam (`docs/10`). O mcp-public lê
+   * a mesma variável para agrupar as requisições stateless.
+   */
+  onlineWindowMs: readIntEnv('MCP_SESSION_ONLINE_WINDOW_MS', 120_000, { min: 1000 }),
+  /** Versão mostrada em Configurações; vazia quando o ambiente não informa. */
+  version: readTextEnv('APP_VERSION', ''),
   isProduction: process.env.NODE_ENV === 'production',
   /** Duração da sessão do painel, em segundos (padrão: 12h). */
   sessionTtlSeconds: readIntEnv('ADMIN_SESSION_TTL', 12 * 3600, { min: 60 }),

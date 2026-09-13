@@ -1,36 +1,31 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Download, ExternalLink, FileText, Pencil, Trash2 } from 'lucide-react';
 import {
   canDelete,
   canWrite,
   deleteSkill,
   formatDateTime,
   getSkill,
+  num,
   skillDownloadUrl,
   skillPackageUrl,
   type Session,
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { Button, McpBadges, Panel, noSite } from '../components/ui.js';
+import { Badge, Button, McpChips, Panel, Skel, noSite, useConfirm } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
+import { SkillIcon } from '../components/SkillIcon.js';
 import { SkillMcpsPanel } from '../components/SkillMcps.js';
-import {
-  ArrowLeftIcon,
-  DownloadIcon,
-  ExternalIcon,
-  FileIcon,
-  PencilIcon,
-  TrashIcon,
-} from '../components/Icons.js';
+import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
 /**
  * Leitura da skill no painel: o SKILL.md renderizado e a árvore de arquivos,
- * como o visitante vê no site. A edição dos metadados fica atrás do botão
- * "Editar"; onde a skill está publicada se decide aqui mesmo, no painel
- * "Publicada em" (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3).
+ * como o visitante vê no site. A edição fica atrás de "Editar"; onde a skill
+ * está publicada se decide aqui mesmo, no painel "Publicada em".
  */
 export function SkillViewPage({ session, user }: { session: Session; user: SessionUser }) {
   const podeEscrever = canWrite(user.role);
@@ -38,6 +33,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const confirm = useConfirm();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
 
@@ -57,7 +53,13 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
 
   async function removeSkill() {
     if (!skill) return;
-    if (!window.confirm(`Remover a skill "${skill.name}" e todos os seus arquivos?`)) return;
+    const ok = await confirm({
+      title: `Remover a skill "${skill.name}"?`,
+      description: 'Todos os arquivos dela e os vínculos com servidores somem. Não dá para desfazer.',
+      confirmLabel: 'Remover',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteSkill(skill.slug);
       toast.success('Skill removida.');
@@ -67,55 +69,74 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
     }
   }
 
+  useRegisterCommands(
+    skill
+      ? [
+          ...(podeEscrever
+            ? [{ id: 'skill-edit', label: `Editar "${skill.name}"`, group: 'Recurso' as const, icon: <Pencil />, shortcut: 'e', run: () => navigate(`/skills/${skill.slug}/editar`) }]
+            : []),
+          { id: 'skill-zip', label: 'Baixar .zip', group: 'Recurso', icon: <Download />, run: () => {
+              window.open(skillDownloadUrl(skill.slug), '_self');
+            },
+          },
+          ...(podeApagar ? [{ id: 'skill-delete', label: `Remover "${skill.name}"`, group: 'Perigo' as const, icon: <Trash2 />, danger: true, run: removeSkill }] : []),
+        ]
+      : [],
+    [skill?.slug, podeEscrever, podeApagar],
+  );
+
   if (!skill) {
-    return <div className="skel-block" style={{ height: '18rem' }} />;
+    return (
+      <div className="page">
+        <Skel h={20} w={120} className="mb-3" />
+        <Skel h={40} w={360} className="mb-6" />
+        <Skel h={320} />
+      </div>
+    );
   }
 
   return (
-    <>
+    <div className="page wide">
       <div className="page-head">
         <div className="min-w-0">
           <Link to="/skills" className="back-link">
-            <ArrowLeftIcon /> Skills
+            <ArrowLeft /> Skills
           </Link>
-          <h1 className="display mt-1 flex flex-wrap items-center gap-3">
-            <span className="truncate">{skill.name}</span>
-            <McpBadges skill={skill} />
-          </h1>
-          <p className="sub mono flex flex-wrap items-center gap-x-3">
-            <span>{skill.slug}</span>
-            <span>· {skill.viewCount} acessos</span>
-            <span>· {skill.downloadCount} downloads</span>
-            <span>· atualizada em {formatDateTime(skill.updatedAt)}</span>
-            {noSite(skill) && (
-              <a
-                href={`${session.siteBaseUrl}/skills/${skill.slug}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1"
-                style={{ color: 'var(--brand)' }}
-              >
-                <ExternalIcon className="h-3 w-3" /> ver no site
-              </a>
-            )}
-          </p>
+          <div className="flex items-center gap-3">
+            <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="lg" />
+            <div className="min-w-0">
+              <h1 className="truncate">{skill.name}</h1>
+              <p className="sub mono flex flex-wrap items-center gap-x-3">
+                <span>{skill.slug}</span>
+                <span>· {num(skill.viewCount)} acessos</span>
+                <span>· {num(skill.downloadCount)} downloads</span>
+                <span>· atualizada em {formatDateTime(skill.updatedAt)}</span>
+              </p>
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="page-actions">
+          <McpChips skill={skill} />
+          {noSite(skill) && (
+            <a href={`${session.siteBaseUrl}/skills/${skill.slug}`} target="_blank" rel="noreferrer" className="btn btn-quiet btn-sm">
+              <ExternalLink /> ver no site
+            </a>
+          )}
           <a href={skillDownloadUrl(skill.slug)} className="btn btn-ghost" download>
-            <DownloadIcon /> .zip
+            <Download /> .zip
           </a>
           <a href={skillPackageUrl(skill.slug)} className="btn btn-ghost" download>
-            <DownloadIcon /> .skill
+            <Download /> .skill
           </a>
           {podeApagar && (
-            <Button variant="danger" onClick={removeSkill}>
-              <TrashIcon /> Remover
+            <Button variant="danger" onClick={() => void removeSkill()}>
+              <Trash2 /> Remover
             </Button>
           )}
           {podeEscrever && (
             <Link to={`/skills/${skill.slug}/editar`} className="btn btn-primary">
-              <PencilIcon /> Editar
+              <Pencil /> Editar
             </Link>
           )}
         </div>
@@ -126,39 +147,25 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
       {skill.tags.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           {skill.tags.map((tag) => (
-            <span className="tag" key={tag}>
-              {tag}
-            </span>
+            <Badge key={tag} tone="outline">{tag}</Badge>
           ))}
         </div>
       )}
 
-      {/* Quem administra ao menos um MCP publica por aqui; quem não administra
-          nenhum vê onde a skill está, só leitura. */}
       <SkillMcpsPanel skill={skill} onChanged={setSkill} />
 
-      <div className="skill-read mt-5">
+      <div className="skill-read mt-4">
         <div className="min-w-0">
-          <SkillDoc
-            slug={skill.slug}
-            name={skill.name}
-            description={skill.description}
-            tags={skill.tags}
-            skillMd={skill.skillMd}
-          />
+          <SkillDoc slug={skill.slug} name={skill.name} description={skill.description} tags={skill.tags} skillMd={skill.skillMd} />
         </div>
 
-        <Panel className="aside-sticky">
-          <h2>
-            <FileIcon /> Arquivos
-          </h2>
+        <Panel className="aside-sticky" title="Arquivos" icon={<FileText />}>
           <FileTree slug={skill.slug} files={skill.files} />
-          <p className="panel-hint mt-3">
-            É esta a pasta que aparece ao descompactar o pacote. Clicar em um arquivo abre o
-            conteúdo cru em outra guia.
+          <p className="panel-hint mt-3 mb-0">
+            É esta a pasta que aparece ao descompactar o pacote. Clicar em um arquivo abre o conteúdo cru em outra guia.
           </p>
         </Panel>
       </div>
-    </>
+    </div>
   );
 }

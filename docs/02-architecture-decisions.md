@@ -413,6 +413,29 @@ CRUD completo, espelhando o painel administrativo:
 
 - **MIT**.
 
+## 12.1 Painel: console com canvas e sessões
+
+Desenho em [`10-admin-canvas-e-sessoes.md`](10-admin-canvas-e-sessoes.md).
+
+- O painel é um **console**: sidebar de 220px, barra superior com o sino, o
+  palco num painel que ocupa a tela. Paleta própria (`tokens.css` do admin,
+  escuro primeiro, espelhado no claro), que **diverge** do site e da homepage
+  de propósito — ver `04`. Toda ação existe primeiro como comando da paleta
+  ⌘K e só depois como botão.
+- A home é **Servidores MCP** (cards com miniatura das skills, selos e
+  clientes online). A "Visão geral" saiu; a auditoria virou página própria,
+  com filtros, paginação e a lista de sessões MCP.
+- O servidor MCP virtual é um **canvas** (React Flow): o vMCP com as três
+  portas (Tools, Resources, Prompts) à direita, as skills ligadas a uma ou
+  mais delas, o globo da Internet à esquerda com o contador de clientes
+  online. Cada aresta é um vínculo gravado na hora; a última aresta que sai
+  tira a skill do servidor. Posições no banco (`014`), compartilhadas.
+- **Sessões do MCP público** em `mcp_sessions` (`015`): uma linha por
+  cliente e transporte, com IP resolvido pelo `trust proxy`, `clientInfo`,
+  atividade e fim real ou presumido. "Online" = atividade nos últimos
+  `MCP_SESSION_ONLINE_WINDOW_MS` (2 min). Sem poda.
+- **Ícone da skill** (`013`): emoji ou URL, com monograma como padrão.
+
 ## 13. Riscos aceitos conscientemente (v1)
 
 Para manter o software "simples, bonito e pontual" conforme pedido, as
@@ -448,6 +471,13 @@ virtual aberto (`is_open`) com skill privada dentro é publicação de fato,
 protegida só pela confirmação explícita; a diferença 404/401 sob `/virtual/`
 permite enumerar os slugs dos MCPs; e o virtual é a primeira entidade com dono
 — a exceção ao "papel limita a ação, não o escopo" da `§7.1`, restrita a ele.
+
+**Riscos introduzidos pelo painel novo e pelas sessões**
+([`10`](10-admin-canvas-e-sessoes.md) §8): cada gesto no canvas é uma
+escrita imediata, sem desfazer; o stateless agrupa clientes por IP + agente
++ credencial, então dois clientes iguais atrás do mesmo NAT contam como um;
+`mcp_sessions` cresce para sempre, por decisão; as posições do canvas são
+compartilhadas, então um administrador reorganiza o canvas de todos.
 
 **Riscos introduzidos pelo MCP padrão e pelas skills flutuantes**
 ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §5): o vMCP `public` criado na

@@ -78,6 +78,19 @@ describe('papéis exigidos pelas rotas', () => {
     }
   });
 
+  // O canvas e as sessões de um servidor seguem a regra do servidor: dono ou
+  // admin, decidido por `loadManaged`. A lista global recorta por dono dentro
+  // de `listSessions` — também sem guarda de papel.
+  it.each([
+    ['put', '/api/mcps/:slug/canvas'],
+    ['get', '/api/mcps/:slug/online'],
+    ['get', '/api/mcps/:slug/sessions'],
+    ['get', '/api/sessions'],
+  ])('%s %s é decidido pelo dono, não pelo papel', (method, path) => {
+    expect(handlers(method, path)).not.toContain(requireWrite);
+    expect(handlers(method, path)).not.toContain(requireAdmin);
+  });
+
   it('leitura do catálogo não exige papel além da sessão', () => {
     const lista = handlers('get', '/api/skills');
 

@@ -463,6 +463,42 @@ Decisões de implementação do PR2 de
 - **`skills_score_idx`** substitui o índice prefixado por `is_public`: é a
   ordenação padrão de toda listagem, com ou sem vínculo.
 
+## Painel: canvas e sessões
+
+Desenho em [`10-admin-canvas-e-sessoes.md`](10-admin-canvas-e-sessoes.md).
+O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
+
+- **Sidebar com rótulos, não trilho de 56px.** A referência visual tinha
+  rótulos; ela venceu a skill.
+- **Stack mínima.** Só `@xyflow/react`, `cmdk` e `lucide-react` entraram.
+  react-router e Tailwind v4 continuam; a rampa espelhada foi mapeada por
+  `@theme inline`, sem voltar ao v3. A filtragem da paleta é nossa
+  (`fuzzyScore`), porque parte dos itens vem do servidor já filtrada.
+- **Grade de 24px, nó de skill de 264×~64.** O cartão de 288×144 da skill
+  serve a recursos com três linhas de status; a skill só precisa de ícone,
+  nome, slug e três pontos de porta.
+- **Arestas do servidor para a skill**, com handles à direita e à esquerda
+  (a skill manda topo/base). O grafo é horizontal: Internet → servidor →
+  skills.
+- **Sem `parentId`, sem grupos, sem undo.** Fora do escopo do `10`.
+- **O `remove-edge` do rótulo da aresta chega por `CustomEvent`.** O
+  componente da aresta é memoizado e não recebe callbacks por props (o
+  React Flow os recriaria a cada render); um evento no `window` mantém a
+  aresta pura.
+- **Recarga do detalhe depois de cada escrita.** `linkSkill` devolve o
+  detalhe da skill, não o do servidor; o canvas refaz `GET /api/mcps/:slug`
+  depois de cada gesto, o que também traz os contadores por porta.
+- **Sessões: o `onclose` do transporte pode disparar depois do `timeout`.**
+  O rastreador só conhece uma sessão até o primeiro `closed`; o segundo
+  motivo é ignorado, e é por isso que o TTL avisa `timeout` **antes** de
+  fechar o transporte, e o desligamento chama `shutdown` antes de fechar os
+  transportes.
+- **`req.ip` como IP de origem.** O Express já resolve o `X-Forwarded-For`
+  pelo `trust proxy` (`TRUST_PROXY`); o rastreador não reimplementa isso.
+- **Vite em dev usa `ADMIN_API_PORT`.** O proxy do `/api` aponta para a
+  porta do servidor do painel (`3001` por padrão), configurável para rodar um
+  segundo painel ao lado do do compose.
+
 ## Portas
 
 | Serviço | Porta |

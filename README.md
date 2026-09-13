@@ -20,7 +20,7 @@ superfícies:
 |---------|-----------|--------------|
 | **homepage** | Apresentação do projeto, estática — não fala com o banco | `3004` |
 | **site** | Catálogo do usuário: busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
-| **admin** | Painel de administração com contas e papéis | `3001` |
+| **admin** | Painel de administração: canvas dos servidores MCP, sessões, contas e papéis | `3001` |
 | **mcp-public** | Servidor MCP para agentes descobrirem e baixarem skills | `3002` |
 | **mcp-admin** | Servidor MCP para administrar o catálogo (CRUD completo) | `3003` |
 
@@ -248,7 +248,7 @@ agente só às skills que lhe interessam — inclusive skills que não estão em
 nenhum servidor aberto, e por isso não aparecem no site. Um deles é o
 **padrão**, e responde também em `/mcp`.
 
-- Cria quem é `editor` ou `admin`, no painel (seção "MCPs virtuais") ou pelo
+- Cria quem é `editor` ou `admin`, no painel (Servidores MCP) ou pelo
   MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
   nele, ninguém mais. Admin transfere o dono.
 - Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
@@ -404,6 +404,8 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 |----------|-------------|-----------|
 | `DATABASE_URL` | sim* | Conexão com o Postgres (senha percent-encodada). *Alternativa sem escape: `PGHOST`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` — é o que o compose usa |
 | `ADMIN_PASSWORD` / `_FILE` | sim (admin) | Senha de **bootstrap**: cria o primeiro administrador e depois fica inerte |
+| `ADMIN_DOCS_URL`, `ADMIN_SUPPORT_URL`, `ADMIN_CHAT_URL` | não | Links externos da sidebar do painel; vazio some do menu (a documentação aponta para este README por padrão) |
+| `MCP_SESSION_ONLINE_WINDOW_MS` | não | Janela em que um cliente do MCP público conta como online no painel (padrão 2 min); agrupa as requisições stateless de um mesmo cliente numa sessão |
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `SITE_BASE_URL` | recomendada | Base da URL da página de uma skill pública, devolvida pelo MCP |

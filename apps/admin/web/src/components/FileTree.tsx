@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { formatBytes, rawFileUrl, type SkillFileMeta } from '../api.js';
 import { buildTree, SKILL_MD, type TreeNode } from '../fileTree.js';
 import { FileTypeIcon, FolderIcon } from './FileTypeIcon.js';
-import { ChevronRightIcon, TrashIcon } from './Icons.js';
+import { ChevronRight, Trash2 } from 'lucide-react';
 
 /* ============================================================
    ÁRVORE DE ARQUIVOS DA SKILL
@@ -85,11 +85,11 @@ function FileRow({ node, slug, onPick, selected, onDelete }: Props & { node: Tre
       {onDelete && !isSkillMd && (
         <button
           type="button"
-          className="row-action del"
+          className="row-action del danger"
           onClick={() => onDelete(node.path)}
           title={`Remover ${node.path}`}
         >
-          <TrashIcon />
+          <Trash2 />
         </button>
       )}
     </div>
@@ -108,7 +108,7 @@ function Branch({ nodes, collapsed, onToggle, ...rest }: RowProps & { nodes: Tre
               onClick={() => onToggle(node.path)}
               aria-expanded={!collapsed.has(node.path)}
             >
-              <ChevronRightIcon className="ft-chevron" />
+              <ChevronRight className="ft-chevron" />
               <FolderIcon open={!collapsed.has(node.path)} />
               <span className="ft-name">{node.name}</span>
               <span className="ft-count">{node.children.length}</span>
@@ -151,7 +151,7 @@ export function FileTree({ slug, files, onPick, selected, onDelete }: Props) {
             onClick={() => toggle('')}
             aria-expanded={rootOpen}
           >
-            <ChevronRightIcon className="ft-chevron" />
+            <ChevronRight className="ft-chevron" />
             <FolderIcon open={rootOpen} />
             <span className="ft-name mono">{slug}</span>
             <span className="ft-count">{tree.length}</span>

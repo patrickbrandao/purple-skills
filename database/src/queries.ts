@@ -7,6 +7,7 @@ import {
   isValidSlug,
   mimeTypeFor,
   normalizeRelativePath,
+  normalizeSkillIcon,
   skillScore,
   slugify,
   uniqueSlug,
@@ -14,7 +15,15 @@ import {
   type AuditAction,
   type AuditActor,
   type AuditEntry,
+  type AuditPage,
   type AuditSource,
+  type CanvasPoint,
+  type McpSessionAuth,
+  type McpSessionEndReason,
+  type McpSessionMount,
+  type McpSessionPage,
+  type McpSessionSummary,
+  type McpSessionTransport,
   type PublicVirtualMcp,
   type Role,
   type SkillDetail,
@@ -26,6 +35,8 @@ import {
   type UserSummary,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
+  type VirtualMcpLayout,
+  type VirtualMcpPreviewSkill,
   type VirtualMcpSkill,
   type VirtualMcpSkillInput,
   type VirtualMcpSummary,
@@ -134,7 +145,7 @@ function virtualSurfaceFlag(surface: VirtualSurface): SQL {
 function skillColumns({ visibility = 'open' }: ReadOptions): SQL {
   const everyLink = visibility === 'all';
   return sql`
-  s.uuid, s.slug, s.name, s.description,
+  s.uuid, s.slug, s.name, s.description, s.icon,
   s.view_count, s.download_count,
   s.created_at, s.updated_at,
   COALESCE((
@@ -181,6 +192,7 @@ function toSummary(row: Row): SkillSummary {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    icon: row.icon ?? null,
     mcps: toSkillMcpRefs(row.mcps),
     viewCount,
     downloadCount,
@@ -493,6 +505,11 @@ function optionalTextList(value: unknown, field: string): readonly string[] | un
 export type CreateSkillInput = {
   name: string;
   description?: string;
+  /**
+   * Um emoji ou a URL http(s) de uma imagem (`normalizeSkillIcon` de shared
+   * é a regra). Omitido, `null` ou vazio nasce sem ícone; inválido é 400.
+   */
+  icon?: string | null;
   skillMd: string;
   tags?: string[];
   /**
@@ -529,6 +546,7 @@ export async function createSkill(
   const requestedSlug = optionalText(input.slug, 'slug');
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
+  const icon = optionalIcon(input.icon) ?? null;
   const links = await resolveLinks(input.mcps ?? []);
 
   // Validado antes de abrir a transação: um caminho recusado no meio da
@@ -558,8 +576,8 @@ export async function createSkill(
     try {
       await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, created_by_user_uuid)
-          VALUES (${slug}, ${name}, ${description}, ${actor?.userUuid ?? null})
+          INSERT INTO skills (slug, name, description, icon, created_by_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${icon}, ${actor?.userUuid ?? null})
           RETURNING uuid
         `);
         const uuid = (inserted.rows as Row[])[0].uuid as string;
@@ -599,6 +617,8 @@ export async function createSkill(
 export type UpdateSkillInput = {
   name?: string;
   description?: string;
+  /** `undefined` não mexe; `null` ou vazio apaga; inválido é 400 (ver `CreateSkillInput`). */
+  icon?: string | null;
   tags?: string[];
   slug?: string;
 };
@@ -616,6 +636,7 @@ export async function updateSkill(
 
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
+  const icon = optionalIcon(input.icon);
 
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
@@ -631,6 +652,7 @@ export async function updateSkill(
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
+          icon = ${icon === undefined ? existing.icon : icon},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -683,6 +705,7 @@ export async function updateSkillWithContent(
 
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
+  const icon = optionalIcon(input.icon);
 
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
@@ -701,6 +724,7 @@ export async function updateSkillWithContent(
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
+          icon = ${icon === undefined ? existing.icon : icon},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -784,23 +808,33 @@ async function resolveLinks(inputs: readonly SkillLinkInput[]): Promise<Resolved
   });
 }
 
-/** Grava (ou reescreve) um vínculo e audita no vMCP, como `setVirtualMcpSkills`. */
+/**
+ * Grava (ou reescreve) um vínculo e audita no vMCP, como `setVirtualMcpSkills`.
+ *
+ * A posição no canvas entra no INSERT e, num vínculo que já existe, só
+ * substitui a gravada quando foi informada: reescrever as flags pelo
+ * formulário da skill não pode devolver o nó ao auto-layout.
+ */
 async function linkTx(
   tx: Tx,
   skillUuid: string,
   link: ResolvedLink,
   source: AuditSource,
   actor: AuditActor | null | undefined,
+  position: CanvasPoint | null = null,
 ) {
   await tx.execute(sql`
     INSERT INTO virtual_mcp_skills
-      (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource)
+      (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y)
     VALUES (${link.virtualMcpUuid}, ${skillUuid},
-            ${link.asSkill}, ${link.asPrompt}, ${link.asResource})
+            ${link.asSkill}, ${link.asPrompt}, ${link.asResource},
+            ${position?.x ?? null}, ${position?.y ?? null})
     ON CONFLICT (virtual_mcp_uuid, skill_uuid) DO UPDATE SET
       as_skill = EXCLUDED.as_skill,
       as_prompt = EXCLUDED.as_prompt,
-      as_resource = EXCLUDED.as_resource
+      as_resource = EXCLUDED.as_resource,
+      pos_x = COALESCE(EXCLUDED.pos_x, virtual_mcp_skills.pos_x),
+      pos_y = COALESCE(EXCLUDED.pos_y, virtual_mcp_skills.pos_y)
   `);
   await tx.execute(
     sql`UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${link.virtualMcpUuid}`,
@@ -822,9 +856,11 @@ export type SkillLinkFlags = Pick<SkillLinkInput, 'asSkill' | 'asPrompt' | 'asRe
 /**
  * Publica uma skill num vMCP a partir do lado da skill
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3). Cria ou reescreve o
- * vínculo — os contadores de um vínculo existente ficam. Audita como
- * `mcp.update` no vMCP, como `setVirtualMcpSkills`. A checagem de que o
- * chamador administra o vMCP é do app.
+ * vínculo — os contadores de um vínculo existente ficam, e a posição no
+ * canvas também, a menos que `options.position` venha (é o que o canvas
+ * manda ao soltar uma skill sobre o servidor). Audita como `mcp.update` no
+ * vMCP, como `setVirtualMcpSkills`. A checagem de que o chamador administra
+ * o vMCP é do app.
  */
 export async function linkSkill(
   slug: string,
@@ -832,12 +868,15 @@ export async function linkSkill(
   flags: SkillLinkFlags,
   source: AuditSource,
   actor?: AuditActor | null,
+  options: { position?: CanvasPoint } = {},
 ): Promise<SkillDetail> {
   const existing = await requireSkill(slug);
   const [link] = await resolveLinks([{ virtualMcpUuid, ...flags }]);
+  const position =
+    options.position === undefined ? null : requirePoint(options.position, 'position');
 
   await db().transaction(async (tx) => {
-    await linkTx(tx, existing.uuid, link!, source, actor);
+    await linkTx(tx, existing.uuid, link!, source, actor, position);
   });
 
   const detail = await getSkillDetail(existing.slug, { visibility: 'all' });
@@ -1505,14 +1544,13 @@ export async function recordAccountAudit(entry: {
   );
 }
 
-export async function listAudit(limit = 100): Promise<AuditEntry[]> {
-  const result = await db().execute(sql`
-    SELECT id, skill_uuid, skill_slug, file_path, action, source,
-           actor_user_uuid, actor_label, target_label, created_at
-    FROM audit_log ORDER BY created_at DESC LIMIT ${clamp(limit, 1, 500)}
-  `);
+const AUDIT_COLUMNS = sql`
+  id, skill_uuid, skill_slug, file_path, action, source,
+  actor_user_uuid, actor_label, target_label, created_at
+`;
 
-  return (result.rows as Row[]).map((row) => ({
+function toAuditEntry(row: Row): AuditEntry {
+  return {
     id: row.id,
     skillUuid: row.skill_uuid,
     skillSlug: row.skill_slug,
@@ -1523,7 +1561,102 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
     actorLabel: row.actor_label ?? null,
     targetLabel: row.target_label ?? null,
     createdAt: new Date(row.created_at).toISOString(),
-  }));
+  };
+}
+
+/** As últimas linhas, sem filtro — o widget do dashboard. Ver `listAuditPage` para a tela. */
+export async function listAudit(limit = 100): Promise<AuditEntry[]> {
+  const result = await db().execute(sql`
+    SELECT ${AUDIT_COLUMNS}
+    FROM audit_log ORDER BY created_at DESC LIMIT ${clamp(limit, 1, 500)}
+  `);
+  return (result.rows as Row[]).map(toAuditEntry);
+}
+
+/**
+ * Espelho do `CHECK` de `audit_log.action` (`schema/011-mcp-padrao.sql`), para
+ * recusar um filtro inválido com 400 em vez de devolver uma página vazia.
+ */
+const AUDIT_ACTIONS: readonly AuditAction[] = [
+  'create',
+  'update',
+  'delete',
+  'user.create',
+  'user.role',
+  'user.deactivate',
+  'key.create',
+  'key.revoke',
+  'mcp.create',
+  'mcp.update',
+  'mcp.delete',
+  'mcp.default',
+  'mcp.key.create',
+  'mcp.key.revoke',
+  'public.key.create',
+  'public.key.revoke',
+];
+
+export type ListAuditOptions = {
+  /** Clamp 1..200; padrão 50. */
+  limit?: number;
+  offset?: number;
+  /** Uma ação exata; fora da lista é 400. */
+  action?: AuditAction;
+  /** Igualdade com `actor_label` (o e-mail, `token-global`, `bootstrap`, `seed`). */
+  actor?: string;
+  /** `ILIKE %q%` em `skill_slug`, `target_label`, `file_path` e `actor_label`. */
+  q?: string;
+  since?: Date;
+  until?: Date;
+};
+
+/**
+ * A trilha de auditoria paginada e filtrável, para a tela do painel. `total`
+ * respeita os mesmos filtros da página — é o que permite paginar. A ordem é
+ * a de `listAudit`: mais recente primeiro.
+ */
+export async function listAuditPage(options: ListAuditOptions = {}): Promise<AuditPage> {
+  const limit = clamp(options.limit ?? 50, 1, 200);
+  const offset = pageOffset(options.offset);
+  const conditions: SQL[] = [];
+
+  if (options.action !== undefined) {
+    if (!AUDIT_ACTIONS.includes(options.action)) {
+      throw badRequest(`Ação de auditoria inválida: ${String(options.action)}`);
+    }
+    conditions.push(sql`action = ${options.action}`);
+  }
+  const actor = optionalText(options.actor, 'actor')?.trim();
+  if (actor) conditions.push(sql`actor_label = ${actor}`);
+
+  const q = normalizeQuery(optionalText(options.q, 'q'));
+  if (q) {
+    const pattern = '%' + q + '%';
+    conditions.push(sql`(
+      skill_slug ILIKE ${pattern}
+      OR target_label ILIKE ${pattern}
+      OR file_path ILIKE ${pattern}
+      OR actor_label ILIKE ${pattern}
+    )`);
+  }
+  const since = optionalDate(options.since, 'since');
+  if (since) conditions.push(sql`created_at >= ${since}`);
+  const until = optionalDate(options.until, 'until');
+  if (until) conditions.push(sql`created_at <= ${until}`);
+
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+  const counted = await db().execute(sql`SELECT count(*)::int AS total FROM audit_log ${where}`);
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    SELECT ${AUDIT_COLUMNS}
+    FROM audit_log ${where}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  return { items: (result.rows as Row[]).map(toAuditEntry), total, limit, offset };
 }
 
 export type Stats = {
@@ -1682,22 +1815,68 @@ export async function setDefaultVirtualMcp(
 
 // ------------------------------------------------------------ MCP virtual ---
 
-// `m` é o servidor, `u` o dono. As contagens são subconsultas porque a
-// listagem é de painel (poucas linhas) e cada uma responde a uma pergunta
-// distinta: "quantas skills" e "quantas chaves vivas".
-const VIRTUAL_MCP_COLUMNS = sql`
+/**
+ * Janela de "online" das leituras de vMCP (`docs/10-admin-canvas-e-sessoes.md`).
+ *
+ * `onlineSessions` conta as linhas de `mcp_sessions` sem fim e com atividade
+ * dentro de `onlineWindowMs`. A janela é do app (`MCP_SESSION_ONLINE_WINDOW_MS`)
+ * e vem por chamada; sem ela o contador é 0 **sem consultar** `mcp_sessions`
+ * — o mcp-admin e o seed não pagam por um número que não mostram.
+ */
+export type VirtualMcpReadOptions = { onlineWindowMs?: number };
+
+/** Quantas skills a miniatura do card mostra. */
+const VIRTUAL_MCP_PREVIEW_SIZE = 8;
+
+// `m` é o servidor, `u` o dono e `c` os contadores do vínculo, numa única
+// passada por `virtual_mcp_skills` (LATERAL) em vez de quatro subconsultas.
+// As chaves vivas e o preview continuam subconsultas: a listagem é de painel
+// (poucas linhas) e cada uma responde a uma pergunta distinta.
+function virtualMcpColumns({ onlineWindowMs }: VirtualMcpReadOptions): SQL {
+  const online =
+    onlineWindowMs === undefined
+      ? sql`0::int`
+      : sql`(SELECT count(*) FROM mcp_sessions ms
+          WHERE ms.virtual_mcp_uuid = m.uuid
+            AND ms.ended_at IS NULL
+            AND ms.last_seen_at >= now() - ${windowInterval(onlineWindowMs, 'onlineWindowMs')})::int`;
+
+  return sql`
   m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
-  m.owner_user_uuid, u.email AS owner_email,
-  (SELECT count(*) FROM virtual_mcp_skills v
-    WHERE v.virtual_mcp_uuid = m.uuid)::int AS skill_count,
+  m.owner_user_uuid, u.email AS owner_email, m.layout,
+  c.skill_count, c.tool_count, c.prompt_count, c.resource_count,
   (SELECT count(*) FROM virtual_mcp_keys k
     WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
   (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
     AS is_default,
+  ${online} AS online_sessions,
+  COALESCE((
+    SELECT json_agg(json_build_object('slug', p.slug, 'name', p.name, 'icon', p.icon)
+                    ORDER BY p.name, p.slug)
+    FROM (
+      SELECT s.slug, s.name, s.icon
+      FROM virtual_mcp_skills v JOIN skills s ON s.uuid = v.skill_uuid
+      WHERE v.virtual_mcp_uuid = m.uuid
+      ORDER BY s.name ASC, s.slug ASC
+      LIMIT ${VIRTUAL_MCP_PREVIEW_SIZE}
+    ) p
+  ), '[]'::json) AS preview,
   m.created_at, m.updated_at
 `;
+}
 
-const VIRTUAL_MCP_FROM = sql`FROM virtual_mcps m LEFT JOIN users u ON u.uuid = m.owner_user_uuid`;
+const VIRTUAL_MCP_FROM = sql`
+  FROM virtual_mcps m
+  LEFT JOIN users u ON u.uuid = m.owner_user_uuid
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int AS skill_count,
+           (count(*) FILTER (WHERE v.as_skill))::int AS tool_count,
+           (count(*) FILTER (WHERE v.as_prompt))::int AS prompt_count,
+           (count(*) FILTER (WHERE v.as_resource))::int AS resource_count
+    FROM virtual_mcp_skills v
+    WHERE v.virtual_mcp_uuid = m.uuid
+  ) c ON true
+`;
 
 function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
   return {
@@ -1710,26 +1889,74 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     ownerUserUuid: row.owner_user_uuid ?? null,
     ownerEmail: row.owner_email ?? null,
     skillCount: Number(row.skill_count ?? 0),
+    toolCount: Number(row.tool_count ?? 0),
+    promptCount: Number(row.prompt_count ?? 0),
+    resourceCount: Number(row.resource_count ?? 0),
     activeKeyCount: Number(row.active_key_count ?? 0),
     // NULL quando não há padrão configurado: `Boolean(null)` é `false`.
     isDefault: Boolean(row.is_default),
+    onlineSessions: Number(row.online_sessions ?? 0),
+    preview: toVirtualMcpPreview(row.preview),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
 }
 
-/** As flags e os contadores vêm do vínculo (`v`), não da skill. */
+function toVirtualMcpPreview(value: unknown): VirtualMcpPreviewSkill[] {
+  const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
+  return (rows ?? []).map((p) => ({ slug: p.slug, name: p.name, icon: p.icon ?? null }));
+}
+
+/** As chaves de `virtual_mcps.layout` que o canvas conhece. */
+const LAYOUT_KEYS = ['server', 'internet'] as const;
+
+/**
+ * O JSON de `virtual_mcps.layout`, só com o que o canvas conhece: `server` e
+ * `internet`, cada um com `x` e `y` numéricos. O CHECK do banco garante um
+ * objeto e nada mais; chave estranha ou ponto torto é ignorado aqui, para o
+ * painel nunca receber um layout que não sabe desenhar.
+ */
+function toVirtualMcpLayout(value: unknown): VirtualMcpLayout {
+  const raw = (typeof value === 'string' ? JSON.parse(value) : value) as Row | null;
+  const layout: VirtualMcpLayout = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return layout;
+  for (const key of LAYOUT_KEYS) {
+    const point = readPoint(raw[key]);
+    if (point) layout[key] = point;
+  }
+  return layout;
+}
+
+/** Um `{x, y}` com os dois finitos, ou nada. */
+function readPoint(value: unknown): CanvasPoint | null {
+  if (!value || typeof value !== 'object') return null;
+  const { x, y } = value as Row;
+  if (typeof x !== 'number' || typeof y !== 'number') return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+/**
+ * As flags, os contadores e a posição vêm do vínculo (`v`), não da skill.
+ * `position` é nula até alguém arrastar o nó (as duas colunas andam juntas,
+ * por CHECK).
+ */
 function toVirtualMcpSkill(row: Row): VirtualMcpSkill {
   return {
     uuid: row.uuid,
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    icon: row.icon ?? null,
     asSkill: Boolean(row.as_skill),
     asPrompt: Boolean(row.as_prompt),
     asResource: Boolean(row.as_resource),
     viewCount: Number(row.view_count ?? 0),
     downloadCount: Number(row.download_count ?? 0),
+    position:
+      row.pos_x === null || row.pos_x === undefined || row.pos_y === null || row.pos_y === undefined
+        ? null
+        : { x: Number(row.pos_x), y: Number(row.pos_y) },
   };
 }
 
@@ -1738,16 +1965,18 @@ function toVirtualMcpSkill(row: Row): VirtualMcpSkill {
  * admin: todos, inclusive inativos e órfãos. Com um UUID, só os daquele dono.
  * `null` é "nenhum dono possível" — a sessão de bootstrap, que não é conta —
  * e devolve lista vazia em vez de vazar os órfãos, que são só do admin.
+ * `onlineWindowMs` liga o contador de clientes online (ver
+ * `VirtualMcpReadOptions`).
  */
 export async function listVirtualMcps(
-  options: { ownerUserUuid?: string | null } = {},
+  options: { ownerUserUuid?: string | null } & VirtualMcpReadOptions = {},
 ): Promise<VirtualMcpSummary[]> {
   const owner = options.ownerUserUuid;
   if (owner === null) return [];
   if (owner !== undefined && !isUuid(owner)) return [];
 
   const result = await db().execute(sql`
-    SELECT ${VIRTUAL_MCP_COLUMNS} ${VIRTUAL_MCP_FROM}
+    SELECT ${virtualMcpColumns(options)} ${VIRTUAL_MCP_FROM}
     ${owner !== undefined ? sql`WHERE m.owner_user_uuid = ${owner}` : sql``}
     ORDER BY m.name ASC, m.slug ASC
   `);
@@ -1756,8 +1985,9 @@ export async function listVirtualMcps(
 
 async function loadVirtualMcpSkills(virtualMcpUuid: string): Promise<VirtualMcpSkill[]> {
   const result = await db().execute(sql`
-    SELECT s.uuid, s.slug, s.name, s.description,
-           v.as_skill, v.as_prompt, v.as_resource, v.view_count, v.download_count
+    SELECT s.uuid, s.slug, s.name, s.description, s.icon,
+           v.as_skill, v.as_prompt, v.as_resource, v.view_count, v.download_count,
+           v.pos_x, v.pos_y
     FROM virtual_mcp_skills v
     JOIN skills s ON s.uuid = v.skill_uuid
     WHERE v.virtual_mcp_uuid = ${virtualMcpUuid}
@@ -1766,28 +1996,41 @@ async function loadVirtualMcpSkills(virtualMcpUuid: string): Promise<VirtualMcpS
   return (result.rows as Row[]).map(toVirtualMcpSkill);
 }
 
-/** Detalhe = resumo + skills vinculadas. Inclui inativos: é o painel que lê. */
-async function loadVirtualMcpDetail(where: SQL): Promise<VirtualMcpDetail | null> {
+/** Detalhe = resumo + skills vinculadas + layout do canvas. Inclui inativos: é o painel que lê. */
+async function loadVirtualMcpDetail(
+  where: SQL,
+  options: VirtualMcpReadOptions,
+): Promise<VirtualMcpDetail | null> {
   const result = await db().execute(sql`
-    SELECT ${VIRTUAL_MCP_COLUMNS} ${VIRTUAL_MCP_FROM} WHERE ${where} LIMIT 1
+    SELECT ${virtualMcpColumns(options)} ${VIRTUAL_MCP_FROM} WHERE ${where} LIMIT 1
   `);
   const row = (result.rows as Row[])[0];
   if (!row) return null;
 
   const summary = toVirtualMcpSummary(row);
-  return { ...summary, skills: await loadVirtualMcpSkills(summary.uuid) };
+  return {
+    ...summary,
+    skills: await loadVirtualMcpSkills(summary.uuid),
+    layout: toVirtualMcpLayout(row.layout),
+  };
 }
 
-export async function getVirtualMcp(slug: string): Promise<VirtualMcpDetail | null> {
+export async function getVirtualMcp(
+  slug: string,
+  options: VirtualMcpReadOptions = {},
+): Promise<VirtualMcpDetail | null> {
   const wanted = (slug ?? '').trim();
   if (!wanted) return null;
-  return loadVirtualMcpDetail(sql`m.slug = ${wanted}`);
+  return loadVirtualMcpDetail(sql`m.slug = ${wanted}`, options);
 }
 
 /** UUID malformado devolve `null` — é "não existe", não erro de servidor. */
-export async function getVirtualMcpByUuid(uuid: string): Promise<VirtualMcpDetail | null> {
+export async function getVirtualMcpByUuid(
+  uuid: string,
+  options: VirtualMcpReadOptions = {},
+): Promise<VirtualMcpDetail | null> {
   if (!isUuid(uuid)) return null;
-  return loadVirtualMcpDetail(sql`m.uuid = ${uuid}`);
+  return loadVirtualMcpDetail(sql`m.uuid = ${uuid}`, options);
 }
 
 /** O que o servidor precisa por requisição, e nada mais. */
@@ -2042,6 +2285,8 @@ export async function setVirtualMcpSkills(
         AND skill_uuid <> ALL(${sql.param(keep)}::uuid[])
     `);
 
+    // Só as flags no `DO UPDATE`: contadores e posição no canvas (`pos_x`/
+    // `pos_y`) de quem ficou não entram na lista e ficam como estavam.
     for (const item of wanted) {
       await tx.execute(sql`
         INSERT INTO virtual_mcp_skills
@@ -2062,6 +2307,93 @@ export async function setVirtualMcpSkills(
   const detail = await getVirtualMcpByUuid(uuid);
   if (!detail) throw new Error('MCP virtual atualizado mas não encontrado');
   return detail;
+}
+
+/** O que o canvas grava: o layout dos nós fixos e/ou a posição de skills vinculadas. */
+export type VirtualMcpCanvasInput = {
+  /** Só as chaves informadas substituem as gravadas; as demais ficam. */
+  layout?: VirtualMcpLayout;
+  /** Cada uma precisa estar vinculada a este vMCP. */
+  positions?: readonly { slug: string; x: number; y: number }[];
+};
+
+/**
+ * Grava o estado do canvas de um vMCP (`docs/10-admin-canvas-e-sessoes.md`):
+ * mescla `layout` em `virtual_mcps.layout` (chave a chave, só as informadas)
+ * e grava `pos_x`/`pos_y` das skills listadas. Tudo numa transação: um slug
+ * desconhecido ou não vinculado a **este** vMCP é 400 e nada é gravado.
+ *
+ * Coordenadas precisam ser números finitos e são arredondadas para o pixel
+ * inteiro. **Sem auditoria e sem `updated_at`**: mover um nó é estado de
+ * tela, não publicação — o `updated_at` do vMCP continua dizendo quando o
+ * recorte mudou. A checagem de que o chamador administra o vMCP é do app.
+ */
+export async function setVirtualMcpCanvas(
+  virtualMcpUuid: string,
+  input: VirtualMcpCanvasInput,
+): Promise<void> {
+  if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw badRequest('O canvas deve ser um objeto com "layout" e/ou "positions"');
+  }
+
+  const layoutPatch: Partial<Record<(typeof LAYOUT_KEYS)[number], CanvasPoint>> = {};
+  if (input.layout !== undefined) {
+    if (!input.layout || typeof input.layout !== 'object' || Array.isArray(input.layout)) {
+      throw badRequest('O campo "layout" deve ser um objeto');
+    }
+    for (const key of LAYOUT_KEYS) {
+      const value = (input.layout as Row)[key];
+      if (value === undefined) continue;
+      layoutPatch[key] = requirePoint(value, `layout.${key}`);
+    }
+  }
+
+  if (input.positions !== undefined && !Array.isArray(input.positions)) {
+    throw badRequest('O campo "positions" deve ser uma lista');
+  }
+  const seen = new Set<string>();
+  const positions = (input.positions ?? []).map((item, index) => {
+    const field = `positions[${index}]`;
+    const slug = (optionalText(item?.slug, `${field}.slug`) ?? '').trim();
+    if (!slug) throw badRequest(`${field}: o campo "slug" é obrigatório`);
+    if (seen.has(slug)) throw badRequest(`Slug repetido na lista: "${slug}"`);
+    seen.add(slug);
+    return { slug, ...requirePoint(item, field) };
+  });
+
+  await db().transaction(async (tx) => {
+    // `FOR UPDATE` serializa com `setVirtualMcpSkills`: o canvas não grava a
+    // posição de um vínculo que um salvamento concorrente está removendo.
+    const locked = await tx.execute(
+      sql`SELECT uuid FROM virtual_mcps WHERE uuid = ${virtualMcpUuid} FOR UPDATE`,
+    );
+    if ((locked.rows as Row[]).length === 0) {
+      throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
+    }
+
+    if (Object.keys(layoutPatch).length > 0) {
+      // `||` de jsonb substitui chave a chave: as não informadas ficam.
+      await tx.execute(sql`
+        UPDATE virtual_mcps SET layout = layout || ${JSON.stringify(layoutPatch)}::jsonb
+        WHERE uuid = ${virtualMcpUuid}
+      `);
+    }
+
+    for (const item of positions) {
+      const updated = await tx.execute(sql`
+        UPDATE virtual_mcp_skills v SET pos_x = ${item.x}, pos_y = ${item.y}
+        FROM skills s
+        WHERE v.virtual_mcp_uuid = ${virtualMcpUuid}
+          AND v.skill_uuid = s.uuid
+          AND s.slug = ${item.slug}
+        RETURNING v.skill_uuid
+      `);
+      if ((updated.rows as Row[]).length === 0) {
+        throw badRequest(`A skill "${item.slug}" não está vinculada a este MCP virtual`);
+      }
+    }
+  });
 }
 
 /**
@@ -2274,6 +2606,357 @@ export async function touchVirtualMcpKey(id: string): Promise<void> {
   await db().execute(sql`UPDATE virtual_mcp_keys SET last_used_at = now() WHERE id = ${id}`);
 }
 
+// ------------------------------------------------------------ sessões MCP ---
+
+// Espelhos dos `CHECK`s de `mcp_sessions` (`schema/015-mcp-sessions.sql`):
+// um valor fora da lista é 400 aqui, e não uma violação de CHECK virando 500.
+const MCP_SESSION_TRANSPORTS: readonly McpSessionTransport[] = ['streamable', 'sse', 'stateless'];
+const MCP_SESSION_MOUNTS: readonly McpSessionMount[] = ['root', 'virtual'];
+const MCP_SESSION_AUTHS: readonly McpSessionAuth[] = ['open', 'key'];
+const MCP_SESSION_END_REASONS: readonly McpSessionEndReason[] = ['closed', 'timeout', 'shutdown'];
+
+/** Teto para o que vem de cabeçalhos e do `clientInfo`: é rótulo de tela, não conteúdo. */
+const MCP_SESSION_LABEL_MAX = 512;
+
+export type OpenMcpSessionInput = {
+  /** `mcp-session-id`, o `sessionId` do SSE ou a chave sintética do stateless. */
+  sessionId: string;
+  transport: McpSessionTransport;
+  mount: McpSessionMount;
+  virtualMcpUuid: string;
+  /** Cópia: o histórico sobrevive à remoção do vMCP. */
+  virtualMcpSlug: string;
+  auth: McpSessionAuth;
+  /** A chave `psv_` usada, quando `auth` é `'key'`. */
+  keyId?: string | null;
+  /** Já resolvido pelo `trust proxy` (X-Forwarded-For quando confiável). */
+  ip: string;
+  userAgent?: string | null;
+  /** `clientInfo` do `initialize`; pode chegar depois, por `touchMcpSession`. */
+  clientName?: string | null;
+  clientVersion?: string | null;
+  /** Requisições já contadas na abertura (padrão 1). */
+  requests?: number;
+};
+
+// `ms` é a sessão, `k` a chave (LEFT JOIN: a maioria é aberta ou a chave foi embora).
+const MCP_SESSION_COLUMNS = sql`
+  ms.id, ms.session_id, ms.transport, ms.mount, ms.virtual_mcp_uuid, ms.virtual_mcp_slug,
+  ms.auth, ms.key_id, k.name AS key_name, ms.ip, ms.user_agent,
+  ms.client_name, ms.client_version, ms.started_at, ms.last_seen_at,
+  ms.ended_at, ms.end_reason, ms.request_count
+`;
+
+function toMcpSessionSummary(row: Row): McpSessionSummary {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    transport: row.transport,
+    mount: row.mount,
+    virtualMcpUuid: row.virtual_mcp_uuid ?? null,
+    virtualMcpSlug: row.virtual_mcp_slug,
+    auth: row.auth,
+    keyId: row.key_id ?? null,
+    keyName: row.key_name ?? null,
+    ip: row.ip,
+    userAgent: row.user_agent ?? null,
+    clientName: row.client_name ?? null,
+    clientVersion: row.client_version ?? null,
+    startedAt: new Date(row.started_at).toISOString(),
+    lastSeenAt: new Date(row.last_seen_at).toISOString(),
+    endedAt: iso(row.ended_at),
+    endReason: row.end_reason ?? null,
+    requestCount: Number(row.request_count ?? 0),
+    isOnline: Boolean(row.is_online),
+  };
+}
+
+/**
+ * Abre a linha de uma sessão e devolve o `id` — é ele que o servidor guarda
+ * ao lado do transporte para os `touch`/`close` seguintes. `sessionId`, `ip`
+ * e `virtualMcpSlug` vazios, uuid torto ou valor fora dos `CHECK`s são 400;
+ * um vMCP (ou chave) que sumiu entre a resolução e a abertura é 404.
+ */
+export async function openMcpSession(input: OpenMcpSessionInput): Promise<string> {
+  const sessionId = requireText(input.sessionId, 'sessionId');
+  const transport = oneOf(input.transport, MCP_SESSION_TRANSPORTS, 'transport');
+  const mount = oneOf(input.mount, MCP_SESSION_MOUNTS, 'mount');
+  if (!isUuid(input.virtualMcpUuid)) {
+    throw badRequest('O campo "virtualMcpUuid" precisa ser um uuid');
+  }
+  const virtualMcpSlug = requireText(input.virtualMcpSlug, 'virtualMcpSlug');
+  const auth = oneOf(input.auth, MCP_SESSION_AUTHS, 'auth');
+  const keyId = input.keyId ?? null;
+  if (keyId !== null && !isUuid(keyId)) throw badRequest('O campo "keyId" precisa ser um uuid');
+  const ip = requireText(input.ip, 'ip');
+  const requests = input.requests === undefined ? 1 : requireCount(input.requests, 'requests');
+
+  try {
+    const result = await db().execute(sql`
+      INSERT INTO mcp_sessions (
+        session_id, transport, mount, virtual_mcp_uuid, virtual_mcp_slug, auth, key_id,
+        ip, user_agent, client_name, client_version, request_count
+      )
+      VALUES (
+        ${sessionId}, ${transport}, ${mount}, ${input.virtualMcpUuid}, ${virtualMcpSlug},
+        ${auth}, ${keyId}, ${ip},
+        ${sessionLabel(input.userAgent, 'userAgent')},
+        ${sessionLabel(input.clientName, 'clientName')},
+        ${sessionLabel(input.clientVersion, 'clientVersion')},
+        ${requests}
+      )
+      RETURNING id
+    `);
+    return (result.rows as Row[])[0].id as string;
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      throw notFound(`MCP virtual ou chave não encontrados: ${input.virtualMcpUuid}`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Marca atividade: `last_seen_at = now()` e `request_count += requests`.
+ * `clientName`/`clientVersion` preenchem só o que ainda está nulo — o
+ * `initialize` pode chegar depois da abertura, mas nunca reescreve o que já
+ * foi visto. Linha já encerrada não é tocada; `id` torto é ignorado, como em
+ * `touchApiKey`: não é para derrubar a requisição.
+ */
+export async function touchMcpSession(
+  id: string,
+  patch: { requests: number; clientName?: string | null; clientVersion?: string | null },
+): Promise<void> {
+  if (!isUuid(id)) return;
+  const requests = requireCount(patch.requests, 'requests');
+
+  await db().execute(sql`
+    UPDATE mcp_sessions SET
+      last_seen_at = now(),
+      request_count = request_count + ${requests},
+      client_name = COALESCE(client_name, ${sessionLabel(patch.clientName, 'clientName')}),
+      client_version = COALESCE(client_version, ${sessionLabel(patch.clientVersion, 'clientVersion')})
+    WHERE id = ${id} AND ended_at IS NULL
+  `);
+}
+
+/** Encerra com `ended_at = now()`, só se ainda aberta: o primeiro fim é o que fica. */
+export async function closeMcpSession(id: string, reason: McpSessionEndReason): Promise<void> {
+  const endReason = oneOf(reason, MCP_SESSION_END_REASONS, 'reason');
+  if (!isUuid(id)) return;
+
+  await db().execute(sql`
+    UPDATE mcp_sessions SET ended_at = now(), end_reason = ${endReason}
+    WHERE id = ${id} AND ended_at IS NULL
+  `);
+}
+
+/**
+ * O mesmo, em lote — o `shutdown` do servidor fecha tudo o que tinha aberto.
+ * Devolve quantas fechou de fato (as já encerradas não contam).
+ */
+export async function closeMcpSessions(
+  ids: readonly string[],
+  reason: McpSessionEndReason,
+): Promise<number> {
+  const endReason = oneOf(reason, MCP_SESSION_END_REASONS, 'reason');
+  if (!Array.isArray(ids)) throw badRequest('O campo "ids" deve ser uma lista');
+  const valid = ids.filter(isUuid);
+  if (valid.length === 0) return 0;
+
+  const result = await db().execute(sql`
+    UPDATE mcp_sessions SET ended_at = now(), end_reason = ${endReason}
+    WHERE id = ANY(${sql.param(valid)}::uuid[]) AND ended_at IS NULL
+    RETURNING id
+  `);
+  return (result.rows as Row[]).length;
+}
+
+/**
+ * A linha aberta de uma sessão com atividade dentro de `withinMs`, ou `null`.
+ * É o reuso de linha do stateless: depois de um restart o servidor não tem
+ * mais o `id` em memória, recalcula a chave sintética e a reencontra aqui em
+ * vez de abrir uma segunda linha para o mesmo cliente. Havendo mais de uma
+ * (dois processos abriram ao mesmo tempo), vale a mais recente.
+ */
+export async function findOpenMcpSession(input: {
+  sessionId: string;
+  transport: McpSessionTransport;
+  withinMs: number;
+}): Promise<string | null> {
+  const sessionId = requireText(input.sessionId, 'sessionId');
+  const transport = oneOf(input.transport, MCP_SESSION_TRANSPORTS, 'transport');
+  const within = windowInterval(input.withinMs, 'withinMs');
+
+  const result = await db().execute(sql`
+    SELECT id FROM mcp_sessions
+    WHERE session_id = ${sessionId}
+      AND transport = ${transport}
+      AND ended_at IS NULL
+      AND last_seen_at >= now() - ${within}
+    ORDER BY last_seen_at DESC
+    LIMIT 1
+  `);
+  return ((result.rows as Row[])[0]?.id as string | undefined) ?? null;
+}
+
+/**
+ * A varredura de expiração: encerra como `timeout` o que ficou sem atividade
+ * — stateless além de `statelessWindowMs`, streamable/sse além de
+ * `sessionTtlMs`. O fim gravado é **presumido**: `last_seen_at` mais o prazo,
+ * o instante em que a sessão deixou de estar online, e não o instante da
+ * varredura (que pode ter demorado a rodar). Devolve quantas fechou.
+ */
+export async function expireMcpSessions(input: {
+  statelessWindowMs: number;
+  sessionTtlMs: number;
+}): Promise<number> {
+  const stateless = windowInterval(input.statelessWindowMs, 'statelessWindowMs');
+  const ttl = windowInterval(input.sessionTtlMs, 'sessionTtlMs');
+  const deadline = sql`CASE WHEN transport = 'stateless' THEN ${stateless} ELSE ${ttl} END`;
+
+  const result = await db().execute(sql`
+    UPDATE mcp_sessions SET
+      ended_at = last_seen_at + ${deadline},
+      end_reason = 'timeout'
+    WHERE ended_at IS NULL
+      AND last_seen_at < now() - ${deadline}
+    RETURNING id
+  `);
+  return (result.rows as Row[]).length;
+}
+
+export type ListMcpSessionsOptions = {
+  /** Obrigatória: é o que define `isOnline` (e `onlineOnly`). */
+  onlineWindowMs: number;
+  /** Um vMCP só. */
+  virtualMcpUuid?: string;
+  /**
+   * O recorte de quem não é admin: só os vMCPs que administra. `[]` devolve
+   * a página vazia sem consultar. Sessões de um vMCP já apagado (uuid nulo)
+   * ficam fora do recorte — só o admin as vê.
+   */
+  virtualMcpUuids?: readonly string[];
+  onlineOnly?: boolean;
+  /** Clamp 1..200; padrão 50. */
+  limit?: number;
+  offset?: number;
+};
+
+/**
+ * A lista de sessões do painel: mais recente atividade primeiro, com o nome
+ * da chave (`LEFT JOIN virtual_mcp_keys`) e `isOnline` calculado no SQL com a
+ * janela informada. `total` respeita os mesmos filtros da página.
+ */
+export async function listMcpSessions(options: ListMcpSessionsOptions): Promise<McpSessionPage> {
+  const limit = clamp(options.limit ?? 50, 1, 200);
+  const offset = pageOffset(options.offset);
+  const online = sql`(ms.ended_at IS NULL
+    AND ms.last_seen_at >= now() - ${windowInterval(options.onlineWindowMs, 'onlineWindowMs')})`;
+
+  const conditions: SQL[] = [];
+  if (options.virtualMcpUuid !== undefined) {
+    if (!isUuid(options.virtualMcpUuid)) {
+      throw badRequest('O campo "virtualMcpUuid" precisa ser um uuid');
+    }
+    conditions.push(sql`ms.virtual_mcp_uuid = ${options.virtualMcpUuid}`);
+  }
+  if (options.virtualMcpUuids !== undefined) {
+    if (!Array.isArray(options.virtualMcpUuids)) {
+      throw badRequest('O campo "virtualMcpUuids" deve ser uma lista');
+    }
+    if (options.virtualMcpUuids.length === 0) return { items: [], total: 0, limit, offset };
+    for (const uuid of options.virtualMcpUuids) {
+      if (!isUuid(uuid)) throw badRequest(`"virtualMcpUuids" traz um valor que não é uuid: ${String(uuid)}`);
+    }
+    conditions.push(
+      sql`ms.virtual_mcp_uuid = ANY(${sql.param([...options.virtualMcpUuids])}::uuid[])`,
+    );
+  }
+  if (options.onlineOnly === true) conditions.push(online);
+
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+  const counted = await db().execute(
+    sql`SELECT count(*)::int AS total FROM mcp_sessions ms ${where}`,
+  );
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    SELECT ${MCP_SESSION_COLUMNS}, ${online} AS is_online
+    FROM mcp_sessions ms
+    LEFT JOIN virtual_mcp_keys k ON k.id = ms.key_id
+    ${where}
+    ORDER BY ms.last_seen_at DESC, ms.id DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  return { items: (result.rows as Row[]).map(toMcpSessionSummary), total, limit, offset };
+}
+
+/**
+ * Quantos clientes estão online agora — o número do globo da Internet —, no
+ * total e por transporte. Com `virtualMcpUuid`, só daquele vMCP.
+ */
+export async function countOnlineMcpSessions(options: {
+  onlineWindowMs: number;
+  virtualMcpUuid?: string;
+}): Promise<{ total: number; byTransport: Record<McpSessionTransport, number> }> {
+  const window = windowInterval(options.onlineWindowMs, 'onlineWindowMs');
+  if (options.virtualMcpUuid !== undefined && !isUuid(options.virtualMcpUuid)) {
+    throw badRequest('O campo "virtualMcpUuid" precisa ser um uuid');
+  }
+
+  const result = await db().execute(sql`
+    SELECT ms.transport, count(*)::int AS n
+    FROM mcp_sessions ms
+    WHERE ms.ended_at IS NULL
+      AND ms.last_seen_at >= now() - ${window}
+      ${options.virtualMcpUuid !== undefined ? sql`AND ms.virtual_mcp_uuid = ${options.virtualMcpUuid}` : sql``}
+    GROUP BY ms.transport
+  `);
+
+  const byTransport: Record<McpSessionTransport, number> = { streamable: 0, sse: 0, stateless: 0 };
+  let total = 0;
+  for (const row of result.rows as Row[]) {
+    const transport = row.transport as McpSessionTransport;
+    const n = Number(row.n ?? 0);
+    if (transport in byTransport) byTransport[transport] = n;
+    total += n;
+  }
+  return { total, byTransport };
+}
+
+/** Texto obrigatório, aparado: vazio é 400. */
+function requireText(value: unknown, field: string): string {
+  const text = (optionalText(value, field) ?? '').trim();
+  if (!text) throw badRequest(`O campo "${field}" é obrigatório`);
+  return text;
+}
+
+/** Um valor de uma lista fechada (os `CHECK`s do banco, espelhados aqui). */
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw badRequest(`O campo "${field}" deve ser um de: ${allowed.join(', ')}`);
+  }
+  return value as T;
+}
+
+/** Contagem de requisições: inteiro ≥ 0. */
+function requireCount(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw badRequest(`O campo "${field}" deve ser um número inteiro maior ou igual a zero`);
+  }
+  return Math.trunc(value);
+}
+
+/** Rótulo opcional de sessão: aparado, vazio vira nulo, cortado no teto. */
+function sessionLabel(value: unknown, field: string): string | null {
+  const text = optionalText(value, field)?.trim();
+  if (!text) return null;
+  return truncate(text, MCP_SESSION_LABEL_MAX);
+}
+
 // --------------------------------------------------------------- internos ---
 
 async function requireSkill(slug: string): Promise<SkillSummary> {
@@ -2409,4 +3092,58 @@ function normalizeQuery(raw: string | null | undefined): string | null {
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+/** `OFFSET` é bigint: fração ou lixo vira 0, não erro do driver. */
+function pageOffset(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.trunc(value));
+}
+
+/**
+ * O ícone como chegou do formulário ou da tool, pela regra de shared:
+ * `undefined` não mexe, `null`/vazio apaga, texto válido é o ícone e o resto
+ * é erro do cliente.
+ */
+function optionalIcon(value: unknown): string | null | undefined {
+  const icon = normalizeSkillIcon(value);
+  if (icon === false) {
+    throw badRequest('O ícone precisa ser um único emoji ou a URL http(s) de uma imagem');
+  }
+  return icon;
+}
+
+/** Teto de `INTEGER` do Postgres: uma coordenada além disso é lixo, não um pixel. */
+const CANVAS_MAX = 2_147_483_647;
+
+/**
+ * Um ponto do canvas vindo do cliente: `x` e `y` numéricos e finitos,
+ * arredondados para o pixel inteiro. Qualquer outra coisa é 400.
+ */
+function requirePoint(value: unknown, field: string): CanvasPoint {
+  const point = readPoint(value);
+  if (!point) throw badRequest(`O campo "${field}" precisa ser um ponto {x, y} numérico`);
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  if (Math.abs(x) > CANVAS_MAX || Math.abs(y) > CANVAS_MAX) {
+    throw badRequest(`O campo "${field}" está fora do canvas`);
+  }
+  return { x, y };
+}
+
+/** Uma janela em milissegundos como intervalo do Postgres; não finita ou ≤ 0 é 400. */
+function windowInterval(ms: unknown, field: string): SQL {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
+    throw badRequest(`O campo "${field}" deve ser um número de milissegundos maior que zero`);
+  }
+  return sql`make_interval(secs => ${ms / 1000})`;
+}
+
+/** Uma `Date` válida ou nada; outro tipo, ou data inválida, é 400. */
+function optionalDate(value: unknown, field: string): Date | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw badRequest(`O campo "${field}" deve ser uma data válida`);
+  }
+  return value;
 }
