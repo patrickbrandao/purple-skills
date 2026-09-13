@@ -91,7 +91,7 @@ export function Layout({
             </span>
           ))}
           {user.legacy && (
-            <Badge tone="warn" title="Sessão aberta com a ADMIN_PASSWORD: saia e crie o primeiro administrador">
+            <Badge tone="warn" title="Sessão aberta com a senha de bootstrap (ADMIN_PASSWORD). Saia e crie o primeiro administrador">
               bootstrap
             </Badge>
           )}
