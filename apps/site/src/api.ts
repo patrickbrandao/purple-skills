@@ -8,9 +8,11 @@ import {
   listTags,
   readAllFiles,
   readFile,
+  getPublicCatalog,
   getSkillDetail,
   healthCheck,
   listOpenVirtualMcps,
+  listPublicCatalogs,
   resolveDefaultVirtualMcp,
 } from '@purple-skills/db';
 import {
@@ -119,9 +121,35 @@ api.get(
 );
 
 /**
+ * Os catálogos públicos e ligados (`docs/12-acesso-granular.md` decisão 14):
+ * a seção "Catálogos" do site. A página de um catálogo lista **todos** os
+ * membros ativos, inclusive skills não marcadas públicas — um catálogo
+ * público expõe o que está dentro, como um vMCP aberto (decisão 5).
+ */
+api.get(
+  '/api/catalogs',
+  asyncRoute(async (_req, res) => {
+    res.json({ items: await listPublicCatalogs() });
+  }),
+);
+
+api.get(
+  '/api/catalogs/:slug',
+  asyncRoute(async (req, res) => {
+    const catalog = await getPublicCatalog(param(req, 'slug'));
+    if (!catalog) {
+      res.status(404).json({ error: 'not_found', message: 'Catálogo não encontrado' });
+      return;
+    }
+    res.json(catalog);
+  }),
+);
+
+/**
  * Lista/busca das skills exibidas: as vinculadas a ao menos um MCP virtual
- * aberto e ligado (a visibilidade padrão do `@purple-skills/db`). Toda
- * leitura do site passa por essa regra — inclusive tags, arquivos e downloads.
+ * aberto e ligado, as marcadas públicas e as de catálogos públicos (a
+ * visibilidade `'open'` do `@purple-skills/db`, `docs/12` §7). Toda leitura
+ * do site passa por essa regra — inclusive tags, arquivos e downloads.
  */
 api.get(
   '/api/skills',

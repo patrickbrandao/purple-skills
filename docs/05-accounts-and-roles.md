@@ -2,7 +2,15 @@
 
 **Status: implementado.** Este documento registra o desenho que substituiu a
 senha única do painel por contas de usuário com papéis, e continua sendo a
-referência de *por que* cada peça é assim. O resumo do que está no ar está na
+referência de *por que* cada peça é assim.
+
+> **Parcialmente revogado por [`12`](12-acesso-granular.md).** As decisões 5
+> e 6 (papéis globais que limitam a ação e nunca o escopo; sem ownership) e a
+> matriz da `§2.1` deixaram de valer: skills, catálogos e vMCPs têm dono e
+> concessões por objeto, o papel `leitor` virou `membro` e só a criação e a
+> administração da instalação continuam sendo decididas pelo papel. O resto —
+> contas locais e OIDC, sessão com `token_version`, bootstrap, chaves `psk_`,
+> recuperação de senha, rate limiting e auditoria — continua como está aqui. O resumo do que está no ar está na
 `§7.1` de [`02-architecture-decisions.md`](02-architecture-decisions.md); os
 desvios e as decisões que esta spec deixou em aberto, em
 [`03-implementation-notes.md`](03-implementation-notes.md).

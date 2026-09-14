@@ -2,11 +2,14 @@
 /** Popula o banco com skills de exemplo — útil para demo/desenvolvimento. */
 import { closeDb } from './client.js';
 import {
+  createCatalog,
   createSkill,
   createVirtualMcp,
+  getCatalog,
   getSkillSummary,
   getVirtualMcp,
   resolveDefaultVirtualMcp,
+  setCatalogSkills,
   setDefaultVirtualMcp,
   setFile,
   setVirtualMcpSkills,
@@ -341,6 +344,40 @@ async function main() {
   }
 
   await seedDefaultMcp();
+  await seedCatalog();
+}
+
+/**
+ * Um catálogo de demonstração (`docs/11-catalogos.md`) com todas as skills de
+ * exemplo como membros ativos, ligado e **sem vínculo com vMCP nenhum**: ele
+ * existe para o painel mostrar o que é um catálogo e para alguém vinculá-lo
+ * a um servidor com um gesto só. Sem o vínculo, não publica nada — o
+ * rascunho continua invisível fora do painel. Idempotente pelo slug, como as
+ * skills.
+ */
+async function seedCatalog() {
+  if (await getCatalog('exemplos')) {
+    console.log('[seed] já existe: catálogo exemplos');
+    return;
+  }
+
+  const catalog = await createCatalog(
+    {
+      slug: 'exemplos',
+      name: 'Skills de exemplo',
+      description: 'Todas as skills de exemplo desta instalação, num grupo só.',
+      ownerUserUuid: null,
+    },
+    'web-admin',
+    SEED_ACTOR,
+  );
+  await setCatalogSkills(
+    catalog.uuid,
+    SEEDS.map((seed) => ({ slug: seed.slug })),
+    'web-admin',
+    SEED_ACTOR,
+  );
+  console.log('[seed] criado catálogo: exemplos (com as skills de exemplo, sem vínculo com vMCP)');
 }
 
 /**

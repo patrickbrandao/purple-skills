@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import type { SkillSummary } from '../api.js';
+import type { CatalogSummary, SkillSummary } from '../api.js';
 
 /**
  * Registro de comandos: toda ação do painel existe primeiro como comando e
@@ -42,6 +42,13 @@ export type PaletteRequest =
       /** Slugs que não devem aparecer (já vinculadas). */
       exclude?: ReadonlySet<string>;
       onPick: (skill: SkillSummary) => void;
+    }
+  | {
+      page: 'pick-catalog';
+      title: string;
+      /** Slugs que não devem aparecer (já vinculados). */
+      exclude?: ReadonlySet<string>;
+      onPick: (catalog: CatalogSummary) => void;
     };
 
 type Registry = Map<number, Command[]>;

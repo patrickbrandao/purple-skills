@@ -276,6 +276,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     ]);
 
     // A skill enxerga os próprios vínculos, com as flags e o estado do vMCP.
+    // Vínculo direto: `direct` e nenhum catálogo no caminho; e a skill não
+    // está em catálogo nenhum.
     const privadaLida = await getSkillSummary('privada', { visibility: 'all' });
     expect(privadaLida?.mcps).toEqual([
       {
@@ -288,8 +290,12 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
         asSkill: true,
         asPrompt: false,
         asResource: true,
+        direct: true,
+        catalogs: [],
       },
     ]);
+    expect(privadaLida?.catalogs).toEqual([]);
+    expect(privadaLida?.isActive).toBe(true);
   });
 
   it('recorta as leituras pelo vínculo, e o site só enxerga vMCP aberto e ligado', async () => {

@@ -23,6 +23,8 @@ function crumbsFor(pathname: string): Crumb[] {
       return second
         ? [{ label: 'Skills', to: '/skills' }, { label: second, to: `/skills/${second}` }, ...(third ? [{ label: third }] : [])]
         : [{ label: 'Skills' }];
+    case 'catalogos':
+      return second ? [{ label: 'Catálogos', to: '/catalogos' }, { label: second }] : [{ label: 'Catálogos' }];
     case 'auditoria':
       return [{ label: 'Auditoria', to: '/auditoria' }, ...(second ? [{ label: 'sessões MCP' }] : [{ label: 'trilha' }])];
     case 'users':

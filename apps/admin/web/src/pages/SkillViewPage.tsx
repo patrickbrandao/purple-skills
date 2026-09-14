@@ -1,24 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, ExternalLink, FileText, Pencil, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, Pencil, Trash2 } from 'lucide-react';
 import {
-  canDelete,
-  canWrite,
+  canEdit,
+  canOwn,
   deleteSkill,
   formatDateTime,
   getSkill,
   num,
   skillDownloadUrl,
   skillPackageUrl,
+  updateSkill,
   type Session,
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
+import { AccessBadge, AccessPanel } from '../components/AccessPanel.js';
 import { Badge, Button, McpChips, Panel, Skel, noSite, useConfirm } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
 import { SkillIcon } from '../components/SkillIcon.js';
-import { SkillMcpsPanel } from '../components/SkillMcps.js';
+import { SkillCatalogsPanel, SkillMcpsPanel } from '../components/SkillMcps.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
@@ -28,14 +30,15 @@ import { useToast } from '../components/Toast.js';
  * está publicada se decide aqui mesmo, no painel "Publicada em".
  */
 export function SkillViewPage({ session, user }: { session: Session; user: SessionUser }) {
-  const podeEscrever = canWrite(user.role);
-  const podeApagar = canDelete(user.role);
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
+  // O que a sessão pode nesta skill vem da própria resposta (`access`).
+  const podeEscrever = skill ? canEdit(skill.access) : false;
+  const podeApagar = skill ? canOwn(skill.access) : false;
 
   const load = useCallback(async () => {
     try {
@@ -117,6 +120,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         </div>
 
         <div className="page-actions">
+          <AccessBadge object={skill} user={user} />
           <McpChips skill={skill} />
           {noSite(skill) && (
             <a href={`${session.siteBaseUrl}/skills/${skill.slug}`} target="_blank" rel="noreferrer" className="btn btn-quiet btn-sm">
@@ -152,7 +156,30 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         </div>
       )}
 
-      <SkillMcpsPanel skill={skill} onChanged={setSkill} />
+      {!skill.isActive && (
+        <div className="alert warn mt-4">
+          <AlertTriangle />
+          <span>
+            Esta skill está <strong>desligada</strong>: não aparece em servidor nenhum nem no site, nem pelos catálogos de que
+            participa. Os vínculos ficam guardados; religue-a em Editar.
+          </span>
+        </div>
+      )}
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,360px)]">
+        <SkillMcpsPanel skill={skill} onChanged={setSkill} />
+        <div className="grid content-start gap-4">
+          <SkillCatalogsPanel skill={skill} />
+          <AccessPanel
+            kind="skill"
+            object={skill}
+            user={user}
+            onPatch={(body) => updateSkill(skill.slug, body)}
+            onChanged={setSkill}
+            publicHint="Não a publica em servidor nenhum: onde ela aparece continua sendo o vínculo."
+          />
+        </div>
+      </div>
 
       <div className="skill-read mt-4">
         <div className="min-w-0">

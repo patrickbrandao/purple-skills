@@ -21,7 +21,10 @@ function PortEdgeImpl({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
           className={`edge-label port nodrag nopan${selected ? ' show' : ''}`}
           style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, opacity: selected ? 1 : undefined }}
         >
-          <span>{data ? PORT_LABEL[data.port] : ''}</span>
+          <span>
+            {data ? PORT_LABEL[data.port] : ''}
+            {data?.target.kind === 'catalog' ? ' · catálogo' : ''}
+          </span>
           {data && !data.saving && (
             <button
               type="button"

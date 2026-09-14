@@ -521,6 +521,73 @@ O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
   porta do servidor do painel (`3001` por padrão), configurável para rodar um
   segundo painel ao lado do do compose.
 
+## Catálogos
+
+Desenho em [`11-catalogos.md`](11-catalogos.md). O que ficou de
+implementação:
+
+- **Um só alvo de aresta no canvas.** Skill e catálogo viram um `Target =
+  { kind, slug }`; `pending`, `busy`, a seleção da gaveta, o id da aresta
+  (`edge:<kind>:<porta>:<slug>`) e o id do nó (`skill:` / `catalog:`)
+  carregam o `kind`, e só `runLink`/`runUnlink` escolhem o `PUT`. O nó de
+  catálogo reaproveita a moldura e os três handles do nó de skill
+  (`.node-skill.node-catalog`), com o número em destaque à direita.
+- **As portas do servidor contam arestas, não vínculos diretos.** No palco
+  `counts` soma skills e catálogos por porta; `toolCount` &co. do resumo
+  continuam sendo só vínculos diretos, e é isso que o card e o mcp-admin
+  mostram — o `catalogCount` fica ao lado.
+- **`catalogPositions` no mesmo `PUT /canvas`.** A fila de posições tem dois
+  mapas; o `relayout` grava skills e catálogos de uma vez.
+- **"Publicada em" mostra o indireto e ainda deixa publicar direto.** Um
+  vMCP alcançado só por catálogo aparece com "via catálogo X"; quem
+  administra o vMCP vê as caixas com as portas do catálogo e "Publicar" cria
+  o vínculo direto, que passa a valer sozinho. "Tirar" só existe para vínculo
+  direto — o catálogo se edita na página dele.
+- **`noSite` e `McpChips` olham `isActive`.** Uma skill desligada nunca
+  está "no site", por mais vínculos que tenha; o selo "desligada" entra na
+  frente dos demais.
+- **A rota declarativa `PUT /api/mcps/:slug/catalogs` confere quem sai.**
+  Além de cada catálogo da lista, os vinculados hoje que ficaram de fora
+  passam por `loadManaged`: tirar um catálogo alheio é mexer nele.
+- **O mcp-public não mudou.** Toda a precedência mora em `@purple-skills/db`
+  (`visibilityClause`, `listPublishedSkills`, `incrementViewCount`); o
+  servidor continua chamando as mesmas funções com o mesmo recorte.
+
+## Acesso granular
+
+Desenho em [`12-acesso-granular.md`](12-acesso-granular.md). O que a
+implementação decidiu além dele:
+
+- **`viewer` em vez de `visibility`.** As leituras de `@purple-skills/db`
+  ganharam `viewer: { role, userUuid }`; `visibility: 'all'` continua
+  existindo para o token global e o bootstrap (admin sem conta) e `'open'`
+  para o site, agora ampliada pelas duas regras de "público". Cada linha
+  devolve `access`, calculado no SQL, e o app só compara níveis
+  (`assertAccess`).
+- **Escritas devolvem o objeto sem conhecer o leitor.** Uma escrita não
+  recebe `viewer`, então o detalhe que ela devolve traz `access: 'owner'`;
+  os handlers reaplicam o `access` de quem chamou antes de responder, e
+  escondem `grants` de quem não tem `manage` (`withGrants`).
+- **404 para quem não vê, 403 para quem vê pouco.** Um objeto fora do
+  escopo da conta não existe para ela (a consulta devolve nulo); um objeto
+  visível com nível insuficiente responde 403 dizendo o nível que a conta
+  tem e o exigido.
+- **Upload confere o nível antes do multer** (`requireSkillAccess`), para
+  não ler um `.zip` que seria recusado.
+- **Sessões de um vMCP são `manage`**, como as chaves: a lista traz IPs e
+  nomes de chave. O contador do globo é `view`.
+- **Desvincular um catálogo de um vMCP** exige só `edit` no vMCP: tirar da
+  lista é mexer no servidor, não no catálogo. Vincular exige também `view`
+  no catálogo, como no doc.
+- **Deixar um objeto sem dono** (`ownerUserUuid: null`) continua sendo só de
+  admin: um dono comum não pode abandonar o objeto num estado em que só o
+  admin o alcança. Transferir para outra conta é do dono e do admin.
+- **`canWrite` ficou como alias de `canCreate`** em `shared`, marcado
+  `@deprecated`, e `canManageVirtualMcp`/`canManageCatalog` como atalhos de
+  `accessLevel` + `canOwn`; `canDelete` saiu.
+- **O selo de origem** do painel (`AccessBadge`) some para admin: ele é dono
+  de tudo e o selo não diria nada.
+
 ## Portas
 
 | Serviço | Porta |

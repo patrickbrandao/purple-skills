@@ -54,6 +54,8 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `013-skill-icon.sql` | `skills.icon` — emoji ou URL http(s) de imagem, com `CHECK` de tamanho (≤ 512); a regra de forma é do app |
 | `014-canvas-do-vmcp.sql` | posições do canvas do painel: `virtual_mcp_skills.pos_x`/`pos_y` (com `CHECK` de par) e `virtual_mcps.layout` JSONB (`CHECK` de objeto) |
 | `015-mcp-sessions.sql` | `mcp_sessions` — contabilidade de sessões do MCP público, com os índices parciais sobre as abertas; **nunca é podada** |
+| `016-catalogos.sql` | catálogos: `skills.is_active` (a skill desligada globalmente), `catalogs`, `catalog_skills` (a participação, com `is_active`), `virtual_mcp_catalogs` (as três portas do vínculo e a posição no canvas, com `CHECK` de par) e o `CHECK` de `action` com `catalog.*` |
+| `017-acesso-granular.sql` | acesso granular: `users.role` troca `leitor` por `membro` (com `UPDATE` das linhas), `skills.owner_user_uuid` (backfill de `created_by`, **uma vez**), `skills.is_public` e `catalogs.is_public`, as três tabelas de concessão (`skill_grants`, `catalog_grants`, `virtual_mcp_grants`) e o `CHECK` de `action` com `*.share`/`*.unshare` |
 
 Regras:
 
@@ -73,16 +75,20 @@ Regras:
 
 | Tabela | Papel |
 |--------|-------|
-| `skills` | catálogo: `slug`, `name`, `description`, `icon` (emoji ou URL, nulo = monograma), contadores e `search_vector`. Sem coluna de visibilidade: a skill é exibida onde está vinculada |
+| `skills` | o acervo: `slug`, `name`, `description`, `icon` (emoji ou URL, nulo = monograma), `is_active` (desligada some de todo vMCP e do site sem perder vínculo), `is_public` (quem pode **ler**: qualquer conta e o site — não publica em MCP nenhum), `owner_user_uuid` (o dono; nulo = órfã, só do admin), contadores e `search_vector`. A skill é **exibida** onde está vinculada, direto ou por catálogo |
 | `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
-| `users` | contas: papel (`admin`/`editor`/`leitor`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
+| `users` | contas: papel (`admin`/`editor`/`membro`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
 | `api_keys` | chaves `psk_` por usuário; guarda o prefixo e o hash, nunca o segredo |
 | `reset_tokens` | tokens de redefinição de senha, com expiração e uso único |
 | `virtual_mcps` | servidores MCP virtuais: `slug`, dono (`owner_user_uuid`), `is_active`, `is_open` e `layout` (posições dos nós fixos do canvas, JSONB) |
 | `virtual_mcp_skills` | vínculo skill ↔ MCP virtual, com as flags `as_skill`/`as_prompt`/`as_resource`, contadores **próprios** e a posição do nó no canvas (`pos_x`/`pos_y`, nulas = auto-layout) |
 | `virtual_mcp_keys` | chaves `psv_` por servidor; mesmo formato de `api_keys` |
+| `catalogs` | grupos de skills com dono (`owner_user_uuid`, como `virtual_mcps`), `is_active`, `is_public` (legível por qualquer conta e pelo site, **com os membros ativos**) e contadores **do catálogo** (somam quando a skill chegou ao vMCP por ele) |
+| `catalog_skills` | a participação skill ↔ catálogo, com `is_active` (desativa a skill **neste** catálogo sem removê-la) — sem portas: quem as decide é o vínculo com o vMCP |
+| `virtual_mcp_catalogs` | vínculo catálogo ↔ MCP virtual, N:N, com as flags `as_skill`/`as_prompt`/`as_resource` (valem para todo membro) e a posição do nó no canvas (`pos_x`/`pos_y`) |
+| `skill_grants` / `catalog_grants` / `virtual_mcp_grants` | as concessões por objeto (`017`): PK `(objeto, conta)`, os dois `ON DELETE CASCADE`, `level` em `view`/`edit`/`manage` (CHECK), `granted_by_user_uuid` informativo (`SET NULL`) e `created_at`; índice reverso por `user_uuid`. Dono e admin **não** têm linha |
 | `settings` | configuração da instalação, chave-valor; `default_virtual_mcp` guarda o uuid do vMCP que responde em `/mcp`, sem FK |
 | `mcp_sessions` | uma linha por cliente conectado a um vMCP pelo MCP público: transporte, por onde chegou, credencial, IP, `clientInfo`, atividade e fim. Sobrevive à remoção do vMCP e nunca é podada |
 | `schema_migrations` | controle do runner (criado por ele, não por um `.sql`) |
@@ -92,43 +98,165 @@ configuração `simple`, mantido por trigger — ver `001` e `002`.
 
 O desenho de contas, papéis e credenciais está em
 [`docs/05-accounts-and-roles.md`](../docs/05-accounts-and-roles.md); `004` a
-`006` são a parte dele que vive aqui. Dois pontos que o modelo assume:
+`006` são a parte dele que vive aqui, e o
+[`docs/12-acesso-granular.md`](../docs/12-acesso-granular.md) (`017`) é o que
+vale para escopo. Três pontos que o modelo assume:
 
-- **não há ownership nas skills.** `skills.created_by_user_uuid` é informativo;
-  o papel limita a ação, nunca o escopo. A única exceção do projeto é
-  `virtual_mcps.owner_user_uuid` (`009`): o MCP virtual tem dono, o admin
-  manda em todos e o dono no seu;
+- **o papel limita a ação; o escopo é do dono e das concessões.** Skill
+  (`017`), vMCP (`009`) e catálogo (`016`) têm `owner_user_uuid`; quem cria
+  vira dono, e `skills.created_by_user_uuid` continua só informativo. O admin
+  manda em tudo; o dono no seu; os demais no que lhes foi concedido
+  (`skill_grants` etc.) — ver [Acesso granular](#acesso-granular);
 - **o ator pode não ser uma conta.** `audit_log.actor_user_uuid` é nulo para o
   `MCP_ADMIN_TOKEN` e para o bootstrap; quem sempre existe é `actor_label`.
+  O que eles criam nasce **órfão** (dono nulo), só do admin;
+- **`leitor` não existe mais.** O `017` renomeou o papel para `membro` e
+  migrou as linhas; a diferença para `editor` é só **criar**.
 
 ### Onde uma skill é exibida
 
 Uma skill é **flutuante** (`012`,
 [`docs/09-mcp-padrao-e-skills-flutuantes.md`](../docs/09-mcp-padrao-e-skills-flutuantes.md)):
 não tem coluna de visibilidade e só é exibida — no site e nos servidores MCP
-— onde está **vinculada** a um MCP virtual. O vínculo (`virtual_mcp_skills`)
-carrega as três portas, `as_skill`, `as_prompt` e `as_resource`,
-obrigatórias e sem default, e contadores próprios; o contador global da
-skill continua somando junto.
+— onde chega a um MCP virtual, por um de dois caminhos: o **vínculo direto**
+(`virtual_mcp_skills`), que carrega as três portas, `as_skill`, `as_prompt`
+e `as_resource`, obrigatórias e sem default, e contadores próprios; ou um
+**catálogo** de que participa, vinculado ao vMCP (`016`, ver
+[Catálogos](#catálogos)). Nos dois casos a skill precisa estar **ligada**
+(`skills.is_active`); o contador global da skill continua somando junto.
 
-Toda leitura de skill recebe uma `visibility`:
+Toda leitura de skill recebe uma `visibility` **ou** um `viewer`:
 
-| `visibility` | Enxerga | Quem passa |
-|--------------|---------|------------|
-| `'open'` (padrão) | skills com vínculo a ao menos um vMCP **aberto e ligado** | site e API REST |
-| `'all'` | o catálogo inteiro, inclusive flutuantes | painel e mcp-admin |
-| `virtualMcp: { uuid, surface }` | o vínculo daquele vMCP com a flag da superfície; sobrepõe `visibility` | mcp-public |
+| Opção | Enxerga | Quem passa |
+|-------|---------|------------|
+| `visibility: 'open'` (padrão) | skills **ligadas** que são públicas (`is_public`), ou expostas em ao menos um vMCP aberto e ligado (por vínculo direto ou por catálogo), ou com participação ativa em catálogo público e ligado | site e API REST anônima |
+| `visibility: 'all'` | o acervo inteiro, inclusive flutuantes, desligadas e órfãs; `access: 'owner'` em tudo | token global e sessão de bootstrap |
+| `viewer: { role, userUuid }` | com `role: 'admin'`, o mesmo que `'all'`; senão, o que a conta vê (`docs/12` §3.1): pública, dela, concedida a ela, em vMCP aberto e ligado, em catálogo público e ligado, ou dentro de um vMCP/catálogo que ela possui ou lhe foi concedido. **Sem** filtrar `is_active` — o painel mostra a desligada a quem a vê. Sobrepõe `visibility` | painel e mcp-admin (a sessão ou o dono da chave `psk_`) |
+| `virtualMcp: { uuid, surface }` | a exposição naquele vMCP com a porta da superfície, pela precedência dos catálogos; sobrepõe as duas acima | mcp-public |
 
 O padrão é o restritivo de propósito: quem esquece a opção mostra de menos,
 nunca de mais. O filtro mora no SQL porque o `total` de `listSkills` e a
 contagem de `listTags` não têm conserto depois da consulta. `SkillSummary`
-traz `mcps`, os vínculos da skill: numa leitura `'all'` todos; nas demais só
-os com vMCP aberto e ligado — o site não revela em que servidor fechado uma
-skill está.
+traz `isActive`, `isPublic`, o dono (`ownerUserUuid`, `ownerEmail`), o
+`access` da conta que leu (ver [Acesso granular](#acesso-granular)) e
+`mcps`, os vMCPs em que a skill está — um item por servidor, `direct: true`
+num vínculo direto e `direct: false` (com `catalogs` dizendo por quais) num
+servidor alcançado só por catálogo: numa leitura `'all'` todos; com `viewer`,
+só os que a conta vê (aberto e ligado, dela, ou concedido a ela); no site só
+os abertos e ligados — ele não revela em que servidor fechado uma skill
+está. `catalogs` (os catálogos de que participa, com o estado de cada um e da
+participação) vem inteiro em `'all'`, recortado pelo `viewer` (público e
+ligado, dele, ou concedido), e vazio no site.
 
 `is_public`, `use_as_skill`, `use_as_prompt` e `use_as_resource` existiram
 entre `001` e `012`; `007` e `008` são a história delas, e o `011` copiou o
-que valia para o vínculo com o vMCP `public` antes de o `012` as apagar.
+que valia para o vínculo com o vMCP `public` antes de o `012` as apagar. O
+`is_public` de hoje (`017`) é outra coluna com o mesmo nome e outro sentido:
+**quem pode ler**, não o que o MCP publica.
+
+### Acesso granular
+
+Dono, concessões por objeto e "público" (`017`,
+[`docs/12-acesso-granular.md`](../docs/12-acesso-granular.md)). Skill, catálogo
+e vMCP têm dono; cada um tem uma tabela de concessões com um nível
+cumulativo por conta (`view` < `edit` < `manage`); skill e catálogo têm
+`is_public`, e o "público" do vMCP é o `is_open` que já existia. O que cada
+nível cobre é a tabela de `docs/12` §3.2 — **a permissão é do app**
+(`accessLevel`, `canView`/`canEdit`/`canManage`/`canOwn` de shared); o banco
+devolve o `access` e recusa só o que não faz sentido gravar.
+
+**O `access` por linha.** `SkillSummary`, `CatalogSummary` e
+`VirtualMcpSummary` trazem `access: EffectiveAccess`: `'owner'` para o admin
+(por papel, pelo token global ou pelo bootstrap — `viewer` ausente com
+`'all'`) e para o dono; o nível da concessão direta; `'view'` para quem só
+chega por público, por vMCP aberto ou por contêiner que possui ou lhe foi
+concedido; `null` numa leitura sem conta (o site). Os `*Detail` trazem
+`grants: Grant[]` sempre — é o app que decide a quem repassar (só `manage`,
+dono e admin).
+
+**As listagens de contêiner** seguem a forma curta de `docs/12` §3.1:
+`listCatalogs({ viewer })` e `listVirtualMcps({ viewer })` devolvem, para
+quem não é admin, o que é público/aberto **e ligado**, o que é da conta e o
+que lhe foi concedido; `getCatalog(slug, { viewer })`,
+`getCatalogByUuid(uuid, { viewer })`, `getVirtualMcp(slug, { viewer })` e
+`getVirtualMcpByUuid(uuid, { viewer })` devolvem `null` fora disso, como se
+o objeto não existisse. Sem `viewer` é a visão do admin, como antes;
+`{ ownerUserUuid }` continua valendo como filtro por dono.
+
+**`scope`** (`'mine' | 'shared' | 'public'`), em `listSkills`, `listCatalogs`
+e `listVirtualMcps`, é o filtro Meus / Compartilhados comigo / Públicos e
+exige `viewer` (400 sem ele; o admin também tem "meus"): `'mine'` é o que a
+conta possui; `'shared'` o que lhe foi concedido — direto ou, nas skills, por
+um contêiner que ela possui ou lhe foi concedido — **e não é dela**;
+`'public'` o que qualquer um lê (skill pública, em vMCP aberto e ligado ou em
+catálogo público e ligado; catálogo público e ligado; vMCP aberto e ligado).
+Os três se sobrepõem de propósito: uma skill pública num vMCP concedido é
+`'shared'` e `'public'`.
+
+**Concessões.** Três trios com a mesma forma, identificando o objeto pelo
+slug (é o que a REST e o mcp-admin têm) e a conta pelo uuid (o que
+`lookupUsers` devolve):
+
+```ts
+await setSkillGrant('minha-skill', userUuid, 'edit', 'web-admin', actor);   // upsert → Grant
+await removeSkillGrant('minha-skill', userUuid, 'web-admin', actor);        // 404 se não havia
+await listSkillGrants(skillUuid);                                          // Grant[], por nome
+// setCatalogGrant / removeCatalogGrant / listCatalogGrants(catalogUuid)
+// setVirtualMcpGrant / removeVirtualMcpGrant / listVirtualMcpGrants(virtualMcpUuid)
+```
+
+- `set*Grant` é **upsert**: mudar o nível reescreve a linha inteira (nível,
+  quem concedeu e `created_at`) — ela descreve a concessão atual. Recusa com
+  400: nível fora dos três, conta torta, inexistente ou desativada, o dono do
+  objeto e uma conta admin (os dois já têm tudo). Slug desconhecido é 404. O
+  objeto é travado (`FOR UPDATE`) durante a escrita. Não toca `updated_at`
+  do objeto: conceder não muda o objeto.
+- `remove*Grant` apaga a linha; concessão inexistente (ou uuid torto) é 404
+  e nada é auditado.
+- `Grant` é `{ userUuid, email, name, role, level, grantedByUserUuid,
+  grantedByEmail, createdAt }`; quem concedeu pode já ter sido removido
+  (`SET NULL` → os dois nulos).
+- Conta **desativada** mantém as linhas, inertes: as leituras por `viewer`
+  não olham `users.is_active` (uma sessão de conta desativada não existe);
+  reativar devolve o acesso. Conta removida leva as linhas (`CASCADE`) e deixa
+  os objetos dela órfãos.
+
+**Transferência e público.** `updateSkill` / `updateSkillWithContent` /
+`updateCatalog` / `updateVirtualMcp` aceitam `ownerUserUuid` e `isPublic`
+(vMCP: `isOpen`). Um uuid de novo dono precisa ser de conta **existente e
+ativa** — 400 senão, inclusive uuid torto —, e a concessão que essa conta
+tinha no objeto é apagada na mesma transação (o dono é implícito); `null`
+deixa órfão. `createSkill` grava `owner_user_uuid = actor.userUuid` (além de
+`created_by`) e aceita `isPublic`; `createCatalog` aceita `isPublic`. A
+checagem de que o chamador é dono ou admin é do app.
+
+**`lookupUsers(q, limit = 10)`** é a busca "Compartilhar com…": contas
+**ativas** cujo nome ou e-mail contém `q` (`ILIKE`), por nome, `UserLookup[]`
+(`uuid`, `email`, `name`, `role`). `q` aparado com menos de dois caracteres
+devolve `[]` sem consultar; `limit` é clamp 1..50.
+
+**Site.** `listPublicCatalogs()` lista os catálogos públicos e ligados
+(`PublicCatalog`: sem dono, sem concessões, `skillCount` = participações
+ativas de skills ligadas), por nome. `getPublicCatalog(slug)` é a página:
+`PublicCatalogDetail` com `skills` = **todos** os membros ativos como
+`SkillSummary` na visibilidade do site (`mcps` só com abertos e ligados,
+`catalogs` vazio, `access` nulo), por nome — inclusive os privados e os que
+não estão em vMCP aberto nenhum, porque o contêiner expõe (`docs/12`
+decisão 5). Privado, desligado ou inexistente é `null`, sem distinção.
+
+**Auditoria** (`docs/12` §8): `skill.share` / `skill.unshare` levam
+`skill_uuid`/`skill_slug` e `target_label` = `email:nível` / `email`;
+`catalog.share` / `mcp.share` levam `<slug> <email>:<nível>` e
+`catalog.unshare` / `mcp.unshare` levam `<slug> <email>` — sem skill, como
+os demais eventos de contêiner. Transferir é `update` / `catalog.update` /
+`mcp.update` do objeto com o e-mail do novo dono no label (`email` na skill,
+`<slug> <email>` nos outros); deixar órfão não muda o label. Ligar o flag
+público é um `update` comum.
+
+**Efeito da `017` numa instalação existente** (`docs/12` §9): leitores
+viram membros e **deixam de ver** o que não é deles, público ou exposto;
+editores deixam de editar o que não criaram. O admin marca públicas as
+skills que devem continuar visíveis, concede `view`/`edit` ou transfere.
 
 ### MCP padrão
 
@@ -178,6 +306,108 @@ e moram ao lado do que posicionam (`014`):
 
 Mover um nó é estado de tela, não publicação: `setVirtualMcpCanvas` **não
 audita nem toca `updated_at`**.
+
+Um catálogo vinculado é o quarto tipo de nó (`016`,
+[`docs/11-catalogos.md`](../docs/11-catalogos.md) §5): a posição mora em
+`virtual_mcp_catalogs.pos_x`/`pos_y`, com o mesmo CHECK de par, cai junto
+com o vínculo e é gravada pelo mesmo `setVirtualMcpCanvas`, em
+`catalogPositions`. `VirtualMcpDetail.catalogs` traz cada nó com as portas
+do vínculo, `position` e `activeSkillCount` — o número do nó.
+
+### Catálogos
+
+Um catálogo (`016`, [`docs/11-catalogos.md`](../docs/11-catalogos.md)) é um
+**grupo de skills com dono** que se vincula a um vMCP de uma vez, com uma
+escolha de portas só. Uma skill pode estar em vários catálogos; um catálogo
+pode estar em vários vMCPs; e um vMCP tem catálogos além das skills diretas.
+
+**Precedência.** Para um par (vMCP, skill), a regra mora na consulta
+(`exposedIn` em `queries.ts`, o SQL de `docs/11` §3.2) e é uma só, para
+`listSkills`, `getSkillSummary`, `getSkillDetail`, `listTags`,
+`listPublishedSkills`, `stats` e `listOpenVirtualMcps`:
+
+- com **vínculo direto** (`virtual_mcp_skills`), valem as portas dele **e
+  nada mais** — ele sobrescreve qualquer catálogo. É assim que se restringe
+  uma skill num servidor sem tirá-la do grupo; e, ao contrário, um vínculo
+  direto só com Prompts numa skill que um catálogo entrega como Tools **tira**
+  a skill das ferramentas daquele vMCP;
+- sem vínculo direto, valem os catálogos **ligados** em que a skill tem
+  participação **ativa** e que estão vinculados ao vMCP; entre catálogos não
+  há precedência — as portas são a **união** (`bool_or`).
+
+**As três desativações**, reversíveis e sem apagar vínculo nenhum:
+
+| Coluna | Alcance | Quem edita |
+|--------|---------|------------|
+| `skills.is_active` | a skill some de **todo** vMCP (direto ou por catálogo) e do site; o painel e o mcp-admin (`'all'`) continuam a vê-la | `createSkill`/`updateSkill`/`updateSkillWithContent` (`isActive`) — é `update` na skill |
+| `catalog_skills.is_active` | a participação: a skill fica no catálogo e não é entregue **por ele** | `setCatalogSkillActive`, `setCatalogSkills` — é `catalog.update` |
+| `catalogs.is_active` | o catálogo inteiro deixa de contribuir em todo vMCP; membros e vínculos ficam | `updateCatalog` — é `catalog.update` |
+
+**Contadores.** `incrementViewCount(skill, mcp)` / `incrementDownloadCount`
+somam no global da skill e **no caminho**: havendo vínculo direto, no
+vínculo, como antes; sem ele, em **cada** catálogo que contribuiu (ligado,
+com participação ativa, vinculado ao vMCP). Um acesso pelo vínculo direto
+não soma no catálogo mesmo que a skill esteja nele — o catálogo não foi o
+caminho. Não há contador por vínculo catálogo×vMCP. Continua best-effort,
+sem transação.
+
+**As queries** (mesmo padrão de `virtual_mcps`: ator obrigatório, `FOR
+UPDATE` nas declarativas, `updated_at = now()` nas escritas que mudam o
+objeto, auditoria com `targetLabel` = slug do catálogo; **a permissão é do
+app** — `canCreateCatalog` / `canManageCatalog` de shared, e vincular
+catálogo↔vMCP exige administrar **os dois**):
+
+- `listCatalogs()` sem opção é a visão do admin (todos, inclusive desligados
+  e órfãos); `{ viewer }` é o que a conta vê e `{ scope }` o filtro do
+  painel (ver [Acesso granular](#acesso-granular)); `{ ownerUserUuid }`
+  restringe ao dono; `{ ownerUserUuid: null }` devolve `[]`. `CatalogSummary`
+  traz `isPublic`, `access`, `skillCount` (membros), `activeSkillCount`
+  (participação ativa **e** skill ligada — o que um vMCP recebe), `mcpCount`
+  e os contadores.
+- `getCatalog(slug, { viewer? })` / `getCatalogByUuid(uuid, { viewer? })`
+  devolvem `CatalogDetail`: resumo + `skills` (`CatalogSkill`: `isActive` é a
+  participação, `skillIsActive` é a skill — o alerta da lista — e `addedAt`)
+  + `mcps` (`CatalogMcpRef`, com as portas do vínculo) + `grants`. Incluem
+  inativos: é o painel que lê. Com `viewer` que não é admin, `null` fora do
+  que a conta vê.
+- `createCatalog({ slug?, name, description?, isPublic?, ownerUserUuid },
+  source, actor)` audita `catalog.create`. Slug omitido é gerado do nome;
+  informado passa por `isValidSlug`; em uso é 409. `updateCatalog(uuid, {
+  slug?, name?, description?, isActive?, isPublic?, ownerUserUuid? })` é
+  parcial no padrão de `updateVirtualMcp` e audita `catalog.update` (com
+  `<slug> <email>` numa transferência — as regras estão em
+  [Acesso granular](#acesso-granular)); `deleteCatalog` audita
+  `catalog.delete` e a cascata leva membros, vínculos e concessões.
+- `setCatalogSkills(uuid, [{ slug, isActive? }])` é **declarativa**: quem
+  saiu é removido; quem entrou é inserido com `isActive` (ou ativo, se
+  omitido); quem ficou tem a participação reescrita **só** se `isActive`
+  veio — omitido não mexe, e um re-salvar não religa o que alguém desativou.
+  Slug desconhecido ou repetido é 400 e nada muda.
+- Um membro de cada vez: `addCatalogSkill(uuid, skillSlug)` (idempotente —
+  já membro fica como está e não audita; skill desconhecida é 404),
+  `removeCatalogSkill(uuid, skillSlug)` e `setCatalogSkillActive(uuid,
+  skillSlug, isActive)` (404 se não é membro). Todos devolvem
+  `CatalogDetail` e auditam `catalog.update`.
+- Pelo lado do vMCP: `linkCatalog(virtualMcpUuid, catalogUuid, flags, source,
+  actor, { position? })` cria ou reescreve o vínculo no padrão de `linkSkill`
+  (posição no INSERT e, num vínculo existente, só quando informada);
+  `unlinkCatalog(virtualMcpUuid, catalogUuid, source, actor)` desfaz (404 se
+  não vinculado); `setVirtualMcpCatalogs(uuid, [{ slug, asSkill, asPrompt,
+  asResource }])` é a declarativa, no padrão de `setVirtualMcpSkills`
+  (posição de quem ficou preservada; três flags obrigatórias). Os três
+  devolvem `VirtualMcpDetail` e auditam `mcp.update` no servidor, com o slug
+  dele — vincular um catálogo é mudar o que o servidor entrega, como com
+  skill.
+- `VirtualMcpSummary.catalogCount` conta os vínculos de catálogo;
+  `skillCount`/`toolCount`/`promptCount`/`resourceCount` continuam contando
+  **só os vínculos diretos**. `listOpenVirtualMcps().skillCount` — o número
+  do site — conta as skills ligadas expostas por qualquer caminho.
+  `stats().openSkills` segue a mesma regra e `unlinkedSkills` é quem não tem
+  vínculo direto **nem** catálogo.
+
+O `seed` cria o catálogo `exemplos` com todas as skills de exemplo como
+membros ativos e **sem vínculo com vMCP nenhum**: ele existe para o painel
+mostrar o que é um catálogo, e não publica nada até alguém vinculá-lo.
 
 ### Sessões do MCP público
 
@@ -256,10 +486,13 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Grupo | Exportações |
 |-------|-------------|
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
-| Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail`, `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
-| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`), `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
+| Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail` (aceitam `visibility`, `viewer`, `virtualMcp`; a listagem também `scope`), `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
+| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`, `isActive` e `isPublic`; as duas últimas também `ownerUserUuid`), `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
+| Acesso | `setSkillGrant`, `removeSkillGrant`, `listSkillGrants`, `setCatalogGrant`, `removeCatalogGrant`, `listCatalogGrants`, `setVirtualMcpGrant`, `removeVirtualMcpGrant`, `listVirtualMcpGrants`, `lookupUsers` |
+| Site | `listOpenVirtualMcps`, `listPublicCatalogs`, `getPublicCatalog` |
 | Vínculo pelo lado da skill | `linkSkill` (aceita `{ position }`), `unlinkSkill` (e `mcps` em `createSkill`) |
-| Canvas | `setVirtualMcpCanvas`; `layout` em `VirtualMcpDetail`, `position`/`icon` em `VirtualMcpSkill`, `toolCount`/`promptCount`/`resourceCount`/`preview`/`onlineSessions` em `VirtualMcpSummary` |
+| Canvas | `setVirtualMcpCanvas` (`layout`, `positions`, `catalogPositions`); `layout`/`catalogs` em `VirtualMcpDetail`, `position`/`icon` em `VirtualMcpSkill`, `toolCount`/`promptCount`/`resourceCount`/`preview`/`onlineSessions`/`catalogCount` em `VirtualMcpSummary` |
+| Catálogos | `listCatalogs`, `getCatalog`, `getCatalogByUuid`, `createCatalog`, `updateCatalog`, `deleteCatalog`, `setCatalogSkills`, `addCatalogSkill`, `removeCatalogSkill`, `setCatalogSkillActive`, `linkCatalog`, `unlinkCatalog`, `setVirtualMcpCatalogs` |
 | Sessões MCP | `openMcpSession`, `touchMcpSession`, `closeMcpSession`, `closeMcpSessions`, `findOpenMcpSession`, `expireMcpSessions`, `listMcpSessions`, `countOnlineMcpSessions` |
 | Auditoria paginada | `listAuditPage` |
 | Contadores | `incrementViewCount`, `incrementDownloadCount` |
@@ -270,8 +503,8 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `settings`, `mcpSessions`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `SettingRow`, `McpSessionRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListAuditOptions` |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListAuditOptions` |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -290,11 +523,13 @@ Em `createSkill` ele também preenche `skills.created_by_user_uuid`.
 
 `listSkills`, `getSkillSummary`, `getSkillDetail` e `listTags` aceitam
 `virtualMcp?: VirtualScope` (`{ uuid, surface: 'skill' | 'prompt' |
-'resource' }`) — o recorte de um MCP virtual. Com ela o `WHERE` vira um
-`EXISTS` sobre `virtual_mcp_skills` com a flag da superfície pedida e ignora
-`visibility`. `listPublishedSkills(surface, virtualMcpUuid)` faz o mesmo para
-`prompts/list` e `resources/list`, e `incrementViewCount(skill, mcp)` /
-`incrementDownloadCount(skill, mcp)` somam no vínculo **e** no global:
+'resource' }`) — o recorte de um MCP virtual. Com ela o `WHERE` vira a
+exposição naquele servidor com a porta da superfície pedida — o vínculo
+direto, ou, sem ele, a união dos catálogos (ver [Catálogos](#catálogos)) —
+e ignora `visibility`. `listPublishedSkills(surface, virtualMcpUuid)` faz o
+mesmo para `prompts/list` e `resources/list`, e `incrementViewCount(skill,
+mcp)` / `incrementDownloadCount(skill, mcp)` somam no global **e** no caminho
+(o vínculo direto, ou cada catálogo que contribuiu):
 
 ```ts
 // apps/mcp-public — a raiz (vMCP padrão) e /virtual/<slug>/mcp
@@ -329,36 +564,42 @@ administra o vMCP (`canManageVirtualMcp`) vem antes de chamar.
 ### MCP virtual
 
 - `listVirtualMcps()` sem opção é a visão do admin (todos, inclusive inativos
-  e órfãos); `{ ownerUserUuid }` restringe ao dono; `{ ownerUserUuid: null }`
-  devolve `[]` — a sessão de bootstrap não é dona de nada.
-  `listOpenVirtualMcps()` é a lista do site: só abertos e ligados, sem dono
-  nem chaves, com `skillCount` e `isDefault`.
+  e órfãos); `{ viewer }` é o que a conta vê e `{ scope }` o filtro do
+  painel (ver [Acesso granular](#acesso-granular)); `{ ownerUserUuid }`
+  restringe ao dono; `{ ownerUserUuid: null }` devolve `[]` — a sessão de
+  bootstrap não é dona de nada. `listOpenVirtualMcps()` é a lista do site:
+  só abertos e ligados, sem dono nem chaves, com `skillCount` e `isDefault`.
 - `VirtualMcpSummary` traz, além de `skillCount`, os contadores por porta
-  (`toolCount` = vínculos com `as_skill`, `promptCount`, `resourceCount`),
-  `preview` (até 8 skills vinculadas por nome: `slug`, `name`, `icon`) e
-  `onlineSessions`. Este último só é contado quando a chamada informa a
+  (`toolCount` = vínculos com `as_skill`, `promptCount`, `resourceCount`) —
+  todos **só dos vínculos diretos** —, `catalogCount`, `preview` (até 8
+  skills vinculadas por nome: `slug`, `name`, `icon`) e `onlineSessions`.
+  Este último só é contado quando a chamada informa a
   janela — `listVirtualMcps({ onlineWindowMs })`, `getVirtualMcp(slug, {
   onlineWindowMs })`, `getVirtualMcpByUuid(uuid, { onlineWindowMs })`; sem
   ela é 0 e `mcp_sessions` nem é consultada. Janela não finita ou ≤ 0 é 400.
-- `getVirtualMcp(slug)` / `getVirtualMcpByUuid(uuid)` devolvem
-  `VirtualMcpDetail` (resumo + skills vinculadas, com as flags, os contadores
-  **do vínculo**, o `icon` e a `position` no canvas + o `layout` dos nós
-  fixos) e incluem inativos: é o painel que lê. `resolveVirtualMcp` é o
-  oposto — só ativos, uma linha, sem agregação — e é o que o servidor
-  consulta a cada requisição.
-- `setVirtualMcpCanvas(uuid, { layout?, positions? })` grava o canvas:
-  mescla `layout` chave a chave (só as informadas substituem) e grava
-  `pos_x`/`pos_y` das skills listadas (`{ slug, x, y }`). Coordenadas
+- `getVirtualMcp(slug, { viewer? })` / `getVirtualMcpByUuid(uuid, {
+  viewer? })` devolvem `VirtualMcpDetail` (resumo + skills vinculadas, com
+  as flags, os contadores **do vínculo**, o `icon` e a `position` no canvas +
+  `catalogs`, os catálogos vinculados com as portas, a `position` e o
+  `activeSkillCount` do nó + o `layout` dos nós fixos + `grants`) e incluem
+  inativos: é o painel que lê. Com `viewer` que não é admin, `null` fora do
+  que a conta vê. `resolveVirtualMcp` é o oposto — só ativos, uma linha, sem
+  agregação — e é o que o servidor consulta a cada requisição.
+- `setVirtualMcpCanvas(uuid, { layout?, positions?, catalogPositions? })`
+  grava o canvas: mescla `layout` chave a chave (só as informadas
+  substituem) e grava `pos_x`/`pos_y` das skills (`positions`) e dos
+  catálogos (`catalogPositions`) listados (`{ slug, x, y }`). Coordenadas
   precisam ser números finitos e são arredondadas para o pixel inteiro. Tudo
   numa transação: slug desconhecido, repetido ou não vinculado a **este**
   vMCP é 400 e nada é gravado; uuid inválido ou sem linha é 404. Sem
   auditoria e sem `updated_at`. A permissão é do app.
 - `createVirtualMcp` / `updateVirtualMcp` / `deleteVirtualMcp` exigem ator e
   auditam como `mcp.create` / `mcp.update` / `mcp.delete`, com `targetLabel`
-  = slug do MCP (o novo, em rename). Slug omitido é gerado do nome; informado
-  passa por `isValidSlug`; em uso é 409. `updateVirtualMcp` é parcial no
-  padrão de `updateUser` (`undefined` não mexe, `ownerUserUuid: null` apaga o
-  dono).
+  = slug do MCP (o novo, em rename; `<slug> <email>` numa transferência).
+  Slug omitido é gerado do nome; informado passa por `isValidSlug`; em uso é
+  409. `updateVirtualMcp` é parcial no padrão de `updateUser` (`undefined`
+  não mexe, `ownerUserUuid: null` apaga o dono; um uuid precisa ser de conta
+  ativa e apaga a concessão dela — ver [Acesso granular](#acesso-granular)).
 - `setVirtualMcpSkills(uuid, lista)` é **declarativa**: a lista é o estado
   desejado. Quem saiu é removido, quem entrou é inserido, quem ficou tem só as
   flags reescritas e mantém os contadores. As três flags são obrigatórias por
@@ -499,7 +740,8 @@ recriado do zero a cada execução:
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
   npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts \
     database/src/virtual-mcps.integration.test.ts database/src/settings.integration.test.ts \
-    database/src/sessions.integration.test.ts
+    database/src/sessions.integration.test.ts database/src/catalogs.integration.test.ts \
+    database/src/access.integration.test.ts
 ```
 
 | Suíte | Cobre |
@@ -507,10 +749,12 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
-| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` a `015` aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |
+| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` a `016` aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |
 | `sessions.integration.test.ts` | sessões do MCP público: abrir/tocar/fechar, o `clientInfo` que só entra uma vez, o reuso de linha do stateless, a expiração com fim presumido por transporte, a listagem com filtros, recorte e `isOnline`, o contador por transporte, `onlineSessions` no resumo do vMCP com e sem janela, e a linha que sobrevive à remoção do vMCP sem ser podada |
+| `catalogs.integration.test.ts` | catálogos: criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; e a re-execução do `016` |
 | `virtual-mcps.integration.test.ts` também cobre | a visibilidade `'open'` do site (só vMCP aberto e ligado), `mcps` na skill, `listPublishedSkills` por vMCP, o `icon` da skill (regra de shared, 400 no inválido, CHECK de tamanho), os contadores por porta e o preview, e o canvas (`setVirtualMcpCanvas`, posição preservada por `setVirtualMcpSkills`, `linkSkill` com posição, `layout` que ignora lixo, os CHECKs de `014`) |
+| `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers`; `listPublicCatalogs`/`getPublicCatalog` com membros privados; as cascatas; e a re-execução do `017` que não devolve dono a ninguém |
 
-As cinco recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
+As sete recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o
 arquivo. Suíte de integração nova aqui dentro precisa usar o mesmo número.

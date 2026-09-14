@@ -2,23 +2,24 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, LayoutTemplate, Radio, Settings, Trash2 } from 'lucide-react';
 import {
-  canManageVirtualMcp,
+  canEdit as canEditAccess,
+  canManage,
+  canOwn,
   createMcpKey,
   deleteMcp,
   formatDateTime,
   getMcp,
   getMcpKeys,
   getMcpSessions,
-  getUsers,
   revokeMcpKey,
   updateMcp,
   type Session,
   type SessionUser,
-  type UserSummary,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
 } from '../api.js';
-import { Button, CopyButton, Field, McpStateBadges, Panel, Skel, Tabs, useConfirm } from '../components/ui.js';
+import { Button, CopyButton, EmptyRow, Field, McpStateBadges, Panel, Skel, Tabs, useConfirm } from '../components/ui.js';
+import { AccessBadge, AccessPanel, accessSentence } from '../components/AccessPanel.js';
 import { useToast } from '../components/Toast.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { SessionsTable } from '../components/SessionsTable.js';
@@ -26,8 +27,9 @@ import { ServerCanvas } from '../components/canvas/ServerCanvas.js';
 
 /**
  * Um servidor MCP virtual: o canvas (skills ligadas às portas), as sessões,
- * as chaves e a configuração. Quem chega aqui é o dono ou um admin — o
- * servidor recusa os demais.
+ * as chaves e a configuração. O que a sessão pode vem em `access`
+ * (`docs/12-acesso-granular.md` §3.2): `view` lê o canvas; `edit` mexe nos
+ * vínculos; `manage` vê sessões e chaves e muda a configuração; o dono apaga.
  */
 export function ServerPage({ session, user }: { session: Session; user: SessionUser }) {
   const { slug = '' } = useParams();
@@ -52,19 +54,24 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
 
   const tail = location.pathname.slice(`/mcps/${slug}`.length).replace(/^\//, '');
   const tab = tail === 'sessoes' || tail === 'chaves' || tail === 'configuracoes' ? tail : 'canvas';
-  const canEdit = detail ? canManageVirtualMcp(user.role, detail.ownerUserUuid, user.uuid) : false;
+  const canEdit = detail ? canEditAccess(detail.access) : false;
+  const manages = detail ? canManage(detail.access) : false;
   const base = session.mcpPublicUrl || 'https://<MCP_PUBLIC_URL>';
 
   useRegisterCommands(
     detail
       ? [
           { id: 'mcp-canvas', label: 'Ir para o canvas', group: 'Ir para', icon: <LayoutTemplate />, run: () => navigate(`/mcps/${detail.slug}`) },
-          { id: 'mcp-sessions', label: 'Sessões deste servidor', group: 'Ir para', icon: <Radio />, run: () => navigate(`/mcps/${detail.slug}/sessoes`) },
-          { id: 'mcp-keys', label: 'Chaves deste servidor', group: 'Ir para', icon: <KeyRound />, run: () => navigate(`/mcps/${detail.slug}/chaves`) },
+          ...(manages
+            ? [
+                { id: 'mcp-sessions', label: 'Sessões deste servidor', group: 'Ir para' as const, icon: <Radio />, run: () => navigate(`/mcps/${detail.slug}/sessoes`) },
+                { id: 'mcp-keys', label: 'Chaves deste servidor', group: 'Ir para' as const, icon: <KeyRound />, run: () => navigate(`/mcps/${detail.slug}/chaves`) },
+              ]
+            : []),
           { id: 'mcp-settings', label: 'Configurações deste servidor', group: 'Ir para', icon: <Settings />, run: () => navigate(`/mcps/${detail.slug}/configuracoes`) },
         ]
       : [],
-    [detail?.slug],
+    [detail?.slug, manages],
   );
 
   if (!detail) {
@@ -88,12 +95,16 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             <div className="flex items-center gap-2">
               <h1>{detail.name}</h1>
               <McpStateBadges mcp={detail} />
+              <AccessBadge object={detail} user={user} publicLabel="aberto" />
             </div>
             <div className="url">
               {base}/virtual/{detail.slug}/mcp
               {detail.isDefault && ` · ${base}/mcp`}
               {' · '}
-              {detail.skillCount} skill{detail.skillCount === 1 ? '' : 's'} · dono: {detail.ownerEmail ?? 'nenhum (só admin)'}
+              {detail.skillCount} skill{detail.skillCount === 1 ? '' : 's'}
+              {detail.catalogCount > 0 && ` · ${detail.catalogCount} catálogo${detail.catalogCount === 1 ? '' : 's'}`} · dono:{' '}
+              {detail.ownerEmail ?? 'nenhum (só admin)'}
+              {user.role !== 'admin' && ` · ${accessSentence(detail.access)}`}
             </div>
           </div>
         </div>
@@ -102,8 +113,13 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           value={tab}
           items={[
             { key: 'canvas', label: 'Canvas', icon: <LayoutTemplate />, to: `/mcps/${detail.slug}` },
-            { key: 'sessoes', label: 'Sessões', icon: <Radio />, to: `/mcps/${detail.slug}/sessoes`, count: detail.onlineSessions || undefined },
-            { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `/mcps/${detail.slug}/chaves`, count: detail.activeKeyCount || undefined },
+            // Sessões (IPs, nomes de chave) e chaves são operação: só `manage`.
+            ...(manages
+              ? [
+                  { key: 'sessoes', label: 'Sessões', icon: <Radio />, to: `/mcps/${detail.slug}/sessoes`, count: detail.onlineSessions || undefined },
+                  { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `/mcps/${detail.slug}/chaves`, count: detail.activeKeyCount || undefined },
+                ]
+              : []),
             { key: 'configuracoes', label: 'Configurações', icon: <Settings />, to: `/mcps/${detail.slug}/configuracoes` },
           ]}
         />
@@ -122,32 +138,36 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             />
           }
         />
-        <Route
-          path="sessoes"
-          element={
-            <div className="stage-body">
-              <div className="page wide">
-                <SessionsTable load={(query) => getMcpSessions(detail.slug, query)} onlineWindowMs={session.onlineWindowMs} />
+        {manages && (
+          <Route
+            path="sessoes"
+            element={
+              <div className="stage-body">
+                <div className="page wide">
+                  <SessionsTable load={(query) => getMcpSessions(detail.slug, query)} onlineWindowMs={session.onlineWindowMs} />
+                </div>
               </div>
-            </div>
-          }
-        />
-        <Route
-          path="chaves"
-          element={
-            <div className="stage-body">
-              <div className="page">
-                <KeysPanel mcp={detail} canEdit={canEdit} base={base} />
+            }
+          />
+        )}
+        {manages && (
+          <Route
+            path="chaves"
+            element={
+              <div className="stage-body">
+                <div className="page">
+                  <KeysPanel mcp={detail} canEdit={manages} base={base} />
+                </div>
               </div>
-            </div>
-          }
-        />
+            }
+          />
+        )}
         <Route
           path="configuracoes"
           element={
             <div className="stage-body">
               <div className="page">
-                <SettingsPanel mcp={detail} user={user} canEdit={canEdit} onSaved={setDetail} />
+                <SettingsPanel mcp={detail} user={user} onSaved={setDetail} />
               </div>
             </div>
           }
@@ -289,13 +309,7 @@ function KeysPanel({ mcp, canEdit, base }: { mcp: VirtualMcpDetail; canEdit: boo
                   </td>
                 </tr>
               ))}
-              {keys !== null && keys.length === 0 && (
-                <tr>
-                  <td colSpan={3}>
-                    <p className="list-empty">Nenhuma chave emitida.</p>
-                  </td>
-                </tr>
-              )}
+              {keys !== null && keys.length === 0 && <EmptyRow colSpan={3}>Nenhuma chave ainda</EmptyRow>}
             </tbody>
           </table>
         </div>
@@ -321,17 +335,18 @@ function KeysPanel({ mcp, canEdit, base }: { mcp: VirtualMcpDetail; canEdit: boo
 
 // ---------------------------------------------------------- configuração ---
 
-function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail; user: SessionUser; canEdit: boolean; onSaved: (detail: VirtualMcpDetail) => void }) {
+/** Nome, slug, descrição, aberto e ligado são `manage`; apagar é do dono; o dono e as concessões ficam em "Acesso". */
+function SettingsPanel({ mcp, user, onSaved }: { mcp: VirtualMcpDetail; user: SessionUser; onSaved: (detail: VirtualMcpDetail) => void }) {
   const toast = useToast();
   const confirm = useConfirm();
   const navigate = useNavigate();
+  const canEdit = canManage(mcp.access);
+  const owns = canOwn(mcp.access);
   const [name, setName] = useState(mcp.name);
   const [slug, setSlug] = useState(mcp.slug);
   const [description, setDescription] = useState(mcp.description);
   const [isOpen, setIsOpen] = useState(mcp.isOpen);
   const [isActive, setIsActive] = useState(mcp.isActive);
-  const [owner, setOwner] = useState(mcp.ownerUserUuid ?? '');
-  const [users, setUsers] = useState<UserSummary[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -340,23 +355,14 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
     setDescription(mcp.description);
     setIsOpen(mcp.isOpen);
     setIsActive(mcp.isActive);
-    setOwner(mcp.ownerUserUuid ?? '');
   }, [mcp]);
-
-  useEffect(() => {
-    if (user.role !== 'admin' || user.legacy) return;
-    getUsers()
-      .then((data) => setUsers(data.items))
-      .catch(() => void 0);
-  }, [user.role, user.legacy]);
 
   const dirty =
     name !== mcp.name ||
     slug !== mcp.slug ||
     description !== mcp.description ||
     isOpen !== mcp.isOpen ||
-    isActive !== mcp.isActive ||
-    owner !== (mcp.ownerUserUuid ?? '');
+    isActive !== mcp.isActive;
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -377,7 +383,6 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
         description: description !== mcp.description ? description : undefined,
         isOpen: isOpen !== mcp.isOpen ? isOpen : undefined,
         isActive: isActive !== mcp.isActive ? isActive : undefined,
-        ...(user.role === 'admin' && owner !== (mcp.ownerUserUuid ?? '') ? { ownerUserUuid: owner || null } : {}),
       });
       onSaved(saved);
       toast.success('Servidor salvo.');
@@ -392,7 +397,7 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
   async function remove() {
     const ok = await confirm({
       title: `Remover o servidor "${mcp.name}"?`,
-      description: `As chaves e os vínculos somem; as skills continuam no catálogo.${mcp.isDefault ? ' Ele é o MCP padrão: /mcp passa a responder 404.' : ''}`,
+      description: `As chaves e os vínculos somem; as skills e os catálogos continuam existindo.${mcp.isDefault ? ' Ele é o MCP padrão: /mcp passa a responder 404.' : ''}`,
       confirmLabel: 'Remover',
       danger: true,
     });
@@ -423,24 +428,19 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
           </Field>
           <label className="check">
             <input type="checkbox" checked={isOpen} onChange={(event) => setIsOpen(event.target.checked)} disabled={!canEdit} />
-            Aberto: qualquer cliente conecta sem chave, e o site lista o servidor e as skills dele
+            <span>
+              Aberto: qualquer cliente conecta sem chave, e o site lista o servidor e as skills dele
+              {isOpen && !mcp.isOpen && mcp.skillCount + mcp.catalogCount > 0 && (
+                <span className="hint block">
+                  Ao abrir, toda skill dentro — direta ou por catálogo — fica pública por aqui, mesmo as privadas.
+                </span>
+              )}
+            </span>
           </label>
           <label className="check">
             <input type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} disabled={!canEdit} />
             Ligado: desligado, tudo sob o endereço dele responde 404 (chaves e vínculos ficam)
           </label>
-          {user.role === 'admin' && !user.legacy && (
-            <Field label="Dono" hint="Só um administrador transfere o dono. Sem dono, só administradores mexem no servidor.">
-              <select className="field" value={owner} onChange={(event) => setOwner(event.target.value)}>
-                <option value="">— sem dono (só admin) —</option>
-                {users.map((item) => (
-                  <option key={item.uuid} value={item.uuid}>
-                    {item.name} ({item.email}){item.isActive ? '' : ' · desativada'}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
           {canEdit && (
             <div className="flex items-center gap-3">
               <Button type="submit" disabled={busy || !dirty}>
@@ -453,6 +453,13 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
       </Panel>
 
       <div className="grid content-start gap-4">
+        <AccessPanel
+          kind="mcp"
+          object={mcp}
+          user={user}
+          onPatch={(body) => updateMcp(mcp.slug, body)}
+          onChanged={onSaved}
+        />
         <Panel title="Sobre" icon={<Settings />}>
           <dl className="kv">
             <dt>Criado em</dt>
@@ -463,11 +470,16 @@ function SettingsPanel({ mcp, user, canEdit, onSaved }: { mcp: VirtualMcpDetail;
             <dd>
               {mcp.skillCount} ({mcp.toolCount} tools, {mcp.resourceCount} resources, {mcp.promptCount} prompts)
             </dd>
+            <dt>Catálogos</dt>
+            <dd>
+              {mcp.catalogCount}
+              {mcp.catalogs.length > 0 && ` (${mcp.catalogs.map((catalog) => catalog.name).join(', ')})`}
+            </dd>
             <dt>Padrão</dt>
             <dd>{mcp.isDefault ? 'sim — responde em /mcp' : 'não'}</dd>
           </dl>
         </Panel>
-        {canEdit && (
+        {owns && (
           <Panel title="Zona de perigo" icon={<Trash2 />}>
             <p className="panel-hint">Remover apaga o servidor, as chaves e os vínculos. As skills continuam no catálogo.</p>
             <Button variant="danger" onClick={() => void remove()}>

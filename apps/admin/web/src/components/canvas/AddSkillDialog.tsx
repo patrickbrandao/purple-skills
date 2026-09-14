@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { SkillSummary } from '../../api.js';
+import { Library } from 'lucide-react';
+import type { CatalogSummary, SkillSummary } from '../../api.js';
 import { Button, Modal } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
 import { PORTS, PORT_LABEL, type Port } from './types.js';
@@ -10,39 +11,64 @@ const PORT_HINT: Record<Port, string> = {
   prompts: 'Oferecida como prompt (slash-command) pelo slug.',
 };
 
+/** O que está sendo acrescentado ao servidor: uma skill ou um catálogo inteiro. */
+export type Picked = { kind: 'skill'; skill: SkillSummary } | { kind: 'catalog'; catalog: CatalogSummary };
+
 /**
- * Ao acrescentar uma skill ao servidor, a pessoa escolhe por quais portas ela
- * entra — Tools vem marcada, porque é a porta que o agente descobre sozinho.
- * Um nó só existe com ao menos uma aresta, então zero portas não passa.
+ * Ao acrescentar uma skill (ou um catálogo) ao servidor, a pessoa escolhe por
+ * quais portas entra — Tools vem marcada, porque é a porta que o agente
+ * descobre sozinho. Um nó só existe com ao menos uma aresta, então zero
+ * portas não passa. No catálogo, a escolha vale para todos os membros.
  */
 export function AddSkillDialog({
-  skill,
+  picked,
   serverName,
   busy,
   onConfirm,
   onClose,
 }: {
-  skill: SkillSummary | null;
+  picked: Picked | null;
   serverName: string;
   busy: boolean;
   onConfirm: (ports: Port[]) => void;
   onClose: () => void;
 }) {
   const [ports, setPorts] = useState<Port[]>(['tools']);
+  const name = picked ? (picked.kind === 'skill' ? picked.skill.name : picked.catalog.name) : '';
 
   return (
-    <Modal open={skill !== null} title={skill ? `Adicionar "${skill.name}"` : ''} onClose={onClose}>
-      {skill && (
+    <Modal open={picked !== null} title={picked ? `Adicionar "${name}"` : ''} onClose={onClose}>
+      {picked && (
         <>
           <p className="d">
-            A skill entra em <strong>{serverName}</strong> pelas portas marcadas. Cada porta vira uma aresta no canvas; tirar a última
-            aresta remove a skill do servidor.
+            {picked.kind === 'skill' ? (
+              <>
+                A skill entra em <strong>{serverName}</strong> pelas portas marcadas. Cada porta vira uma aresta no canvas; tirar a
+                última aresta remove a skill do servidor.
+              </>
+            ) : (
+              <>
+                Todas as skills ativas do catálogo entram em <strong>{serverName}</strong> pelas portas marcadas — uma escolha só
+                para o grupo inteiro. Uma skill que também tiver vínculo direto com este servidor segue o vínculo direto, não o
+                catálogo.
+              </>
+            )}
           </p>
           <div className="mt-4 flex items-center gap-3">
-            <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} />
+            {picked.kind === 'skill' ? (
+              <SkillIcon icon={picked.skill.icon} name={picked.skill.name} slug={picked.skill.slug} />
+            ) : (
+              <span className="skill-icon" style={{ color: 'var(--accent-soft)' }}>
+                <Library />
+              </span>
+            )}
             <span className="min-w-0">
-              <span className="row-title">{skill.name}</span>
-              <span className="row-sub">{skill.slug}</span>
+              <span className="row-title">{name}</span>
+              <span className="row-sub">
+                {picked.kind === 'skill'
+                  ? picked.skill.slug
+                  : `${picked.catalog.slug} · ${picked.catalog.activeSkillCount} skill${picked.catalog.activeSkillCount === 1 ? '' : 's'} ativa${picked.catalog.activeSkillCount === 1 ? '' : 's'}`}
+              </span>
             </span>
           </div>
           <div className="mt-4 grid gap-2">

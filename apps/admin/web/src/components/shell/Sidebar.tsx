@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ExternalLink,
   LayoutGrid,
+  Library,
   ListChecks,
   MessageSquare,
   MoreVertical,
@@ -99,6 +100,9 @@ export function Sidebar({
           </NavLink>
           <NavLink to="/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
             <Table2 /> Skills
+          </NavLink>
+          <NavLink to="/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+            <Library /> Catálogos
           </NavLink>
 
           <div className="nav-sep" />

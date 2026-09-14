@@ -9,6 +9,14 @@
   saem do banco; uma skill só é exibida — no MCP e no site — quando está
   vinculada a um vMCP. Migration `012`.
 
+> **Parcialmente revogado por [`12`](12-acesso-granular.md):** a decisão 1
+> ("privada deixa de ser um estado da skill") ganhou uma exceção com outro
+> significado — `skills.is_public` voltou, mas responde *quem pode ler*, não
+> *onde é servida*; a exposição no MCP continua sendo vínculo. A regra do site
+> (decisão 5) ampliou: skills públicas e catálogos públicos também aparecem.
+> A decisão 6 ("só dono ou admin vinculam") virou `edit` no vMCP e `view` na
+> skill.
+
 Este documento registra o desenho fechado na entrevista de 12/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra em
 [`02-architecture-decisions.md`](02-architecture-decisions.md) e os desvios em

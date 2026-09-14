@@ -17,6 +17,10 @@ const db = vi.hoisted(() => ({
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
   getVirtualMcp: vi.fn(),
+  getSkillSummary: vi.fn(),
+  getUserByEmail: vi.fn(),
+  setSkillGrant: vi.fn(),
+  removeSkillGrant: vi.fn(),
   setFile: vi.fn(),
   setFiles: vi.fn(),
   deleteFile: vi.fn(),
@@ -26,14 +30,19 @@ const db = vi.hoisted(() => ({
   getSkillDetail: vi.fn(),
   readFile: vi.fn(),
   stats: vi.fn(),
+  notFound: (message: string) => new AppError(message, 404, 'not_found'),
+  badRequest: (message: string) => new AppError(message, 400, 'bad_request'),
 }));
 
 vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
 const { guard, createHandlers } = await import('./tools.js');
 
-const caller = (role: 'admin' | 'editor' | 'leitor') => ({
-  actor: { userUuid: role === 'admin' ? null : `uuid-${role}`, label: `${role}@exemplo.com` },
+type Role = 'admin' | 'editor' | 'membro';
+type Viewer = { role: Role; userUuid: string | null };
+
+const caller = (role: Role, userUuid: string | null = role === 'admin' ? null : `uuid-${role}`) => ({
+  actor: { userUuid, label: `${role}@exemplo.com` },
   role,
   identity: `teste:${role}`,
 });
@@ -43,13 +52,34 @@ const handlers = createHandlers(caller('admin'));
 /** Ator gravado no audit quando quem chama é o token global. */
 const ADMIN_ACTOR = { userUuid: null, label: 'admin@exemplo.com' };
 
+/** O que o banco faria com `viewer` (`docs/12` §3.1); concessões por uuid da conta. */
+const grants: Record<string, 'view' | 'edit' | 'manage'> = {};
+function seen<T extends { ownerUserUuid: string | null; isOpen?: boolean; isPublic?: boolean }>(
+  object: T,
+  viewer: Viewer | undefined,
+): (T & { access: string }) | null {
+  if (!viewer || viewer.role === 'admin') return { ...object, access: 'owner' };
+  if (viewer.userUuid !== null && object.ownerUserUuid === viewer.userUuid) return { ...object, access: 'owner' };
+  const level = viewer.userUuid ? grants[viewer.userUuid] : undefined;
+  if (level) return { ...object, access: level };
+  if (object.isOpen || object.isPublic) return { ...object, access: 'view' };
+  return null;
+}
+
 const detail = {
   icon: null,
   uuid: 'uuid-1',
   slug: 'minha-skill',
   name: 'Minha Skill',
   description: 'Faz coisas',
+  isActive: true,
+  isPublic: false,
+  ownerUserUuid: 'uuid-editor',
+  ownerEmail: 'editor@exemplo.com',
+  access: 'owner',
+  grants: [],
   mcps: [],
+  catalogs: [],
   viewCount: 0,
   downloadCount: 0,
   score: 0,
@@ -69,20 +99,17 @@ function makeZip(entries: Record<string, string>): string {
   return zip.toBuffer().toString('base64');
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
-/** Um vMCP do editor: quem administra publica nele; outro editor, não. */
+/** Um vMCP do editor: quem o edita publica nele; outro editor não o vê. */
 const timeA = {
   uuid: 'mcp-1',
   slug: 'time-a',
   name: 'Time A',
   description: '',
   isActive: true,
-  isOpen: true,
+  isOpen: false,
   ownerUserUuid: 'uuid-editor',
   ownerEmail: 'editor@exemplo.com',
+  grants: [],
   skillCount: 0,
   activeKeyCount: 0,
   isDefault: false,
@@ -91,11 +118,30 @@ const timeA = {
   resourceCount: 0,
   onlineSessions: 0,
   preview: [],
+  catalogCount: 0,
   layout: {},
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   skills: [],
+  catalogs: [],
 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  for (const key of Object.keys(grants)) delete grants[key];
+  db.getSkillSummary.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) =>
+    slug === 'minha-skill' ? seen(detail, options?.viewer) : null,
+  );
+  db.getSkillDetail.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) =>
+    slug === 'minha-skill' ? seen(detail, options?.viewer) : null,
+  );
+  db.getVirtualMcp.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) =>
+    slug === 'time-a' ? seen(timeA, options?.viewer) : null,
+  );
+  db.getUserByEmail.mockImplementation(async (email: string) =>
+    email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
+  );
+});
 
 describe('create_skill', () => {
   it('encaminha o conteúdo do SKILL.md e marca a origem mcp-admin', async () => {
@@ -108,7 +154,7 @@ describe('create_skill', () => {
     });
 
     expect(db.createSkill).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Minha Skill', skillMd: '# Minha Skill', mcps: [] }),
+      expect.objectContaining({ name: 'Minha Skill', skillMd: '# Minha Skill', mcps: [], isPublic: false }),
       'mcp-admin',
       ADMIN_ACTOR,
     );
@@ -134,12 +180,11 @@ describe('create_skill', () => {
   });
 
   // Onde a skill aparece é o vínculo: `mcps` resolve o slug em uuid e a
-  // permissão é a do vMCP — o dono ou um admin.
-  it('publica nos vMCPs pedidos, com a permissão de quem os administra', async () => {
-    db.getVirtualMcp.mockResolvedValue(timeA);
+  // permissão é a do vMCP — `edit` nele.
+  it('publica nos vMCPs pedidos, com a permissão de quem os edita', async () => {
     db.createSkill.mockResolvedValue({
       ...detail,
-      mcps: [{ ...timeA, asSkill: true, asPrompt: false, asResource: false }],
+      mcps: [{ ...timeA, isOpen: true, asSkill: true, asPrompt: false, asResource: false, direct: true, catalogs: [] }],
     });
 
     const result = await createHandlers(caller('editor')).create_skill({
@@ -159,20 +204,30 @@ describe('create_skill', () => {
     expect(result.content[0].text).toContain('/skills/minha-skill');
   });
 
-  it('recusa um vMCP de outra conta, ou sem superfície, sem criar nada', async () => {
-    db.getVirtualMcp.mockResolvedValue({ ...timeA, ownerUserUuid: 'uuid-outra' });
+  it('recusa um vMCP que não vê, um que só lê, ou sem superfície, sem criar nada', async () => {
+    const outro = createHandlers(caller('editor', 'uuid-outro'));
 
-    const alheio = await guard(() =>
-      createHandlers(caller('editor')).create_skill({
+    const invisivel = await guard(() =>
+      outro.create_skill({
         name: 'X',
         skill_md_content: '# X',
         mcps: [{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }],
       }),
     );
-    expect(alheio.isError).toBe(true);
-    expect(alheio.content[0].text).toMatch(/pertence a outra conta/);
+    expect(invisivel.isError).toBe(true);
+    expect(invisivel.content[0].text).toMatch(/MCP virtual não encontrado/);
 
-    db.getVirtualMcp.mockResolvedValue(timeA);
+    grants['uuid-outro'] = 'view';
+    const soLe = await guard(() =>
+      outro.create_skill({
+        name: 'X',
+        skill_md_content: '# X',
+        mcps: [{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }],
+      }),
+    );
+    expect(soLe.isError).toBe(true);
+    expect(soLe.content[0].text).toMatch(/exige "editar"/);
+
     const semPorta = await guard(() =>
       handlers.create_skill({
         name: 'X',
@@ -197,6 +252,28 @@ describe('edit_skill', () => {
       'mcp-admin',
       ADMIN_ACTOR,
     );
+  });
+
+  // `docs/12` §3.2: nome, descrição, ícone e tags são edit; slug, estado e
+  // público são manage.
+  it('edit muda conteúdo; slug, is_active e is_public exigem manage', async () => {
+    grants['uuid-outro'] = 'edit';
+    const editor = createHandlers(caller('membro', 'uuid-outro'));
+    db.updateSkill.mockResolvedValue(detail);
+
+    expect((await editor.edit_skill({ slug: 'minha-skill', name: 'Y' })).isError).toBeUndefined();
+
+    for (const args of [{ new_slug: 'z' }, { is_active: false }, { is_public: true }]) {
+      const negado = await guard(() => editor.edit_skill({ slug: 'minha-skill', ...args }));
+      expect(negado.isError).toBe(true);
+      expect(negado.content[0].text).toMatch(/exige "administrar"/);
+    }
+    expect(db.updateSkill).toHaveBeenCalledTimes(1);
+
+    grants['uuid-outro'] = 'manage';
+    db.updateSkill.mockResolvedValue({ ...detail, isPublic: true });
+    const publica = await editor.edit_skill({ slug: 'minha-skill', is_public: true });
+    expect(publica.content[0].text).toMatch(/pública/);
   });
 });
 
@@ -340,7 +417,6 @@ describe('set_files_bulk', () => {
 
 describe('get_file', () => {
   it('recusa arquivos binários', async () => {
-    db.getSkillDetail.mockResolvedValue(detail);
     db.readFile.mockResolvedValue({
       relativePath: 'img/logo.png',
       mimeType: 'image/png',
@@ -355,7 +431,6 @@ describe('get_file', () => {
   });
 
   it('monta o frontmatter do SKILL.md a partir dos metadados da skill', async () => {
-    db.getSkillDetail.mockResolvedValue(detail);
     db.readFile.mockResolvedValue({
       relativePath: 'SKILL.md',
       mimeType: 'text/markdown',
@@ -385,20 +460,49 @@ describe('get_skill', () => {
     expect(payload.skillMd).toBe('# Minha Skill\n');
     expect(payload.slug).toBe('minha-skill');
   });
+
+  it('mostra o dono e o acesso; as concessões só para quem administra', async () => {
+    const dado = { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', level: 'view', grantedByUserUuid: null, grantedByEmail: null, createdAt: '2026-01-01T00:00:00.000Z' };
+    db.getSkillDetail.mockImplementation(async (_slug: string, options?: { viewer?: Viewer }) =>
+      seen({ ...detail, grants: [dado] }, options?.viewer),
+    );
+
+    const doDono = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
+    expect(doDono).toMatchObject({ owner: 'editor@exemplo.com', isPublic: false, access: 'owner' });
+    expect(doDono.grants).toEqual([{ email: 'maria@exemplo.com', name: 'Maria', level: 'view' }]);
+
+    grants['uuid-maria'] = 'view';
+    const daMaria = JSON.parse(
+      (await createHandlers(caller('membro', 'uuid-maria')).get_skill({ slug: 'minha-skill' })).content[0].text,
+    );
+    expect(daMaria.access).toBe('view');
+    expect(daMaria.grants).toBeUndefined();
+  });
 });
 
 describe('list_skills', () => {
-  it('lê o catálogo inteiro, inclusive skills sem vínculo, e mostra onde cada uma está', async () => {
+  it('lê o que a credencial vê, inclusive skills sem vínculo, e mostra onde cada uma está', async () => {
     db.listSkills.mockResolvedValue({
-      items: [{ ...detail, mcps: [{ ...timeA, asSkill: true, asPrompt: true, asResource: false }] }],
+      items: [
+        {
+          ...detail,
+          mcps: [
+            { ...timeA, isOpen: true, asSkill: true, asPrompt: true, asResource: false, direct: true, catalogs: [] },
+            // Alcançado só por catálogo: as portas são do catálogo, e a tool diz por qual.
+            { ...timeA, isOpen: true, uuid: 'mcp-2', slug: 'time-b', name: 'Time B', asSkill: true, asPrompt: false, asResource: false, direct: false, catalogs: [{ uuid: 'cat-1', slug: 'dados', name: 'Dados' }] },
+          ],
+        },
+      ],
       total: 1,
       limit: 50,
       offset: 0,
     });
 
-    const payload = JSON.parse((await handlers.list_skills({})).content[0].text);
+    const payload = JSON.parse((await handlers.list_skills({ scope: 'mine' })).content[0].text);
 
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ visibility: 'all' }));
+    expect(db.listSkills).toHaveBeenCalledWith(
+      expect.objectContaining({ viewer: { role: 'admin', userUuid: null }, scope: 'mine' }),
+    );
     expect(payload.skills[0].mcps).toEqual([
       {
         slug: 'time-a',
@@ -409,9 +513,59 @@ describe('list_skills', () => {
         asSkill: true,
         asPrompt: true,
         asResource: false,
+        direct: true,
+        viaCatalogs: [],
+      },
+      {
+        slug: 'time-b',
+        name: 'Time B',
+        isOpen: true,
+        isActive: true,
+        isDefault: false,
+        asSkill: true,
+        asPrompt: false,
+        asResource: false,
+        direct: false,
+        viaCatalogs: ['dados'],
       },
     ]);
+    expect(payload.skills[0]).toMatchObject({ isActive: true, owner: 'editor@exemplo.com', access: 'owner' });
     expect(payload.skills[0]).not.toHaveProperty('visibility');
+  });
+});
+
+describe('acesso: share / unshare / transfer', () => {
+  const dono = createHandlers(caller('editor'));
+
+  it('manage concede e revoga pelo e-mail', async () => {
+    db.setSkillGrant.mockResolvedValue({ userUuid: 'uuid-maria', email: 'maria@exemplo.com', level: 'manage' });
+    db.removeSkillGrant.mockResolvedValue(undefined);
+
+    const dado = await dono.share_skill({ slug: 'minha-skill', email: 'maria@exemplo.com', level: 'manage' });
+    expect(dado.content[0].text).toMatch(/maria@exemplo.com agora pode administrar/);
+    expect(db.setSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-maria', 'manage', 'mcp-admin', caller('editor').actor);
+
+    await dono.unshare_skill({ slug: 'minha-skill', email: 'maria@exemplo.com' });
+    expect(db.removeSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-maria', 'mcp-admin', caller('editor').actor);
+
+    grants['uuid-outro'] = 'edit';
+    const negado = await guard(() =>
+      createHandlers(caller('membro', 'uuid-outro')).share_skill({ slug: 'minha-skill', email: 'maria@exemplo.com', level: 'view' }),
+    );
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toMatch(/exige "administrar"/);
+  });
+
+  it('transferir é do dono; conta inativa é recusada', async () => {
+    db.updateSkill.mockResolvedValue(detail);
+
+    await dono.transfer_skill({ slug: 'minha-skill', email: 'maria@exemplo.com' });
+    expect(db.updateSkill).toHaveBeenCalledWith('minha-skill', { ownerUserUuid: 'uuid-maria' }, 'mcp-admin', caller('editor').actor);
+
+    db.getUserByEmail.mockResolvedValueOnce({ uuid: 'uuid-x', email: 'x@exemplo.com', isActive: false });
+    const inativa = await guard(() => dono.transfer_skill({ slug: 'minha-skill', email: 'x@exemplo.com' }));
+    expect(inativa.isError).toBe(true);
+    expect(inativa.content[0].text).toMatch(/desativada/);
   });
 });
 
@@ -437,25 +591,33 @@ describe('guard', () => {
 
 // ---------------------------------------------------------------- papéis ---
 
-describe('papel da credencial', () => {
-  it('leitor lê o catálogo inteiro, inclusive skills sem vínculo', async () => {
+describe('papel e acesso da credencial', () => {
+  it('membro lista com o próprio viewer', async () => {
     db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
-    await createHandlers(caller('leitor')).list_skills({});
-    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ visibility: 'all' }));
+    await createHandlers(caller('membro')).list_skills({});
+    expect(db.listSkills).toHaveBeenCalledWith(
+      expect.objectContaining({ viewer: { role: 'membro', userUuid: 'uuid-membro' } }),
+    );
   });
 
-  it('leitor não escreve nada', async () => {
-    const leitor = createHandlers(caller('leitor'));
+  it('membro não cria; sem acesso, não vê nem escreve numa skill alheia', async () => {
+    const membro = createHandlers(caller('membro'));
 
-    for (const result of [
-      await leitor.create_skill({ name: 'X', skill_md_content: '# X' }),
-      await leitor.edit_skill({ slug: 'minha-skill', name: 'Y' }),
-      await leitor.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' }),
-      await leitor.set_files_bulk({ slug: 'minha-skill', zip_base64: makeZip({ 'a.md': 'a' }) }),
-      await leitor.delete_file({ slug: 'minha-skill', path: 'a.md' }),
-      await leitor.delete_skill({ slug: 'minha-skill', confirm: true }),
+    const criar = await membro.create_skill({ name: 'X', skill_md_content: '# X' });
+    expect(criar.isError).toBe(true);
+    expect(criar.content[0].text).toMatch(/exige papel "editor" ou "admin"/);
+
+    for (const run of [
+      () => membro.get_skill({ slug: 'minha-skill' }),
+      () => membro.edit_skill({ slug: 'minha-skill', name: 'Y' }),
+      () => membro.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' }),
+      () => membro.set_files_bulk({ slug: 'minha-skill', zip_base64: makeZip({ 'a.md': 'a' }) }),
+      () => membro.delete_file({ slug: 'minha-skill', path: 'a.md' }),
+      () => membro.delete_skill({ slug: 'minha-skill', confirm: true }),
     ]) {
+      const result = await guard(run);
       expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/não encontrada/);
     }
 
     expect(db.createSkill).not.toHaveBeenCalled();
@@ -463,15 +625,32 @@ describe('papel da credencial', () => {
     expect(db.deleteSkill).not.toHaveBeenCalled();
   });
 
-  it('editor escreve mas não apaga skill', async () => {
-    db.createSkill.mockResolvedValue(detail);
-    const editor = createHandlers(caller('editor'));
+  it('membro edita e apaga o que é seu; view só lê', async () => {
+    db.setFile.mockResolvedValue({ relativePath: 'a.md', mimeType: 'text/markdown', sizeBytes: 1, isText: true });
+    db.deleteSkill.mockResolvedValue(undefined);
+    const dono = createHandlers(caller('membro', 'uuid-editor'));
 
-    expect((await editor.create_skill({ name: 'X', skill_md_content: '# X' })).isError).toBeUndefined();
+    expect((await dono.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' })).isError).toBeUndefined();
+    expect((await dono.delete_skill({ slug: 'minha-skill', confirm: true })).isError).toBeUndefined();
 
-    const denied = await editor.delete_skill({ slug: 'minha-skill', confirm: true });
+    grants['uuid-maria'] = 'view';
+    const leitora = createHandlers(caller('membro', 'uuid-maria'));
+    expect((await leitora.get_skill({ slug: 'minha-skill' })).isError).toBeUndefined();
+    const negado = await guard(() => leitora.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' }));
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toMatch(/exige "editar"/);
+  });
+
+  it('editor com edit escreve mas não apaga a skill de outro', async () => {
+    grants['uuid-outro'] = 'edit';
+    const editor = createHandlers(caller('editor', 'uuid-outro'));
+    db.setFile.mockResolvedValue({ relativePath: 'a.md', mimeType: 'text/markdown', sizeBytes: 1, isText: true });
+
+    expect((await editor.set_file({ slug: 'minha-skill', path: 'a.md', content: 'a' })).isError).toBeUndefined();
+
+    const denied = await guard(() => editor.delete_skill({ slug: 'minha-skill', confirm: true }));
     expect(denied.isError).toBe(true);
-    expect(denied.content[0].text).toContain('admin');
+    expect(denied.content[0].text).toMatch(/exige "dono"/);
     expect(db.deleteSkill).not.toHaveBeenCalled();
   });
 

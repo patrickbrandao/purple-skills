@@ -11,16 +11,16 @@ import {
   type SessionUser,
   type UserSummary,
 } from '../api.js';
-import { Badge, Button, CopyButton, Field, Panel, useConfirm } from '../components/ui.js';
+import { Badge, Button, CopyButton, EmptyRow, Field, Panel, useConfirm } from '../components/ui.js';
 import { initials } from '../components/SkillIcon.js';
 import { useToast } from '../components/Toast.js';
 
-const ROLES: Role[] = ['admin', 'editor', 'leitor'];
+const ROLES: Role[] = ['admin', 'editor', 'membro'];
 
 const ROLE_HINT: Record<Role, string> = {
-  admin: 'Faz tudo, inclusive apagar skills e gerenciar contas.',
-  editor: 'Cria e edita qualquer skill; não apaga nem gerencia contas.',
-  leitor: 'Só lê — inclusive o que não está em servidor aberto nenhum.',
+  admin: 'Vê e administra tudo, inclusive contas, auditoria e o MCP padrão.',
+  editor: 'Cria skills, catálogos e servidores (e vira dono); administra o que é seu ou lhe foi concedido.',
+  membro: 'Não cria nada; administra o que é seu ou lhe foi concedido e lê o que é público.',
 };
 
 export function UsersPage({ me }: { me: SessionUser }) {
@@ -191,13 +191,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
                     </tr>
                   );
                 })}
-                {users.length === 0 && (
-                  <tr>
-                    <td colSpan={4}>
-                      <p className="list-empty">Nenhuma conta ainda.</p>
-                    </td>
-                  </tr>
-                )}
+                {users.length === 0 && <EmptyRow colSpan={4}>Nenhuma conta ainda</EmptyRow>}
               </tbody>
             </table>
           </div>

@@ -1,11 +1,11 @@
 import { Link } from 'react-router-dom';
-import { ExternalLink, Globe, Radio, Server, Trash2, X } from 'lucide-react';
-import { num, type OnlineCount, type VirtualMcpDetail, type VirtualMcpSkill } from '../../api.js';
+import { ExternalLink, Globe, Library, Radio, Server, Trash2, X } from 'lucide-react';
+import { num, type OnlineCount, type VirtualMcpDetail } from '../../api.js';
 import { Badge, Button, McpStateBadges } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
-import { PORTS, PORT_LABEL, flagsToPorts, type Port } from './types.js';
+import { PORTS, PORT_LABEL, flagsToPorts, type Port, type Target } from './types.js';
 
-export type Selection = { kind: 'server' } | { kind: 'internet' } | { kind: 'skill'; slug: string } | null;
+export type Selection = { kind: 'server' } | { kind: 'internet' } | Target | null;
 
 /**
  * A gaveta à direita do palco: o detalhe do que está selecionado, sem tirar o
@@ -16,38 +16,64 @@ export function NodeDrawer({
   detail,
   online,
   onlineWindowMs,
-  busySlug,
+  busy,
   canEdit,
   onClose,
   onTogglePort,
-  onRemoveSkill,
+  onRemove,
   onOpenSessions,
 }: {
   selection: Selection;
   detail: VirtualMcpDetail;
   online: OnlineCount | null;
   onlineWindowMs: number;
-  busySlug: string | null;
+  busy: (target: Target) => boolean;
   canEdit: boolean;
   onClose: () => void;
-  onTogglePort: (skill: VirtualMcpSkill, port: Port, on: boolean) => void;
-  onRemoveSkill: (skill: VirtualMcpSkill) => void;
+  onTogglePort: (target: Target, port: Port, on: boolean) => void;
+  onRemove: (target: Target) => void;
   onOpenSessions: () => void;
 }) {
   if (!selection) return null;
 
+  const closeButton = (
+    <button type="button" className="icon-btn" onClick={onClose} title="Fechar (Esc)">
+      <X />
+    </button>
+  );
+
+  const portBoxes = (target: Target, flags: { asSkill: boolean; asPrompt: boolean; asResource: boolean }, hint: string) => {
+    const ports = flagsToPorts(flags);
+    return (
+      <div className="sec">
+        <p className="eyebrow">Portas neste servidor</p>
+        <div className="grid gap-2">
+          {PORTS.map((port) => (
+            <label key={port} className="check well">
+              <input
+                type="checkbox"
+                checked={ports.includes(port)}
+                disabled={!canEdit || busy(target)}
+                onChange={(event) => onTogglePort(target, port, event.target.checked)}
+              />
+              {PORT_LABEL[port]}
+            </label>
+          ))}
+        </div>
+        <p className="hint">{hint}</p>
+      </div>
+    );
+  };
+
   if (selection.kind === 'skill') {
     const skill = detail.skills.find((item) => item.slug === selection.slug);
     if (!skill) return null;
-    const ports = flagsToPorts(skill);
     return (
       <aside className="drawer" aria-label={skill.name}>
         <div className="dh">
           <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
           <span className="t">{skill.name}</span>
-          <button type="button" className="icon-btn" onClick={onClose} title="Fechar (Esc)">
-            <X />
-          </button>
+          {closeButton}
         </div>
         <div className="db">
           <p className="mono text-xs" style={{ color: 'var(--text-faint)' }}>
@@ -57,23 +83,7 @@ export function NodeDrawer({
             {skill.description || 'Sem descrição.'}
           </p>
 
-          <div className="sec">
-            <p className="eyebrow">Portas neste servidor</p>
-            <div className="grid gap-2">
-              {PORTS.map((port) => (
-                <label key={port} className="check well">
-                  <input
-                    type="checkbox"
-                    checked={ports.includes(port)}
-                    disabled={!canEdit || busySlug === skill.slug}
-                    onChange={(event) => onTogglePort(skill, port, event.target.checked)}
-                  />
-                  {PORT_LABEL[port]}
-                </label>
-              ))}
-            </div>
-            <p className="hint">Desmarcar a última porta tira a skill do servidor.</p>
-          </div>
+          {portBoxes(selection, skill, 'Desmarcar a última porta tira a skill do servidor.')}
 
           <div className="sec">
             <p className="eyebrow">Uso por este servidor</p>
@@ -92,7 +102,72 @@ export function NodeDrawer({
               <ExternalLink /> Abrir skill
             </Link>
             {canEdit && (
-              <Button variant="danger" size="sm" disabled={busySlug === skill.slug} onClick={() => onRemoveSkill(skill)}>
+              <Button variant="danger" size="sm" disabled={busy(selection)} onClick={() => onRemove(selection)}>
+                <Trash2 /> Tirar do servidor
+              </Button>
+            )}
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  if (selection.kind === 'catalog') {
+    const catalog = detail.catalogs.find((item) => item.slug === selection.slug);
+    if (!catalog) return null;
+    // Membros que já são nó próprio aqui seguem o vínculo direto, não o catálogo.
+    const overridden = catalog.skillCount - catalog.activeSkillCount;
+    return (
+      <aside className="drawer" aria-label={catalog.name}>
+        <div className="dh">
+          <Library size={18} style={{ color: 'var(--accent-soft)' }} />
+          <span className="t">{catalog.name}</span>
+          {closeButton}
+        </div>
+        <div className="db">
+          <p className="mono text-xs" style={{ color: 'var(--text-faint)' }}>
+            catálogo · {catalog.slug}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {!catalog.isActive && (
+              <Badge tone="danger" title="Desligado na página do catálogo: não entrega nada até religar">
+                desligado
+              </Badge>
+            )}
+            {catalog.isActive && catalog.activeSkillCount === 0 && <Badge tone="outline">nenhuma skill ativa</Badge>}
+          </div>
+          <p className="mt-2 text-[13px]" style={{ color: 'var(--text-dim)' }}>
+            {catalog.description || 'Sem descrição.'}
+          </p>
+
+          {portBoxes(selection, catalog, 'As portas valem para todas as skills do catálogo. Desmarcar a última tira o catálogo do servidor.')}
+
+          <div className="sec">
+            <p className="eyebrow">O que entra por aqui</p>
+            <dl className="kv">
+              <dt>Skills ativas</dt>
+              <dd>
+                <strong>{catalog.activeSkillCount}</strong>
+              </dd>
+              <dt>Membros</dt>
+              <dd>{catalog.skillCount}</dd>
+              <dt>Posição</dt>
+              <dd className="mono">{catalog.position ? `${catalog.position.x}, ${catalog.position.y}` : 'automática'}</dd>
+            </dl>
+            {overridden > 0 && (
+              <p className="hint">
+                {overridden} membro{overridden === 1 ? '' : 's'} não conta{overridden === 1 ? '' : 'm'} aqui: participação desativada, skill
+                desligada ou vínculo direto com este servidor (que prevalece sobre o catálogo).
+              </p>
+            )}
+          </div>
+
+          <div className="sec flex flex-wrap gap-2">
+            <Link to={`/catalogos/${catalog.slug}`} className="btn btn-ghost btn-sm">
+              <ExternalLink /> Abrir catálogo
+            </Link>
+            {canEdit && (
+              <Button variant="danger" size="sm" disabled={busy(selection)} onClick={() => onRemove(selection)}>
                 <Trash2 /> Tirar do servidor
               </Button>
             )}
@@ -108,9 +183,7 @@ export function NodeDrawer({
         <div className="dh">
           <Globe size={18} style={{ color: online && online.total > 0 ? 'var(--ok)' : 'var(--text-muted)' }} />
           <span className="t">Clientes conectados</span>
-          <button type="button" className="icon-btn" onClick={onClose} title="Fechar (Esc)">
-            <X />
-          </button>
+          {closeButton}
         </div>
         <div className="db">
           <p className="text-[13px]" style={{ color: 'var(--text-dim)' }}>
@@ -141,14 +214,14 @@ export function NodeDrawer({
     );
   }
 
+  const catalogSkills = detail.catalogs.reduce((sum, catalog) => sum + (catalog.isActive ? catalog.activeSkillCount : 0), 0);
+
   return (
     <aside className="drawer" aria-label={detail.name}>
       <div className="dh">
         <Server size={18} style={{ color: 'var(--accent-soft)' }} />
         <span className="t">{detail.name}</span>
-        <button type="button" className="icon-btn" onClick={onClose} title="Fechar (Esc)">
-          <X />
-        </button>
+        {closeButton}
       </div>
       <div className="db">
         <div className="flex flex-wrap gap-1.5">
@@ -166,6 +239,11 @@ export function NodeDrawer({
             <dd>{detail.resourceCount}</dd>
             <dt>Prompts</dt>
             <dd>{detail.promptCount}</dd>
+            <dt>Catálogos</dt>
+            <dd>
+              {detail.catalogs.length}
+              {catalogSkills > 0 && ` (+${catalogSkills} skill${catalogSkills === 1 ? '' : 's'})`}
+            </dd>
             <dt>Chaves ativas</dt>
             <dd>{detail.activeKeyCount}</dd>
             <dt>Dono</dt>

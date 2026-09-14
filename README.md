@@ -210,6 +210,32 @@ Publicar em um MCP virtual exige administrá-lo — o dono ou um admin. O
 desenho está em
 [`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
+Uma skill pode ser **desligada** na ficha dela: some de todo servidor e do
+site, direto ou por catálogo, sem perder vínculo nenhum — e volta quando for
+religada.
+
+### Catálogos: um grupo de skills de uma vez
+
+Um **catálogo** agrupa skills e, vinculado a um MCP virtual, entrega todas as
+que estiverem ativas pelas portas escolhidas no vínculo — uma escolha só para
+o grupo, que continua valendo quando o grupo muda. Uma skill pode estar em
+vários catálogos; um catálogo pode estar em vários servidores.
+
+- Cria quem é `editor` ou `admin`, em Catálogos no painel ou por
+  `create_catalog`. Quem cria é o dono; vincular a um servidor exige
+  administrar **o servidor e o catálogo** (dono ou admin dos dois).
+- Se uma skill do catálogo também tem **vínculo direto** com o mesmo
+  servidor, o vínculo direto vale sozinho — é o jeito de restringir uma
+  skill num servidor sem tirá-la do grupo. Sem vínculo direto, as portas são
+  a união dos catálogos.
+- Na página do catálogo cada skill tem a **participação** (desmarcar tira da
+  entrega sem remover do catálogo), e uma skill desligada aparece com alerta.
+  O catálogo inteiro também liga e desliga.
+- No canvas o catálogo é um nó só, com o número de skills ativas que ele
+  entrega àquele servidor. Cada catálogo tem o próprio contador de acessos.
+
+O desenho está em [`docs/11-catalogos.md`](docs/11-catalogos.md).
+
 ### Ferramentas do MCP público
 
 | Ferramenta | Descrição |
@@ -282,26 +308,30 @@ O desenho está em [`docs/08-mcp-virtual.md`](docs/08-mcp-virtual.md).
 
 Exige sempre `Authorization: Bearer <credencial>`, que pode ser o
 `MCP_ADMIN_TOKEN` (papel `admin`, ator `token-global` na auditoria) ou uma
-chave `psk_…` emitida por um usuário no painel — nesse caso valem o **papel** e
-o **nome** do dono: uma chave de `leitor` só executa as ferramentas de leitura,
-e `delete_skill` exige `admin`.
+chave `psk_…` emitida por um usuário no painel — nesse caso valem o **papel**,
+o **acesso por objeto** e o **nome** do dono: a chave vê e faz exatamente o
+que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-acesso)).
 
 | Ferramenta | Descrição |
 |-----------|-----------|
-| `list_skills(query?, tag?, limit?, offset?)` | Lista tudo, inclusive skills sem vínculo, cada uma com `mcps` |
+| `list_skills(query?, tag?, limit?, offset?, scope?)` | Lista o que a credencial enxerga, inclusive skills sem vínculo, cada uma com o dono, o acesso e `mcps`; `scope` = `mine` / `shared` / `public` |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, mcps?)` | Cria a skill e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial administra). `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?})` | Edita metadados — é por aqui que muda o frontmatter |
-| `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill; a permissão é a do MCP virtual |
+| `create_skill(name, description?, skill_md_content, tags?, slug?, mcps?, is_public?)` | Cria a skill (quem cria é o dono) e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial edita). `skill_md_content` é só o **corpo** |
+| `edit_skill(slug, {name?, description?, tags?, new_slug?, is_active?, is_public?})` | Edita metadados — é por aqui que muda o frontmatter. Nome, descrição, ícone e tags exigem `edit`; slug, `is_active` e `is_public`, `manage` |
+| `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill: `edit` no MCP virtual e `view` na skill |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
 | `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
-| `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`) |
+| `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`; só o dono ou um admin) |
+| `share_skill(slug, email, level)` / `unshare_skill(slug, email)` / `transfer_skill(slug, email)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp` |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
-| `list_virtual_mcps()` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance por dono |
+| `list_virtual_mcps(scope?)` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance pelo acesso por objeto |
 | `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
 | `get_default_virtual_mcp()` / `set_default_virtual_mcp(slug \| null)` | Qual MCP virtual responde em `/mcp`; escolher é só admin |
+| `list_catalogs()` / `get_catalog(slug)` / `create_catalog(…)` / `update_catalog(…)` / `delete_catalog(slug, confirm)` | Catálogos — alcance por dono |
+| `set_catalog_skills(slug, [{slug, isActive?}])` | Substitui a lista inteira de skills do catálogo; `isActive: false` mantém sem entregar |
+| `set_virtual_mcp_catalogs(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista de catálogos do MCP virtual; exige administrar o MCP e cada catálogo |
 
 ## API REST pública
 
@@ -355,18 +385,34 @@ O painel usa **contas**. Numa instalação nova a tabela nasce vazia: a
 administrador. A partir da primeira conta, ela fica **inerte** — o acesso passa
 a ser sempre por e-mail e senha.
 
-| Ação | admin | editor | leitor |
+| Ação | admin | editor | membro |
 |------|:-----:|:------:|:------:|
-| Ver skills, inclusive sem vínculo | ✅ | ✅ | ✅ |
-| Criar / editar skill e arquivos | ✅ | ✅ | ❌ |
-| Publicar / despublicar | ✅ | ✅ | ❌ |
-| Apagar skill | ✅ | ❌ | ❌ |
+| Ver tudo | ✅ | ❌ | ❌ |
+| Criar skill, catálogo e servidor MCP (e virar dono) | ✅ | ✅ | ❌ |
+| Editar / administrar o que é seu ou lhe foi concedido | ✅ | ✅ | ✅ |
+| Apagar e transferir o que é seu | ✅ | ✅ | ✅ |
 | Gerenciar contas e papéis | ✅ | ❌ | ❌ |
 | Ver a trilha de auditoria | ✅ | ❌ | ❌ |
 | Emitir chaves de API para si | ✅ | ✅ | ✅ |
 
-Os papéis são **globais**: não há dono por skill. O papel limita a ação, nunca
-o escopo.
+O papel decide só quem **cria** e quem administra a instalação. O **escopo** é
+por objeto ([`docs/12-acesso-granular.md`](docs/12-acesso-granular.md)):
+
+- **Skills, catálogos e servidores MCP têm dono.** Quem cria é o dono e faz
+  tudo, inclusive apagar e transferir. Admin é dono de tudo.
+- **Concessões por objeto**, cumulativas: `view` (ler; num servidor ou
+  catálogo, ler também as skills dentro), `edit` (conteúdo da skill, membros
+  do catálogo, vínculos e canvas do servidor) e `manage` (slug, estado,
+  público/aberto, chaves e as próprias concessões). Quem tem `manage` concede
+  a outros; quem tem `view` numa skill pode vinculá-la aos servidores e
+  catálogos que edita.
+- **Público**: uma skill ou um catálogo marcado como público é legível por
+  qualquer conta e pelo site, sem concessão. Um servidor aberto (`is_open`) já
+  é público por definição. Um catálogo público ou um servidor aberto **expõe
+  o que está dentro**, mesmo skills privadas — o painel avisa.
+- Quem não é admin só lista o que é seu, o que lhe foi concedido e o que é
+  público; as listas do painel têm o filtro *Meus / Compartilhados comigo /
+  Públicos*.
 
 - **Chaves de API** (`psk_<prefixo>_<segredo>`) substituem o token global ao
   configurar um agente: carregam o papel do dono e aparecem na auditoria com o
@@ -378,9 +424,8 @@ o escopo.
   `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` e registre no provedor o
   `redirect_uri` `<ADMIN_PUBLIC_URL>/api/auth/oidc/callback`. **Defina
   `OIDC_ALLOWED_DOMAINS`**: com a lista vazia, o auto-provisionamento fica
-  desligado de propósito — um `leitor` enxerga o catálogo inteiro, inclusive
-  o que não está em servidor aberto nenhum, e sem allowlist qualquer conta do
-  provedor entraria.
+  desligado de propósito — sem allowlist qualquer conta do provedor entraria
+  como `membro` e leria tudo o que é público.
 - **Redefinição de senha por e-mail** exige `SMTP_URL` + `SMTP_FROM`. Sem SMTP
   o painel continua completo: o administrador gera uma senha temporária, e a
   pessoa é obrigada a trocá-la no primeiro acesso.
@@ -390,6 +435,14 @@ o escopo.
 O desenho completo, com as decisões e o que ficou de fora, está em
 [`docs/05-accounts-and-roles.md`](docs/05-accounts-and-roles.md).
 
+> **Mudança de comportamento na série beta (acesso granular).** O papel
+> `leitor` virou `membro` e deixou de ver o acervo inteiro: um membro (e um
+> editor) vê só o que é seu, o que lhe foi concedido e o que é público ou está
+> em servidor aberto. Skills existentes ganham como dono quem as criou; nada
+> nasce público. Depois de atualizar, marque como públicas as skills que devem
+> continuar visíveis a todos, ou conceda acesso na seção *Acesso* de cada uma.
+> Sessões abertas com o papel antigo pedem novo login.
+>
 > **Mudança de comportamento na série beta.** A `ADMIN_PASSWORD` deixa de
 > logar assim que existir a primeira conta. Instalações existentes sobem sem
 > intervenção — quem não passar pelo setup continua entrando com ela

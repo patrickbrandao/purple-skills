@@ -160,6 +160,21 @@ export function EmptyState({
   );
 }
 
+/**
+ * A linha única de uma tabela sem itens: o cabeçalho continua no lugar e a
+ * mensagem fica no meio. Ação de criar não entra aqui — ela já está na barra
+ * da página ou do painel.
+ */
+export function EmptyRow({ colSpan, children }: { colSpan: number; children: ReactNode }) {
+  return (
+    <tr>
+      <td colSpan={colSpan}>
+        <p className="list-empty">{children}</p>
+      </td>
+    </tr>
+  );
+}
+
 /** Esqueleto com a forma do conteúdo que vai chegar. */
 export function Skel({
   h = 16,
@@ -454,24 +469,42 @@ export function Modal({
 
 /* ---- onde a skill está ---- */
 
-/** O site mostra a skill quando ela está em algum vMCP aberto e ligado. */
-export const noSite = (skill: { mcps: SkillMcpRef[] }): boolean =>
-  skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
+/** O site mostra a skill quando ela está ligada e em algum vMCP aberto e ligado. */
+export const noSite = (skill: { isActive: boolean; mcps: SkillMcpRef[] }): boolean =>
+  skill.isActive && skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
 
 /**
- * Onde a skill está, em selos: "sem vínculo" (flutuante), "em N servidores" e,
- * quando algum é aberto e ligado, "no site". Só leitura.
+ * Onde a skill está, em selos: "desligada", "sem vínculo" (flutuante), "em N
+ * servidores" e, quando algum é aberto e ligado, "no site". Só leitura.
  */
-export function McpChips({ skill, compact }: { skill: { mcps: SkillMcpRef[] }; compact?: boolean }) {
+export function McpChips({ skill, compact }: { skill: { isActive: boolean; mcps: SkillMcpRef[] }; compact?: boolean }) {
+  const desligada = !skill.isActive && (
+    <Badge tone="danger" title="Desligada: some de todo servidor e do site até ser religada">
+      desligada
+    </Badge>
+  );
   if (skill.mcps.length === 0) {
     return (
-      <Badge tone="outline" title="Não está em nenhum servidor MCP: não é exibida no site nem em servidor algum">
-        sem vínculo
-      </Badge>
+      <span className="mcp-chips">
+        {desligada}
+        <Badge tone="outline" title="Não está em nenhum servidor MCP: não é exibida no site nem em servidor algum">
+          sem vínculo
+        </Badge>
+      </span>
     );
   }
   const abertos = skill.mcps.filter((mcp) => mcp.isOpen && mcp.isActive).length;
-  const names = skill.mcps.map((mcp) => mcp.name).join(', ');
+  const names = skill.mcps.map((mcp) => `${mcp.name}${mcp.direct ? '' : ' (via catálogo)'}`).join(', ');
+  if (desligada) {
+    return (
+      <span className="mcp-chips">
+        {desligada}
+        <Badge tone="outline" title={`Vinculada a: ${names} — mas desligada, não aparece em nenhum`}>
+          {compact ? skill.mcps.length : `em ${skill.mcps.length} servidor${skill.mcps.length === 1 ? '' : 'es'}`}
+        </Badge>
+      </span>
+    );
+  }
   return (
     <span className="mcp-chips">
       <Badge tone="accent" title={`Publicada em: ${names}`}>

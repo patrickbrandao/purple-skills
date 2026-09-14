@@ -155,9 +155,11 @@ export function SkillPage() {
                 <PlugIcon /> Via MCP
               </h2>
               <p className="mt-2 text-xs" style={{ color: 'var(--text-faint)' }}>
-                Publicada em {skill.mcps.length} servidor{skill.mcps.length === 1 ? '' : 'es'}{' '}
-                aberto{skill.mcps.length === 1 ? '' : 's'}. Conecte seu agente a um deles e peça pelo
-                slug:
+                {skill.mcps.length === 0
+                  ? 'Em nenhum servidor MCP aberto: esta skill é pública, mas só chega ao agente pelo download acima.'
+                  : `Publicada em ${skill.mcps.length} servidor${skill.mcps.length === 1 ? '' : 'es'} aberto${
+                      skill.mcps.length === 1 ? '' : 's'
+                    }. Conecte seu agente a um deles e peça pelo slug:`}
               </p>
               <div className="code-card" style={{ marginTop: '10px' }}>
                 <div className="code-body" style={{ padding: '12px 14px', fontSize: '.76rem' }}>

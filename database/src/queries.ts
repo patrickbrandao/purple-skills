@@ -1,6 +1,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   SKILL_MD,
+  isAccessLevel,
+  isAccessScope,
   isRole,
   isSkillMd,
   isTextualMime,
@@ -11,6 +13,8 @@ import {
   skillScore,
   slugify,
   uniqueSlug,
+  type AccessLevel,
+  type AccessScope,
   type ApiKeySummary,
   type AuditAction,
   type AuditActor,
@@ -18,21 +22,34 @@ import {
   type AuditPage,
   type AuditSource,
   type CanvasPoint,
+  type CatalogDetail,
+  type CatalogMcpRef,
+  type CatalogSkill,
+  type CatalogSkillInput,
+  type CatalogSummary,
+  type EffectiveAccess,
+  type Grant,
   type McpSessionAuth,
   type McpSessionEndReason,
   type McpSessionMount,
   type McpSessionPage,
   type McpSessionSummary,
   type McpSessionTransport,
+  type PublicCatalog,
+  type PublicCatalogDetail,
   type PublicVirtualMcp,
   type Role,
+  type SkillCatalogRef,
   type SkillDetail,
   type SkillFileMeta,
   type SkillLinkInput,
   type SkillMcpRef,
   type SkillSummary,
   type SearchResult,
+  type UserLookup,
   type UserSummary,
+  type VirtualMcpCatalog,
+  type VirtualMcpCatalogInput,
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
   type VirtualMcpLayout,
@@ -59,22 +76,37 @@ export type SortOrder = 'score' | 'recent' | 'name' | 'relevance';
 
 /**
  * Recorte de um MCP virtual (`docs/08-mcp-virtual.md` §3.2): a leitura passa
- * a enxergar só as skills **vinculadas** a ele e ligadas na superfície pedida
- * (`as_skill`, `as_prompt` ou `as_resource` do vínculo). Quando presente,
- * `visibility` é ignorada: quem decide é o vínculo.
+ * a enxergar só as skills **expostas** nele na superfície pedida — pelo
+ * vínculo direto ou, sem ele, por um catálogo vinculado
+ * (`docs/11-catalogos.md` §3.2). Quando presente, `visibility` é ignorada:
+ * quem decide é o vínculo.
  */
 export type VirtualScope = { uuid: string; surface: VirtualSurface };
 
 /**
- * O que uma leitura enxerga (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.2).
+ * O que uma leitura enxerga (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.2,
+ * ampliada por `docs/12-acesso-granular.md` §7).
  *
  * `'open'` — o padrão, e o que o site e a API REST mostram: só skills
- * vinculadas a ao menos um vMCP **aberto e ligado**. `'all'` — o catálogo
- * inteiro, inclusive skills flutuantes (sem vínculo): painel e mcp-admin.
- * O padrão é o restritivo de propósito: um chamador que esquece a opção
- * mostra de menos, nunca de mais.
+ * **ligadas** que são públicas (`is_public`), ou expostas em ao menos um vMCP
+ * aberto e ligado (por vínculo direto ou por catálogo), ou com participação
+ * ativa em catálogo público e ligado. `'all'` — o acervo inteiro, inclusive
+ * skills flutuantes (sem vínculo) e desligadas: o admin, o token global e a
+ * sessão de bootstrap. Quem não é admin passa `viewer` em vez disso. O padrão
+ * é o restritivo de propósito: um chamador que esquece a opção mostra de
+ * menos, nunca de mais.
  */
 export type SkillVisibility = 'open' | 'all';
+
+/**
+ * A conta que está lendo (`docs/12-acesso-granular.md` §3.1). Com `role:
+ * 'admin'` é o mesmo que `visibility: 'all'` e todo `access` é `'owner'`; com
+ * outro papel, a leitura vê o que é da conta, o que lhe foi concedido, o que
+ * é público e o que está dentro de um contêiner que ela vê, e `access` diz
+ * o que ela pode em cada linha. `userUuid` nulo com papel que não é admin
+ * enxerga só o público — não é um caso do painel, mas não pode vazar nada.
+ */
+export type Viewer = { role: Role; userUuid: string | null };
 
 export type ListOptions = {
   query?: string | null;
@@ -88,64 +120,282 @@ export type ListOptions = {
    * paginação mentindo — e a contagem por tag de `listTags` é um `GROUP BY`.
    */
   visibility?: SkillVisibility;
-  /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe `visibility`. */
+  /** A conta que lê — ver `Viewer`. Sobrepõe `visibility`. */
+  viewer?: Viewer;
+  /**
+   * O filtro das listas do painel, relativo ao `viewer` (exige um): `'mine'`
+   * é o que a conta possui; `'shared'` o que lhe foi concedido, direto ou
+   * por um contêiner que ela possui ou lhe foi concedido, e que não é dela;
+   * `'public'` o que qualquer um lê. Sem `scope`, a união.
+   */
+  scope?: AccessScope;
+  /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe `visibility` e `viewer`. */
   virtualMcp?: VirtualScope;
   sort?: SortOrder;
 };
 
 /** As chaves de `ListOptions` que também valem ao ler uma skill só, ou as tags. */
-type ReadOptions = Pick<ListOptions, 'visibility' | 'virtualMcp'>;
+type ReadOptions = Pick<ListOptions, 'visibility' | 'viewer' | 'virtualMcp'>;
 
-/** Vínculo com um vMCP aberto e ligado — a regra do site, em SQL. */
-const OPEN_LINK_EXISTS = sql`EXISTS (
-  SELECT 1 FROM virtual_mcp_skills v
-  JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
-  WHERE v.skill_uuid = s.uuid AND m.is_open AND m.is_active
+/**
+ * O modo de uma leitura, resolvido de `visibility` e `viewer`: `'all'` (o
+ * admin — por papel, pelo token global ou pelo bootstrap), `'open'` (o site)
+ * ou a conta que lê, com o uuid dela (nulo se torto ou ausente).
+ */
+type ReadMode = { kind: 'all' } | { kind: 'open' } | { kind: 'viewer'; user: string | null };
+
+function readMode({ visibility = 'open', viewer }: Pick<ReadOptions, 'visibility' | 'viewer'>): ReadMode {
+  if (viewer !== undefined && viewer !== null) {
+    if (!isRole(viewer.role)) throw badRequest(`Papel inválido: ${String(viewer.role)}`);
+    if (viewer.role === 'admin') return { kind: 'all' };
+    return { kind: 'viewer', user: isUuid(viewer.userUuid) ? viewer.userUuid : null };
+  }
+  return visibility === 'all' ? { kind: 'all' } : { kind: 'open' };
+}
+
+/** O `scope` das listagens, validado; exige `viewer` porque é relativo a ele. */
+function readScope(options: Pick<ListOptions, 'viewer' | 'scope'>): AccessScope | undefined {
+  if (options.scope === undefined || options.scope === null) return undefined;
+  if (!isAccessScope(options.scope)) {
+    throw badRequest(`O campo "scope" deve ser um de: mine, shared, public`);
+  }
+  if (options.viewer === undefined || options.viewer === null) {
+    throw badRequest('O filtro "scope" exige "viewer"');
+  }
+  return options.scope;
+}
+
+/**
+ * A conta a que o `scope` é relativo: a do `viewer`, mesmo quando é admin —
+ * o admin também tem "meus". Nulo quando não há conta (bootstrap, token).
+ */
+function scopeUser(options: Pick<ListOptions, 'viewer'>): string | null {
+  const uuid = options.viewer?.userUuid;
+  return isUuid(uuid) ? uuid : null;
+}
+
+/** O uuid do viewer (ou nulo) como parâmetro tipado, para as comparações com colunas uuid. */
+const userParam = (user: string | null): SQL => sql`${user}::uuid`;
+
+/**
+ * A skill `s` (da consulta que embute isto) está exposta no vMCP `mcp` — uma
+ * expressão SQL com o uuid do servidor: `m.uuid` de um `virtual_mcps m` de
+ * fora, ou um parâmetro. É a precedência de `docs/11-catalogos.md` §3.2, em
+ * SQL e num lugar só:
+ *
+ *   - com vínculo **direto** (`virtual_mcp_skills`), valem as portas dele e
+ *     nada mais — ele sobrescreve qualquer catálogo;
+ *   - sem vínculo direto, valem os catálogos **ligados** em que a skill tem
+ *     participação **ativa** e que estão vinculados ao vMCP; entre catálogos
+ *     não há precedência, as portas somam.
+ *
+ * Com `surface`, a porta pedida precisa estar ligada no caminho que valeu;
+ * sem, basta a skill estar lá por qualquer caminho, com qualquer porta — é
+ * a pergunta do site ("está publicada aqui?"), não a do servidor MCP.
+ *
+ * `skills.is_active` fica de fora de propósito: quem chama decide se a
+ * pergunta é "estaria exposta" (o painel, em `mcps`) ou "está exposta" (o
+ * site e o servidor, que acrescentam `s.is_active`).
+ */
+function exposedIn(mcp: SQL, surface?: VirtualSurface): SQL {
+  const direct = surface ? sql`AND ${surfaceFlag('v', surface)}` : sql``;
+  const viaCatalog = surface ? sql`AND ${surfaceFlag('vc', surface)}` : sql``;
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM virtual_mcp_skills v
+      WHERE v.skill_uuid = s.uuid AND v.virtual_mcp_uuid = ${mcp} ${direct}
+    )
+    OR (
+      NOT EXISTS (
+        SELECT 1 FROM virtual_mcp_skills v
+        WHERE v.skill_uuid = s.uuid AND v.virtual_mcp_uuid = ${mcp}
+      )
+      AND EXISTS (
+        SELECT 1 FROM catalog_skills cs
+        JOIN catalogs c ON c.uuid = cs.catalog_uuid AND c.is_active
+        JOIN virtual_mcp_catalogs vc ON vc.catalog_uuid = c.uuid AND vc.virtual_mcp_uuid = ${mcp}
+        WHERE cs.skill_uuid = s.uuid AND cs.is_active ${viaCatalog}
+      )
+    )
+  )`;
+}
+
+/**
+ * A skill `s` está exposta em algum vMCP aberto e ligado, por vínculo direto
+ * ou por catálogo. Sem `s.is_active` de propósito, como `exposedIn`: quem
+ * chama decide se pergunta "estaria" (o painel) ou "está" (o site).
+ */
+const OPEN_MCP_EXPOSURE: SQL = sql`EXISTS (
+  SELECT 1 FROM virtual_mcps m
+  WHERE m.is_open AND m.is_active AND ${exposedIn(sql`m.uuid`)}
+)`;
+
+/** A skill `s` tem participação ativa em algum catálogo público e ligado (`docs/12` decisão 5). */
+const PUBLIC_CATALOG_EXPOSURE: SQL = sql`EXISTS (
+  SELECT 1 FROM catalog_skills cs JOIN catalogs c ON c.uuid = cs.catalog_uuid
+  WHERE cs.skill_uuid = s.uuid AND cs.is_active AND c.is_active AND c.is_public
 )`;
 
 /**
- * A cláusula de visibilidade que `listSkills`, `getSkillSummary` e `listTags`
- * compartilham. Com `virtualMcp`, vira um `EXISTS` sobre o vínculo daquele
- * servidor e **só** ele; sem, é `'open'` (vínculo com vMCP aberto e ligado)
- * ou `'all'` (tudo).
+ * Qualquer um pode ler a skill `s`, ligada ou não: ela é pública, está em
+ * vMCP aberto e ligado, ou em catálogo público e ligado. É a parte "público"
+ * do que uma conta enxerga e o filtro `scope: 'public'`.
  */
-function visibilityClause({ visibility = 'open', virtualMcp }: ReadOptions): SQL {
-  if (virtualMcp) {
-    // UUID torto é "nenhuma skill", não erro do driver virando HTTP 500.
-    if (!isUuid(virtualMcp.uuid)) return sql`false`;
-    return sql`EXISTS (
-      SELECT 1 FROM virtual_mcp_skills v
-      WHERE v.skill_uuid = s.uuid
-        AND v.virtual_mcp_uuid = ${virtualMcp.uuid}
-        AND ${virtualSurfaceFlag(virtualMcp.surface)}
-    )`;
-  }
-  return visibility === 'all' ? sql`true` : OPEN_LINK_EXISTS;
+const PUBLIC_REACH: SQL = sql`(s.is_public OR ${OPEN_MCP_EXPOSURE} OR ${PUBLIC_CATALOG_EXPOSURE})`;
+
+/**
+ * A regra do site (`docs/12-acesso-granular.md` §7), em SQL: skill ligada
+ * **e** legível por qualquer um. `s` é a skill da consulta de fora.
+ */
+const OPEN_EXPOSURE: SQL = sql`(s.is_active AND ${PUBLIC_REACH})`;
+
+/** O nível concedido a `user` na skill `s`, ou nulo. */
+const skillGrantOf = (user: string | null): SQL =>
+  sql`(SELECT g.level FROM skill_grants g WHERE g.skill_uuid = s.uuid AND g.user_uuid = ${userParam(user)})`;
+
+/** O vMCP `m` é de `user` ou lhe foi concedido — a árvore inteira dele é legível (`docs/12` decisão 5). */
+const mcpSeenBy = (user: string | null): SQL =>
+  sql`(m.owner_user_uuid = ${userParam(user)} OR EXISTS (
+    SELECT 1 FROM virtual_mcp_grants vg
+    WHERE vg.virtual_mcp_uuid = m.uuid AND vg.user_uuid = ${userParam(user)}
+  ))`;
+
+/** O catálogo `c` é de `user` ou lhe foi concedido — todos os membros são legíveis. */
+const catalogSeenBy = (user: string | null): SQL =>
+  sql`(c.owner_user_uuid = ${userParam(user)} OR EXISTS (
+    SELECT 1 FROM catalog_grants cg
+    WHERE cg.catalog_uuid = c.uuid AND cg.user_uuid = ${userParam(user)}
+  ))`;
+
+/**
+ * A skill `s` chega a `user` por concessão — direta, ou por estar num vMCP
+ * ou catálogo que a conta possui ou lhe foi concedido. Pelo vMCP vale o
+ * mesmo caminho da chave `psv_` (`exposedIn`: direto ou por catálogo ligado
+ * com participação ativa); pelo catálogo vale toda participação, ativa ou
+ * não, porque quem vê o catálogo vê a lista inteira de membros.
+ */
+const skillSharedWith = (user: string | null): SQL =>
+  sql`(${skillGrantOf(user)} IS NOT NULL
+    OR EXISTS (SELECT 1 FROM virtual_mcps m WHERE ${mcpSeenBy(user)} AND ${exposedIn(sql`m.uuid`)})
+    OR EXISTS (
+      SELECT 1 FROM catalog_skills cs JOIN catalogs c ON c.uuid = cs.catalog_uuid
+      WHERE cs.skill_uuid = s.uuid AND ${catalogSeenBy(user)}
+    ))`;
+
+/**
+ * O que uma conta que não é admin enxerga (`docs/12-acesso-granular.md`
+ * §3.1): o público, o que é dela e o que lhe chega por concessão. Sem
+ * `s.is_active`, como `'all'`: o painel mostra a skill desligada a quem a vê.
+ */
+const skillVisibleTo = (user: string | null): SQL =>
+  sql`(${PUBLIC_REACH} OR s.owner_user_uuid = ${userParam(user)} OR ${skillSharedWith(user)})`;
+
+/**
+ * O `access` de cada linha (`SkillSummary.access`): `'owner'` para o admin e
+ * para o dono, o nível da concessão direta, `'view'` para quem chega por
+ * público ou contêiner, e nulo numa leitura sem conta (o site).
+ */
+function accessColumn(mode: ReadMode, owner: SQL, grantOf: (user: string | null) => SQL): SQL {
+  if (mode.kind === 'all') return sql`'owner'::text`;
+  if (mode.kind === 'open') return sql`NULL::text`;
+  return sql`CASE WHEN ${owner} = ${userParam(mode.user)} THEN 'owner'
+    ELSE COALESCE(${grantOf(mode.user)}, 'view') END`;
 }
 
-/** A coluna do vínculo (`v`) que corresponde à superfície — nunca texto do chamador. */
-function virtualSurfaceFlag(surface: VirtualSurface): SQL {
-  switch (surface) {
-    case 'prompt':
-      return sql`v.as_prompt`;
-    case 'resource':
-      return sql`v.as_resource`;
+/** O filtro `scope` das skills, relativo à conta. */
+function skillScopeClause(scope: AccessScope, user: string | null): SQL {
+  switch (scope) {
+    case 'mine':
+      return sql`s.owner_user_uuid = ${userParam(user)}`;
+    case 'shared':
+      return sql`(s.owner_user_uuid IS DISTINCT FROM ${userParam(user)} AND ${skillSharedWith(user)})`;
     default:
-      return sql`v.as_skill`;
+      return PUBLIC_REACH;
   }
 }
 
 /**
- * As colunas de `SkillSummary`. Além dos metadados, cada linha traz `mcps`: os
- * vínculos da skill, como JSON. Numa leitura `'all'` vêm todos os vínculos;
- * nas demais só os com vMCP aberto e ligado — o site não pode revelar em qual
- * servidor fechado uma skill está, e é por essa lista que o mcp-public sabe se
- * a skill tem página no site.
+ * A cláusula de visibilidade que `listSkills`, `getSkillSummary` e `listTags`
+ * compartilham. Com `virtualMcp`, é a exposição naquele servidor e **só**
+ * nele, na superfície pedida, com a skill ligada; sem, é o modo da leitura:
+ * `'all'` (tudo, inclusive desligadas), `'open'` (a regra do site) ou o que
+ * a conta do `viewer` enxerga.
  */
-function skillColumns({ visibility = 'open' }: ReadOptions): SQL {
-  const everyLink = visibility === 'all';
+function visibilityClause({ visibility, viewer, virtualMcp }: ReadOptions): SQL {
+  if (virtualMcp) {
+    // UUID torto é "nenhuma skill", não erro do driver virando HTTP 500.
+    if (!isUuid(virtualMcp.uuid)) return sql`false`;
+    return sql`(s.is_active AND ${exposedIn(sql`${virtualMcp.uuid}::uuid`, virtualMcp.surface)})`;
+  }
+  const mode = readMode({ visibility, viewer });
+  if (mode.kind === 'all') return sql`true`;
+  if (mode.kind === 'open') return OPEN_EXPOSURE;
+  return skillVisibleTo(mode.user);
+}
+
+/**
+ * A coluna de porta do vínculo (`v`, skill ↔ vMCP) ou do vínculo de catálogo
+ * (`vc`, catálogo ↔ vMCP) que corresponde à superfície — nunca texto do
+ * chamador: `surface` é um dos três valores fechados, e o alias é nosso.
+ */
+function surfaceFlag(alias: 'v' | 'vc', surface: VirtualSurface): SQL {
+  switch (surface) {
+    case 'prompt':
+      return sql.raw(`${alias}.as_prompt`);
+    case 'resource':
+      return sql.raw(`${alias}.as_resource`);
+    default:
+      return sql.raw(`${alias}.as_skill`);
+  }
+}
+
+/**
+ * As colunas de `SkillSummary`. Além dos metadados, cada linha traz dois JSON:
+ *
+ * `mcps` — em quais vMCPs a skill está. É a união de dois caminhos, um item
+ * por servidor: os vínculos **diretos** (`direct: true`, as portas do
+ * vínculo) e os servidores alcançados **só por catálogo** (`direct: false`,
+ * as portas são a união dos catálogos ligados, com participação ativa,
+ * vinculados a ele, e `catalogs` diz quais). Um servidor com vínculo direto
+ * não aparece pelo caminho do catálogo: o direto sobrescreve
+ * (`docs/11-catalogos.md` §3.2). Numa leitura `'all'` vêm todos; com
+ * `viewer`, só os que a conta vê (aberto e ligado, dela ou concedido a ela);
+ * nas demais só os com vMCP aberto e ligado — o site não pode revelar em
+ * qual servidor fechado uma skill está, e é por essa lista que o mcp-public
+ * sabe se a skill tem página no site. `skills.is_active` não filtra aqui: a
+ * lista diz onde a skill *estaria*, e `isActive` diz se ela sai.
+ *
+ * `catalogs` — os catálogos de que a skill participa, com o estado do
+ * catálogo e o da participação. Na leitura `'all'` todos; com `viewer`, os
+ * que a conta vê (público e ligado, dela ou concedido a ela); no site,
+ * nenhum — é o painel "Nos catálogos" da página da skill.
+ *
+ * E, desde o `017`, o dono (`owner_user_uuid`, `owner_email`), o flag
+ * `is_public` e o `access` da conta que lê (`accessColumn`).
+ */
+function skillColumns(options: ReadOptions): SQL {
+  const mode = readMode(options);
+  const everyLink = mode.kind === 'all';
+  // O vMCP `x` (do UNION abaixo) entra na lista `mcps` da skill.
+  const mcpFilter = everyLink
+    ? sql`true`
+    : mode.kind === 'viewer'
+      ? sql`((x.is_open AND x.is_active) OR x.owner_user_uuid = ${userParam(mode.user)} OR EXISTS (
+          SELECT 1 FROM virtual_mcp_grants vg
+          WHERE vg.virtual_mcp_uuid = x.uuid AND vg.user_uuid = ${userParam(mode.user)}
+        ))`
+      : sql`(x.is_open AND x.is_active)`;
+  // O catálogo `c` entra na lista `catalogs`; nulo é "lista vazia" (o site).
+  const catalogFilter = everyLink
+    ? sql`true`
+    : mode.kind === 'viewer'
+      ? sql`((c.is_public AND c.is_active) OR ${catalogSeenBy(mode.user)})`
+      : null;
   return sql`
-  s.uuid, s.slug, s.name, s.description, s.icon,
+  s.uuid, s.slug, s.name, s.description, s.icon, s.is_active, s.is_public,
+  s.owner_user_uuid,
+  (SELECT u.email FROM users u WHERE u.uuid = s.owner_user_uuid) AS owner_email,
+  ${accessColumn(mode, sql`s.owner_user_uuid`, skillGrantOf)} AS access,
   s.view_count, s.download_count,
   s.created_at, s.updated_at,
   COALESCE((
@@ -156,18 +406,58 @@ function skillColumns({ visibility = 'open' }: ReadOptions): SQL {
   (SELECT count(*) FROM files f WHERE f.skill_uuid = s.uuid) AS file_count,
   COALESCE((
     SELECT json_agg(json_build_object(
-      'uuid', m.uuid, 'slug', m.slug, 'name', m.name,
-      'isOpen', m.is_open, 'isActive', m.is_active,
-      'isDefault', (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING})),
-      'asSkill', v.as_skill, 'asPrompt', v.as_prompt, 'asResource', v.as_resource
-    ) ORDER BY m.name, m.slug)
-    FROM virtual_mcp_skills v JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
-    WHERE v.skill_uuid = s.uuid AND (${everyLink} OR (m.is_open AND m.is_active))
-  ), '[]'::json) AS mcps
+      'uuid', x.uuid, 'slug', x.slug, 'name', x.name,
+      'isOpen', x.is_open, 'isActive', x.is_active,
+      'isDefault', (x.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING})),
+      'asSkill', x.as_skill, 'asPrompt', x.as_prompt, 'asResource', x.as_resource,
+      'direct', x.direct, 'catalogs', x.catalogs
+    ) ORDER BY x.name, x.slug)
+    FROM (
+      SELECT m.uuid, m.slug, m.name, m.is_open, m.is_active, m.owner_user_uuid,
+             v.as_skill, v.as_prompt, v.as_resource,
+             true AS direct, '[]'::json AS catalogs
+      FROM virtual_mcp_skills v JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+      WHERE v.skill_uuid = s.uuid
+      UNION ALL
+      SELECT m.uuid, m.slug, m.name, m.is_open, m.is_active, m.owner_user_uuid,
+             bool_or(vc.as_skill), bool_or(vc.as_prompt), bool_or(vc.as_resource),
+             false,
+             json_agg(json_build_object('uuid', c.uuid, 'slug', c.slug, 'name', c.name)
+                      ORDER BY c.name, c.slug)
+      FROM catalog_skills cs
+      JOIN catalogs c ON c.uuid = cs.catalog_uuid AND c.is_active
+      JOIN virtual_mcp_catalogs vc ON vc.catalog_uuid = c.uuid
+      JOIN virtual_mcps m ON m.uuid = vc.virtual_mcp_uuid
+      WHERE cs.skill_uuid = s.uuid AND cs.is_active
+        AND NOT EXISTS (
+          SELECT 1 FROM virtual_mcp_skills v
+          WHERE v.skill_uuid = s.uuid AND v.virtual_mcp_uuid = m.uuid
+        )
+      GROUP BY m.uuid, m.slug, m.name, m.is_open, m.is_active, m.owner_user_uuid
+    ) x
+    WHERE ${mcpFilter}
+  ), '[]'::json) AS mcps,
+  ${
+    catalogFilter
+      ? sql`COALESCE((
+          SELECT json_agg(json_build_object(
+            'uuid', c.uuid, 'slug', c.slug, 'name', c.name,
+            'isActive', c.is_active, 'memberActive', cs.is_active
+          ) ORDER BY c.name, c.slug)
+          FROM catalog_skills cs JOIN catalogs c ON c.uuid = cs.catalog_uuid
+          WHERE cs.skill_uuid = s.uuid AND ${catalogFilter}
+        ), '[]'::json)`
+      : sql`'[]'::json`
+  } AS catalogs
 `;
 }
 
-/** O JSON do vínculo, com o `isDefault` nulo (sem padrão) normalizado. */
+/** O texto de `access` vindo do SQL, fechado nos valores de `EffectiveAccess`. */
+function toAccess(value: unknown): EffectiveAccess {
+  return value === 'owner' || isAccessLevel(value) ? value : null;
+}
+
+/** O JSON de `mcps`, com o `isDefault` nulo (sem padrão) normalizado. */
 function toSkillMcpRefs(value: unknown): SkillMcpRef[] {
   const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
   return (rows ?? []).map((m) => ({
@@ -180,6 +470,24 @@ function toSkillMcpRefs(value: unknown): SkillMcpRef[] {
     asSkill: Boolean(m.asSkill),
     asPrompt: Boolean(m.asPrompt),
     asResource: Boolean(m.asResource),
+    direct: Boolean(m.direct),
+    catalogs: ((m.catalogs ?? []) as Row[]).map((c) => ({
+      uuid: c.uuid,
+      slug: c.slug,
+      name: c.name,
+    })),
+  }));
+}
+
+/** O JSON de `catalogs` da skill: o catálogo e a participação dela nele. */
+function toSkillCatalogRefs(value: unknown): SkillCatalogRef[] {
+  const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
+  return (rows ?? []).map((c) => ({
+    uuid: c.uuid,
+    slug: c.slug,
+    name: c.name,
+    isActive: Boolean(c.isActive),
+    memberActive: Boolean(c.memberActive),
   }));
 }
 
@@ -193,7 +501,13 @@ function toSummary(row: Row): SkillSummary {
     name: row.name,
     description: row.description ?? '',
     icon: row.icon ?? null,
+    isActive: Boolean(row.is_active),
+    isPublic: Boolean(row.is_public),
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    ownerEmail: row.owner_email ?? null,
+    access: toAccess(row.access),
     mcps: toSkillMcpRefs(row.mcps),
+    catalogs: toSkillCatalogRefs(row.catalogs),
     viewCount,
     downloadCount,
     score: skillScore(viewCount, downloadCount),
@@ -225,9 +539,12 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
           ? sql`rank DESC, (s.view_count + s.download_count) DESC, s.updated_at DESC`
           : sql`(s.view_count + s.download_count) DESC, s.updated_at DESC`;
 
+  const scope = readScope(options);
+
   // Filtro compartilhado entre a contagem e a página de resultados.
   const where = sql`
     WHERE ${visibilityClause(options)}
+      ${scope ? sql`AND ${skillScopeClause(scope, scopeUser(options))}` : sql``}
       ${
         query
           ? sql`AND (
@@ -290,28 +607,28 @@ export type PublishedSkill = {
 };
 
 /**
- * As skills de um vMCP vinculadas com a flag da superfície (`as_prompt` /
- * `as_resource`), para `prompts/list` e `resources/list`.
+ * As skills ligadas e expostas num vMCP na superfície pedida (`as_prompt` /
+ * `as_resource`), para `prompts/list` e `resources/list` — pela mesma
+ * precedência das outras leituras (`exposedIn`): o vínculo direto sobrescreve,
+ * sem ele vale a união dos catálogos.
  *
  * Não reusa `listSkills` por dois motivos: aquela limita o resultado a 100, o
  * que esconderia skills em silêncio numa listagem que o protocolo entrega
  * inteira, sem cursor nem teto; e carrega por linha agregações que as duas
  * listagens descartam. Como não há teto, a linha precisa ser barata — daí só
  * três colunas. A ordem por slug é estável entre chamadas: a lista é
- * recomputada a cada requisição, e um catálogo embaralhado seria ruído.
+ * recomputada a cada requisição, e uma lista embaralhada seria ruído.
  */
 export async function listPublishedSkills(
   surface: PublicationSurface,
   virtualMcpUuid: string,
 ): Promise<PublishedSkill[]> {
   if (!isUuid(virtualMcpUuid)) return [];
-  const flag = surface === 'prompt' ? sql`v.as_prompt` : sql`v.as_resource`;
 
   const result = await db().execute(sql`
     SELECT s.slug, s.name, s.description
-    FROM virtual_mcp_skills v
-    JOIN skills s ON s.uuid = v.skill_uuid
-    WHERE v.virtual_mcp_uuid = ${virtualMcpUuid} AND ${flag}
+    FROM skills s
+    WHERE s.is_active AND ${exposedIn(sql`${virtualMcpUuid}::uuid`, surface)}
     ORDER BY s.slug ASC
   `);
   return (result.rows as Row[]).map((row) => ({
@@ -344,8 +661,9 @@ export async function getSkillDetail(
 
   const files = await listFiles(summary.uuid);
   const skillMd = await readTextFile(summary.uuid, SKILL_MD);
+  const grants = await listSkillGrants(summary.uuid);
 
-  return { ...summary, skillMd: skillMd ?? '', files };
+  return { ...summary, skillMd: skillMd ?? '', files, grants };
 }
 
 export async function listFiles(skillUuid: string): Promise<SkillFileMeta[]> {
@@ -425,34 +743,57 @@ export async function readAllFiles(skillUuid: string): Promise<FileContent[]> {
 // ------------------------------------------------------------- contadores ---
 
 /**
- * Com `virtualMcpUuid`, soma **nos dois lugares**: no vínculo (o contador
- * "por este MCP") e no global da skill. Dois UPDATEs sem transação: são
- * contadores best-effort, e perder um incremento numa falha no meio é
- * preferível a segurar a leitura por um lock a mais.
+ * Com `virtualMcpUuid`, soma **no global da skill e no caminho** por onde ela
+ * chegou ao servidor (`docs/11-catalogos.md` §3.3): havendo vínculo direto,
+ * no vínculo (o contador "por este MCP"); sem ele, em **cada** catálogo que
+ * contribuiu — ligado, com a participação ativa e vinculado ao vMCP. Um
+ * acesso pelo vínculo direto não soma no catálogo mesmo que a skill esteja
+ * nele: o catálogo não foi o caminho.
+ *
+ * UPDATEs sem transação: são contadores best-effort, e perder um incremento
+ * numa falha no meio é preferível a segurar a leitura por um lock a mais.
  */
 export async function incrementViewCount(skillUuid: string, virtualMcpUuid?: string): Promise<void> {
-  await db().execute(sql`UPDATE skills SET view_count = view_count + 1 WHERE uuid = ${skillUuid}`);
-  if (virtualMcpUuid !== undefined && isUuid(virtualMcpUuid)) {
-    await db().execute(sql`
-      UPDATE virtual_mcp_skills SET view_count = view_count + 1
-      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${skillUuid}
-    `);
-  }
+  await bumpCounter('view_count', skillUuid, virtualMcpUuid);
 }
 
 export async function incrementDownloadCount(
   skillUuid: string,
   virtualMcpUuid?: string,
 ): Promise<void> {
-  await db().execute(
-    sql`UPDATE skills SET download_count = download_count + 1 WHERE uuid = ${skillUuid}`,
-  );
-  if (virtualMcpUuid !== undefined && isUuid(virtualMcpUuid)) {
-    await db().execute(sql`
-      UPDATE virtual_mcp_skills SET download_count = download_count + 1
-      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${skillUuid}
-    `);
-  }
+  await bumpCounter('download_count', skillUuid, virtualMcpUuid);
+}
+
+/** O nome da coluna é um dos dois literais nossos — nunca texto do chamador. */
+async function bumpCounter(
+  counter: 'view_count' | 'download_count',
+  skillUuid: string,
+  virtualMcpUuid: string | undefined,
+): Promise<void> {
+  const column = sql.raw(counter);
+  await db().execute(sql`UPDATE skills SET ${column} = ${column} + 1 WHERE uuid = ${skillUuid}`);
+  if (virtualMcpUuid === undefined || !isUuid(virtualMcpUuid)) return;
+
+  // O `RETURNING` diz se havia vínculo direto: com ele, o caminho foi o
+  // vínculo e os catálogos não entram; sem ele, o caminho foram os catálogos.
+  const direct = await db().execute(sql`
+    UPDATE virtual_mcp_skills SET ${column} = ${column} + 1
+    WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${skillUuid}
+    RETURNING skill_uuid
+  `);
+  if ((direct.rows as Row[]).length > 0) return;
+
+  await db().execute(sql`
+    UPDATE catalogs SET ${column} = ${column} + 1
+    WHERE uuid IN (
+      SELECT c.uuid FROM catalogs c
+      JOIN catalog_skills cs ON cs.catalog_uuid = c.uuid
+      JOIN virtual_mcp_catalogs vc ON vc.catalog_uuid = c.uuid
+      WHERE cs.skill_uuid = ${skillUuid}
+        AND vc.virtual_mcp_uuid = ${virtualMcpUuid}
+        AND c.is_active AND cs.is_active
+    )
+  `);
 }
 
 // ------------------------------------------------------------------ tags ---
@@ -510,6 +851,16 @@ export type CreateSkillInput = {
    * é a regra). Omitido, `null` ou vazio nasce sem ícone; inválido é 400.
    */
   icon?: string | null;
+  /**
+   * Ligada (padrão). Desligada, a skill existe no painel e em lugar nenhum
+   * mais, mesmo com vínculos (`docs/11-catalogos.md` §3.1).
+   */
+  isActive?: boolean;
+  /**
+   * Legível por qualquer conta e pelo site (`docs/12` decisão 4); padrão
+   * `false`. Não publica em MCP nenhum — isso é `mcps`.
+   */
+  isPublic?: boolean;
   skillMd: string;
   tags?: string[];
   /**
@@ -547,6 +898,8 @@ export async function createSkill(
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
   const icon = optionalIcon(input.icon) ?? null;
+  const isActive = optionalBoolean(input.isActive, 'isActive') ?? true;
+  const isPublic = optionalBoolean(input.isPublic, 'isPublic') ?? false;
   const links = await resolveLinks(input.mcps ?? []);
 
   // Validado antes de abrir a transação: um caminho recusado no meio da
@@ -575,9 +928,14 @@ export async function createSkill(
 
     try {
       await db().transaction(async (tx) => {
+        // Quem cria vira dono (`docs/12` decisão 8); sem conta (bootstrap,
+        // token global, seed) a skill nasce órfã, só do admin.
         const inserted = await tx.execute(sql`
-          INSERT INTO skills (slug, name, description, icon, created_by_user_uuid)
-          VALUES (${slug}, ${name}, ${description}, ${icon}, ${actor?.userUuid ?? null})
+          INSERT INTO skills
+            (slug, name, description, icon, is_active, is_public,
+             created_by_user_uuid, owner_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${icon}, ${isActive}, ${isPublic},
+                  ${actor?.userUuid ?? null}, ${actor?.userUuid ?? null})
           RETURNING uuid
         `);
         const uuid = (inserted.rows as Row[])[0].uuid as string;
@@ -619,6 +977,18 @@ export type UpdateSkillInput = {
   description?: string;
   /** `undefined` não mexe; `null` ou vazio apaga; inválido é 400 (ver `CreateSkillInput`). */
   icon?: string | null;
+  /** `undefined` não mexe. Desligar some de todo vMCP e do site sem perder vínculo. */
+  isActive?: boolean;
+  /** `undefined` não mexe. Ligar torna a skill legível por qualquer conta e pelo site. */
+  isPublic?: boolean;
+  /**
+   * Transferência (`docs/12` decisão 9): `undefined` não mexe; um uuid
+   * precisa ser de conta existente e ativa (400 senão), e a concessão que
+   * essa conta tinha na skill é apagada — o dono é implícito; `null` deixa a
+   * skill órfã (só o admin). A checagem de que o chamador é dono ou admin é
+   * do app. Audita `update` com o e-mail do novo dono em `target_label`.
+   */
+  ownerUserUuid?: string | null;
   tags?: string[];
   slug?: string;
 };
@@ -637,6 +1007,9 @@ export async function updateSkill(
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
   const icon = optionalIcon(input.icon);
+  const isActive = optionalBoolean(input.isActive, 'isActive');
+  const isPublic = optionalBoolean(input.isPublic, 'isPublic');
+  const transfer = input.ownerUserUuid !== undefined;
 
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
@@ -648,15 +1021,24 @@ export async function updateSkill(
 
   try {
     await db().transaction(async (tx) => {
+      // A transferência valida o novo dono e apaga a concessão dele antes
+      // do UPDATE; o e-mail vai para o label da auditoria.
+      const newOwnerEmail = transfer
+        ? await transferOwnerTx(tx, GRANTS.skill, existing.uuid, input.ownerUserUuid ?? null)
+        : undefined;
       await tx.execute(sql`
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
           icon = ${icon === undefined ? existing.icon : icon},
+          is_active = ${isActive ?? existing.isActive},
+          is_public = ${isPublic ?? existing.isPublic},
+          owner_user_uuid = ${transfer ? (input.ownerUserUuid ?? null) : existing.ownerUserUuid},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
       `);
+      const transferLabel = newOwnerEmail ?? null;
 
       if (input.tags !== undefined) {
         await replaceTagsTx(tx, existing.uuid, tags);
@@ -670,6 +1052,7 @@ export async function updateSkill(
         source,
         actor,
         previousContent: null,
+        targetLabel: transferLabel,
       });
     });
   } catch (err) {
@@ -706,6 +1089,9 @@ export async function updateSkillWithContent(
   const description = optionalText(input.description, 'description')?.trim() ?? '';
   const tags = optionalTextList(input.tags, 'tags') ?? [];
   const icon = optionalIcon(input.icon);
+  const isActive = optionalBoolean(input.isActive, 'isActive');
+  const isPublic = optionalBoolean(input.isPublic, 'isPublic');
+  const transfer = input.ownerUserUuid !== undefined;
 
   // Slug vazio continua significando "mantém o atual", como antes de haver
   // checagem de tipo — só a troca por um slug diferente vai ao `resolveSlug`.
@@ -720,15 +1106,24 @@ export async function updateSkillWithContent(
 
   try {
     await db().transaction(async (tx) => {
+      // A transferência valida o novo dono e apaga a concessão dele antes
+      // do UPDATE; o e-mail vai para o label da auditoria.
+      const newOwnerEmail = transfer
+        ? await transferOwnerTx(tx, GRANTS.skill, existing.uuid, input.ownerUserUuid ?? null)
+        : undefined;
       await tx.execute(sql`
         UPDATE skills SET
           name = ${name ?? existing.name},
           description = ${input.description !== undefined ? description : existing.description},
           icon = ${icon === undefined ? existing.icon : icon},
+          is_active = ${isActive ?? existing.isActive},
+          is_public = ${isPublic ?? existing.isPublic},
+          owner_user_uuid = ${transfer ? (input.ownerUserUuid ?? null) : existing.ownerUserUuid},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
       `);
+      const transferLabel = newOwnerEmail ?? null;
 
       if (input.tags !== undefined) {
         await replaceTagsTx(tx, existing.uuid, tags);
@@ -755,6 +1150,7 @@ export async function updateSkillWithContent(
         source,
         actor,
         previousContent: null,
+        targetLabel: transferLabel,
       });
     });
   } catch (err) {
@@ -789,9 +1185,9 @@ async function resolveLinks(inputs: readonly SkillLinkInput[]): Promise<Resolved
     seen.add(uuid);
     return {
       virtualMcpUuid: uuid,
-      asSkill: requireBoolean(item.asSkill, 'asSkill', uuid),
-      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', uuid),
-      asResource: requireBoolean(item.asResource, 'asResource', uuid),
+      asSkill: requireBoolean(item.asSkill, 'asSkill', `MCP virtual "${uuid}"`),
+      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', `MCP virtual "${uuid}"`),
+      asResource: requireBoolean(item.asResource, 'asResource', `MCP virtual "${uuid}"`),
     };
   });
 
@@ -1574,8 +1970,8 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
 }
 
 /**
- * Espelho do `CHECK` de `audit_log.action` (`schema/011-mcp-padrao.sql`), para
- * recusar um filtro inválido com 400 em vez de devolver uma página vazia.
+ * Espelho do `CHECK` de `audit_log.action` (`schema/017-acesso-granular.sql`),
+ * para recusar um filtro inválido com 400 em vez de devolver uma página vazia.
  */
 const AUDIT_ACTIONS: readonly AuditAction[] = [
   'create',
@@ -1592,6 +1988,15 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'mcp.default',
   'mcp.key.create',
   'mcp.key.revoke',
+  'catalog.create',
+  'catalog.update',
+  'catalog.delete',
+  'skill.share',
+  'skill.unshare',
+  'catalog.share',
+  'catalog.unshare',
+  'mcp.share',
+  'mcp.unshare',
   'public.key.create',
   'public.key.revoke',
 ];
@@ -1661,9 +2066,9 @@ export async function listAuditPage(options: ListAuditOptions = {}): Promise<Aud
 
 export type Stats = {
   totalSkills: number;
-  /** Em ao menos um vMCP aberto e ligado — o que o site mostra. */
+  /** Ligadas e expostas em ao menos um vMCP aberto e ligado, por vínculo direto ou catálogo — o que o site mostra. */
   openSkills: number;
-  /** Flutuantes: sem vínculo com servidor nenhum. */
+  /** Flutuantes: sem vínculo direto com servidor nenhum **e** fora de todo catálogo. */
   unlinkedSkills: number;
   totalFiles: number;
   totalViews: number;
@@ -1677,11 +2082,10 @@ export async function stats(): Promise<Stats> {
   const result = await db().execute(sql`
     SELECT
       (SELECT count(*) FROM skills)::int AS total_skills,
-      (SELECT count(DISTINCT v.skill_uuid) FROM virtual_mcp_skills v
-        JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
-        WHERE m.is_open AND m.is_active)::int AS open_skills,
+      (SELECT count(*) FROM skills s WHERE ${OPEN_EXPOSURE})::int AS open_skills,
       (SELECT count(*) FROM skills s
-        WHERE NOT EXISTS (SELECT 1 FROM virtual_mcp_skills v WHERE v.skill_uuid = s.uuid))::int
+        WHERE NOT EXISTS (SELECT 1 FROM virtual_mcp_skills v WHERE v.skill_uuid = s.uuid)
+          AND NOT EXISTS (SELECT 1 FROM catalog_skills cs WHERE cs.skill_uuid = s.uuid))::int
         AS unlinked_skills,
       (SELECT count(*) FROM files)::int AS total_files,
       (SELECT COALESCE(sum(view_count), 0) FROM skills)::bigint AS total_views,
@@ -1823,7 +2227,16 @@ export async function setDefaultVirtualMcp(
  * e vem por chamada; sem ela o contador é 0 **sem consultar** `mcp_sessions`
  * — o mcp-admin e o seed não pagam por um número que não mostram.
  */
-export type VirtualMcpReadOptions = { onlineWindowMs?: number };
+export type VirtualMcpReadOptions = {
+  onlineWindowMs?: number;
+  /**
+   * A conta que lê (`docs/12` §3.1). Sem ela é a visão do admin: tudo, com
+   * `access: 'owner'`. Com uma conta que não é admin, a listagem devolve só
+   * os vMCPs que ela vê (aberto e ligado, dela ou concedido a ela), o
+   * detalhe é `null` fora disso, e `access` diz o nível em cada um.
+   */
+  viewer?: Viewer;
+};
 
 /** Quantas skills a miniatura do card mostra. */
 const VIRTUAL_MCP_PREVIEW_SIZE = 8;
@@ -1832,7 +2245,8 @@ const VIRTUAL_MCP_PREVIEW_SIZE = 8;
 // passada por `virtual_mcp_skills` (LATERAL) em vez de quatro subconsultas.
 // As chaves vivas e o preview continuam subconsultas: a listagem é de painel
 // (poucas linhas) e cada uma responde a uma pergunta distinta.
-function virtualMcpColumns({ onlineWindowMs }: VirtualMcpReadOptions): SQL {
+function virtualMcpColumns({ onlineWindowMs, viewer }: VirtualMcpReadOptions): SQL {
+  const access = accessColumn(readMode({ visibility: 'all', viewer }), sql`m.owner_user_uuid`, mcpGrantOf);
   const online =
     onlineWindowMs === undefined
       ? sql`0::int`
@@ -1843,10 +2257,12 @@ function virtualMcpColumns({ onlineWindowMs }: VirtualMcpReadOptions): SQL {
 
   return sql`
   m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
-  m.owner_user_uuid, u.email AS owner_email, m.layout,
+  m.owner_user_uuid, u.email AS owner_email, m.layout, ${access} AS access,
   c.skill_count, c.tool_count, c.prompt_count, c.resource_count,
   (SELECT count(*) FROM virtual_mcp_keys k
     WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
+  (SELECT count(*) FROM virtual_mcp_catalogs vc
+    WHERE vc.virtual_mcp_uuid = m.uuid)::int AS catalog_count,
   (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
     AS is_default,
   ${online} AS online_sessions,
@@ -1888,6 +2304,7 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     isOpen: Boolean(row.is_open),
     ownerUserUuid: row.owner_user_uuid ?? null,
     ownerEmail: row.owner_email ?? null,
+    access: toAccess(row.access),
     skillCount: Number(row.skill_count ?? 0),
     toolCount: Number(row.tool_count ?? 0),
     promptCount: Number(row.prompt_count ?? 0),
@@ -1897,6 +2314,7 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     isDefault: Boolean(row.is_default),
     onlineSessions: Number(row.online_sessions ?? 0),
     preview: toVirtualMcpPreview(row.preview),
+    catalogCount: Number(row.catalog_count ?? 0),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -1953,31 +2371,41 @@ function toVirtualMcpSkill(row: Row): VirtualMcpSkill {
     asResource: Boolean(row.as_resource),
     viewCount: Number(row.view_count ?? 0),
     downloadCount: Number(row.download_count ?? 0),
-    position:
-      row.pos_x === null || row.pos_x === undefined || row.pos_y === null || row.pos_y === undefined
-        ? null
-        : { x: Number(row.pos_x), y: Number(row.pos_y) },
+    position: toPosition(row),
   };
 }
 
 /**
- * Listagem do painel. Sem `ownerUserUuid` (ou `undefined`) é a visão do
- * admin: todos, inclusive inativos e órfãos. Com um UUID, só os daquele dono.
- * `null` é "nenhum dono possível" — a sessão de bootstrap, que não é conta —
- * e devolve lista vazia em vez de vazar os órfãos, que são só do admin.
- * `onlineWindowMs` liga o contador de clientes online (ver
- * `VirtualMcpReadOptions`).
+ * Listagem do painel. Sem opção é a visão do admin: todos, inclusive
+ * inativos e órfãos, com `access: 'owner'`. Com `viewer` que não é admin, só
+ * os que a conta vê (`docs/12` §3.1: aberto e ligado, dela, ou concedido a
+ * ela), e `scope` filtra entre meus / compartilhados comigo / públicos
+ * (relativo ao `viewer`, inclusive quando ele é admin).
+ *
+ * `ownerUserUuid` é o filtro anterior ao `017` e continua valendo: com um
+ * UUID, só os daquele dono; `null` é "nenhum dono possível" — a sessão de
+ * bootstrap, que não é conta — e devolve lista vazia em vez de vazar os
+ * órfãos, que são só do admin. `onlineWindowMs` liga o contador de clientes
+ * online (ver `VirtualMcpReadOptions`).
  */
 export async function listVirtualMcps(
-  options: { ownerUserUuid?: string | null } & VirtualMcpReadOptions = {},
+  options: { ownerUserUuid?: string | null; scope?: AccessScope } & VirtualMcpReadOptions = {},
 ): Promise<VirtualMcpSummary[]> {
   const owner = options.ownerUserUuid;
   if (owner === null) return [];
   if (owner !== undefined && !isUuid(owner)) return [];
+  const mode = readMode({ visibility: 'all', viewer: options.viewer });
+  const scope = readScope(options);
+
+  const conditions: SQL[] = [];
+  if (owner !== undefined) conditions.push(sql`m.owner_user_uuid = ${owner}`);
+  if (mode.kind === 'viewer') conditions.push(mcpVisibleTo(mode.user));
+  if (scope) conditions.push(mcpScopeClause(scope, scopeUser(options)));
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
 
   const result = await db().execute(sql`
     SELECT ${virtualMcpColumns(options)} ${VIRTUAL_MCP_FROM}
-    ${owner !== undefined ? sql`WHERE m.owner_user_uuid = ${owner}` : sql``}
+    ${where}
     ORDER BY m.name ASC, m.slug ASC
   `);
   return (result.rows as Row[]).map(toVirtualMcpSummary);
@@ -1996,13 +2424,67 @@ async function loadVirtualMcpSkills(virtualMcpUuid: string): Promise<VirtualMcpS
   return (result.rows as Row[]).map(toVirtualMcpSkill);
 }
 
-/** Detalhe = resumo + skills vinculadas + layout do canvas. Inclui inativos: é o painel que lê. */
+/**
+ * Os catálogos vinculados a um vMCP — os nós de catálogo do canvas
+ * (`docs/11-catalogos.md` §5). As portas e a posição são do vínculo (`vc`);
+ * `skill_count` conta todo membro e `active_skill_count` é o número do nó:
+ * membros com participação ativa e skill ligada que **não** têm vínculo
+ * direto com este vMCP — quem já é nó próprio não conta duas vezes.
+ */
+async function loadVirtualMcpCatalogs(virtualMcpUuid: string): Promise<VirtualMcpCatalog[]> {
+  const result = await db().execute(sql`
+    SELECT c.uuid, c.slug, c.name, c.description, c.is_active, c.owner_user_uuid,
+           vc.as_skill, vc.as_prompt, vc.as_resource, vc.pos_x, vc.pos_y,
+           (SELECT count(*) FROM catalog_skills cs WHERE cs.catalog_uuid = c.uuid)::int
+             AS skill_count,
+           (SELECT count(*) FROM catalog_skills cs
+             JOIN skills s ON s.uuid = cs.skill_uuid
+             WHERE cs.catalog_uuid = c.uuid AND cs.is_active AND s.is_active
+               AND NOT EXISTS (
+                 SELECT 1 FROM virtual_mcp_skills v
+                 WHERE v.virtual_mcp_uuid = vc.virtual_mcp_uuid AND v.skill_uuid = cs.skill_uuid
+               ))::int AS active_skill_count
+    FROM virtual_mcp_catalogs vc
+    JOIN catalogs c ON c.uuid = vc.catalog_uuid
+    WHERE vc.virtual_mcp_uuid = ${virtualMcpUuid}
+    ORDER BY c.name ASC, c.slug ASC
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    isActive: Boolean(row.is_active),
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    asSkill: Boolean(row.as_skill),
+    asPrompt: Boolean(row.as_prompt),
+    asResource: Boolean(row.as_resource),
+    skillCount: Number(row.skill_count ?? 0),
+    activeSkillCount: Number(row.active_skill_count ?? 0),
+    position: toPosition(row),
+  }));
+}
+
+/** `pos_x`/`pos_y` de um vínculo como ponto, ou nulo (as duas andam juntas, por CHECK). */
+function toPosition(row: Row): CanvasPoint | null {
+  return row.pos_x === null || row.pos_x === undefined || row.pos_y === null || row.pos_y === undefined
+    ? null
+    : { x: Number(row.pos_x), y: Number(row.pos_y) };
+}
+
+/**
+ * Detalhe = resumo + skills e catálogos vinculados + layout do canvas +
+ * concessões. Inclui inativos: é o painel que lê. Com `viewer` que não é
+ * admin, um vMCP que a conta não vê é `null`, como se não existisse.
+ */
 async function loadVirtualMcpDetail(
   where: SQL,
   options: VirtualMcpReadOptions,
 ): Promise<VirtualMcpDetail | null> {
+  const mode = readMode({ visibility: 'all', viewer: options.viewer });
+  const visible = mode.kind === 'viewer' ? sql`AND ${mcpVisibleTo(mode.user)}` : sql``;
   const result = await db().execute(sql`
-    SELECT ${virtualMcpColumns(options)} ${VIRTUAL_MCP_FROM} WHERE ${where} LIMIT 1
+    SELECT ${virtualMcpColumns(options)} ${VIRTUAL_MCP_FROM} WHERE ${where} ${visible} LIMIT 1
   `);
   const row = (result.rows as Row[])[0];
   if (!row) return null;
@@ -2011,7 +2493,9 @@ async function loadVirtualMcpDetail(
   return {
     ...summary,
     skills: await loadVirtualMcpSkills(summary.uuid),
+    catalogs: await loadVirtualMcpCatalogs(summary.uuid),
     layout: toVirtualMcpLayout(row.layout),
+    grants: await listVirtualMcpGrants(summary.uuid),
   };
 }
 
@@ -2134,7 +2618,12 @@ export type UpdateVirtualMcpInput = {
   description?: string;
   isOpen?: boolean;
   isActive?: boolean;
-  /** `undefined` não mexe; `null` apaga o dono. */
+  /**
+   * Transferência (`docs/12` decisão 9): `undefined` não mexe; um uuid
+   * precisa ser de conta existente e ativa (400 senão), e a concessão que
+   * essa conta tinha no vMCP é apagada — o dono é implícito; `null` apaga o
+   * dono. Audita `mcp.update` com `<slug> <email do novo dono>`.
+   */
   ownerUserUuid?: string | null;
 };
 
@@ -2161,9 +2650,10 @@ export async function updateVirtualMcp(
   if (isOpen !== undefined) sets.push(sql`is_open = ${isOpen}`);
   const isActive = optionalBoolean(input.isActive, 'isActive');
   if (isActive !== undefined) sets.push(sql`is_active = ${isActive}`);
-  if (input.ownerUserUuid !== undefined) {
-    sets.push(sql`owner_user_uuid = ${ownerOrNull(input.ownerUserUuid)}`);
-  }
+  // O novo dono é validado dentro da transação (`transferOwnerTx`), antes
+  // deste SET chegar ao banco.
+  const transfer = input.ownerUserUuid !== undefined;
+  if (transfer) sets.push(sql`owner_user_uuid = ${input.ownerUserUuid ?? null}`);
 
   // Slug vazio continua significando "mantém o atual", como em `updateSkill`.
   const requestedSlug = optionalText(input.slug, 'slug')?.trim() || undefined;
@@ -2176,6 +2666,9 @@ export async function updateVirtualMcp(
 
   try {
     await db().transaction(async (tx) => {
+      const newOwnerEmail = transfer
+        ? await transferOwnerTx(tx, GRANTS.mcp, uuid, input.ownerUserUuid ?? null)
+        : undefined;
       const result = await tx.execute(sql`
         UPDATE virtual_mcps SET ${sql.join(sets, sql`, `)}
         WHERE uuid = ${uuid}
@@ -2183,8 +2676,10 @@ export async function updateVirtualMcp(
       `);
       const row = (result.rows as Row[])[0];
       if (!row) throw notFound(`MCP virtual não encontrado: ${uuid}`);
-      // O slug novo em caso de rename: é o que o painel vai mostrar dali em diante.
-      await auditTx(tx, virtualMcpAudit('mcp.update', row.slug as string, source, actor));
+      // O slug novo em caso de rename: é o que o painel vai mostrar dali em
+      // diante; numa transferência, o e-mail do novo dono vem junto.
+      const label = transferLabel(row.slug as string, newOwnerEmail);
+      await auditTx(tx, virtualMcpAudit('mcp.update', label, source, actor));
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
@@ -2243,9 +2738,9 @@ export async function setVirtualMcpSkills(
     if (!slug) throw badRequest(`${position}: o campo "slug" é obrigatório`);
     return {
       slug,
-      asSkill: requireBoolean(item.asSkill, 'asSkill', slug),
-      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', slug),
-      asResource: requireBoolean(item.asResource, 'asResource', slug),
+      asSkill: requireBoolean(item.asSkill, 'asSkill', `Skill "${slug}"`),
+      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', `Skill "${slug}"`),
+      asResource: requireBoolean(item.asResource, 'asResource', `Skill "${slug}"`),
     };
   });
 
@@ -2266,18 +2761,7 @@ export async function setVirtualMcpSkills(
     const mcp = (locked.rows as Row[])[0];
     if (!mcp) throw notFound(`MCP virtual não encontrado: ${uuid}`);
 
-    const bySlug = new Map<string, string>();
-    if (slugs.length > 0) {
-      const found = await tx.execute(sql`
-        SELECT uuid, slug FROM skills WHERE slug = ANY(${sql.param(slugs)}::text[])
-      `);
-      for (const row of found.rows as Row[]) bySlug.set(row.slug as string, row.uuid as string);
-    }
-    const missing = slugs.filter((slug) => !bySlug.has(slug));
-    if (missing.length > 0) {
-      throw badRequest(`Skills não encontradas: ${missing.join(', ')}`);
-    }
-
+    const bySlug = await resolveSkillSlugsTx(tx, slugs);
     const keep = slugs.map((slug) => bySlug.get(slug)!);
     await tx.execute(sql`
       DELETE FROM virtual_mcp_skills
@@ -2309,19 +2793,25 @@ export async function setVirtualMcpSkills(
   return detail;
 }
 
-/** O que o canvas grava: o layout dos nós fixos e/ou a posição de skills vinculadas. */
+/** Um nó do canvas a posicionar: o slug do que ele representa e o ponto. */
+type NodePosition = { slug: string; x: number; y: number };
+
+/** O que o canvas grava: o layout dos nós fixos e/ou a posição de skills e catálogos vinculados. */
 export type VirtualMcpCanvasInput = {
   /** Só as chaves informadas substituem as gravadas; as demais ficam. */
   layout?: VirtualMcpLayout;
-  /** Cada uma precisa estar vinculada a este vMCP. */
-  positions?: readonly { slug: string; x: number; y: number }[];
+  /** Skills: cada uma precisa estar vinculada a este vMCP. */
+  positions?: readonly NodePosition[];
+  /** Catálogos: cada um precisa estar vinculado a este vMCP (`docs/11-catalogos.md` §5). */
+  catalogPositions?: readonly NodePosition[];
 };
 
 /**
  * Grava o estado do canvas de um vMCP (`docs/10-admin-canvas-e-sessoes.md`):
  * mescla `layout` em `virtual_mcps.layout` (chave a chave, só as informadas)
- * e grava `pos_x`/`pos_y` das skills listadas. Tudo numa transação: um slug
- * desconhecido ou não vinculado a **este** vMCP é 400 e nada é gravado.
+ * e grava `pos_x`/`pos_y` das skills (`positions`) e dos catálogos
+ * (`catalogPositions`) listados. Tudo numa transação: um slug desconhecido
+ * ou não vinculado a **este** vMCP é 400 e nada é gravado.
  *
  * Coordenadas precisam ser números finitos e são arredondadas para o pixel
  * inteiro. **Sem auditoria e sem `updated_at`**: mover um nó é estado de
@@ -2334,7 +2824,7 @@ export async function setVirtualMcpCanvas(
 ): Promise<void> {
   if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw badRequest('O canvas deve ser um objeto com "layout" e/ou "positions"');
+    throw badRequest('O canvas deve ser um objeto com "layout", "positions" e/ou "catalogPositions"');
   }
 
   const layoutPatch: Partial<Record<(typeof LAYOUT_KEYS)[number], CanvasPoint>> = {};
@@ -2349,18 +2839,8 @@ export async function setVirtualMcpCanvas(
     }
   }
 
-  if (input.positions !== undefined && !Array.isArray(input.positions)) {
-    throw badRequest('O campo "positions" deve ser uma lista');
-  }
-  const seen = new Set<string>();
-  const positions = (input.positions ?? []).map((item, index) => {
-    const field = `positions[${index}]`;
-    const slug = (optionalText(item?.slug, `${field}.slug`) ?? '').trim();
-    if (!slug) throw badRequest(`${field}: o campo "slug" é obrigatório`);
-    if (seen.has(slug)) throw badRequest(`Slug repetido na lista: "${slug}"`);
-    seen.add(slug);
-    return { slug, ...requirePoint(item, field) };
-  });
+  const positions = readNodePositions(input.positions, 'positions');
+  const catalogPositions = readNodePositions(input.catalogPositions, 'catalogPositions');
 
   await db().transaction(async (tx) => {
     // `FOR UPDATE` serializa com `setVirtualMcpSkills`: o canvas não grava a
@@ -2393,6 +2873,39 @@ export async function setVirtualMcpCanvas(
         throw badRequest(`A skill "${item.slug}" não está vinculada a este MCP virtual`);
       }
     }
+
+    for (const item of catalogPositions) {
+      const updated = await tx.execute(sql`
+        UPDATE virtual_mcp_catalogs vc SET pos_x = ${item.x}, pos_y = ${item.y}
+        FROM catalogs c
+        WHERE vc.virtual_mcp_uuid = ${virtualMcpUuid}
+          AND vc.catalog_uuid = c.uuid
+          AND c.slug = ${item.slug}
+        RETURNING vc.catalog_uuid
+      `);
+      if ((updated.rows as Row[]).length === 0) {
+        throw badRequest(`O catálogo "${item.slug}" não está vinculado a este MCP virtual`);
+      }
+    }
+  });
+}
+
+/**
+ * Uma lista de posições do canvas vinda do cliente: `undefined` é vazia;
+ * cada item precisa de slug (sem repetição na lista) e de um ponto válido.
+ */
+function readNodePositions(value: unknown, field: string): NodePosition[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw badRequest(`O campo "${field}" deve ser uma lista`);
+
+  const seen = new Set<string>();
+  return (value as Row[]).map((item, index) => {
+    const label = `${field}[${index}]`;
+    const slug = (optionalText(item?.slug, `${label}.slug`) ?? '').trim();
+    if (!slug) throw badRequest(`${label}: o campo "slug" é obrigatório`);
+    if (seen.has(slug)) throw badRequest(`Slug repetido na lista: "${slug}"`);
+    seen.add(slug);
+    return { slug, ...requirePoint(item, label) };
   });
 }
 
@@ -2400,11 +2913,14 @@ export async function setVirtualMcpCanvas(
  * Os vMCPs que o site lista (`docs/09-mcp-padrao-e-skills-flutuantes.md`
  * §4.2): abertos e ligados, sem dono nem chaves — nada que um anônimo não
  * possa saber. Um fechado ou desligado não aparece, nem que seja o padrão.
+ * `skillCount` é o que o site mostra: skills ligadas expostas no servidor por
+ * qualquer porta, por vínculo direto ou por catálogo.
  */
 export async function listOpenVirtualMcps(): Promise<PublicVirtualMcp[]> {
   const result = await db().execute(sql`
     SELECT m.uuid, m.slug, m.name, m.description,
-      (SELECT count(*) FROM virtual_mcp_skills v WHERE v.virtual_mcp_uuid = m.uuid)::int AS skill_count,
+      (SELECT count(*) FROM skills s
+        WHERE s.is_active AND ${exposedIn(sql`m.uuid`)})::int AS skill_count,
       (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
         AS is_default
     FROM virtual_mcps m
@@ -2468,12 +2984,1204 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
-/** As flags do vínculo não têm default: omitir uma é erro, não `false`. */
-function requireBoolean(value: unknown, field: string, slug: string): boolean {
+/**
+ * As flags do vínculo não têm default: omitir uma é erro, não `false`.
+ * `subject` nomeia o item na mensagem (`Skill "x"`, `Catálogo "y"`).
+ */
+function requireBoolean(value: unknown, field: string, subject: string): boolean {
   if (typeof value !== 'boolean') {
-    throw badRequest(`Skill "${slug}": o campo "${field}" é obrigatório e deve ser booleano`);
+    throw badRequest(`${subject}: o campo "${field}" é obrigatório e deve ser booleano`);
   }
   return value;
+}
+
+/**
+ * Trava o vMCP (`FOR UPDATE`) e devolve o slug: serializa escritas
+ * concorrentes no recorte dele — dois salvamentos não apagam e inserem por
+ * cima um do outro — e é o 404 de quem não existe.
+ */
+async function lockVirtualMcpTx(tx: Tx, uuid: string): Promise<{ slug: string }> {
+  const locked = await tx.execute(
+    sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR UPDATE`,
+  );
+  const row = (locked.rows as Row[])[0];
+  if (!row) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+  return { slug: row.slug as string };
+}
+
+/** O fecho de toda escrita no recorte do vMCP: `updated_at` e a linha `mcp.update`. */
+async function touchVirtualMcpTx(
+  tx: Tx,
+  uuid: string,
+  slug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> {
+  await tx.execute(sql`UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${uuid}`);
+  await auditTx(tx, virtualMcpAudit('mcp.update', slug, source, actor));
+}
+
+/** O detalhe depois de uma escrita; sumir no meio é falha interna, não 404. */
+async function virtualMcpAfterWrite(uuid: string, verb: string): Promise<VirtualMcpDetail> {
+  const detail = await getVirtualMcpByUuid(uuid);
+  if (!detail) throw new Error(`MCP virtual ${verb} mas não encontrado`);
+  return detail;
+}
+
+// -------------------------------------------------------------- catálogos ---
+
+/**
+ * A conta que lê um catálogo (`docs/12` §3.1). Sem ela é a visão do admin:
+ * tudo, com `access: 'owner'`. Com uma conta que não é admin, a listagem
+ * devolve só os catálogos que ela vê (público e ligado, dela ou concedido a
+ * ela), o detalhe é `null` fora disso, e `access` diz o nível em cada um.
+ */
+export type CatalogReadOptions = { viewer?: Viewer };
+
+// `c` é o catálogo, `u` o dono. Os três contadores são subconsultas porque a
+// listagem é de painel (poucas linhas) e cada um responde a uma pergunta
+// distinta: quantos membros, quantos saem de fato, em quantos servidores.
+function catalogColumns({ viewer }: CatalogReadOptions): SQL {
+  const access = accessColumn(readMode({ visibility: 'all', viewer }), sql`c.owner_user_uuid`, catalogGrantOf);
+  return sql`
+  c.uuid, c.slug, c.name, c.description, c.is_active, c.is_public, c.owner_user_uuid,
+  u.email AS owner_email, ${access} AS access, c.view_count, c.download_count,
+  (SELECT count(*) FROM catalog_skills cs WHERE cs.catalog_uuid = c.uuid)::int AS skill_count,
+  (SELECT count(*) FROM catalog_skills cs JOIN skills s ON s.uuid = cs.skill_uuid
+    WHERE cs.catalog_uuid = c.uuid AND cs.is_active AND s.is_active)::int AS active_skill_count,
+  (SELECT count(*) FROM virtual_mcp_catalogs vc WHERE vc.catalog_uuid = c.uuid)::int AS mcp_count,
+  c.created_at, c.updated_at
+`;
+}
+
+const CATALOG_FROM = sql`FROM catalogs c LEFT JOIN users u ON u.uuid = c.owner_user_uuid`;
+
+function toCatalogSummary(row: Row): CatalogSummary {
+  return {
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    isActive: Boolean(row.is_active),
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    ownerEmail: row.owner_email ?? null,
+    isPublic: Boolean(row.is_public),
+    access: toAccess(row.access),
+    skillCount: Number(row.skill_count ?? 0),
+    activeSkillCount: Number(row.active_skill_count ?? 0),
+    mcpCount: Number(row.mcp_count ?? 0),
+    viewCount: Number(row.view_count ?? 0),
+    downloadCount: Number(row.download_count ?? 0),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+/**
+ * Listagem do painel, com a semântica de `listVirtualMcps`: sem opção é a
+ * visão do admin (todos, inclusive desligados e órfãos, `access: 'owner'`);
+ * com `viewer` que não é admin, só os que a conta vê (público e ligado,
+ * dela, ou concedido a ela), e `scope` filtra entre meus / compartilhados
+ * comigo / públicos. `ownerUserUuid` é o filtro anterior ao `017`: com um
+ * UUID, só os daquele dono; `null` — a sessão de bootstrap, que não é conta
+ * — devolve `[]` em vez de vazar os órfãos, que são só do admin.
+ */
+export async function listCatalogs(
+  options: { ownerUserUuid?: string | null; scope?: AccessScope } & CatalogReadOptions = {},
+): Promise<CatalogSummary[]> {
+  const owner = options.ownerUserUuid;
+  if (owner === null) return [];
+  if (owner !== undefined && !isUuid(owner)) return [];
+  const mode = readMode({ visibility: 'all', viewer: options.viewer });
+  const scope = readScope(options);
+
+  const conditions: SQL[] = [];
+  if (owner !== undefined) conditions.push(sql`c.owner_user_uuid = ${owner}`);
+  if (mode.kind === 'viewer') conditions.push(catalogVisibleTo(mode.user));
+  if (scope) conditions.push(catalogScopeClause(scope, scopeUser(options)));
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+  const result = await db().execute(sql`
+    SELECT ${catalogColumns(options)} ${CATALOG_FROM}
+    ${where}
+    ORDER BY c.name ASC, c.slug ASC
+  `);
+  return (result.rows as Row[]).map(toCatalogSummary);
+}
+
+/**
+ * Os membros, com a participação (`cs.is_active`) e o estado da própria
+ * skill (`skillIsActive`, o alerta da lista). Inclui inativos: é o painel
+ * que lê.
+ */
+async function loadCatalogSkills(catalogUuid: string): Promise<CatalogSkill[]> {
+  const result = await db().execute(sql`
+    SELECT s.uuid, s.slug, s.name, s.description, s.icon,
+           cs.is_active, s.is_active AS skill_is_active, cs.created_at AS added_at
+    FROM catalog_skills cs
+    JOIN skills s ON s.uuid = cs.skill_uuid
+    WHERE cs.catalog_uuid = ${catalogUuid}
+    ORDER BY s.name ASC, s.slug ASC
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    icon: row.icon ?? null,
+    isActive: Boolean(row.is_active),
+    skillIsActive: Boolean(row.skill_is_active),
+    addedAt: new Date(row.added_at).toISOString(),
+  }));
+}
+
+/** Os vMCPs em que o catálogo está, com as portas do vínculo. Inclui fechados e desligados. */
+async function loadCatalogMcps(catalogUuid: string): Promise<CatalogMcpRef[]> {
+  const result = await db().execute(sql`
+    SELECT m.uuid, m.slug, m.name, m.is_open, m.is_active, m.owner_user_uuid,
+           (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
+             AS is_default,
+           vc.as_skill, vc.as_prompt, vc.as_resource
+    FROM virtual_mcp_catalogs vc
+    JOIN virtual_mcps m ON m.uuid = vc.virtual_mcp_uuid
+    WHERE vc.catalog_uuid = ${catalogUuid}
+    ORDER BY m.name ASC, m.slug ASC
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    isOpen: Boolean(row.is_open),
+    isActive: Boolean(row.is_active),
+    isDefault: Boolean(row.is_default),
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    asSkill: Boolean(row.as_skill),
+    asPrompt: Boolean(row.as_prompt),
+    asResource: Boolean(row.as_resource),
+  }));
+}
+
+/**
+ * Detalhe = resumo + membros + vMCPs vinculados + concessões. Inclui
+ * inativos: é o painel que lê. Com `viewer` que não é admin, um catálogo
+ * que a conta não vê é `null`, como se não existisse.
+ */
+async function loadCatalogDetail(
+  where: SQL,
+  options: CatalogReadOptions,
+): Promise<CatalogDetail | null> {
+  const mode = readMode({ visibility: 'all', viewer: options.viewer });
+  const visible = mode.kind === 'viewer' ? sql`AND ${catalogVisibleTo(mode.user)}` : sql``;
+  const result = await db().execute(sql`
+    SELECT ${catalogColumns(options)} ${CATALOG_FROM} WHERE ${where} ${visible} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  const summary = toCatalogSummary(row);
+  return {
+    ...summary,
+    skills: await loadCatalogSkills(summary.uuid),
+    mcps: await loadCatalogMcps(summary.uuid),
+    grants: await listCatalogGrants(summary.uuid),
+  };
+}
+
+export async function getCatalog(
+  slug: string,
+  options: CatalogReadOptions = {},
+): Promise<CatalogDetail | null> {
+  const wanted = (slug ?? '').trim();
+  if (!wanted) return null;
+  return loadCatalogDetail(sql`c.slug = ${wanted}`, options);
+}
+
+/** UUID malformado devolve `null` — é "não existe", não erro de servidor. */
+export async function getCatalogByUuid(
+  uuid: string,
+  options: CatalogReadOptions = {},
+): Promise<CatalogDetail | null> {
+  if (!isUuid(uuid)) return null;
+  return loadCatalogDetail(sql`c.uuid = ${uuid}`, options);
+}
+
+/** O detalhe depois de uma escrita; sumir no meio é falha interna, não 404. */
+async function catalogAfterWrite(uuid: string, verb: string): Promise<CatalogDetail> {
+  const detail = await getCatalogByUuid(uuid);
+  if (!detail) throw new Error(`Catálogo ${verb} mas não encontrado`);
+  return detail;
+}
+
+export type CreateCatalogInput = {
+  /** Omitido: gerado a partir de `name`. Informado: precisa passar em `isValidSlug`. */
+  slug?: string;
+  name: string;
+  description?: string;
+  /** Legível por qualquer conta e pelo site, com os membros (`docs/12` decisões 4 e 5); padrão `false`. */
+  isPublic?: boolean;
+  /** `null` = sem dono (sessão de bootstrap, token global); só o admin gerencia depois. */
+  ownerUserUuid: string | null;
+};
+
+/**
+ * Cria o catálogo, ligado e vazio, e audita `catalog.create` com o slug em
+ * `target_label`. A checagem de papel (`canCreate`) é do app.
+ */
+export async function createCatalog(
+  input: CreateCatalogInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  const name = (optionalText(input.name, 'name') ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const isPublic = optionalBoolean(input.isPublic, 'isPublic') ?? false;
+  const owner = ownerOrNull(input.ownerUserUuid);
+
+  // Slug vazio é "gera para mim", como em `createVirtualMcp`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim() || undefined;
+  if (requestedSlug !== undefined) assertCatalogSlug(requestedSlug);
+
+  // Mesma corrida de `createVirtualMcp`: o slug gerado é escolhido antes do
+  // INSERT e outra criação pode levá-lo no meio. Gerado, vale tentar de
+  // novo; pedido, o conflito é a resposta.
+  let slug = '';
+  for (let attempt = 1; ; attempt += 1) {
+    slug = requestedSlug ?? (await freeCatalogSlug(name));
+
+    try {
+      const uuid = await db().transaction(async (tx) => {
+        const inserted = await tx.execute(sql`
+          INSERT INTO catalogs (slug, name, description, is_public, owner_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${isPublic}, ${owner})
+          RETURNING uuid
+        `);
+        const created = (inserted.rows as Row[])[0].uuid as string;
+        await auditTx(tx, catalogAudit('catalog.create', slug, source, actor));
+        return created;
+      });
+      return catalogAfterWrite(uuid, 'criado');
+    } catch (err) {
+      // O dono sumiu entre a sessão e a criação.
+      if (isForeignKeyViolation(err)) throw notFound(`Conta não encontrada: ${owner}`);
+      if (!isUniqueViolation(err)) throw err;
+      if (requestedSlug !== undefined || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe um catálogo com o slug "${slug}"`);
+      }
+    }
+  }
+}
+
+export type UpdateCatalogInput = {
+  slug?: string;
+  name?: string;
+  description?: string;
+  /** Desligar tira o catálogo inteiro de todo vMCP vinculado; membros e vínculos ficam. */
+  isActive?: boolean;
+  /** `undefined` não mexe. Ligar torna o catálogo e os membros ativos legíveis por qualquer um. */
+  isPublic?: boolean;
+  /**
+   * Transferência (`docs/12` decisão 9): `undefined` não mexe; um uuid
+   * precisa ser de conta existente e ativa (400 senão), e a concessão que
+   * essa conta tinha no catálogo é apagada — o dono é implícito; `null`
+   * apaga o dono. Audita `catalog.update` com `<slug> <email do novo dono>`.
+   */
+  ownerUserUuid?: string | null;
+};
+
+/**
+ * Parcial, no padrão de `updateVirtualMcp`: campo ausente fica como está.
+ * Audita `catalog.update` com o slug (o novo, em rename).
+ */
+export async function updateCatalog(
+  uuid: string,
+  input: UpdateCatalogInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+
+  const sets: SQL[] = [];
+
+  if (input.name !== undefined) {
+    const name = optionalText(input.name, 'name')?.trim();
+    if (!name) throw badRequest('O campo "name" não pode ficar vazio');
+    sets.push(sql`name = ${name}`);
+  }
+  if (input.description !== undefined) {
+    sets.push(sql`description = ${optionalText(input.description, 'description')?.trim() ?? ''}`);
+  }
+  const isActive = optionalBoolean(input.isActive, 'isActive');
+  if (isActive !== undefined) sets.push(sql`is_active = ${isActive}`);
+  const isPublic = optionalBoolean(input.isPublic, 'isPublic');
+  if (isPublic !== undefined) sets.push(sql`is_public = ${isPublic}`);
+  // O novo dono é validado dentro da transação (`transferOwnerTx`), antes
+  // deste SET chegar ao banco.
+  const transfer = input.ownerUserUuid !== undefined;
+  if (transfer) sets.push(sql`owner_user_uuid = ${input.ownerUserUuid ?? null}`);
+
+  // Slug vazio continua significando "mantém o atual", como em `updateVirtualMcp`.
+  const requestedSlug = optionalText(input.slug, 'slug')?.trim() || undefined;
+  if (requestedSlug !== undefined) {
+    assertCatalogSlug(requestedSlug);
+    sets.push(sql`slug = ${requestedSlug}`);
+  }
+
+  sets.push(sql`updated_at = now()`);
+
+  try {
+    await db().transaction(async (tx) => {
+      const newOwnerEmail = transfer
+        ? await transferOwnerTx(tx, GRANTS.catalog, uuid, input.ownerUserUuid ?? null)
+        : undefined;
+      const result = await tx.execute(sql`
+        UPDATE catalogs SET ${sql.join(sets, sql`, `)}
+        WHERE uuid = ${uuid}
+        RETURNING slug
+      `);
+      const row = (result.rows as Row[])[0];
+      if (!row) throw notFound(`Catálogo não encontrado: ${uuid}`);
+      const label = transferLabel(row.slug as string, newOwnerEmail);
+      await auditTx(tx, catalogAudit('catalog.update', label, source, actor));
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw conflict(`Já existe um catálogo com o slug "${requestedSlug}"`);
+    }
+    if (isForeignKeyViolation(err)) {
+      throw notFound(`Conta não encontrada: ${input.ownerUserUuid}`);
+    }
+    throw err;
+  }
+
+  return catalogAfterWrite(uuid, 'atualizado');
+}
+
+/** A cascata leva os membros (`catalog_skills`) e os vínculos (`virtual_mcp_catalogs`). */
+export async function deleteCatalog(
+  uuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+
+  await db().transaction(async (tx) => {
+    const result = await tx.execute(sql`DELETE FROM catalogs WHERE uuid = ${uuid} RETURNING slug`);
+    const row = (result.rows as Row[])[0];
+    if (!row) throw notFound(`Catálogo não encontrado: ${uuid}`);
+    await auditTx(tx, catalogAudit('catalog.delete', row.slug as string, source, actor));
+  });
+}
+
+/**
+ * Define os membros de forma **declarativa**, como `setVirtualMcpSkills`: a
+ * lista é o estado desejado inteiro. Numa transação: quem saiu é removido;
+ * quem entrou é inserido com `isActive` (ou ativo, se omitido); quem ficou
+ * tem a participação reescrita **só** se `isActive` veio — omitido não mexe,
+ * e um re-salvar da lista não religa o que alguém desativou. Slug
+ * desconhecido ou repetido é 400 e nada muda. Audita `catalog.update`.
+ */
+export async function setCatalogSkills(
+  uuid: string,
+  skills: CatalogSkillInput[],
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  if (!Array.isArray(skills)) throw badRequest('O campo "skills" deve ser uma lista');
+
+  const wanted = skills.map((item, index) => {
+    const slug = (optionalText(item?.slug, 'slug') ?? '').trim();
+    if (!slug) throw badRequest(`Item ${index + 1}: o campo "slug" é obrigatório`);
+    return { slug, isActive: optionalBoolean(item.isActive, `isActive (${slug})`) };
+  });
+
+  const seen = new Set<string>();
+  for (const item of wanted) {
+    if (seen.has(item.slug)) throw badRequest(`Slug repetido na lista: "${item.slug}"`);
+    seen.add(item.slug);
+  }
+  const slugs = wanted.map((item) => item.slug);
+
+  await db().transaction(async (tx) => {
+    const catalog = await lockCatalogTx(tx, uuid);
+    const bySlug = await resolveSkillSlugsTx(tx, slugs);
+    const keep = slugs.map((slug) => bySlug.get(slug)!);
+
+    await tx.execute(sql`
+      DELETE FROM catalog_skills
+      WHERE catalog_uuid = ${uuid}
+        AND skill_uuid <> ALL(${sql.param(keep)}::uuid[])
+    `);
+
+    for (const item of wanted) {
+      const skillUuid = bySlug.get(item.slug)!;
+      if (item.isActive === undefined) {
+        // Quem entra nasce ativo (o DEFAULT); quem já estava fica como está.
+        await tx.execute(sql`
+          INSERT INTO catalog_skills (catalog_uuid, skill_uuid)
+          VALUES (${uuid}, ${skillUuid})
+          ON CONFLICT (catalog_uuid, skill_uuid) DO NOTHING
+        `);
+      } else {
+        await tx.execute(sql`
+          INSERT INTO catalog_skills (catalog_uuid, skill_uuid, is_active)
+          VALUES (${uuid}, ${skillUuid}, ${item.isActive})
+          ON CONFLICT (catalog_uuid, skill_uuid) DO UPDATE SET is_active = EXCLUDED.is_active
+        `);
+      }
+    }
+
+    await touchCatalogTx(tx, uuid, catalog.slug, source, actor);
+  });
+
+  return catalogAfterWrite(uuid, 'atualizado');
+}
+
+/**
+ * Acrescenta um membro, ativo. Já membro: nada muda e nada é auditado — a
+ * participação fica como estava. Skill desconhecida é 404.
+ */
+export async function addCatalogSkill(
+  uuid: string,
+  skillSlug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  const slug = requireText(skillSlug, 'skill');
+
+  await db().transaction(async (tx) => {
+    const catalog = await lockCatalogTx(tx, uuid);
+    const skill = await tx.execute(sql`SELECT uuid FROM skills WHERE slug = ${slug}`);
+    const skillUuid = (skill.rows as Row[])[0]?.uuid as string | undefined;
+    if (!skillUuid) throw notFound(`Skill não encontrada: ${slug}`);
+
+    const inserted = await tx.execute(sql`
+      INSERT INTO catalog_skills (catalog_uuid, skill_uuid)
+      VALUES (${uuid}, ${skillUuid})
+      ON CONFLICT (catalog_uuid, skill_uuid) DO NOTHING
+      RETURNING skill_uuid
+    `);
+    if ((inserted.rows as Row[]).length > 0) {
+      await touchCatalogTx(tx, uuid, catalog.slug, source, actor);
+    }
+  });
+
+  return catalogAfterWrite(uuid, 'atualizado');
+}
+
+/** Remove um membro. Quem não é membro é 404: nada muda e nada é auditado. */
+export async function removeCatalogSkill(
+  uuid: string,
+  skillSlug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  const slug = requireText(skillSlug, 'skill');
+
+  await db().transaction(async (tx) => {
+    const catalog = await lockCatalogTx(tx, uuid);
+    const removed = await tx.execute(sql`
+      DELETE FROM catalog_skills cs USING skills s
+      WHERE cs.catalog_uuid = ${uuid} AND cs.skill_uuid = s.uuid AND s.slug = ${slug}
+      RETURNING cs.skill_uuid
+    `);
+    if ((removed.rows as Row[]).length === 0) {
+      throw notFound(`A skill "${slug}" não está neste catálogo`);
+    }
+    await touchCatalogTx(tx, uuid, catalog.slug, source, actor);
+  });
+
+  return catalogAfterWrite(uuid, 'atualizado');
+}
+
+/**
+ * Liga ou desliga a **participação** de um membro (`catalog_skills.is_active`)
+ * — a caixa da tela do catálogo. Não toca `skills.is_active`, que é global e
+ * se edita na skill. Quem não é membro é 404.
+ */
+export async function setCatalogSkillActive(
+  uuid: string,
+  skillSlug: string,
+  isActive: boolean,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  const slug = requireText(skillSlug, 'skill');
+  const active = requireBoolean(isActive, 'isActive', `Skill "${slug}"`);
+
+  await db().transaction(async (tx) => {
+    const catalog = await lockCatalogTx(tx, uuid);
+    const updated = await tx.execute(sql`
+      UPDATE catalog_skills cs SET is_active = ${active}
+      FROM skills s
+      WHERE cs.catalog_uuid = ${uuid} AND cs.skill_uuid = s.uuid AND s.slug = ${slug}
+      RETURNING cs.skill_uuid
+    `);
+    if ((updated.rows as Row[]).length === 0) {
+      throw notFound(`A skill "${slug}" não está neste catálogo`);
+    }
+    await touchCatalogTx(tx, uuid, catalog.slug, source, actor);
+  });
+
+  return catalogAfterWrite(uuid, 'atualizado');
+}
+
+/**
+ * Vincula (ou reescreve as portas de) um catálogo num vMCP, no padrão de
+ * `linkSkill`: a posição no canvas entra no INSERT e, num vínculo que já
+ * existe, só substitui quando informada. Audita `mcp.update` no servidor com
+ * o slug dele — vincular um catálogo é mudar o que o servidor entrega, como
+ * com skill. A permissão é do app, e exige administrar **os dois**
+ * (`docs/11-catalogos.md` §3.4).
+ */
+export async function linkCatalog(
+  virtualMcpUuid: string,
+  catalogUuid: string,
+  flags: SkillLinkFlags,
+  source: AuditSource,
+  actor: AuditActor,
+  options: { position?: CanvasPoint } = {},
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
+  if (!isUuid(catalogUuid)) throw notFound(`Catálogo não encontrado: ${catalogUuid}`);
+  const subject = `Catálogo "${catalogUuid}"`;
+  const asSkill = requireBoolean(flags?.asSkill, 'asSkill', subject);
+  const asPrompt = requireBoolean(flags?.asPrompt, 'asPrompt', subject);
+  const asResource = requireBoolean(flags?.asResource, 'asResource', subject);
+  const position =
+    options.position === undefined ? null : requirePoint(options.position, 'position');
+
+  try {
+    await db().transaction(async (tx) => {
+      const mcp = await lockVirtualMcpTx(tx, virtualMcpUuid);
+      const found = await tx.execute(sql`SELECT 1 FROM catalogs WHERE uuid = ${catalogUuid}`);
+      if ((found.rows as Row[]).length === 0) {
+        throw notFound(`Catálogo não encontrado: ${catalogUuid}`);
+      }
+
+      await tx.execute(sql`
+        INSERT INTO virtual_mcp_catalogs
+          (virtual_mcp_uuid, catalog_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y)
+        VALUES (${virtualMcpUuid}, ${catalogUuid}, ${asSkill}, ${asPrompt}, ${asResource},
+                ${position?.x ?? null}, ${position?.y ?? null})
+        ON CONFLICT (virtual_mcp_uuid, catalog_uuid) DO UPDATE SET
+          as_skill = EXCLUDED.as_skill,
+          as_prompt = EXCLUDED.as_prompt,
+          as_resource = EXCLUDED.as_resource,
+          pos_x = COALESCE(EXCLUDED.pos_x, virtual_mcp_catalogs.pos_x),
+          pos_y = COALESCE(EXCLUDED.pos_y, virtual_mcp_catalogs.pos_y)
+      `);
+      await touchVirtualMcpTx(tx, virtualMcpUuid, mcp.slug, source, actor);
+    });
+  } catch (err) {
+    // O catálogo sumiu entre a checagem e o INSERT.
+    if (isForeignKeyViolation(err)) throw notFound(`Catálogo não encontrado: ${catalogUuid}`);
+    throw err;
+  }
+
+  return virtualMcpAfterWrite(virtualMcpUuid, 'atualizado');
+}
+
+/** Desfaz o vínculo; a posição no canvas vai junto. Não vinculado é 404: nada muda e nada é auditado. */
+export async function unlinkCatalog(
+  virtualMcpUuid: string,
+  catalogUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
+  if (!isUuid(catalogUuid)) throw notFound(`Catálogo não encontrado: ${catalogUuid}`);
+
+  await db().transaction(async (tx) => {
+    const mcp = await lockVirtualMcpTx(tx, virtualMcpUuid);
+    const removed = await tx.execute(sql`
+      DELETE FROM virtual_mcp_catalogs
+      WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND catalog_uuid = ${catalogUuid}
+      RETURNING catalog_uuid
+    `);
+    if ((removed.rows as Row[]).length === 0) {
+      throw notFound('O catálogo não está vinculado a este MCP virtual');
+    }
+    await touchVirtualMcpTx(tx, virtualMcpUuid, mcp.slug, source, actor);
+  });
+
+  return virtualMcpAfterWrite(virtualMcpUuid, 'atualizado');
+}
+
+/**
+ * Define os catálogos de um vMCP de forma **declarativa**, no padrão de
+ * `setVirtualMcpSkills`: quem saiu é removido, quem entrou é inserido, quem
+ * ficou tem só as portas reescritas e mantém a posição no canvas. As três
+ * portas são obrigatórias por item; slug desconhecido ou repetido é 400 e
+ * nada muda. Audita `mcp.update` no servidor.
+ */
+export async function setVirtualMcpCatalogs(
+  uuid: string,
+  catalogs: VirtualMcpCatalogInput[],
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(uuid)) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+  if (!Array.isArray(catalogs)) throw badRequest('O campo "catalogs" deve ser uma lista');
+
+  const wanted = catalogs.map((item, index) => {
+    const slug = (optionalText(item?.slug, 'slug') ?? '').trim();
+    if (!slug) throw badRequest(`Item ${index + 1}: o campo "slug" é obrigatório`);
+    const subject = `Catálogo "${slug}"`;
+    return {
+      slug,
+      asSkill: requireBoolean(item.asSkill, 'asSkill', subject),
+      asPrompt: requireBoolean(item.asPrompt, 'asPrompt', subject),
+      asResource: requireBoolean(item.asResource, 'asResource', subject),
+    };
+  });
+
+  const seen = new Set<string>();
+  for (const item of wanted) {
+    if (seen.has(item.slug)) throw badRequest(`Slug repetido na lista: "${item.slug}"`);
+    seen.add(item.slug);
+  }
+  const slugs = wanted.map((item) => item.slug);
+
+  await db().transaction(async (tx) => {
+    const mcp = await lockVirtualMcpTx(tx, uuid);
+    const bySlug = await resolveSlugsTx(tx, 'catalogs', slugs, 'Catálogos não encontrados');
+    const keep = slugs.map((slug) => bySlug.get(slug)!);
+
+    await tx.execute(sql`
+      DELETE FROM virtual_mcp_catalogs
+      WHERE virtual_mcp_uuid = ${uuid}
+        AND catalog_uuid <> ALL(${sql.param(keep)}::uuid[])
+    `);
+
+    // Só as portas no `DO UPDATE`: a posição no canvas de quem ficou fica.
+    for (const item of wanted) {
+      await tx.execute(sql`
+        INSERT INTO virtual_mcp_catalogs
+          (virtual_mcp_uuid, catalog_uuid, as_skill, as_prompt, as_resource)
+        VALUES (${uuid}, ${bySlug.get(item.slug)!},
+                ${item.asSkill}, ${item.asPrompt}, ${item.asResource})
+        ON CONFLICT (virtual_mcp_uuid, catalog_uuid) DO UPDATE SET
+          as_skill = EXCLUDED.as_skill,
+          as_prompt = EXCLUDED.as_prompt,
+          as_resource = EXCLUDED.as_resource
+      `);
+    }
+
+    await touchVirtualMcpTx(tx, uuid, mcp.slug, source, actor);
+  });
+
+  return virtualMcpAfterWrite(uuid, 'atualizado');
+}
+
+/** Linha de auditoria de um catálogo: sem skill, com o slug do catálogo como alvo. */
+function catalogAudit(
+  action: 'catalog.create' | 'catalog.update' | 'catalog.delete',
+  slug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): AuditInput {
+  return {
+    skillUuid: null,
+    skillSlug: null,
+    filePath: null,
+    action,
+    source,
+    previousContent: null,
+    actor,
+    targetLabel: slug,
+  };
+}
+
+function assertCatalogSlug(slug: string): void {
+  if (!isValidSlug(slug)) throw badRequest(`Slug inválido: "${slug}"`);
+}
+
+/** Slug livre a partir do nome, no padrão de `freeVirtualMcpSlug` — mas sobre `catalogs`. */
+async function freeCatalogSlug(name: string): Promise<string> {
+  const desired = slugify(name) || 'catalogo';
+  const result = await db().execute(
+    sql`SELECT slug FROM catalogs WHERE slug = ${desired} OR slug LIKE ${desired + '-%'}`,
+  );
+  const taken = (result.rows as Row[]).map((row) => row.slug as string);
+  return uniqueSlug(desired, taken);
+}
+
+/**
+ * Trava o catálogo (`FOR UPDATE`) e devolve o slug: serializa escritas
+ * concorrentes nos membros, e é o 404 de quem não existe.
+ */
+async function lockCatalogTx(tx: Tx, uuid: string): Promise<{ slug: string }> {
+  const locked = await tx.execute(sql`SELECT slug FROM catalogs WHERE uuid = ${uuid} FOR UPDATE`);
+  const row = (locked.rows as Row[])[0];
+  if (!row) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  return { slug: row.slug as string };
+}
+
+/** O fecho de toda escrita nos membros: `updated_at` e a linha `catalog.update`. */
+async function touchCatalogTx(
+  tx: Tx,
+  uuid: string,
+  slug: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> {
+  await tx.execute(sql`UPDATE catalogs SET updated_at = now() WHERE uuid = ${uuid}`);
+  await auditTx(tx, catalogAudit('catalog.update', slug, source, actor));
+}
+
+// ------------------------------------------------------------------ acesso ---
+//
+// Dono, concessões por objeto e "público" (`docs/12-acesso-granular.md`,
+// `schema/017-acesso-granular.sql`). Os fragmentos de skill (`skillVisibleTo`,
+// `skillGrantOf`, `PUBLIC_REACH`) ficam junto de `visibilityClause`, no topo;
+// aqui estão os de vMCP (`m`) e catálogo (`c`), a validação de transferência
+// e as escritas de concessão. **A permissão é do app** (`accessLevel`,
+// `canManage`, `canOwn` de shared): quem chega aqui já pôde.
+
+/** O nível concedido a `user` no vMCP `m`, ou nulo. */
+const mcpGrantOf = (user: string | null): SQL =>
+  sql`(SELECT vg.level FROM virtual_mcp_grants vg
+    WHERE vg.virtual_mcp_uuid = m.uuid AND vg.user_uuid = ${userParam(user)})`;
+
+/** O que uma conta que não é admin enxerga dos vMCPs: aberto e ligado, dela, ou concedido. */
+const mcpVisibleTo = (user: string | null): SQL =>
+  sql`((m.is_open AND m.is_active) OR ${mcpSeenBy(user)})`;
+
+function mcpScopeClause(scope: AccessScope, user: string | null): SQL {
+  switch (scope) {
+    case 'mine':
+      return sql`m.owner_user_uuid = ${userParam(user)}`;
+    case 'shared':
+      return sql`(m.owner_user_uuid IS DISTINCT FROM ${userParam(user)} AND ${mcpGrantOf(user)} IS NOT NULL)`;
+    default:
+      return sql`(m.is_open AND m.is_active)`;
+  }
+}
+
+/** O nível concedido a `user` no catálogo `c`, ou nulo. */
+const catalogGrantOf = (user: string | null): SQL =>
+  sql`(SELECT cg.level FROM catalog_grants cg
+    WHERE cg.catalog_uuid = c.uuid AND cg.user_uuid = ${userParam(user)})`;
+
+/** O que uma conta que não é admin enxerga dos catálogos: público e ligado, dela, ou concedido. */
+const catalogVisibleTo = (user: string | null): SQL =>
+  sql`((c.is_public AND c.is_active) OR ${catalogSeenBy(user)})`;
+
+function catalogScopeClause(scope: AccessScope, user: string | null): SQL {
+  switch (scope) {
+    case 'mine':
+      return sql`c.owner_user_uuid = ${userParam(user)}`;
+    case 'shared':
+      return sql`(c.owner_user_uuid IS DISTINCT FROM ${userParam(user)} AND ${catalogGrantOf(user)} IS NOT NULL)`;
+    default:
+      return sql`(c.is_public AND c.is_active)`;
+  }
+}
+
+/**
+ * Os três tipos de objeto com concessão, e o que muda entre eles: a tabela
+ * de concessões e a coluna do objeto, a tabela do objeto (para o slug, o
+ * dono e o `FOR UPDATE`), as ações de auditoria e se a linha de auditoria
+ * leva a skill (`skill_uuid`/`skill_slug`) ou o slug em `target_label`.
+ * Todos os nomes são literais nossos — nunca texto do chamador.
+ */
+type GrantSpec = {
+  table: 'skill_grants' | 'catalog_grants' | 'virtual_mcp_grants';
+  column: 'skill_uuid' | 'catalog_uuid' | 'virtual_mcp_uuid';
+  objects: 'skills' | 'catalogs' | 'virtual_mcps';
+  label: 'Skill' | 'Catálogo' | 'MCP virtual';
+  share: 'skill.share' | 'catalog.share' | 'mcp.share';
+  unshare: 'skill.unshare' | 'catalog.unshare' | 'mcp.unshare';
+};
+
+const GRANTS = {
+  skill: {
+    table: 'skill_grants',
+    column: 'skill_uuid',
+    objects: 'skills',
+    label: 'Skill',
+    share: 'skill.share',
+    unshare: 'skill.unshare',
+  },
+  catalog: {
+    table: 'catalog_grants',
+    column: 'catalog_uuid',
+    objects: 'catalogs',
+    label: 'Catálogo',
+    share: 'catalog.share',
+    unshare: 'catalog.unshare',
+  },
+  mcp: {
+    table: 'virtual_mcp_grants',
+    column: 'virtual_mcp_uuid',
+    objects: 'virtual_mcps',
+    label: 'MCP virtual',
+    share: 'mcp.share',
+    unshare: 'mcp.unshare',
+  },
+} as const satisfies Record<string, GrantSpec>;
+
+/** O objeto de uma concessão, travado (`FOR UPDATE`) dentro da transação. */
+type GrantedObject = { uuid: string; slug: string; ownerUserUuid: string | null };
+
+/**
+ * Trava o objeto pelo slug (ou pelo uuid) e devolve uuid, slug e dono. O
+ * `FOR UPDATE` serializa conceder, revogar e transferir sobre o mesmo
+ * objeto — e é o 404 de quem não existe.
+ */
+async function lockGrantedObjectTx(tx: Tx, spec: GrantSpec, where: SQL): Promise<GrantedObject> {
+  const locked = await tx.execute(sql`
+    SELECT uuid, slug, owner_user_uuid FROM ${sql.raw(spec.objects)} WHERE ${where} FOR UPDATE
+  `);
+  const row = (locked.rows as Row[])[0];
+  if (!row) throw notFound(`${spec.label} não encontrado`);
+  return { uuid: row.uuid, slug: row.slug, ownerUserUuid: row.owner_user_uuid ?? null };
+}
+
+/**
+ * Valida o novo dono de uma transferência (`docs/12` decisão 9) e apaga a
+ * concessão que ele tinha no objeto — o dono é implícito, não tem linha.
+ * Conta torta, inexistente ou desativada é 400; `null` (deixar órfão) passa.
+ * Trava o objeto antes de mexer nas concessões, na mesma ordem de
+ * `setGrant`/`removeGrant`, para dois caminhos concorrentes não se
+ * cruzarem. Devolve o e-mail do novo dono, para o label da auditoria.
+ */
+async function transferOwnerTx(
+  tx: Tx,
+  spec: GrantSpec,
+  objectUuid: string,
+  newOwner: string | null,
+): Promise<string | null> {
+  if (!isUuid(objectUuid)) throw notFound(`${spec.label} não encontrado: ${objectUuid}`);
+  await lockGrantedObjectTx(tx, spec, sql`uuid = ${objectUuid}`);
+  if (newOwner === null) return null;
+  if (!isUuid(newOwner)) throw badRequest(`Conta não encontrada: ${String(newOwner)}`);
+
+  const found = await tx.execute(
+    sql`SELECT email, is_active FROM users WHERE uuid = ${newOwner} FOR SHARE`,
+  );
+  const user = (found.rows as Row[])[0];
+  if (!user) throw badRequest(`Conta não encontrada: ${newOwner}`);
+  if (!user.is_active) {
+    throw badRequest(`A conta "${user.email}" está desativada e não pode receber a transferência`);
+  }
+
+  await tx.execute(sql`
+    DELETE FROM ${sql.raw(spec.table)}
+    WHERE ${sql.raw(spec.column)} = ${objectUuid} AND user_uuid = ${newOwner}
+  `);
+  return user.email as string;
+}
+
+/**
+ * O `target_label` de um `update` de catálogo ou vMCP: só o slug, ou
+ * `<slug> <email do novo dono>` numa transferência (`docs/12` §8). Deixar
+ * órfão (`null`) não muda o label: não há e-mail a registrar.
+ */
+function transferLabel(slug: string, newOwnerEmail: string | null | undefined): string {
+  return newOwnerEmail ? `${slug} ${newOwnerEmail}` : slug;
+}
+
+/** As colunas de `Grant`: `g` é a concessão, `u` a conta, `gb` quem concedeu. */
+function grantsQuery(spec: GrantSpec, objectUuid: string, userUuid?: string): SQL {
+  return sql`
+    SELECT g.user_uuid, u.email, u.name, u.role, g.level,
+           g.granted_by_user_uuid, gb.email AS granted_by_email, g.created_at
+    FROM ${sql.raw(spec.table)} g
+    JOIN users u ON u.uuid = g.user_uuid
+    LEFT JOIN users gb ON gb.uuid = g.granted_by_user_uuid
+    WHERE g.${sql.raw(spec.column)} = ${objectUuid}
+      ${userUuid === undefined ? sql`` : sql`AND g.user_uuid = ${userUuid}`}
+    ORDER BY u.name ASC, u.email ASC
+  `;
+}
+
+function toGrant(row: Row): Grant {
+  return {
+    userUuid: row.user_uuid,
+    email: row.email,
+    name: row.name,
+    role: row.role as Role,
+    level: row.level as AccessLevel,
+    grantedByUserUuid: row.granted_by_user_uuid ?? null,
+    grantedByEmail: row.granted_by_email ?? null,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+async function listGrants(spec: GrantSpec, objectUuid: string): Promise<Grant[]> {
+  if (!isUuid(objectUuid)) return [];
+  const result = await db().execute(grantsQuery(spec, objectUuid));
+  return (result.rows as Row[]).map(toGrant);
+}
+
+/**
+ * Concede (ou muda o nível — é um upsert) `level` a uma conta num objeto,
+ * identificado pelo slug (`docs/12` decisão 10). Recusa com 400: nível fora
+ * dos três, conta torta/inexistente/desativada, o dono do objeto e uma conta
+ * admin — os dois já têm tudo, e uma linha para eles seria ruído. Slug
+ * desconhecido é 404. Ao mudar o nível a linha é reescrita inteira (nível,
+ * quem concedeu e quando): ela descreve a concessão **atual**. Audita
+ * `*.share` com `email:nível` (e o slug antes, em catálogo e vMCP) e devolve
+ * a concessão. A checagem de que o chamador tem `manage` é do app.
+ */
+async function setGrant(
+  spec: GrantSpec,
+  slug: string,
+  userUuid: string,
+  level: AccessLevel,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<Grant> {
+  const wantedSlug = requireText(slug, 'slug');
+  if (!isAccessLevel(level)) {
+    throw badRequest(`Nível inválido: ${String(level)} (use view, edit ou manage)`);
+  }
+  if (!isUuid(userUuid)) throw badRequest(`Conta não encontrada: ${String(userUuid)}`);
+
+  return db().transaction(async (tx) => {
+    const object = await lockGrantedObjectTx(tx, spec, sql`slug = ${wantedSlug}`);
+
+    const found = await tx.execute(
+      sql`SELECT email, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
+    );
+    const user = (found.rows as Row[])[0];
+    if (!user) throw badRequest(`Conta não encontrada: ${userUuid}`);
+    if (!user.is_active) throw badRequest(`A conta "${user.email}" está desativada`);
+    if (user.role === 'admin') {
+      throw badRequest(`"${user.email}" é administrador e já tem acesso a tudo`);
+    }
+    if (object.ownerUserUuid === userUuid) {
+      throw badRequest(`"${user.email}" é o dono e já tem acesso a tudo`);
+    }
+
+    await tx.execute(sql`
+      INSERT INTO ${sql.raw(spec.table)}
+        (${sql.raw(spec.column)}, user_uuid, level, granted_by_user_uuid)
+      VALUES (${object.uuid}, ${userUuid}, ${level}, ${actor.userUuid ?? null})
+      ON CONFLICT (${sql.raw(spec.column)}, user_uuid) DO UPDATE SET
+        level = EXCLUDED.level,
+        granted_by_user_uuid = EXCLUDED.granted_by_user_uuid,
+        created_at = now()
+    `);
+    await auditTx(tx, grantAudit(spec, 'share', object, `${user.email}:${level}`, source, actor));
+
+    const grant = (await tx.execute(grantsQuery(spec, object.uuid, userUuid)).then(
+      (r) => (r.rows as Row[])[0],
+    ))!;
+    return toGrant(grant);
+  });
+}
+
+/**
+ * Revoga a concessão de uma conta num objeto. Concessão inexistente (ou
+ * conta torta) é 404 e nada é auditado; slug desconhecido também. Audita
+ * `*.unshare` com o e-mail (e o slug antes, em catálogo e vMCP).
+ */
+async function removeGrant(
+  spec: GrantSpec,
+  slug: string,
+  userUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> {
+  const wantedSlug = requireText(slug, 'slug');
+
+  await db().transaction(async (tx) => {
+    const object = await lockGrantedObjectTx(tx, spec, sql`slug = ${wantedSlug}`);
+    if (!isUuid(userUuid)) throw notFound(`A conta não tem concessão neste ${spec.label.toLowerCase()}`);
+
+    const removed = await tx.execute(sql`
+      DELETE FROM ${sql.raw(spec.table)} g USING users u
+      WHERE g.${sql.raw(spec.column)} = ${object.uuid}
+        AND g.user_uuid = ${userUuid}
+        AND u.uuid = g.user_uuid
+      RETURNING u.email
+    `);
+    const row = (removed.rows as Row[])[0];
+    if (!row) throw notFound(`A conta não tem concessão neste ${spec.label.toLowerCase()}`);
+    await auditTx(tx, grantAudit(spec, 'unshare', object, row.email as string, source, actor));
+  });
+}
+
+/**
+ * A linha de auditoria de uma concessão (`docs/12` §8): na skill, com
+ * `skill_uuid`/`skill_slug` e `email:nível` (ou só o e-mail) no label; em
+ * catálogo e vMCP, sem skill e com o slug antes, separado por espaço.
+ */
+function grantAudit(
+  spec: GrantSpec,
+  kind: 'share' | 'unshare',
+  object: GrantedObject,
+  who: string,
+  source: AuditSource,
+  actor: AuditActor,
+): AuditInput {
+  const onSkill = spec.table === 'skill_grants';
+  return {
+    skillUuid: onSkill ? object.uuid : null,
+    skillSlug: onSkill ? object.slug : null,
+    filePath: null,
+    action: spec[kind],
+    source,
+    previousContent: null,
+    actor,
+    targetLabel: onSkill ? who : `${object.slug} ${who}`,
+  };
+}
+
+export const setSkillGrant = (
+  slug: string,
+  userUuid: string,
+  level: AccessLevel,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<Grant> => setGrant(GRANTS.skill, slug, userUuid, level, source, actor);
+
+export const removeSkillGrant = (
+  slug: string,
+  userUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> => removeGrant(GRANTS.skill, slug, userUuid, source, actor);
+
+/** As concessões de uma skill, por nome da conta. Uuid torto é `[]`. */
+export const listSkillGrants = (skillUuid: string): Promise<Grant[]> =>
+  listGrants(GRANTS.skill, skillUuid);
+
+export const setCatalogGrant = (
+  slug: string,
+  userUuid: string,
+  level: AccessLevel,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<Grant> => setGrant(GRANTS.catalog, slug, userUuid, level, source, actor);
+
+export const removeCatalogGrant = (
+  slug: string,
+  userUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> => removeGrant(GRANTS.catalog, slug, userUuid, source, actor);
+
+export const listCatalogGrants = (catalogUuid: string): Promise<Grant[]> =>
+  listGrants(GRANTS.catalog, catalogUuid);
+
+export const setVirtualMcpGrant = (
+  slug: string,
+  userUuid: string,
+  level: AccessLevel,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<Grant> => setGrant(GRANTS.mcp, slug, userUuid, level, source, actor);
+
+export const removeVirtualMcpGrant = (
+  slug: string,
+  userUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<void> => removeGrant(GRANTS.mcp, slug, userUuid, source, actor);
+
+export const listVirtualMcpGrants = (virtualMcpUuid: string): Promise<Grant[]> =>
+  listGrants(GRANTS.mcp, virtualMcpUuid);
+
+/** Teto da busca de contas: é uma lista de sugestões, não uma listagem. */
+const USER_LOOKUP_MAX = 50;
+
+/**
+ * A busca "Compartilhar com…" (`docs/12` decisão 13): contas **ativas** cujo
+ * nome ou e-mail contém `q` (`ILIKE`), por nome. Menos de dois caracteres
+ * (depois de aparar) devolve `[]` sem consultar — é o mínimo para não
+ * listar a instalação inteira a cada tecla. Aberta a qualquer conta logada;
+ * a checagem de sessão é do app.
+ */
+export async function lookupUsers(q: string, limit = 10): Promise<UserLookup[]> {
+  const wanted = (optionalText(q, 'q') ?? '').trim();
+  if (wanted.length < 2) return [];
+  const pattern = '%' + wanted.slice(0, 200) + '%';
+
+  const result = await db().execute(sql`
+    SELECT uuid, email, name, role FROM users
+    WHERE is_active AND (name ILIKE ${pattern} OR email ILIKE ${pattern})
+    ORDER BY name ASC, email ASC
+    LIMIT ${clamp(limit, 1, USER_LOOKUP_MAX)}
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid,
+    email: row.email,
+    name: row.name,
+    role: row.role as Role,
+  }));
+}
+
+/** Os catálogos que o site lista (`docs/12` §7): públicos e ligados, sem dono nem concessões. */
+const PUBLIC_CATALOG_COLUMNS = sql`
+  c.uuid, c.slug, c.name, c.description,
+  (SELECT count(*) FROM catalog_skills cs JOIN skills s ON s.uuid = cs.skill_uuid
+    WHERE cs.catalog_uuid = c.uuid AND cs.is_active AND s.is_active)::int AS skill_count
+`;
+
+function toPublicCatalog(row: Row): PublicCatalog {
+  return {
+    uuid: row.uuid,
+    slug: row.slug,
+    name: row.name,
+    description: row.description ?? '',
+    skillCount: Number(row.skill_count ?? 0),
+  };
+}
+
+/**
+ * A seção "Catálogos" do site: os públicos e ligados, por nome, com
+ * `skillCount` = membros com participação ativa e skill ligada — o que a
+ * página do catálogo vai listar.
+ */
+export async function listPublicCatalogs(): Promise<PublicCatalog[]> {
+  const result = await db().execute(sql`
+    SELECT ${PUBLIC_CATALOG_COLUMNS} FROM catalogs c
+    WHERE c.is_public AND c.is_active
+    ORDER BY c.name ASC, c.slug ASC
+  `);
+  return (result.rows as Row[]).map(toPublicCatalog);
+}
+
+/**
+ * A página de um catálogo no site: os membros ativos (participação ativa e
+ * skill ligada), **todos**, mesmo os privados e os que não estão em vMCP
+ * aberto nenhum — o contêiner expõe (`docs/12` decisão 5). Cada um vem como
+ * `SkillSummary` na visibilidade do site (`mcps` só com os vMCPs abertos e
+ * ligados, `catalogs` vazio, `access` nulo), por nome. Catálogo privado,
+ * desligado ou inexistente é `null`, sem distinção.
+ */
+export async function getPublicCatalog(slug: string): Promise<PublicCatalogDetail | null> {
+  const wanted = (slug ?? '').trim();
+  if (!wanted) return null;
+
+  const found = await db().execute(sql`
+    SELECT ${PUBLIC_CATALOG_COLUMNS} FROM catalogs c
+    WHERE c.slug = ${wanted} AND c.is_public AND c.is_active
+    LIMIT 1
+  `);
+  const row = (found.rows as Row[])[0];
+  if (!row) return null;
+  const catalog = toPublicCatalog(row);
+
+  const members = await db().execute(sql`
+    SELECT ${skillColumns({ visibility: 'open' })}
+    FROM skills s
+    WHERE s.is_active AND EXISTS (
+      SELECT 1 FROM catalog_skills cs
+      WHERE cs.catalog_uuid = ${catalog.uuid} AND cs.skill_uuid = s.uuid AND cs.is_active
+    )
+    ORDER BY s.name ASC, s.slug ASC
+  `);
+  return { ...catalog, skills: (members.rows as Row[]).map(toSummary) };
 }
 
 // ------------------------------------------------- chaves de MCP virtual ---
@@ -2963,6 +4671,34 @@ async function requireSkill(slug: string): Promise<SkillSummary> {
   const skill = await getSkillSummary(slug, { visibility: 'all' });
   if (!skill) throw notFound(`Skill não encontrada: ${slug}`);
   return skill;
+}
+
+/**
+ * Slugs → uuids numa tabela com `slug` único, dentro da transação de uma
+ * escrita declarativa. Qualquer slug desconhecido é 400 com a lista inteira
+ * dos que faltam (`label` é o começo da mensagem), e nada é gravado. O nome
+ * da tabela é um dos dois literais nossos — nunca texto do chamador.
+ */
+async function resolveSlugsTx(
+  tx: Tx,
+  table: 'skills' | 'catalogs',
+  slugs: readonly string[],
+  label: string,
+): Promise<Map<string, string>> {
+  const bySlug = new Map<string, string>();
+  if (slugs.length > 0) {
+    const found = await tx.execute(sql`
+      SELECT uuid, slug FROM ${sql.raw(table)} WHERE slug = ANY(${sql.param([...slugs])}::text[])
+    `);
+    for (const row of found.rows as Row[]) bySlug.set(row.slug as string, row.uuid as string);
+  }
+  const missing = slugs.filter((slug) => !bySlug.has(slug));
+  if (missing.length > 0) throw badRequest(`${label}: ${missing.join(', ')}`);
+  return bySlug;
+}
+
+async function resolveSkillSlugsTx(tx: Tx, slugs: readonly string[]): Promise<Map<string, string>> {
+  return resolveSlugsTx(tx, 'skills', slugs, 'Skills não encontradas');
 }
 
 async function resolveSlug(requested: string | undefined, fallbackName: string): Promise<string> {

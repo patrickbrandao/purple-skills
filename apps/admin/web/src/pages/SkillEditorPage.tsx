@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Download, ExternalLink, Eye, FileText, Save, Trash2, Upload } from 'lucide-react';
 import {
-  canDelete,
-  canWrite,
+  canEdit,
+  canManage,
+  canOwn,
   deleteFile,
   deleteSkill,
   getFile,
@@ -31,17 +32,22 @@ import { useRegisterCommands } from '../components/commands.js';
 type Tab = 'skill' | 'files';
 
 export function SkillEditorPage({ session, user }: { session: Session; user: SessionUser }) {
-  const podeEscrever = canWrite(user.role);
-  const podeApagar = canDelete(user.role);
   const { slug = '' } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const confirm = useConfirm();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
+  // Conteúdo e metadados são `edit`; slug, estado e público são `manage`;
+  // apagar é do dono (`docs/12-acesso-granular.md` §3.2).
+  const podeEscrever = skill ? canEdit(skill.access) : false;
+  const podeAdministrar = skill ? canManage(skill.access) : false;
+  const podeApagar = skill ? canOwn(skill.access) : false;
   const [tab, setTab] = useState<Tab>('skill');
   const [saving, setSaving] = useState(false);
   const [meta, setMeta] = useState<SkillMetaValues>({ name: '', slug: '', description: '', tags: '', icon: '' });
+  const [isActive, setIsActive] = useState(true);
+  const [isPublic, setIsPublic] = useState(false);
   const [skillMd, setSkillMd] = useState('');
   const [replaceTree, setReplaceTree] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -52,6 +58,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   const hydrate = useCallback((detail: SkillDetail) => {
     setSkill(detail);
     setMeta({ name: detail.name, slug: detail.slug, description: detail.description, tags: detail.tags.join(', '), icon: detail.icon ?? '' });
+    setIsActive(detail.isActive);
+    setIsPublic(detail.isPublic);
     setSkillMd(stripFrontmatter(detail.skillMd));
   }, []);
 
@@ -77,6 +85,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       meta.description !== skill.description ||
       meta.tags !== skill.tags.join(', ') ||
       meta.icon.trim() !== (skill.icon ?? '') ||
+      isActive !== skill.isActive ||
+      isPublic !== skill.isPublic ||
       skillMd !== stripFrontmatter(skill.skillMd));
 
   const save = useCallback(async () => {
@@ -90,6 +100,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         description: meta.description,
         icon: meta.icon.trim() !== (skill.icon ?? '') ? meta.icon.trim() || null : undefined,
         tags: parseTags(meta.tags),
+        isActive: isActive !== skill.isActive ? isActive : undefined,
+        isPublic: isPublic !== skill.isPublic ? isPublic : undefined,
         skillMd: prompt !== skill.skillMd ? prompt : undefined,
       });
       hydrate(updated);
@@ -100,7 +112,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     } finally {
       setSaving(false);
     }
-  }, [skill, skillMd, meta, hydrate, toast, navigate]);
+  }, [skill, skillMd, meta, isActive, isPublic, hydrate, toast, navigate]);
 
   useRegisterCommands(
     skill && podeEscrever ? [{ id: 'skill-save', label: 'Salvar alterações', group: 'Recurso', icon: <Save />, shortcut: '⌘ S', disabled: dirty ? false : 'nada a salvar', run: save }] : [],
@@ -265,6 +277,17 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       {tab === 'skill' && (
         <Panel>
           <SkillMetaForm values={meta} onChange={patchMeta} />
+          <label className="check mt-4" title="Desligada, a skill some de todo servidor e do site — direto ou por catálogo — sem perder vínculo nenhum.">
+            <input type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} disabled={!podeAdministrar} />
+            Skill ligada: desligada, não é entregue por servidor nenhum nem aparece no site (os vínculos e os catálogos ficam)
+          </label>
+          <label className="check mt-2" title="Legível por qualquer conta do painel e pelo site, sem concessão. Não a publica em servidor nenhum.">
+            <input type="checkbox" checked={isPublic} onChange={(event) => setIsPublic(event.target.checked)} disabled={!podeAdministrar} />
+            Pública: qualquer conta e o site leem esta skill (onde ela aparece por MCP continua sendo o vínculo)
+          </label>
+          {!podeAdministrar && podeEscrever && (
+            <p className="hint mt-1">Slug, estado e visibilidade são de quem administra a skill; você edita o conteúdo.</p>
+          )}
           <FrontmatterPreview values={meta} />
           <PromptEditor value={skillMd} onChange={setSkillMd} />
         </Panel>

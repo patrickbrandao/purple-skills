@@ -403,6 +403,30 @@ input[type='radio'] {
   padding: 12px 14px;
 }
 
+/* aviso em bloco, dentro de um painel */
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-surface);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.alert svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-top: 1px;
+}
+.alert.warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
 /* ============================================================
    SELOS, PONTOS DE ESTADO, TAGS, KBD
    ============================================================ */

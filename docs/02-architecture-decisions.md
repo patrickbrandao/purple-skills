@@ -195,10 +195,11 @@ o que segue é o resumo do que está no ar.
 
 - **Contas locais** em `users`, com senha guardada como hash **scrypt**
   (`packages/shared/src/password.ts`, custo e salt embutidos no próprio hash).
-- Três papéis **globais** — `admin`, `editor`, `leitor`. O papel limita a
-  ação, nunca o escopo: não há ownership por skill. Um `leitor` enxerga as
-  skills privadas mas não escreve; um `editor` escreve em todas mas não apaga
-  skill nem gerencia contas.
+- Três papéis **globais** — `admin`, `editor`, `membro`. Desde o `12`
+  (§12.3) o papel decide só **criar** (editor+) e gerenciar a instalação
+  (admin); o **escopo** é o acesso por objeto — dono, concessões e o flag
+  público. Um `membro` administra o que é seu ou lhe foi concedido e não cria
+  nada.
 - Sessão em **cookie assinado, httpOnly, stateless**, agora com
   `{ sub, role, ver, exp }`. `ver` é uma cópia de `users.token_version`: o
   middleware relê a conta a cada requisição e recusa a sessão quando a versão
@@ -213,7 +214,7 @@ o que segue é o resumo do que está no ar.
   (`LOGIN_MAX_ATTEMPTS`/`LOGIN_LOCK_SECONDS`, sobrevive a restart e vale para
   vários containers).
 - **OIDC opcional** (`OIDC_ISSUER`), authorization code + PKCE via
-  `openid-client`. O papel nunca vem do provedor; conta nova nasce `leitor` e
+  `openid-client`. O papel nunca vem do provedor; conta nova nasce `membro` e
   conta existente mantém o papel que tem. `OIDC_ALLOWED_DOMAINS` vazia
   **desliga** o auto-provisionamento, de propósito — ver §13.
 - **SMTP opcional** (`SMTP_URL` + `SMTP_FROM`) para o link de redefinição de
@@ -235,8 +236,9 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
 - A chave de usuário é encontrada pelo **prefixo** (8 caracteres, indexado) e
   conferida por hash scrypt do segredo. O texto completo aparece uma única vez,
   na emissão. Chave revogada ou de conta desativada não autentica.
-- As ferramentas de escrita recusam papel `leitor`; `delete_skill` exige
-  `admin`.
+- As tools seguem o acesso por objeto do painel (§12.3): criar exige papel
+  `editor`+, o resto é o nível da credencial em cada skill, catálogo ou vMCP;
+  `delete_*` e `transfer_*` são do dono (ou admin).
 - Uma sessão Streamable HTTP fica **presa à credencial que a abriu**: reusar um
   `mcp-session-id` com outra credencial responde 403, senão o papel gravado na
   sessão valeria para quem descobrisse o identificador.
@@ -353,7 +355,8 @@ CRUD completo, espelhando o painel administrativo:
 - `create_skill(name, description, skill_md_content, tags?, slug?,
   mcps?: [{slug, asSkill, asPrompt, asResource}])` — nasce publicada onde a
   credencial administra, ou sem vínculo
-- `edit_skill(slug, { name?, description?, tags?, new_slug? })`
+- `edit_skill(slug, { name?, description?, tags?, new_slug?, is_active? })`
+  — `is_active: false` desliga a skill em tudo ([`11`](11-catalogos.md))
 - `link_skill(skill, mcp, asSkill, asPrompt, asResource)` /
   `unlink_skill(skill, mcp)` — o vínculo pelo lado da skill; a permissão é a
   do MCP virtual alvo
@@ -374,6 +377,13 @@ CRUD completo, espelhando o painel administrativo:
 - MCP padrão ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §3.6):
   `get_default_virtual_mcp()` e `set_default_virtual_mcp(slug | null)`, o
   segundo só admin.
+- Catálogos ([`11`](11-catalogos.md) §6.3): `list_catalogs()`,
+  `get_catalog(slug)`, `create_catalog(name, slug?, description?)`,
+  `update_catalog(slug, {name?, new_slug?, description?, is_active?})`,
+  `delete_catalog(slug, confirm)`, `set_catalog_skills(slug, [{slug,
+  isActive?}])` e, no vMCP, `set_virtual_mcp_catalogs(slug, [{slug, asSkill,
+  asPrompt, asResource}])` — este exige administrar o MCP **e** cada
+  catálogo. Mesmo alcance por dono dos MCPs virtuais.
 
 ## 9. Download de pacotes
 
@@ -435,6 +445,55 @@ Desenho em [`10-admin-canvas-e-sessoes.md`](10-admin-canvas-e-sessoes.md).
   atividade e fim real ou presumido. "Online" = atividade nos últimos
   `MCP_SESSION_ONLINE_WINDOW_MS` (2 min). Sem poda.
 - **Ícone da skill** (`013`): emoji ou URL, com monograma como padrão.
+
+## 12.2 Catálogos
+
+Desenho em [`11-catalogos.md`](11-catalogos.md). Migration `016`.
+
+- Um **catálogo** é um grupo de skills com dono (como o vMCP): quem cria
+  (editor+) é o dono, admin manda em todos. Uma skill pode estar em vários.
+- Vinculado a um vMCP (`virtual_mcp_catalogs`, muitos-para-muitos), entrega
+  **todos os membros ativos** pelas portas do vínculo — uma escolha só para
+  o grupo. Vincular exige administrar **os dois** lados; não há convite.
+- **Precedência**: o vínculo direto da skill com o vMCP **sobrescreve** o
+  catálogo; sem vínculo direto, as portas são a **união** dos catálogos que
+  chegam ao vMCP. A regra mora no SQL (`visibilityClause`), como sempre.
+- Três desativações reversíveis: `skills.is_active` (global — some de tudo,
+  inclusive do site e do vínculo direto), `catalog_skills.is_active` (a
+  participação, só naquele catálogo) e `catalogs.is_active` (o catálogo).
+- Contador **por catálogo**, global: cada acesso a uma skill que chegou ao
+  vMCP pelo catálogo soma nele e na skill; por vínculo direto, no vínculo.
+- No canvas, o catálogo é um **nó só**, com as mesmas portas e gestos da
+  skill e o número de skills ativas — excluindo as que já são nó próprio.
+- Auditoria: `catalog.create` / `catalog.update` / `catalog.delete`; o
+  vínculo com o vMCP é `mcp.update` no servidor.
+
+## 12.3 Acesso granular
+
+Desenho em [`12-acesso-granular.md`](12-acesso-granular.md). Migration `017`.
+
+- **Skill, catálogo e vMCP têm dono** (`owner_user_uuid`; a skill herdou o
+  de `created_by`). Dono e admin apagam e transferem; nenhum nível de
+  concessão chega lá.
+- **Concessões por objeto** em `skill_grants`, `catalog_grants` e
+  `virtual_mcp_grants`, um nível cumulativo por conta: `view` < `edit` <
+  `manage`. `manage` concede e revoga; a lista de concessões só é visível a
+  quem tem `manage`.
+- **Escopo por conta**: quem não é admin vê o que é seu, o que lhe foi
+  concedido e o que é público (`skills.is_public`, `catalogs.is_public`) ou
+  aberto (`virtual_mcps.is_open`). A cláusula mora no SQL (`viewer` nas
+  leituras), pelo motivo de sempre. Admin, o token global e o bootstrap veem
+  tudo.
+- **Contêiner expõe**: ver um vMCP ou um catálogo lê todas as skills dentro,
+  para pessoa e máquina; um catálogo público ou um vMCP aberto expõe os
+  membros no site, mesmo privados. Vincular exige `view` na skill e `edit`
+  no contêiner; catálogo↔vMCP, `edit` no vMCP e `view` no catálogo.
+- **`leitor` virou `membro`**: a única diferença para `editor` é criar.
+- **Site**: lista também skills públicas sem vMCP aberto e os catálogos
+  públicos, com página própria (`/catalogos/<slug>`).
+- Auditoria: `skill.share` / `skill.unshare`, `catalog.share` /
+  `catalog.unshare`, `mcp.share` / `mcp.unshare`; transferência e flag
+  público são `update` do objeto.
 
 ## 13. Riscos aceitos conscientemente (v1)
 

@@ -64,6 +64,12 @@ Fechadas por derivação:
   sistema da skill (rampa espelhada, geometria de 24px, paleta de comandos
   como superfície primária, painel lateral, estados vazios em quatro partes,
   vocabulário de movimento) foi adotado.
+- **Lista vazia continua sendo tabela.** Nas telas de lista (servidores,
+  skills, catálogos, trilha, sessões, chaves, contas) o cabeçalho fica e uma
+  única linha centralizada diz "Nenhum … ainda" (`EmptyRow`). O botão de
+  criar não se repete ali: ele já está na barra do título. Nas vistas em
+  cards, sem itens, aparece a tabela. O estado vazio em quatro partes ficou
+  para o sino.
 - **Stack mínima.** Da lista da skill entraram só `@xyflow/react` (o palco),
   `cmdk` (a paleta) e `lucide-react` (ícones). TanStack Router, Jotai,
   TanStack Query, GraphQL, Radix avulso, Virtua, Zod e Tailwind v3 ficaram

@@ -163,7 +163,7 @@ export async function createAccount(
   const name = String(input.name ?? '').trim();
   if (!name) throw badRequest('Informe o nome');
 
-  if (!isRole(input.role)) throw badRequest('Papel inválido: use admin, editor ou leitor');
+  if (!isRole(input.role)) throw badRequest('Papel inválido: use admin, editor ou membro');
 
   // Senha em branco gera uma temporária: a conta nasce utilizável e a pessoa
   // troca no primeiro acesso, sem o admin precisar inventar uma.
@@ -214,7 +214,7 @@ export async function updateAccount(
   }
 
   if (patch.role !== undefined) {
-    if (!isRole(patch.role)) throw badRequest('Papel inválido: use admin, editor ou leitor');
+    if (!isRole(patch.role)) throw badRequest('Papel inválido: use admin, editor ou membro');
     if (patch.role !== target.role) {
       // Um admin que se rebaixa perde o acesso à tela de contas na hora, e
       // pode ser o último — o caminho de volta seria mexer no banco à mão.
@@ -409,7 +409,7 @@ export type OidcClaims = { issuer: string; subject: string; email: unknown; name
  * Resolve um login OIDC em uma conta local.
  *
  * A allowlist vale nos **três** caminhos — autenticar, provisionar e vincular
- * (§2.4). O papel nunca vem do provedor: conta nova nasce `leitor`, conta
+ * (§2.4). O papel nunca vem do provedor: conta nova nasce `membro`, conta
  * existente mantém o papel que já tem.
  */
 export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
@@ -451,7 +451,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
   const created = await createUser({
     email,
     name: String(claims.name ?? '').trim() || email,
-    role: 'leitor',
+    role: 'membro',
     passwordHash: null,
     oidcIssuer: claims.issuer,
     oidcSubject: claims.subject,

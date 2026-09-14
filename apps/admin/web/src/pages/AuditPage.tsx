@@ -14,7 +14,7 @@ import {
 } from '../api.js';
 import { ACTION_LABEL, ACTION_TONE } from '../audit.js';
 import { SessionsTable } from '../components/SessionsTable.js';
-import { Badge, EmptyState, Field, Skel, Tabs, useDebounced } from '../components/ui.js';
+import { Badge, EmptyRow, Field, Skel, Tabs, useDebounced } from '../components/ui.js';
 
 const PAGE = 50;
 
@@ -134,8 +134,6 @@ function Trail() {
 
       {!page ? (
         <Skel h={320} />
-      ) : page.items.length === 0 ? (
-        <EmptyState icon={<History />} title="Nada na trilha" description="Nenhum evento casa com os filtros." />
       ) : (
         <div className="table-wrap">
           <table className="data">
@@ -175,6 +173,9 @@ function Trail() {
                   </td>
                 </tr>
               ))}
+              {page.items.length === 0 && (
+                <EmptyRow colSpan={5}>{action || actor || q || since || until ? 'Nenhum evento com esses filtros' : 'Nenhum evento ainda'}</EmptyRow>
+              )}
             </tbody>
           </table>
         </div>

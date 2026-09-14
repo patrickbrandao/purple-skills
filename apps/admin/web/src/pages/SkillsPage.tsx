@@ -2,32 +2,36 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, LayoutGrid, List, Plus, Search, Table2, Trash2, Upload } from 'lucide-react';
 import {
-  canDelete,
-  canWrite,
+  canCreate,
+  canOwn,
   deleteSkill,
   formatRelative,
   listSkills,
   num,
+  type AccessScope,
   type SessionUser,
   type SkillSummary,
 } from '../api.js';
-import { Badge, EmptyState, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
+import { AccessBadge } from '../components/AccessPanel.js';
+import { Badge, EmptyRow, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
 type Sort = 'recent' | 'score' | 'name';
-type Filter = 'todas' | 'sem-vinculo' | 'no-site';
+type Filter = 'todas' | 'sem-vinculo' | 'no-site' | 'desligadas';
+type Scope = 'todos' | AccessScope;
 
 const SORT_LABEL: Record<Sort, string> = { recent: 'Atualização', score: 'Mais acessadas', name: 'Nome' };
-const FILTER_LABEL: Record<Filter, string> = { todas: 'Todas', 'sem-vinculo': 'Sem vínculo', 'no-site': 'No site' };
+const FILTER_LABEL: Record<Filter, string> = { todas: 'Todas', 'sem-vinculo': 'Sem vínculo', 'no-site': 'No site', desligadas: 'Desligadas' };
+/** O recorte de acesso (`docs/12-acesso-granular.md` decisão 19): quem vê tudo não precisa dele. */
+export const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Minhas', shared: 'Compartilhadas comigo', public: 'Públicas' };
 
 export function SkillsPage({ user }: { user: SessionUser }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [params, setParams] = useSearchParams();
-  const podeEscrever = canWrite(user.role);
-  const podeApagar = canDelete(user.role);
+  const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<SkillSummary[] | null>(null);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
@@ -35,17 +39,23 @@ export function SkillsPage({ user }: { user: SessionUser }) {
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:skills-sort', 'recent');
   const [view, setView] = useStored<'grid' | 'list'>('purple-skills-admin:skills-view', 'grid');
   const filter = (params.get('filtro') as Filter | null) ?? 'todas';
+  const scope = (params.get('acesso') as Scope | null) ?? 'todos';
 
   const load = useCallback(async () => {
     try {
-      const data = await listSkills({ q: dq, limit: 100, sort: dq ? undefined : sort === 'name' ? undefined : sort });
+      const data = await listSkills({
+        q: dq,
+        limit: 100,
+        sort: dq ? undefined : sort === 'name' ? undefined : sort,
+        scope: scope === 'todos' ? '' : scope,
+      });
       setItems(data.items);
       setTotal(data.total);
     } catch (err) {
       toast.error((err as Error).message);
       setItems([]);
     }
-  }, [dq, sort, toast]);
+  }, [dq, sort, scope, toast]);
 
   useEffect(() => {
     void load();
@@ -63,12 +73,14 @@ export function SkillsPage({ user }: { user: SessionUser }) {
     let list = items ?? [];
     if (filter === 'sem-vinculo') list = list.filter((skill) => skill.mcps.length === 0);
     if (filter === 'no-site') list = list.filter(noSite);
+    if (filter === 'desligadas') list = list.filter((skill) => !skill.isActive);
     if (sort === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [items, filter, sort]);
 
   const unlinked = (items ?? []).filter((skill) => skill.mcps.length === 0).length;
   const onSite = (items ?? []).filter(noSite).length;
+  const off = (items ?? []).filter((skill) => !skill.isActive).length;
 
   async function remove(skill: SkillSummary) {
     const ok = await confirm({
@@ -104,7 +116,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
               placeholder="Procurar skill"
             />
           </label>
-          {podeEscrever && (
+          {podeCriar && (
             <>
               <Link to="/skills/new?modo=zip" className="btn btn-ghost">
                 <Upload /> Importar
@@ -120,7 +132,9 @@ export function SkillsPage({ user }: { user: SessionUser }) {
       <div className="meta-line">
         <span className="stat">
           <Table2 />
-          {items ? `${num(total)} skill${total === 1 ? '' : 's'}, ${num(onSite)} no site, ${num(unlinked)} sem vínculo` : 'Carregando…'}
+          {items
+            ? `${num(total)} skill${total === 1 ? '' : 's'}, ${num(onSite)} no site, ${num(unlinked)} sem vínculo${off > 0 ? `, ${num(off)} desligada${off === 1 ? '' : 's'}` : ''}`
+            : 'Carregando…'}
         </span>
         <span className="sep" />
         <Menu
@@ -131,8 +145,21 @@ export function SkillsPage({ user }: { user: SessionUser }) {
           )}
         >
           {(Object.keys(FILTER_LABEL) as Filter[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setParams(key === 'todas' ? {} : { filtro: key })}>
+            <MenuItem key={key} onSelect={() => setParams({ ...(key === 'todas' ? {} : { filtro: key }), ...(scope === 'todos' ? {} : { acesso: scope }) })}>
               {FILTER_LABEL[key]}
+            </MenuItem>
+          ))}
+        </Menu>
+        <Menu
+          trigger={(props) => (
+            <button type="button" className="sort" {...props}>
+              Acesso: <b>{SCOPE_LABEL[scope]}</b> <ChevronDown />
+            </button>
+          )}
+        >
+          {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
+            <MenuItem key={key} onSelect={() => setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) })}>
+              {SCOPE_LABEL[key]}
             </MenuItem>
           ))}
         </Menu>
@@ -169,25 +196,6 @@ export function SkillsPage({ user }: { user: SessionUser }) {
         </div>
       )}
 
-      {items !== null && visible.length === 0 && (
-        <EmptyState
-          icon={<Table2 />}
-          title={query ? 'Nenhuma skill encontrada' : filter !== 'todas' ? 'Nada com esse filtro' : 'Nenhuma skill ainda'}
-          description={
-            query
-              ? 'Tente outro termo: a busca olha nome, descrição e conteúdo do SKILL.md.'
-              : 'Uma skill é um SKILL.md com arquivos auxiliares. Crie a primeira ou importe um .zip.'
-          }
-          action={
-            podeEscrever && !query && filter === 'todas' ? (
-              <Link to="/skills/new" className="btn btn-primary">
-                <Plus /> Nova skill
-              </Link>
-            ) : undefined
-          }
-        />
-      )}
-
       {items !== null && visible.length > 0 && view === 'grid' && (
         <div className="card-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
           {visible.map((skill, index) => (
@@ -198,7 +206,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                   <span className="row-title truncate">{skill.name}</span>
                   <span className="row-sub truncate">{skill.slug}</span>
                 </div>
-                {podeApagar && (
+                {canOwn(skill.access) && (
                   <button
                     type="button"
                     className="row-action danger"
@@ -216,6 +224,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                 {skill.description || 'Sem descrição.'}
               </p>
               <div className="mt-auto flex flex-wrap items-center gap-1.5">
+                <AccessBadge object={skill} user={user} />
                 <McpChips skill={skill} />
                 {skill.tags.slice(0, 2).map((tag) => (
                   <Badge key={tag} tone="outline">{tag}</Badge>
@@ -229,7 +238,8 @@ export function SkillsPage({ user }: { user: SessionUser }) {
         </div>
       )}
 
-      {items !== null && visible.length > 0 && view === 'list' && (
+      {/* Sem skills, a lista vale para as duas vistas: cards vazios não mostram nada. */}
+      {items !== null && (visible.length === 0 || view === 'list') && (
         <div className="table-wrap">
           <table className="data">
             <thead>
@@ -245,7 +255,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
             </thead>
             <tbody>
               {visible.map((skill) => (
-                <tr key={skill.uuid}>
+                <tr key={skill.uuid} className={skill.isActive ? undefined : 'is-off'}>
                   <td>
                     <Link to={`/skills/${skill.slug}`} className="flex items-center gap-3 no-underline">
                       <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
@@ -263,7 +273,10 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                     </div>
                   </td>
                   <td>
-                    <McpChips skill={skill} />
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <AccessBadge object={skill} user={user} />
+                      <McpChips skill={skill} />
+                    </div>
                   </td>
                   <td className="num hidden sm:table-cell">{num(skill.viewCount)}</td>
                   <td className="num hidden sm:table-cell">{num(skill.downloadCount)}</td>
@@ -271,7 +284,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                     <span className="row-sub">{formatRelative(skill.updatedAt)}</span>
                   </td>
                   <td className="num">
-                    {podeApagar && (
+                    {canOwn(skill.access) && (
                       <button type="button" className="row-action danger" onClick={() => void remove(skill)} title="Remover skill">
                         <Trash2 />
                       </button>
@@ -279,6 +292,11 @@ export function SkillsPage({ user }: { user: SessionUser }) {
                   </td>
                 </tr>
               ))}
+              {visible.length === 0 && (
+                <EmptyRow colSpan={7}>
+                  {query ? 'Nenhuma skill encontrada' : filter !== 'todas' || scope !== 'todos' ? 'Nenhuma skill com esse filtro' : 'Nenhuma skill ainda'}
+                </EmptyRow>
+              )}
             </tbody>
           </table>
         </div>
