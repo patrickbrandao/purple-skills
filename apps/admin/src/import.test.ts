@@ -58,6 +58,8 @@ const timeA = {
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   skills: [],
+  grants: [],
+  access: 'owner' as const,
 };
 
 async function importar(skillMd: string, campos: Record<string, string> = {}, user = admin) {
@@ -109,15 +111,22 @@ describe('POST /api/skills/import', () => {
       mcps: JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }]),
     });
 
-    // A leitura leva a janela de "online" do painel junto (docs/10).
-    expect(lerMcp).toHaveBeenCalledWith('time-a', { onlineWindowMs: expect.any(Number) });
+    // A leitura leva a janela de "online" do painel (docs/10) e quem está
+    // olhando (docs/12): o banco decide o que a sessão enxerga.
+    expect(lerMcp).toHaveBeenCalledWith('time-a', {
+      onlineWindowMs: expect.any(Number),
+      viewer: { role: 'admin', userUuid: 'uuid-admin' },
+    });
     expect(input.mcps).toEqual([
       { virtualMcpUuid: 'mcp-1', asSkill: true, asPrompt: false, asResource: false },
     ]);
   });
 
-  it('recusa um vMCP que a sessão não administra, sem criar a skill', async () => {
+  // Vincular é editar o vMCP (docs/12 §3.2): quem só visualiza é barrado, e
+  // quem nem enxerga recebe o mesmo 404 de um slug inexistente.
+  it('recusa um vMCP que a sessão só visualiza, sem criar a skill', async () => {
     const outro = { ...editor, uuid: 'uuid-outro' };
+    lerMcp.mockResolvedValue({ ...timeA, access: 'view' });
 
     const { res } = await importar(
       '# Corpo\n',
@@ -126,6 +135,20 @@ describe('POST /api/skills/import', () => {
     );
 
     expect(res.statusCode).toBe(403);
+    expect(criar).not.toHaveBeenCalled();
+  });
+
+  it('trata como inexistente um vMCP que a sessão não enxerga', async () => {
+    const outro = { ...editor, uuid: 'uuid-outro' };
+    lerMcp.mockResolvedValue(null);
+
+    const { res } = await importar(
+      '# Corpo\n',
+      { mcps: JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: false, asResource: false }]) },
+      outro,
+    );
+
+    expect(res.statusCode).toBe(404);
     expect(criar).not.toHaveBeenCalled();
   });
 

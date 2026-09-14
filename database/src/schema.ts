@@ -44,17 +44,38 @@ export const skills = pgTable(
      * Nulo cai no monograma do painel.
      */
     icon: text('icon'),
-    // Nada de visibilidade aqui: uma skill é flutuante e só é exibida onde
-    // está vinculada (`virtual_mcp_skills`). Ver `schema/012-skills-flutuantes.sql`.
+    /**
+     * Desligada **globalmente** (`schema/016-catalogos.sql`): some de todo
+     * vMCP, por vínculo direto ou por catálogo, e do site, sem perder vínculo
+     * nenhum. Só o painel e o mcp-admin (visibilidade `'all'`) a enxergam.
+     */
+    isActive: boolean('is_active').notNull().default(true),
+    /**
+     * Quem pode ler sem concessão: qualquer conta logada e o site anônimo
+     * (`schema/017-acesso-granular.sql`, `docs/12` decisão 4). **Não** decide
+     * exposição no MCP — a skill continua flutuante e só é exibida num
+     * servidor onde está vinculada, direto (`virtual_mcp_skills`) ou por
+     * catálogo (`virtual_mcp_catalogs`); ver `schema/012-skills-flutuantes.sql`.
+     */
+    isPublic: boolean('is_public').notNull().default(false),
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
     downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
     searchVector: tsvector('search_vector'),
     /** Informativo (`docs/05-accounts-and-roles.md` §2.1): não autoriza nada. */
     createdByUserUuid: uuid('created_by_user_uuid'),
+    /**
+     * O dono (`docs/12` decisão 8): apaga, transfere e concede. Nulo é órfã —
+     * só o admin —, o que acontece quando a conta é removida (`SET NULL`) ou
+     * quando quem criou não era conta (bootstrap, token global, seed).
+     */
+    ownerUserUuid: uuid('owner_user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('skills_search_vector_idx').using('gin', table.searchVector)],
+  (table) => [
+    index('skills_search_vector_idx').using('gin', table.searchVector),
+    index('skills_owner_user_uuid_idx').on(table.ownerUserUuid),
+  ],
 );
 
 export const files = pgTable(
@@ -262,6 +283,162 @@ export const virtualMcpKeys = pgTable(
   (table) => [index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid)],
 );
 
+// -------------------------------------------------------------- catálogos ---
+
+/**
+ * Um grupo de skills com dono (`docs/11-catalogos.md`, `schema/016-catalogos.sql`).
+ * Vinculado a um vMCP, entrega todos os membros ativos de uma vez, pelas
+ * portas do vínculo. Mesma regra de dono do vMCP: nulo é órfão (só o admin)
+ * ou criado pela sessão de bootstrap. Os contadores são **do catálogo**:
+ * somam a cada acesso a uma skill que chegou ao vMCP por ele.
+ */
+export const catalogs = pgTable(
+  'catalogs',
+  {
+    uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    /** Desligado: deixa de contribuir para todo vMCP vinculado; membros e vínculos ficam. */
+    isActive: boolean('is_active').notNull().default(true),
+    /**
+     * Legível por qualquer conta e pelo site, que lista os membros ativos —
+     * todos, mesmo os privados (`docs/12` decisões 4 e 5).
+     */
+    isPublic: boolean('is_public').notNull().default(false),
+    ownerUserUuid: uuid('owner_user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
+    viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
+    downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('catalogs_owner_user_uuid_idx').on(table.ownerUserUuid)],
+);
+
+/**
+ * A participação de uma skill num catálogo. `isActive` desativa a skill
+ * **neste** catálogo sem removê-la — diferente de `skills.isActive`, que vale
+ * em tudo. Sem portas: quem as decide é o vínculo do catálogo com o vMCP.
+ */
+export const catalogSkills = pgTable(
+  'catalog_skills',
+  {
+    catalogUuid: uuid('catalog_uuid')
+      .notNull()
+      .references(() => catalogs.uuid, { onDelete: 'cascade' }),
+    skillUuid: uuid('skill_uuid')
+      .notNull()
+      .references(() => skills.uuid, { onDelete: 'cascade' }),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.catalogUuid, table.skillUuid] }),
+    index('catalog_skills_skill_uuid_idx').on(table.skillUuid),
+  ],
+);
+
+/**
+ * Vínculo catálogo ↔ MCP virtual, muitos-para-muitos. As três portas são do
+ * vínculo, sem default, e valem para todo membro do catálogo; o vínculo
+ * direto da skill (`virtualMcpSkills`), quando existe, sobrescreve. A posição
+ * é o nó do catálogo no canvas **deste** vMCP (CHECK de par só no SQL).
+ */
+export const virtualMcpCatalogs = pgTable(
+  'virtual_mcp_catalogs',
+  {
+    virtualMcpUuid: uuid('virtual_mcp_uuid')
+      .notNull()
+      .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
+    catalogUuid: uuid('catalog_uuid')
+      .notNull()
+      .references(() => catalogs.uuid, { onDelete: 'cascade' }),
+    asSkill: boolean('as_skill').notNull(),
+    asPrompt: boolean('as_prompt').notNull(),
+    asResource: boolean('as_resource').notNull(),
+    posX: integer('pos_x'),
+    posY: integer('pos_y'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.virtualMcpUuid, table.catalogUuid] }),
+    index('virtual_mcp_catalogs_catalog_uuid_idx').on(table.catalogUuid),
+  ],
+);
+
+// ------------------------------------------------------------- concessões ---
+
+/**
+ * As concessões por objeto (`docs/12-acesso-granular.md`,
+ * `schema/017-acesso-granular.sql`): uma linha por par (objeto, conta) com o
+ * nível cumulativo (`view` < `edit` < `manage`; o CHECK fica só no SQL).
+ * Dono e admin não têm linha — o acesso deles é implícito. FK real nos dois
+ * lados, com CASCADE: apagar o objeto ou a conta leva a concessão.
+ * `grantedByUserUuid` é informativo e sobrevive à remoção de quem concedeu.
+ */
+export const skillGrants = pgTable(
+  'skill_grants',
+  {
+    skillUuid: uuid('skill_uuid')
+      .notNull()
+      .references(() => skills.uuid, { onDelete: 'cascade' }),
+    userUuid: uuid('user_uuid')
+      .notNull()
+      .references(() => users.uuid, { onDelete: 'cascade' }),
+    level: text('level').notNull(),
+    grantedByUserUuid: uuid('granted_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.skillUuid, table.userUuid] }),
+    index('skill_grants_user_uuid_idx').on(table.userUuid),
+  ],
+);
+
+export const catalogGrants = pgTable(
+  'catalog_grants',
+  {
+    catalogUuid: uuid('catalog_uuid')
+      .notNull()
+      .references(() => catalogs.uuid, { onDelete: 'cascade' }),
+    userUuid: uuid('user_uuid')
+      .notNull()
+      .references(() => users.uuid, { onDelete: 'cascade' }),
+    level: text('level').notNull(),
+    grantedByUserUuid: uuid('granted_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.catalogUuid, table.userUuid] }),
+    index('catalog_grants_user_uuid_idx').on(table.userUuid),
+  ],
+);
+
+export const virtualMcpGrants = pgTable(
+  'virtual_mcp_grants',
+  {
+    virtualMcpUuid: uuid('virtual_mcp_uuid')
+      .notNull()
+      .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
+    userUuid: uuid('user_uuid')
+      .notNull()
+      .references(() => users.uuid, { onDelete: 'cascade' }),
+    level: text('level').notNull(),
+    grantedByUserUuid: uuid('granted_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.virtualMcpUuid, table.userUuid] }),
+    index('virtual_mcp_grants_user_uuid_idx').on(table.userUuid),
+  ],
+);
+
 // --------------------------------------------------------------- settings ---
 
 /**
@@ -331,5 +508,11 @@ export type ResetTokenRow = typeof resetTokens.$inferSelect;
 export type VirtualMcpRow = typeof virtualMcps.$inferSelect;
 export type VirtualMcpSkillRow = typeof virtualMcpSkills.$inferSelect;
 export type VirtualMcpKeyRow = typeof virtualMcpKeys.$inferSelect;
+export type CatalogRow = typeof catalogs.$inferSelect;
+export type CatalogSkillRow = typeof catalogSkills.$inferSelect;
+export type VirtualMcpCatalogRow = typeof virtualMcpCatalogs.$inferSelect;
+export type SkillGrantRow = typeof skillGrants.$inferSelect;
+export type CatalogGrantRow = typeof catalogGrants.$inferSelect;
+export type VirtualMcpGrantRow = typeof virtualMcpGrants.$inferSelect;
 export type SettingRow = typeof settings.$inferSelect;
 export type McpSessionRow = typeof mcpSessions.$inferSelect;

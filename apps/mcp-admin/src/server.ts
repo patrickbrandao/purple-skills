@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
+import { createCatalogHandlers } from './catalogs.js';
 import { createMcpHandlers } from './mcps.js';
 import { createHandlers, guard } from './tools.js';
 
@@ -26,21 +27,43 @@ Regras importantes:
   link_skill / unlink_skill publicam e despublicam pelo lado da skill, e
   set_virtual_mcp_skills define a lista inteira pelo lado do MCP. Cada vínculo
   escolhe as três superfícies (asSkill, asPrompt, asResource). Publicar em um
-  MCP virtual exige administrá-lo: o dono, ou um admin.
-- O site lista o que está em ao menos um MCP virtual aberto e ligado; list_skills
-  e get_skill mostram, em mcps, onde cada skill está.
-- delete_skill é irreversível e exige confirm=true.
-- As ferramentas de escrita dependem do papel da credencial: uma chave de
-  usuário "leitor" só lê, e apagar skill exige papel "admin".
+  MCP virtual exige "edit" nele e "view" na skill.
+- O site lista o que está em ao menos um MCP virtual aberto e ligado, mais as
+  skills e catálogos marcados públicos (is_public); list_skills e get_skill
+  mostram, em mcps, onde cada skill está.
+- delete_skill é irreversível, exige confirm=true e é do dono (ou admin).
+- Acesso: skills, catálogos e MCPs virtuais têm dono. O papel da credencial
+  decide só quem CRIA (editor e admin; um "membro" não cria). O resto é o
+  acesso por objeto: admin tem tudo em tudo; o dono tem tudo no que é seu;
+  outras contas têm o nível concedido — "view" (ler; num MCP ou catálogo,
+  ler também as skills dentro), "edit" (conteúdo da skill; membros do
+  catálogo; vínculos, portas e canvas do MCP) ou "manage" (slug, estado,
+  público/aberto, chaves do MCP e as concessões). Apagar e transferir o dono
+  são só do dono e do admin. Uma credencial só lista o que é seu, o que lhe
+  foi concedido e o que é público/aberto (list_* aceita scope: mine, shared,
+  public). share_<tipo>(slug, email, level) / unshare_<tipo> concedem e
+  revogam; transfer_<tipo>(slug, email) muda o dono. Uma skill dentro de um
+  MCP aberto ou de um catálogo público fica legível por qualquer um, mesmo
+  privada — as tools avisam.
 - MCPs virtuais (tools *_virtual_mcp*): servidores de leitura em
   /virtual/<slug>/mcp com chaves próprias (psv_…), ou abertos (is_open) — um
-  MCP aberto é público: o site o lista, com suas skills. O MCP virtual tem
-  dono: quem cria é o dono, e só o dono ou um admin o administra.
+  MCP aberto é público: o site o lista, com suas skills. A chave psv_ lê a
+  árvore inteira do MCP (skills diretas e catálogos), qualquer que seja o
+  acesso de cada skill.
 - O MCP público (/mcp) é o MCP virtual escolhido como padrão
   (get_default_virtual_mcp / set_default_virtual_mcp, só admin). Ele continua
   respondendo em /virtual/<slug>/mcp e não tem tratamento especial: pode ser
   fechado, desligado ou apagado como qualquer um, e aí /mcp responde 404.
-  Sem MCP padrão, /mcp responde 404.`;
+  Sem MCP padrão, /mcp responde 404.
+- Catálogos (tools *_catalog*): um catálogo é um grupo de skills com dono.
+  Vinculado a um MCP virtual (set_virtual_mcp_catalogs), entrega todas as
+  skills ativas dele de uma vez, pelas portas escolhidas no vínculo — uma
+  escolha só para o grupo. Uma skill com vínculo direto ao mesmo MCP segue o
+  vínculo direto, que sobrescreve o catálogo; sem vínculo direto, as portas
+  são a união dos catálogos. Vincular exige "edit" no MCP e "view" no
+  catálogo. Três desligamentos, todos reversíveis: is_active da skill (edit_skill —
+  some de todo MCP e do site), isActive da participação em set_catalog_skills
+  (só naquele catálogo) e is_active do catálogo (update_catalog).`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -52,6 +75,7 @@ Regras importantes:
 export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
   const handlers = createHandlers(caller);
   const mcps = createMcpHandlers(caller);
+  const catalogs = createCatalogHandlers(caller);
 
   const server = new McpServer(
     { name: config.serverName, version: config.version },
@@ -63,10 +87,15 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Listar skills',
       description:
-        'Lista o catálogo inteiro, inclusive skills sem vínculo. Cada uma traz em mcps os MCPs virtuais em que está.',
+        'Lista as skills que a credencial enxerga (as suas, as concedidas e as públicas ou expostas; tudo para admin), ' +
+        'inclusive sem vínculo e desligadas. Cada uma traz o dono, o seu acesso e, em mcps, os MCPs virtuais em que está.',
       inputSchema: {
         query: z.string().describe('Filtro por texto livre.').optional(),
         tag: z.string().describe('Filtro por tag.').optional(),
+        scope: z
+          .enum(['mine', 'shared', 'public'])
+          .describe('Só as minhas, só as compartilhadas comigo ou só as públicas. Omitido: todas que vejo.')
+          .optional(),
         limit: z
           .number()
           .int()
@@ -137,8 +166,12 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
             }),
           )
           .describe(
-            'Onde publicar já na criação. Só em MCPs virtuais que a credencial administra; omitido, a skill nasce sem vínculo.',
+            'Onde publicar já na criação. Só em MCPs virtuais que a credencial edita; omitido, a skill nasce sem vínculo.',
           )
+          .optional(),
+        is_public: z
+          .boolean()
+          .describe('Legível por qualquer conta e pelo site, sem concessão (padrão false). Não a publica em MCP nenhum.')
           .optional(),
       },
     },
@@ -150,8 +183,8 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Editar metadados',
       description:
-        'Altera nome, descrição, ícone, tags ou slug de uma skill existente. É por aqui que se muda ' +
-        'o frontmatter do SKILL.md, gerado a partir destes campos. Onde ela aparece é link_skill.',
+        'Altera nome, descrição, ícone, tags ("edit") ou slug, is_active e is_public ("manage") de uma skill. É por ' +
+        'aqui que se muda o frontmatter do SKILL.md, gerado a partir destes campos. Onde ela aparece é link_skill.',
       inputSchema: {
         slug: z.string().describe('Slug atual da skill.'),
         name: z.string().optional(),
@@ -164,6 +197,14 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         new_slug: z
           .string()
           .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
+          .optional(),
+        is_active: z
+          .boolean()
+          .describe('false desliga a skill: some de todo MCP virtual e do site, direto ou por catálogo, sem perder vínculo nenhum.')
+          .optional(),
+        is_public: z
+          .boolean()
+          .describe('Legível por qualquer conta e pelo site, sem concessão. Exige "manage", como new_slug e is_active.')
           .optional(),
       },
     },
@@ -289,10 +330,12 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Listar MCPs virtuais',
       description:
-        'Lista os MCPs virtuais que a credencial administra: todos para admin, os próprios para os demais.',
-      inputSchema: {},
+        'Lista os MCPs virtuais que a credencial enxerga: todos para admin; os seus, os concedidos e os abertos para os demais, com o acesso em cada um.',
+      inputSchema: {
+        scope: z.enum(['mine', 'shared', 'public']).describe('Só os meus, só os compartilhados comigo ou só os abertos.').optional(),
+      },
     },
-    () => guard(() => mcps.list_virtual_mcps()),
+    (args) => guard(() => mcps.list_virtual_mcps(args)),
   );
 
   server.registerTool(
@@ -329,7 +372,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Alterar MCP virtual',
       description:
-        'Altera nome, slug, descrição, is_open ou is_active. Aberto (is_open), o MCP é público: o site o lista, com suas skills.',
+        'Altera nome, slug, descrição, is_open ou is_active (exige "manage"). Aberto (is_open), o MCP é público: o site o lista, com suas skills — inclusive as privadas.',
       inputSchema: {
         slug: z.string().describe('Slug atual.'),
         name: z.string().optional(),
@@ -410,6 +453,238 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       inputSchema: { slug: z.string(), key_id: z.string() },
     },
     (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
+  );
+
+  // ----------------------------------------------------------- catálogos ---
+
+  server.registerTool(
+    'list_catalogs',
+    {
+      title: 'Listar catálogos',
+      description:
+        'Lista os catálogos que a credencial enxerga: todos para admin; os seus, os concedidos e os públicos para os demais, com o acesso em cada um.',
+      inputSchema: {
+        scope: z.enum(['mine', 'shared', 'public']).describe('Só os meus, só os compartilhados comigo ou só os públicos.').optional(),
+      },
+    },
+    (args) => guard(() => catalogs.list_catalogs(args)),
+  );
+
+  server.registerTool(
+    'get_catalog',
+    {
+      title: 'Ler catálogo',
+      description: 'Configuração, skills (com a participação e se a skill está ligada) e os MCPs virtuais em que o catálogo está.',
+      inputSchema: { slug: z.string().describe('Slug do catálogo.') },
+    },
+    (args) => guard(() => catalogs.get_catalog(args)),
+  );
+
+  server.registerTool(
+    'create_catalog',
+    {
+      title: 'Criar catálogo',
+      description: 'Cria um catálogo vazio e ligado. Quem cria é o dono.',
+      inputSchema: {
+        name: z.string().describe('Nome de exibição.'),
+        slug: z.string().describe('Slug (a-z, 0-9 e hífen). Gerado do nome se omitido.').optional(),
+        description: z.string().describe('Para quem administra: do que este grupo trata.').optional(),
+        is_public: z
+          .boolean()
+          .describe('Legível por qualquer conta e pelo site, que lista os membros — inclusive skills privadas (padrão false).')
+          .optional(),
+      },
+    },
+    (args) => guard(() => catalogs.create_catalog(args)),
+  );
+
+  server.registerTool(
+    'update_catalog',
+    {
+      title: 'Alterar catálogo',
+      description:
+        'Altera nome, slug, descrição, is_active ou is_public (exige "manage"). Desligado, o catálogo não entrega nada a MCP nenhum (membros e vínculos ficam); público, o site o lista com todos os membros.',
+      inputSchema: {
+        slug: z.string().describe('Slug atual.'),
+        name: z.string().optional(),
+        new_slug: z.string().optional(),
+        description: z.string().optional(),
+        is_active: z.boolean().optional(),
+        is_public: z.boolean().optional(),
+      },
+    },
+    (args) => guard(() => catalogs.update_catalog(args)),
+  );
+
+  server.registerTool(
+    'delete_catalog',
+    {
+      title: 'Remover catálogo',
+      description: 'Remove o catálogo e os vínculos dele com MCPs virtuais. As skills continuam existindo. Irreversível.',
+      inputSchema: {
+        slug: z.string(),
+        confirm: z.boolean().describe('Precisa ser true para a remoção acontecer.'),
+      },
+    },
+    (args) => guard(() => catalogs.delete_catalog(args)),
+  );
+
+  server.registerTool(
+    'set_catalog_skills',
+    {
+      title: 'Definir skills do catálogo',
+      description:
+        'Substitui a lista inteira de skills do catálogo: a lista é o estado desejado, e quem não está nela sai. ' +
+        'isActive é a participação: false mantém a skill no catálogo sem entregá-la; omitido é true para quem entra e não mexe em quem fica.',
+      inputSchema: {
+        slug: z.string(),
+        skills: z
+          .array(
+            z.object({
+              slug: z.string(),
+              isActive: z.boolean().describe('Participação no catálogo (padrão true para quem entra).').optional(),
+            }),
+          )
+          .describe('Lista completa. Vazia esvazia o catálogo.'),
+      },
+    },
+    (args) => guard(() => catalogs.set_catalog_skills(args)),
+  );
+
+  server.registerTool(
+    'set_virtual_mcp_catalogs',
+    {
+      title: 'Definir catálogos do MCP virtual',
+      description:
+        'Substitui a lista inteira de catálogos do MCP virtual; cada entrada escolhe as três superfícies, que valem para ' +
+        'todas as skills do catálogo. Exige "edit" no MCP e "view" em cada catálogo que entra.',
+      inputSchema: {
+        slug: z.string().describe('Slug do MCP virtual.'),
+        catalogs: z
+          .array(
+            z.object({
+              slug: z.string().describe('Slug do catálogo.'),
+              asSkill: z.boolean().describe('Nas ferramentas (search_skills, get_skill…).'),
+              asPrompt: z.boolean().describe('Como prompt, pelo slug.'),
+              asResource: z.boolean().describe('Como resource skill://<slug>.'),
+            }),
+          )
+          .describe('Lista completa. Vazia tira todos os catálogos do MCP.'),
+      },
+    },
+    (args) => guard(() => catalogs.set_virtual_mcp_catalogs(args)),
+  );
+
+  // ------------------------------------------------------------- acesso ---
+
+  const accessInput = {
+    slug: z.string().describe('Slug do objeto.'),
+    email: z.string().describe('E-mail da conta (ativa) que recebe o acesso.'),
+    level: z
+      .enum(['view', 'edit', 'manage'])
+      .describe('view: ler; edit: conteúdo/membros/vínculos; manage: propriedades, chaves e concessões.'),
+  };
+  const unshareInput = {
+    slug: z.string().describe('Slug do objeto.'),
+    email: z.string().describe('E-mail da conta que perde o acesso.'),
+  };
+  const transferInput = {
+    slug: z.string().describe('Slug do objeto.'),
+    email: z.string().describe('E-mail da conta (ativa) que vira dona.'),
+  };
+
+  server.registerTool(
+    'share_skill',
+    {
+      title: 'Compartilhar skill',
+      description:
+        'Concede (ou muda) o nível de acesso de uma conta a uma skill. Exige "manage" na skill. ' +
+        'Não se concede ao dono nem a um admin — já têm tudo.',
+      inputSchema: accessInput,
+    },
+    (args) => guard(() => handlers.share_skill(args)),
+  );
+
+  server.registerTool(
+    'unshare_skill',
+    {
+      title: 'Revogar acesso à skill',
+      description: 'Remove a concessão de uma conta a uma skill. Exige "manage". Vínculos já feitos por ela ficam.',
+      inputSchema: unshareInput,
+    },
+    (args) => guard(() => handlers.unshare_skill(args)),
+  );
+
+  server.registerTool(
+    'transfer_skill',
+    {
+      title: 'Transferir skill',
+      description: 'Muda o dono da skill. Só o dono atual ou um admin; quem transfere deixa de ser dono.',
+      inputSchema: transferInput,
+    },
+    (args) => guard(() => handlers.transfer_skill(args)),
+  );
+
+  server.registerTool(
+    'share_catalog',
+    {
+      title: 'Compartilhar catálogo',
+      description:
+        'Concede (ou muda) o nível de acesso de uma conta a um catálogo. Exige "manage". "view" inclui ler os membros.',
+      inputSchema: accessInput,
+    },
+    (args) => guard(() => catalogs.share_catalog(args)),
+  );
+
+  server.registerTool(
+    'unshare_catalog',
+    {
+      title: 'Revogar acesso ao catálogo',
+      description: 'Remove a concessão de uma conta a um catálogo. Exige "manage".',
+      inputSchema: unshareInput,
+    },
+    (args) => guard(() => catalogs.unshare_catalog(args)),
+  );
+
+  server.registerTool(
+    'transfer_catalog',
+    {
+      title: 'Transferir catálogo',
+      description: 'Muda o dono do catálogo. Só o dono atual ou um admin.',
+      inputSchema: transferInput,
+    },
+    (args) => guard(() => catalogs.transfer_catalog(args)),
+  );
+
+  server.registerTool(
+    'share_mcp',
+    {
+      title: 'Compartilhar MCP virtual',
+      description:
+        'Concede (ou muda) o nível de acesso de uma conta a um MCP virtual. Exige "manage". "view" inclui ler as skills dentro.',
+      inputSchema: accessInput,
+    },
+    (args) => guard(() => mcps.share_mcp(args)),
+  );
+
+  server.registerTool(
+    'unshare_mcp',
+    {
+      title: 'Revogar acesso ao MCP virtual',
+      description: 'Remove a concessão de uma conta a um MCP virtual. Exige "manage".',
+      inputSchema: unshareInput,
+    },
+    (args) => guard(() => mcps.unshare_mcp(args)),
+  );
+
+  server.registerTool(
+    'transfer_mcp',
+    {
+      title: 'Transferir MCP virtual',
+      description: 'Muda o dono do MCP virtual. Só o dono atual ou um admin.',
+      inputSchema: transferInput,
+    },
+    (args) => guard(() => mcps.transfer_mcp(args)),
   );
 
   // ------------------------------------------------------- MCP padrão ---

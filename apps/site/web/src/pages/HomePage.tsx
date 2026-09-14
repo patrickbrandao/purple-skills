@@ -6,6 +6,7 @@ import { Connect } from '../components/catalog/Connect.js';
 import { ConnectAdmin } from '../components/catalog/ConnectAdmin.js';
 import { Endpoints } from '../components/catalog/Endpoints.js';
 import { OpenMcps } from '../components/catalog/OpenMcps.js';
+import { PublicCatalogs } from '../components/catalog/PublicCatalogs.js';
 import { Catalog } from '../components/catalog/Catalog.js';
 
 export function HomePage() {
@@ -22,6 +23,7 @@ export function HomePage() {
       <Catalog />
       <Connect />
       <OpenMcps />
+      <PublicCatalogs />
       <ConnectAdmin />
       <Endpoints />
     </>

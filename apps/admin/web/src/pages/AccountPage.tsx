@@ -10,7 +10,7 @@ import {
   type ApiKeySummary,
   type SessionUser,
 } from '../api.js';
-import { Button, CopyButton, Field, Panel, useConfirm } from '../components/ui.js';
+import { Button, CopyButton, EmptyRow, Field, Panel, useConfirm } from '../components/ui.js';
 import { useToast } from '../components/Toast.js';
 
 /** Minha conta: troca de senha e chaves do MCP administrativo. */
@@ -187,13 +187,7 @@ export function AccountPage({ user, onChanged }: { user: SessionUser; onChanged:
                     </td>
                   </tr>
                 ))}
-                {keys.length === 0 && (
-                  <tr>
-                    <td colSpan={3}>
-                      <p className="list-empty">Nenhuma chave emitida.</p>
-                    </td>
-                  </tr>
-                )}
+                {keys.length === 0 && <EmptyRow colSpan={3}>Nenhuma chave ainda</EmptyRow>}
               </tbody>
             </table>
           </div>

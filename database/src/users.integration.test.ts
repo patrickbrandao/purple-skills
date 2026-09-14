@@ -114,7 +114,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
 
   it('recusa um segundo cadastro com o mesmo e-mail, em qualquer caixa', async () => {
     const err = await capture(
-      createUser({ email: 'ana@exemplo.dev', name: 'Outra Ana', role: 'leitor' }),
+      createUser({ email: 'ana@exemplo.dev', name: 'Outra Ana', role: 'membro' }),
     );
 
     expect(err).toBeInstanceOf(AppError);
@@ -127,7 +127,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     const bruno = await createUser({
       email: 'bruno@exemplo.dev',
       name: 'Bruno',
-      role: 'leitor',
+      role: 'membro',
     });
     brunoUuid = bruno.uuid;
     expect(bruno.hasPassword).toBe(false);

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation, useMatch, useNavigate } from 'rea
 import {
   ExternalLink,
   LayoutGrid,
+  Library,
   ListChecks,
   LogOut,
   Moon,
@@ -16,9 +17,8 @@ import {
   Users,
 } from 'lucide-react';
 import {
-  canCreateVirtualMcp,
+  canCreate,
   canManageUsers,
-  canWrite,
   getSession,
   logout,
   type Session,
@@ -39,6 +39,8 @@ import { SkillViewPage } from './pages/SkillViewPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
 import { ServersPage } from './pages/ServersPage.js';
+import { CatalogsPage } from './pages/CatalogsPage.js';
+import { CatalogPage } from './pages/CatalogPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { AuditPage } from './pages/AuditPage.js';
 
@@ -149,11 +151,13 @@ function Shell({ session, user, onLogout }: { session: Session; user: SessionUse
         <Route path="/skills" element={<SkillsPage user={user} />} />
         <Route
           path="/skills/new"
-          element={canWrite(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
+          element={canCreate(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
         />
         <Route path="/skills/:slug" element={<SkillViewPage session={session} user={user} />} />
         {/* Sem trava de papel: o editor já esconde o que o papel não permite. */}
         <Route path="/skills/:slug/editar" element={<SkillEditorPage session={session} user={user} />} />
+        <Route path="/catalogos" element={<CatalogsPage user={user} />} />
+        <Route path="/catalogos/:slug" element={<CatalogPage user={user} />} />
         <Route
           path="/auditoria/*"
           element={admin ? <AuditPage session={session} /> : <Navigate to="/mcps" replace />}
@@ -191,7 +195,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
 
   useRegisterCommands(
     [
-      ...(canCreateVirtualMcp(user.role)
+      ...(canCreate(user.role)
         ? [
             {
               id: 'new-mcp',
@@ -203,7 +207,19 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
             },
           ]
         : []),
-      ...(canWrite(user.role)
+      ...(canCreate(user.role)
+        ? [
+            {
+              id: 'new-catalog',
+              label: 'Novo catálogo',
+              group: 'Criar' as const,
+              icon: <Library />,
+              keywords: ['catalogo', 'grupo', 'criar'],
+              run: () => navigate('/catalogos?novo=1'),
+            },
+          ]
+        : []),
+      ...(canCreate(user.role)
         ? [
             {
               id: 'new-skill',
@@ -225,6 +241,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
         : []),
       { id: 'go-mcps', label: 'Servidores MCP', group: 'Ir para', icon: <LayoutGrid />, shortcut: 'g s', run: () => navigate('/mcps') },
       { id: 'go-skills', label: 'Skills', group: 'Ir para', icon: <Table2 />, shortcut: 'g k', run: () => navigate('/skills') },
+      { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogos') },
       ...(admin
         ? [
             { id: 'go-audit', label: 'Auditoria', group: 'Ir para' as const, icon: <ListChecks />, shortcut: 'g a', run: () => navigate('/auditoria') },
@@ -272,6 +289,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
       const routes: Record<string, string | undefined> = {
         s: '/mcps',
         k: '/skills',
+        c: '/catalogos',
         a: admin ? '/auditoria' : undefined,
         u: admin && !user.legacy ? '/users' : undefined,
       };

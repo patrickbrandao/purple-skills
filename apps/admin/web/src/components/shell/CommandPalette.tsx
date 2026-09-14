@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Command } from 'cmdk';
-import { ArrowLeft, Server, Table2 } from 'lucide-react';
-import { getMcps, listSkills, type SkillSummary, type VirtualMcpSummary } from '../../api.js';
+import { ArrowLeft, Library, Server, Table2 } from 'lucide-react';
+import { getCatalogs, getMcps, listSkills, type CatalogSummary, type SkillSummary, type VirtualMcpSummary } from '../../api.js';
 import { GROUP_ORDER, fuzzyScore, useCommandRegistry, type Command as Cmd } from '../commands.js';
 import { SkillIcon } from '../SkillIcon.js';
 import { Kbd, useDebounced } from '../ui.js';
 
 /**
- * A paleta (⌘K): busca servidores e skills e lista os comandos registrados
- * pela tela atual. Tem uma segunda página, "escolher skill", usada pelo
- * canvas para acrescentar um nó. A filtragem é nossa (`fuzzyScore`) porque
- * parte dos itens vem do servidor já filtrada.
+ * A paleta (⌘K): busca servidores, catálogos e skills e lista os comandos
+ * registrados pela tela atual. Tem duas páginas de escolha — "escolher
+ * skill" e "escolher catálogo" — usadas pelo canvas e pela página do catálogo
+ * para acrescentar um item. A filtragem é nossa (`fuzzyScore`) porque parte
+ * dos itens vem do servidor já filtrada.
  */
 export function CommandPalette() {
   const { commands, request, close } = useCommandRegistry();
@@ -19,39 +20,48 @@ export function CommandPalette() {
   const [search, setSearch] = useState('');
   const debounced = useDebounced(search, 200);
   const [mcps, setMcps] = useState<VirtualMcpSummary[] | null>(null);
+  const [catalogs, setCatalogs] = useState<CatalogSummary[] | null>(null);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
   const open = request !== null;
-  const picking = request?.page === 'pick-skill' ? request : null;
+  const pickingSkill = request?.page === 'pick-skill' ? request : null;
+  const pickingCatalog = request?.page === 'pick-catalog' ? request : null;
+  const picking = pickingSkill ?? pickingCatalog;
 
-  // Limpa ao fechar e carrega os servidores ao abrir a raiz.
+  // Limpa ao fechar; carrega servidores e catálogos ao abrir a raiz, e os
+  // catálogos (que a sessão administra) na página de escolha deles.
   useEffect(() => {
     if (!open) {
       setSearch('');
       setSkills([]);
       return;
     }
-    if (!picking && mcps === null) {
+    if (!pickingSkill && mcps === null && !pickingCatalog) {
       getMcps()
         .then((data) => setMcps(data.items))
         .catch(() => setMcps([]));
     }
-  }, [open, picking, mcps]);
+    if (!pickingSkill && catalogs === null) {
+      getCatalogs()
+        .then((data) => setCatalogs(data.items))
+        .catch(() => setCatalogs([]));
+    }
+  }, [open, pickingSkill, pickingCatalog, mcps, catalogs]);
 
   // Skills vêm do servidor: na raiz só com 2+ letras; na página de escolha sempre.
   useEffect(() => {
-    if (!open) return;
+    if (!open || pickingCatalog) return;
     const q = debounced.trim();
-    if (!picking && q.length < 2) {
+    if (!pickingSkill && q.length < 2) {
       setSkills([]);
       return;
     }
     let cancelled = false;
     setLoading(true);
-    listSkills({ q, limit: picking ? 40 : 6, sort: q ? undefined : 'recent' })
+    listSkills({ q, limit: pickingSkill ? 40 : 6, sort: q ? undefined : 'recent' })
       .then((data) => {
-        if (!cancelled) setSkills(data.items.filter((skill) => !picking?.exclude?.has(skill.slug)));
+        if (!cancelled) setSkills(data.items.filter((skill) => !pickingSkill?.exclude?.has(skill.slug)));
       })
       .catch(() => {
         if (!cancelled) setSkills([]);
@@ -62,7 +72,7 @@ export function CommandPalette() {
     return () => {
       cancelled = true;
     };
-  }, [open, picking, debounced]);
+  }, [open, pickingSkill, pickingCatalog, debounced]);
 
   const grouped = useMemo(() => {
     const q = search.trim();
@@ -88,6 +98,20 @@ export function CommandPalette() {
       .slice(0, 8)
       .map((entry) => entry.mcp);
   }, [mcps, search]);
+
+  // Na página de escolha a lista inteira vale (menos os já vinculados); na
+  // raiz, só quando a busca casa, para não empurrar os comandos para baixo.
+  const matchingCatalogs = useMemo(() => {
+    const q = search.trim();
+    const list = (catalogs ?? []).filter((catalog) => !pickingCatalog?.exclude?.has(catalog.slug));
+    if (!pickingCatalog && q.length < 2) return [];
+    return list
+      .map((catalog) => ({ catalog, score: fuzzyScore(q, `${catalog.name} ${catalog.slug}`) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, pickingCatalog ? 40 : 6)
+      .map((entry) => entry.catalog);
+  }, [catalogs, search, pickingCatalog]);
 
   function run(action: () => void | Promise<void>) {
     close();
@@ -116,7 +140,9 @@ export function CommandPalette() {
       <Command.Input
         value={search}
         onValueChange={setSearch}
-        placeholder={picking ? 'Buscar skill no catálogo…' : 'Procurar servidor, skill ou comando…'}
+        placeholder={
+          pickingSkill ? 'Buscar skill no catálogo…' : pickingCatalog ? 'Buscar catálogo…' : 'Procurar servidor, catálogo, skill ou comando…'
+        }
         autoFocus
       />
       <div className="trail">
@@ -143,15 +169,39 @@ export function CommandPalette() {
         </span>
       </div>
       <Command.List>
-        <Command.Empty>{loading ? 'Buscando…' : 'Nada encontrado.'}</Command.Empty>
+        <Command.Empty>
+          {loading || (pickingCatalog && catalogs === null)
+            ? 'Buscando…'
+            : pickingCatalog && (catalogs ?? []).length === 0
+              ? 'Você não administra nenhum catálogo.'
+              : 'Nada encontrado.'}
+        </Command.Empty>
 
-        {picking && (
+        {pickingSkill && (
           <Command.Group heading="Skills do catálogo">
             {skills.map((skill) => (
-              <Command.Item key={skill.uuid} value={`skill:${skill.slug}`} onSelect={() => run(() => picking.onPick(skill))}>
+              <Command.Item key={skill.uuid} value={`skill:${skill.slug}`} onSelect={() => run(() => pickingSkill.onPick(skill))}>
                 <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
                 <span className="lbl">{skill.name}</span>
-                <span className="sub">{skill.slug}</span>
+                <span className="sub">
+                  {skill.slug}
+                  {!skill.isActive ? ' · desligada' : ''}
+                </span>
+              </Command.Item>
+            ))}
+          </Command.Group>
+        )}
+
+        {pickingCatalog && (
+          <Command.Group heading="Catálogos que você administra">
+            {matchingCatalogs.map((catalog) => (
+              <Command.Item key={catalog.uuid} value={`catalog:${catalog.slug}`} onSelect={() => run(() => pickingCatalog.onPick(catalog))}>
+                <Library />
+                <span className="lbl">{catalog.name}</span>
+                <span className="sub">
+                  {catalog.activeSkillCount} skill{catalog.activeSkillCount === 1 ? '' : 's'} ativa{catalog.activeSkillCount === 1 ? '' : 's'}
+                  {!catalog.isActive ? ' · desligado' : ''}
+                </span>
               </Command.Item>
             ))}
           </Command.Group>
@@ -173,13 +223,31 @@ export function CommandPalette() {
           </Command.Group>
         )}
 
+        {!picking && matchingCatalogs.length > 0 && (
+          <Command.Group heading="Catálogos">
+            {matchingCatalogs.map((catalog) => (
+              <Command.Item key={catalog.uuid} value={`catalog:${catalog.slug}`} onSelect={() => run(() => navigate(`/catalogos/${catalog.slug}`))}>
+                <Library />
+                <span className="lbl">{catalog.name}</span>
+                <span className="sub">
+                  {catalog.slug}
+                  {!catalog.isActive ? ' · desligado' : ''}
+                </span>
+              </Command.Item>
+            ))}
+          </Command.Group>
+        )}
+
         {!picking && skills.length > 0 && (
           <Command.Group heading="Skills">
             {skills.map((skill) => (
               <Command.Item key={skill.uuid} value={`skill:${skill.slug}`} onSelect={() => run(() => navigate(`/skills/${skill.slug}`))}>
                 <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
                 <span className="lbl">{skill.name}</span>
-                <span className="sub">{skill.slug}</span>
+                <span className="sub">
+                  {skill.slug}
+                  {!skill.isActive ? ' · desligada' : ''}
+                </span>
               </Command.Item>
             ))}
           </Command.Group>

@@ -1,5 +1,4 @@
 import {
-  AppError,
   badRequest,
   createVirtualMcp,
   createVirtualMcpKey,
@@ -10,22 +9,28 @@ import {
   listVirtualMcps,
   notFound,
   recordAccountAudit,
+  removeVirtualMcpGrant,
   resolveDefaultVirtualMcp,
   revokeVirtualMcpKey,
   setDefaultVirtualMcp,
+  setVirtualMcpGrant,
   setVirtualMcpSkills,
   unlinkSkill,
   updateVirtualMcp,
   type DefaultMcpResolution,
 } from '@purple-skills/db';
 import {
+  ACCESS_LABEL,
   VIRTUAL_KEY_SCHEME,
-  canCreateVirtualMcp,
-  canManageVirtualMcp,
+  canCreate,
+  canManage,
   generateApiKey,
+  isAccessScope,
+  type AccessLevel,
   type VirtualMcpDetail,
   type VirtualMcpSkillInput,
 } from '@purple-skills/shared';
+import { accountByEmail, assertAccess, assertSkillsViewable, levelFrom, viewerOf } from './access.js';
 import type { Caller } from './auth.js';
 
 const SOURCE = 'mcp-admin' as const;
@@ -42,8 +47,6 @@ const fail = (message: string): ToolResult => ({
   isError: true,
 });
 
-const forbidden = (message: string) => new AppError(message, 403, 'forbidden');
-
 /** O que uma tool devolve de um MCP virtual — o mesmo shape do painel. */
 const view = (mcp: VirtualMcpDetail) => ({
   slug: mcp.slug,
@@ -53,6 +56,11 @@ const view = (mcp: VirtualMcpDetail) => ({
   isOpen: mcp.isOpen,
   isDefault: mcp.isDefault,
   owner: mcp.ownerEmail,
+  access: mcp.access,
+  // A lista de concessões só para quem as administra (`docs/12` decisão 11).
+  grants: canManage(mcp.access)
+    ? mcp.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level }))
+    : undefined,
   path: `/virtual/${mcp.slug}/mcp`,
   skills: mcp.skills.map((skill) => ({
     slug: skill.slug,
@@ -62,6 +70,17 @@ const view = (mcp: VirtualMcpDetail) => ({
     asResource: skill.asResource,
     views: skill.viewCount,
     downloads: skill.downloadCount,
+  })),
+  // Catálogos vinculados: todas as skills ativas de cada um saem pelas portas
+  // do vínculo, menos as que já têm vínculo direto acima (que prevalece).
+  catalogs: mcp.catalogs.map((catalog) => ({
+    slug: catalog.slug,
+    name: catalog.name,
+    isActive: catalog.isActive,
+    asSkill: catalog.asSkill,
+    asPrompt: catalog.asPrompt,
+    asResource: catalog.asResource,
+    activeSkills: catalog.activeSkillCount,
   })),
   activeKeys: mcp.activeKeyCount,
   // Quantas skills saem por cada porta — os mesmos contadores do card do painel.
@@ -73,13 +92,16 @@ const view = (mcp: VirtualMcpDetail) => ({
 /**
  * Handlers das tools de MCP virtual do MCP administrativo.
  *
- * O `caller` decide o alcance como no painel: o token global e uma chave de
- * admin administram qualquer MCP; a chave de um usuário, os MCPs de que ele é
- * dono. `caller.actor.userUuid` é o usuário — nulo para o token global.
+ * O `caller` decide o alcance como no painel (`docs/12-acesso-granular.md`):
+ * o token global e uma chave de admin veem e administram qualquer MCP; a
+ * chave de um usuário, os seus, os concedidos (no nível da concessão) e os
+ * abertos (leitura). `caller.actor.userUuid` é o usuário — nulo para o token
+ * global.
  */
 export function createMcpHandlers(caller: Caller) {
   const actor = caller.actor;
   const userUuid = actor.userUuid;
+  const viewer = viewerOf(caller);
 
   /** O MCP padrão responde em /mcp para a instalação inteira: só admin escolhe. */
   const denySettings = (): ToolResult | null =>
@@ -87,20 +109,20 @@ export function createMcpHandlers(caller: Caller) {
       ? null
       : fail(`Escolher o MCP padrão exige papel "admin"; sua credencial é "${caller.role}".`);
 
-  async function managed(slug: string): Promise<VirtualMcpDetail> {
-    const mcp = await getVirtualMcp(slug);
+  /** O vMCP com o nível mínimo da ação; 404 se a credencial não o vê. */
+  async function managed(slug: string, minimum: AccessLevel | 'owner'): Promise<VirtualMcpDetail> {
+    const mcp = await getVirtualMcp(slug, { viewer });
     if (!mcp) throw notFound(`MCP virtual não encontrado: "${slug}"`);
-    if (!canManageVirtualMcp(caller.role, mcp.ownerUserUuid, userUuid)) {
-      throw forbidden(`O MCP virtual "${slug}" pertence a outra conta; só o dono ou um admin mexem nele.`);
-    }
+    assertAccess(mcp.access, minimum, 'MCP virtual');
     return mcp;
   }
 
   return {
-    async list_virtual_mcps(): Promise<ToolResult> {
-      const items = await listVirtualMcps(
-        caller.role === 'admin' ? undefined : { ownerUserUuid: userUuid },
-      );
+    async list_virtual_mcps(args: { scope?: string } = {}): Promise<ToolResult> {
+      const items = await listVirtualMcps({
+        viewer,
+        ...(isAccessScope(args.scope) ? { scope: args.scope } : {}),
+      });
       return asJson({
         mcps: items.map((mcp) => ({
           slug: mcp.slug,
@@ -109,7 +131,9 @@ export function createMcpHandlers(caller: Caller) {
           isOpen: mcp.isOpen,
           isDefault: mcp.isDefault,
           owner: mcp.ownerEmail,
+          access: mcp.access,
           skills: mcp.skillCount,
+          catalogs: mcp.catalogCount,
           tools: mcp.toolCount,
           prompts: mcp.promptCount,
           resources: mcp.resourceCount,
@@ -120,7 +144,7 @@ export function createMcpHandlers(caller: Caller) {
     },
 
     async get_virtual_mcp(args: { slug: string }): Promise<ToolResult> {
-      return asJson(view(await managed(args.slug)));
+      return asJson(view(await managed(args.slug, 'view')));
     },
 
     async create_virtual_mcp(args: {
@@ -129,7 +153,7 @@ export function createMcpHandlers(caller: Caller) {
       description?: string;
       is_open?: boolean;
     }): Promise<ToolResult> {
-      if (!canCreateVirtualMcp(caller.role)) {
+      if (!canCreate(caller.role)) {
         return fail(`Criar MCP virtual exige papel "editor" ou "admin"; sua credencial é "${caller.role}".`);
       }
       const mcp = await createVirtualMcp(
@@ -160,7 +184,8 @@ export function createMcpHandlers(caller: Caller) {
       is_open?: boolean;
       is_active?: boolean;
     }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      // Nome, slug, descrição, aberto e ligado são propriedades: `manage`.
+      const current = await managed(args.slug, 'manage');
 
       const mcp = await updateVirtualMcp(
         current.uuid,
@@ -178,7 +203,7 @@ export function createMcpHandlers(caller: Caller) {
     },
 
     async delete_virtual_mcp(args: { slug: string; confirm: boolean }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      const current = await managed(args.slug, 'owner');
       if (args.confirm !== true) {
         return fail('Passe confirm: true para confirmar a remoção do MCP virtual, seus vínculos e chaves.');
       }
@@ -190,7 +215,7 @@ export function createMcpHandlers(caller: Caller) {
       slug: string;
       skills: VirtualMcpSkillInput[];
     }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      const current = await managed(args.slug, 'edit');
 
       const semSuperficie = args.skills.filter(
         (skill) => !skill.asSkill && !skill.asPrompt && !skill.asResource,
@@ -201,6 +226,10 @@ export function createMcpHandlers(caller: Caller) {
             semSuperficie.map((skill) => skill.slug).join(', '),
         );
       }
+
+      // Quem entra precisa ser visível para a credencial (`docs/12` decisão 6).
+      const linked = new Set(current.skills.map((skill) => skill.slug));
+      await assertSkillsViewable(caller, args.skills.map((skill) => skill.slug).filter((slug) => !linked.has(slug)));
 
       const mcp = await setVirtualMcpSkills(current.uuid, args.skills, SOURCE, actor);
       return text(
@@ -222,7 +251,8 @@ export function createMcpHandlers(caller: Caller) {
 
     /**
      * Vínculo pelo lado da skill (`docs/09-mcp-padrao-e-skills-flutuantes.md`
-     * §4.3): a permissão é a do vMCP alvo, como em `set_virtual_mcp_skills`.
+     * §4.3): `edit` no vMCP alvo e `view` na skill, como em
+     * `set_virtual_mcp_skills`.
      */
     async link_skill(args: {
       skill: string;
@@ -231,7 +261,8 @@ export function createMcpHandlers(caller: Caller) {
       asPrompt: boolean;
       asResource: boolean;
     }): Promise<ToolResult> {
-      const current = await managed(args.mcp);
+      const current = await managed(args.mcp, 'edit');
+      await assertSkillsViewable(caller, [args.skill]);
       if (!args.asSkill && !args.asPrompt && !args.asResource) {
         return fail('Escolha ao menos uma superfície: asSkill, asPrompt ou asResource.');
       }
@@ -255,7 +286,7 @@ export function createMcpHandlers(caller: Caller) {
     },
 
     async unlink_skill(args: { skill: string; mcp: string }): Promise<ToolResult> {
-      const current = await managed(args.mcp);
+      const current = await managed(args.mcp, 'edit');
       const detail = await unlinkSkill(args.skill, current.uuid, SOURCE, actor);
       return text(
         `"${detail.slug}" saiu de "${current.slug}". ${
@@ -267,7 +298,7 @@ export function createMcpHandlers(caller: Caller) {
     },
 
     async list_virtual_mcp_keys(args: { slug: string }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      const current = await managed(args.slug, 'manage');
       const keys = await listVirtualMcpKeys(current.uuid);
       return asJson({
         keys: keys.map((key) => ({
@@ -283,7 +314,8 @@ export function createMcpHandlers(caller: Caller) {
 
     /** O texto completo da chave só existe nesta resposta. */
     async create_virtual_mcp_key(args: { slug: string; name: string }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      // Emitir uma chave entrega a árvore inteira a uma máquina: `manage`.
+      const current = await managed(args.slug, 'manage');
       const name = (args.name ?? '').trim();
       if (!name) throw badRequest('Dê um nome à chave (ex.: "CI do projeto X")');
 
@@ -312,7 +344,7 @@ export function createMcpHandlers(caller: Caller) {
     },
 
     async revoke_virtual_mcp_key(args: { slug: string; key_id: string }): Promise<ToolResult> {
-      const current = await managed(args.slug);
+      const current = await managed(args.slug, 'manage');
       const revoked = await revokeVirtualMcpKey(args.key_id, current.uuid);
       if (!revoked) return fail('Chave não encontrada neste MCP virtual, ou já revogada.');
 
@@ -323,6 +355,29 @@ export function createMcpHandlers(caller: Caller) {
         targetLabel: `${current.slug}: ${args.key_id}`,
       });
       return text(`Chave ${args.key_id} revogada.`);
+    },
+
+    // ----------------------------------------------------------- acesso ---
+
+    async share_mcp(args: { slug: string; email: string; level: string }): Promise<ToolResult> {
+      const current = await managed(args.slug, 'manage');
+      const target = await accountByEmail(args.email);
+      const grant = await setVirtualMcpGrant(current.slug, target.uuid, levelFrom(args.level), SOURCE, actor);
+      return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} o MCP virtual "${current.slug}".`);
+    },
+
+    async unshare_mcp(args: { slug: string; email: string }): Promise<ToolResult> {
+      const current = await managed(args.slug, 'manage');
+      const target = await accountByEmail(args.email);
+      await removeVirtualMcpGrant(current.slug, target.uuid, SOURCE, actor);
+      return text(`${target.email} perdeu o acesso ao MCP virtual "${current.slug}".`);
+    },
+
+    async transfer_mcp(args: { slug: string; email: string }): Promise<ToolResult> {
+      const current = await managed(args.slug, 'owner');
+      const target = await accountByEmail(args.email);
+      await updateVirtualMcp(current.uuid, { ownerUserUuid: target.uuid }, SOURCE, actor);
+      return text(`O MCP virtual "${current.slug}" agora é de ${target.email}.`);
     },
 
     // ------------------------------------------------------- MCP padrão ---

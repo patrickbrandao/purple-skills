@@ -23,8 +23,7 @@ const {
   issueLegacySession,
   requireAdmin,
   requirePasswordChanged,
-  requireWrite,
-  requireDelete,
+  requireCreate,
   resolveUser,
 } = await import('./auth.js');
 
@@ -177,28 +176,27 @@ describe('guardas de papel', () => {
     return { next, res };
   };
 
-  it('leitor não escreve, não apaga e não gerencia contas', () => {
-    for (const guard of [requireWrite, requireDelete, requireAdmin]) {
-      const { next, res } = run(guard, 'leitor');
+  it('membro não cria nem gerencia contas', () => {
+    for (const guard of [requireCreate, requireAdmin]) {
+      const { next, res } = run(guard, 'membro');
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(403);
     }
   });
 
-  it('editor escreve, mas não apaga nem gerencia contas', () => {
-    expect(run(requireWrite, 'editor').next).toHaveBeenCalled();
-    expect(run(requireDelete, 'editor').res.status).toHaveBeenCalledWith(403);
+  it('editor cria, mas não gerencia contas', () => {
+    expect(run(requireCreate, 'editor').next).toHaveBeenCalled();
     expect(run(requireAdmin, 'editor').res.status).toHaveBeenCalledWith(403);
   });
 
   it('admin passa em tudo', () => {
-    for (const guard of [requireWrite, requireDelete, requireAdmin]) {
+    for (const guard of [requireCreate, requireAdmin]) {
       expect(run(guard, 'admin').next).toHaveBeenCalled();
     }
   });
 
   it('sem sessão, nada passa', () => {
-    for (const guard of [requireWrite, requireDelete, requireAdmin]) {
+    for (const guard of [requireCreate, requireAdmin]) {
       expect(run(guard, undefined).res.status).toHaveBeenCalledWith(403);
     }
   });

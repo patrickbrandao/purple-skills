@@ -1,5 +1,4 @@
 import {
-  AppError,
   badRequest,
   countOnlineMcpSessions,
   createVirtualMcp,
@@ -12,8 +11,10 @@ import {
   listVirtualMcps,
   notFound,
   recordAccountAudit,
+  removeVirtualMcpGrant,
   resolveDefaultVirtualMcp,
   revokeVirtualMcpKey,
+  setVirtualMcpGrant,
   setDefaultVirtualMcp,
   setVirtualMcpCanvas,
   setVirtualMcpSkills,
@@ -24,9 +25,12 @@ import {
 } from '@purple-skills/db';
 import {
   VIRTUAL_KEY_SCHEME,
-  canManageVirtualMcp,
+  canManage,
   generateApiKey,
+  isAccessScope,
+  type AccessLevel,
   type CanvasPoint,
+  type Grant,
   type InstallationSettings,
   type McpSessionPage,
   type McpSessionTransport,
@@ -38,37 +42,57 @@ import {
   type VirtualMcpSkillInput,
   type VirtualMcpSummary,
 } from '@purple-skills/shared';
-import { actorOf, type AuthUser } from './auth.js';
+import {
+  accountByEmail,
+  assertAccess,
+  assertSkillsViewable,
+  forbidden,
+  levelFrom,
+  ownerFrom,
+  withGrants,
+} from './access.js';
+import { actorOf, viewerOf, type AuthUser } from './auth.js';
 import { config } from './config.js';
 
 const SOURCE = 'web-admin' as const;
 
-const forbidden = (message: string) => new AppError(message, 403, 'forbidden');
-
 /** A janela de "online" do painel, em toda leitura de vMCP e de sessão. */
 const janela = () => ({ onlineWindowMs: config.onlineWindowMs });
 
-/** Os MCPs que a sessão enxerga: todos para admin, os próprios para os demais. */
-export function listMine(user: AuthUser): Promise<VirtualMcpSummary[]> {
+/**
+ * Os MCPs que a sessão enxerga (`docs/12-acesso-granular.md` §3.1): tudo
+ * para admin; para os demais, os seus, os concedidos e os abertos. `scope`
+ * é o filtro das listas do painel (meus / compartilhados / públicos).
+ */
+export function listMine(user: AuthUser, rawScope?: unknown): Promise<VirtualMcpSummary[]> {
   return listVirtualMcps({
-    ...(user.role === 'admin' ? {} : { ownerUserUuid: user.uuid }),
+    viewer: viewerOf(user),
+    ...(isAccessScope(rawScope) ? { scope: rawScope } : {}),
     ...janela(),
   });
 }
 
 /**
- * Carrega um MCP virtual que a sessão pode administrar.
- *
- * É a única exceção do projeto ao "papel limita a ação, não o escopo": o
- * virtual tem dono. Admin passa em qualquer um; o dono, no seu.
+ * Carrega um MCP virtual com o nível mínimo exigido pela ação
+ * (`docs/12-acesso-granular.md` §3.2): `view` lê o canvas e as skills
+ * dentro; `edit` mexe nos vínculos, portas e posições; `manage` muda nome,
+ * slug, estado, abertura, chaves e concessões; `owner` apaga e transfere.
+ * Quem não o vê recebe 404, como se não existisse.
  */
-export async function loadManaged(user: AuthUser, slug: string): Promise<VirtualMcpDetail> {
-  const mcp = await getVirtualMcp(slug, janela());
+export async function load(
+  user: AuthUser,
+  slug: string,
+  minimum: AccessLevel | 'owner',
+): Promise<VirtualMcpDetail> {
+  const mcp = await getVirtualMcp(slug, { ...janela(), viewer: viewerOf(user) });
   if (!mcp) throw notFound(`MCP virtual não encontrado: ${slug}`);
-  if (!canManageVirtualMcp(user.role, mcp.ownerUserUuid, user.uuid)) {
-    throw forbidden('Este MCP virtual pertence a outra conta');
-  }
+  assertAccess(mcp.access, minimum, 'MCP virtual');
   return mcp;
+}
+
+/** O detalhe para o painel: as concessões só para quem as administra. */
+export async function detail(user: AuthUser, slug: string): Promise<VirtualMcpDetail> {
+  return withGrants(await load(user, slug, 'view'));
 }
 
 export async function create(
@@ -104,7 +128,8 @@ export async function update(
     ownerUserUuid?: unknown;
   },
 ): Promise<VirtualMcpDetail> {
-  const current = await loadManaged(user, slug);
+  // Nome, slug, descrição, aberto e ligado são propriedades: `manage`.
+  const current = await load(user, slug, 'manage');
 
   const patch: Parameters<typeof updateVirtualMcp>[1] = {};
   if (typeof body.name === 'string') patch.name = body.name.trim();
@@ -113,20 +138,18 @@ export async function update(
   if (typeof body.isOpen === 'boolean') patch.isOpen = body.isOpen;
   if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
 
-  // Transferir o dono é do admin: o dono atual não escolhe quem o substitui.
-  if (body.ownerUserUuid !== undefined) {
-    if (user.role !== 'admin') throw forbidden('Só um administrador transfere o dono de um MCP virtual');
-    if (body.ownerUserUuid !== null && typeof body.ownerUserUuid !== 'string') {
-      throw badRequest('ownerUserUuid precisa ser um UUID ou null');
-    }
-    patch.ownerUserUuid = body.ownerUserUuid;
-  }
+  // Transferir é do dono e do admin (decisão 9); o banco recusa conta inativa.
+  const owner = await ownerFrom(user, current.access, body.ownerUserUuid, 'MCP virtual');
+  if (owner !== undefined) patch.ownerUserUuid = owner;
 
-  return updateVirtualMcp(current.uuid, patch, SOURCE, actorOf(user));
+  return withGrants({
+    ...(await updateVirtualMcp(current.uuid, patch, SOURCE, actorOf(user))),
+    access: current.access,
+  });
 }
 
 export async function remove(user: AuthUser, slug: string): Promise<void> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'owner');
   await deleteVirtualMcp(current.uuid, SOURCE, actorOf(user));
 }
 
@@ -140,7 +163,7 @@ export async function setSkills(
   slug: string,
   body: { skills?: unknown },
 ): Promise<VirtualMcpDetail> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'edit');
 
   if (!Array.isArray(body.skills)) throw badRequest('Envie "skills" como uma lista');
   const skills: VirtualMcpSkillInput[] = body.skills.map((entry: unknown, index: number) => {
@@ -161,13 +184,24 @@ export async function setSkills(
     };
   });
 
-  return setVirtualMcpSkills(current.uuid, skills, SOURCE, actorOf(user));
+  // Quem entra precisa ser visível para a sessão (decisão 6); quem já está
+  // fica, mesmo que a sessão tenha perdido o acesso à skill depois.
+  const linked = new Set(current.skills.map((skill) => skill.slug));
+  await assertSkillsViewable(
+    user,
+    skills.map((skill) => skill.slug).filter((slug) => !linked.has(slug)),
+  );
+
+  return withGrants({
+    ...(await setVirtualMcpSkills(current.uuid, skills, SOURCE, actorOf(user))),
+    access: current.access,
+  });
 }
 
 // ------------------------------------------- vínculo pelo lado da skill ---
 
 /** As três portas do vínculo, obrigatórias e ao menos uma ligada. */
-function flagsFrom(body: unknown): SkillLinkFlags {
+export function flagsFrom(body: unknown): SkillLinkFlags {
   const item = (body ?? {}) as Record<string, unknown>;
   for (const flag of ['asSkill', 'asPrompt', 'asResource'] as const) {
     if (typeof item[flag] !== 'boolean') throw badRequest(`"${flag}" precisa ser true ou false`);
@@ -185,8 +219,8 @@ function flagsFrom(body: unknown): SkillLinkFlags {
 
 /**
  * Publica a skill num vMCP a partir da página dela
- * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3). A permissão é a do
- * vMCP alvo — dono ou admin — exatamente como no `PUT …/skills` do MCP.
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3): `edit` no vMCP alvo e
+ * `view` na skill, como no `PUT …/skills` do MCP (decisão 6 do `12`).
  */
 export async function linkSkill(
   user: AuthUser,
@@ -194,14 +228,15 @@ export async function linkSkill(
   skillSlug: string,
   body: unknown,
 ): Promise<SkillDetail> {
-  const mcp = await loadManaged(user, mcpSlug);
+  const mcp = await load(user, mcpSlug, 'edit');
+  await assertSkillsViewable(user, [skillSlug]);
   // A posição vem do canvas: o nó nasce onde foi solto. Ausente, fica onde estava.
   const position = pointFrom((body as { position?: unknown } | null)?.position, 'position');
   return dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user), position ? { position } : undefined);
 }
 
 /** Um ponto do canvas: `{ x, y }` finitos, arredondados para inteiro. Ausente é `undefined`. */
-function pointFrom(raw: unknown, field: string): CanvasPoint | undefined {
+export function pointFrom(raw: unknown, field: string): CanvasPoint | undefined {
   if (raw === undefined || raw === null) return undefined;
   const point = raw as { x?: unknown; y?: unknown };
   if (typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
@@ -212,17 +247,32 @@ function pointFrom(raw: unknown, field: string): CanvasPoint | undefined {
 
 // ------------------------------------------------------------------ canvas ---
 
+/** Uma lista de `{ slug, x, y }` do corpo, ou nada. */
+function positionsFrom(raw: unknown, field: string, what: string): { slug: string; x: number; y: number }[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) throw badRequest(`"${field}" precisa ser uma lista`);
+  return raw.map((entry: unknown, index: number) => {
+    const item = (entry ?? {}) as { slug?: unknown; x?: unknown; y?: unknown };
+    if (typeof item.slug !== 'string' || !item.slug.trim()) {
+      throw badRequest(`${field}[${index}]: informe o slug ${what}`);
+    }
+    const point = pointFrom({ x: item.x, y: item.y }, `${field}[${index}]`)!;
+    return { slug: item.slug.trim(), ...point };
+  });
+}
+
 /**
  * O estado do canvas de um vMCP (`docs/10-admin-canvas-e-sessoes.md`): as
- * posições dos nós fixos (servidor, Internet) e das skills. É estado de tela,
- * compartilhado entre quem administra o servidor — sem auditoria.
+ * posições dos nós fixos (servidor, Internet), das skills e dos catálogos. É
+ * estado de tela, compartilhado entre quem administra o servidor — sem
+ * auditoria.
  */
 export async function setCanvas(
   user: AuthUser,
   slug: string,
-  body: { layout?: unknown; positions?: unknown },
+  body: { layout?: unknown; positions?: unknown; catalogPositions?: unknown },
 ): Promise<void> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'edit');
 
   let layout: VirtualMcpLayout | undefined;
   if (body.layout !== undefined && body.layout !== null) {
@@ -235,20 +285,11 @@ export async function setCanvas(
     if (internet) layout.internet = internet;
   }
 
-  let positions: { slug: string; x: number; y: number }[] | undefined;
-  if (body.positions !== undefined && body.positions !== null) {
-    if (!Array.isArray(body.positions)) throw badRequest('"positions" precisa ser uma lista');
-    positions = body.positions.map((entry: unknown, index: number) => {
-      const item = (entry ?? {}) as { slug?: unknown; x?: unknown; y?: unknown };
-      if (typeof item.slug !== 'string' || !item.slug.trim()) {
-        throw badRequest(`positions[${index}]: informe o slug da skill`);
-      }
-      const point = pointFrom({ x: item.x, y: item.y }, `positions[${index}]`)!;
-      return { slug: item.slug.trim(), ...point };
-    });
-  }
-
-  await setVirtualMcpCanvas(current.uuid, { layout, positions });
+  await setVirtualMcpCanvas(current.uuid, {
+    layout,
+    positions: positionsFrom(body.positions, 'positions', 'da skill'),
+    catalogPositions: positionsFrom(body.catalogPositions, 'catalogPositions', 'do catálogo'),
+  });
 }
 
 // ----------------------------------------------------------------- sessões ---
@@ -270,13 +311,13 @@ export async function online(
   user: AuthUser,
   slug: string,
 ): Promise<{ total: number; byTransport: Record<McpSessionTransport, number> }> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'view');
   return countOnlineMcpSessions({ ...janela(), virtualMcpUuid: current.uuid });
 }
 
-/** As sessões de um vMCP que a sessão administra. */
+/** As sessões de um vMCP: IPs e nomes de chave são operação, como as chaves — `manage`. */
 export async function sessionsOf(user: AuthUser, slug: string, query: SessionQuery): Promise<McpSessionPage> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'manage');
   return listMcpSessions({ ...janela(), virtualMcpUuid: current.uuid, ...pageOf(query) });
 }
 
@@ -297,10 +338,10 @@ export async function listSessions(
     return listMcpSessions({ ...janela(), virtualMcpUuid: mcp.uuid, ...pageOf(query) });
   }
 
-  const mine = await listVirtualMcps({ ownerUserUuid: user.uuid });
+  const mine = (await listVirtualMcps({ viewer: viewerOf(user) })).filter((mcp) => canManage(mcp.access));
   if (wanted) {
     const one = mine.find((mcp) => mcp.slug === wanted);
-    if (!one) throw forbidden('Este MCP virtual pertence a outra conta');
+    if (!one) throw forbidden('Você não administra este MCP virtual');
     return listMcpSessions({ ...janela(), virtualMcpUuid: one.uuid, ...pageOf(query) });
   }
   return listMcpSessions({ ...janela(), virtualMcpUuids: mine.map((mcp) => mcp.uuid), ...pageOf(query) });
@@ -311,15 +352,14 @@ export async function unlinkSkill(
   mcpSlug: string,
   skillSlug: string,
 ): Promise<SkillDetail> {
-  const mcp = await loadManaged(user, mcpSlug);
+  const mcp = await load(user, mcpSlug, 'edit');
   return dbUnlinkSkill(skillSlug, mcp.uuid, SOURCE, actorOf(user));
 }
 
 /**
  * A lista "publicar em" de uma skill nova: slugs de vMCP e flags, vindos do
- * formulário ou do import, resolvidos em uuids. Cada vMCP passa por
- * `loadManaged`: quem não o administra não publica nele, e a skill não é
- * criada.
+ * formulário ou do import, resolvidos em uuids. Cada vMCP exige `edit`:
+ * quem não o edita não publica nele, e a skill não é criada.
  */
 export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillLinkInput[]> {
   if (raw === undefined || raw === null) return [];
@@ -331,7 +371,7 @@ export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillL
     if (typeof item.slug !== 'string' || !item.slug.trim()) {
       throw badRequest(`mcps[${index}]: informe o slug do MCP virtual`);
     }
-    const mcp = await loadManaged(user, item.slug.trim());
+    const mcp = await load(user, item.slug.trim(), 'edit');
     links.push({ virtualMcpUuid: mcp.uuid, ...flagsFrom(item) });
   }
   return links;
@@ -340,7 +380,7 @@ export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillL
 // ------------------------------------------------------------------ chaves ---
 
 export async function listKeys(user: AuthUser, slug: string): Promise<VirtualMcpKeySummary[]> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'manage');
   return listVirtualMcpKeys(current.uuid);
 }
 
@@ -350,7 +390,9 @@ export async function issueKey(
   slug: string,
   rawName: unknown,
 ): Promise<{ key: VirtualMcpKeySummary; token: string }> {
-  const current = await loadManaged(user, slug);
+  // Emitir uma chave entrega a árvore inteira a uma máquina: é ampliar
+  // acesso, o mesmo que conceder — `manage` (`docs/12` §3.2).
+  const current = await load(user, slug, 'manage');
 
   const name = String(rawName ?? '').trim();
   if (!name) throw badRequest('Dê um nome à chave (ex.: "CI do projeto X")');
@@ -375,7 +417,7 @@ export async function issueKey(
 }
 
 export async function revokeKey(user: AuthUser, slug: string, id: string): Promise<void> {
-  const current = await loadManaged(user, slug);
+  const current = await load(user, slug, 'manage');
 
   const revoked = await revokeVirtualMcpKey(id, current.uuid);
   if (!revoked) throw notFound('Chave não encontrada ou já revogada');
@@ -386,6 +428,20 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
     actor: actorOf(user),
     targetLabel: `${current.slug}: ${id}`,
   });
+}
+
+// -------------------------------------------------------------- concessões ---
+
+export async function share(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
+  const current = await load(user, slug, 'manage');
+  const target = await accountByEmail(email);
+  return setVirtualMcpGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user));
+}
+
+export async function unshare(user: AuthUser, slug: string, email: string): Promise<void> {
+  const current = await load(user, slug, 'manage');
+  const target = await accountByEmail(email);
+  await removeVirtualMcpGrant(current.slug, target.uuid, SOURCE, actorOf(user));
 }
 
 // ---------------------------------------------------- configuração ---

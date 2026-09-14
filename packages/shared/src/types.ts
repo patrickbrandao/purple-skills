@@ -1,4 +1,4 @@
-import type { Role } from './roles.js';
+import type { AccessLevel, EffectiveAccess, Role } from './roles.js';
 
 /**
  * Um vMCP em que a skill está, visto da skill: o servidor e as três portas
@@ -16,6 +16,26 @@ export type SkillMcpRef = {
   asSkill: boolean;
   asPrompt: boolean;
   asResource: boolean;
+  /**
+   * Vínculo direto (`virtual_mcp_skills`). Falso: a skill chega a este vMCP
+   * só por catálogo (`docs/11-catalogos.md` §3) e as portas acima são a união
+   * dos catálogos em `catalogs`. O vínculo direto, quando existe, sobrescreve
+   * qualquer catálogo — por isso os dois nunca aparecem juntos.
+   */
+  direct: boolean;
+  /** Os catálogos por onde a skill chega a este vMCP; vazio num vínculo direto. */
+  catalogs: CatalogRef[];
+};
+
+/** O mínimo para nomear um catálogo numa referência. */
+export type CatalogRef = { uuid: string; slug: string; name: string };
+
+/** Um catálogo de que a skill participa, visto da skill. */
+export type SkillCatalogRef = CatalogRef & {
+  /** O catálogo está ligado. */
+  isActive: boolean;
+  /** A participação **desta** skill neste catálogo está ativa. */
+  memberActive: boolean;
 };
 
 export type SkillSummary = {
@@ -30,12 +50,36 @@ export type SkillSummary = {
    */
   icon: string | null;
   /**
-   * Em quais vMCPs a skill está. Numa leitura de visibilidade `'all'`
-   * (painel, mcp-admin) vêm todos; nas demais, só os abertos e ligados — que
-   * é o que o site pode mostrar. Vazio = skill flutuante, exibida em lugar
-   * nenhum.
+   * Desligada (`docs/11-catalogos.md` §2): some de todo vMCP e do site, por
+   * vínculo direto ou por catálogo, sem perder vínculo nenhum. Só o painel e
+   * o mcp-admin (visibilidade `'all'`) continuam a enxergá-la.
+   */
+  isActive: boolean;
+  /**
+   * Quem pode ler sem concessão: qualquer conta logada e o site anônimo
+   * (`docs/12-acesso-granular.md` decisão 4). Não decide exposição no MCP —
+   * isso continua sendo vínculo.
+   */
+  isPublic: boolean;
+  /** Nulo quando o dono foi removido ou quando quem criou não era conta (bootstrap, token global). */
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  /**
+   * O que a conta que leu pode nesta skill (`accessLevel` de `roles.ts`,
+   * mais `'view'` quando ela chega por um contêiner que a conta vê). Numa
+   * leitura sem conta (site, `visibility: 'all'` sem `viewer`) é `'owner'`
+   * para o painel/mcp-admin do admin e `null` para o site.
+   */
+  access: EffectiveAccess;
+  /**
+   * Em quais vMCPs a skill está — por vínculo direto **ou** por catálogo.
+   * Numa leitura de visibilidade `'all'` (painel, mcp-admin) vêm todos; nas
+   * demais, só os abertos e ligados — que é o que o site pode mostrar. Vazio
+   * = skill flutuante, exibida em lugar nenhum.
    */
   mcps: SkillMcpRef[];
+  /** Os catálogos de que participa. Só na visibilidade `'all'`; vazio nas demais. */
+  catalogs: SkillCatalogRef[];
   viewCount: number;
   downloadCount: number;
   score: number;
@@ -55,7 +99,38 @@ export type SkillFileMeta = {
 export type SkillDetail = SkillSummary & {
   skillMd: string;
   files: SkillFileMeta[];
+  /**
+   * As concessões da skill (`skill_grants`). O banco sempre as devolve; o
+   * app só as repassa a quem tem `manage` (`docs/12` decisão 11).
+   */
+  grants: Grant[];
 };
+
+// ------------------------------------------------------------- acesso ------
+
+/** Uma concessão por objeto: a conta, o nível e quem concedeu. */
+export type Grant = {
+  userUuid: string;
+  email: string;
+  name: string;
+  role: Role;
+  level: AccessLevel;
+  grantedByUserUuid: string | null;
+  grantedByEmail: string | null;
+  createdAt: string;
+};
+
+/** Resultado da busca de contas para compartilhar (`GET /api/users/lookup`). */
+export type UserLookup = { uuid: string; email: string; name: string; role: Role };
+
+/** O filtro das listas do painel: meus, compartilhados comigo, públicos. */
+export type AccessScope = 'mine' | 'shared' | 'public';
+
+export const ACCESS_SCOPES: readonly AccessScope[] = ['mine', 'shared', 'public'];
+
+export function isAccessScope(value: unknown): value is AccessScope {
+  return typeof value === 'string' && (ACCESS_SCOPES as readonly string[]).includes(value);
+}
 
 export type SearchResult = {
   items: SkillSummary[];
@@ -88,6 +163,21 @@ export type AuditAction =
   | 'mcp.default'
   | 'mcp.key.create'
   | 'mcp.key.revoke'
+  // Eventos de catálogo (`docs/11-catalogos.md` §7). `target_label` é o slug
+  // do catálogo; mudar a lista de skills dele é `catalog.update`, e vincular
+  // um catálogo a um vMCP é `mcp.update` no servidor, como com skill.
+  | 'catalog.create'
+  | 'catalog.update'
+  | 'catalog.delete'
+  // Concessões (`docs/12-acesso-granular.md` §8). `target_label` é
+  // `email:nível` ao conceder e o e-mail ao revogar; em catálogo e vMCP o
+  // slug vem antes, separado por espaço. Transferir o dono é `update`.
+  | 'skill.share'
+  | 'skill.unshare'
+  | 'catalog.share'
+  | 'catalog.unshare'
+  | 'mcp.share'
+  | 'mcp.unshare'
   // Chaves `psp_` do antigo MCP principal. Nada mais as produz desde o `011`;
   // ficam no tipo porque a trilha ainda carrega linhas com elas.
   | 'public.key.create'
@@ -173,6 +263,8 @@ export type VirtualMcpSummary = {
   /** Nulo quando o dono foi removido ou quando quem criou foi a sessão de bootstrap. */
   ownerUserUuid: string | null;
   ownerEmail: string | null;
+  /** O que a conta que leu pode neste vMCP; `'view'` inclui ler as skills dentro. */
+  access: EffectiveAccess;
   skillCount: number;
   /** Quantas skills saem por cada porta — os contadores do card no painel. */
   toolCount: number;
@@ -189,6 +281,8 @@ export type VirtualMcpSummary = {
   onlineSessions: number;
   /** Até 8 skills vinculadas, para a miniatura do card: slug, nome e ícone. */
   preview: VirtualMcpPreviewSkill[];
+  /** Catálogos vinculados (`virtual_mcp_catalogs`), ligados ou não. */
+  catalogCount: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -223,7 +317,46 @@ export type VirtualMcpSkill = {
 
 export type VirtualMcpDetail = VirtualMcpSummary & {
   skills: VirtualMcpSkill[];
+  catalogs: VirtualMcpCatalog[];
   layout: VirtualMcpLayout;
+  /** As concessões (`virtual_mcp_grants`); o app só as repassa a quem tem `manage`. */
+  grants: Grant[];
+};
+
+/**
+ * Um catálogo visto de dentro do MCP virtual — o nó do canvas
+ * (`docs/11-catalogos.md` §5). As portas são do vínculo
+ * (`virtual_mcp_catalogs`) e valem para todo membro do catálogo.
+ */
+export type VirtualMcpCatalog = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** O catálogo em si está ligado; desligado, não contribui nada. */
+  isActive: boolean;
+  ownerUserUuid: string | null;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+  /** Membros, contando inativos. */
+  skillCount: number;
+  /**
+   * O número do nó: membros com participação ativa e skill ativa que **não**
+   * têm vínculo direto com este vMCP — os que já são nó próprio no canvas
+   * não contam duas vezes.
+   */
+  activeSkillCount: number;
+  /** Posição do nó no canvas do painel; nula até alguém arrastar. */
+  position: CanvasPoint | null;
+};
+
+/** Entrada de `setVirtualMcpCatalogs`: as três portas, obrigatórias como nas skills. */
+export type VirtualMcpCatalogInput = {
+  slug: string;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
 };
 
 /** Entrada de `setVirtualMcpSkills`: a escolha das três superfícies é obrigatória. */
@@ -281,6 +414,96 @@ export type VirtualMcpKeySummary = {
 
 /** Uma página da trilha de auditoria, como o painel a lista. */
 export type AuditPage = { items: AuditEntry[]; total: number; limit: number; offset: number };
+
+// ---------------------------------------------------------- catálogos ------
+
+/**
+ * Um catálogo: um grupo de skills com dono (`docs/11-catalogos.md`). Vinculado
+ * a um vMCP, entrega todos os membros ativos de uma vez, pelas portas do
+ * vínculo; uma skill pode estar em vários catálogos.
+ */
+export type CatalogSummary = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** Desligado: deixa de contribuir para todo vMCP vinculado; membros e vínculos ficam. */
+  isActive: boolean;
+  /** Nulo quando o dono foi removido ou quando quem criou foi a sessão de bootstrap. */
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  /** Legível por qualquer conta e pelo site; expõe os membros (`docs/12` decisões 4 e 5). */
+  isPublic: boolean;
+  /** O que a conta que leu pode neste catálogo; `'view'` inclui ler os membros. */
+  access: EffectiveAccess;
+  /** Membros, contando participações desativadas e skills desligadas. */
+  skillCount: number;
+  /** Membros com participação ativa **e** skill ativa — o que um vMCP vinculado recebe. */
+  activeSkillCount: number;
+  /** vMCPs em que o catálogo está vinculado. */
+  mcpCount: number;
+  /** Contadores do catálogo: acessos a skills que chegaram ao vMCP por ele. */
+  viewCount: number;
+  downloadCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Uma skill vista de dentro do catálogo. */
+export type CatalogSkill = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  icon: string | null;
+  /** A participação neste catálogo: desativada, a skill fica e não é entregue. */
+  isActive: boolean;
+  /** A skill em si (`skills.is_active`) — falso é o alerta na lista. */
+  skillIsActive: boolean;
+  addedAt: string;
+};
+
+/** Um vMCP em que o catálogo está, visto do catálogo: as portas são do vínculo. */
+export type CatalogMcpRef = {
+  uuid: string;
+  slug: string;
+  name: string;
+  isOpen: boolean;
+  isActive: boolean;
+  isDefault: boolean;
+  ownerUserUuid: string | null;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
+export type CatalogDetail = CatalogSummary & {
+  skills: CatalogSkill[];
+  mcps: CatalogMcpRef[];
+  /** As concessões (`catalog_grants`); o app só as repassa a quem tem `manage`. */
+  grants: Grant[];
+};
+
+/** Um catálogo público e ligado, como o site o lista: sem dono, sem concessões. */
+export type PublicCatalog = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** Membros com participação ativa e skill ativa. */
+  skillCount: number;
+};
+
+/** A página do catálogo no site: os membros ativos, todos (`docs/12` decisão 5). */
+export type PublicCatalogDetail = PublicCatalog & {
+  skills: SkillSummary[];
+};
+
+/** Entrada de `setCatalogSkills`: `isActive` omitido é "ativa" para quem entra e "não mexe" para quem fica. */
+export type CatalogSkillInput = {
+  slug: string;
+  isActive?: boolean;
+};
 
 // ------------------------------------------------------- sessões MCP ------
 

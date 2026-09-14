@@ -3,8 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { requireAdmin, requireDelete, requireSettingsAdmin, requireVirtualMcpCreate, requireWrite } =
-  await import('./auth.js');
+const { requireAdmin, requireCreate, requireSettingsAdmin } = await import('./auth.js');
 const { api } = await import('./api.js');
 
 /**
@@ -46,56 +45,65 @@ describe('papéis exigidos pelas rotas', () => {
     expect(handlers(method, path)).toContain(requireSettingsAdmin);
   });
 
+  // Criar é o único guarda de papel fora da administração da instalação
+  // (`docs/12-acesso-granular.md` decisão 12).
   it.each([
     ['post', '/api/skills'],
     ['post', '/api/skills/import'],
+    ['post', '/api/mcps'],
+    ['post', '/api/catalogs'],
+  ])('%s %s exige papel de criação', (method, path) => {
+    expect(handlers(method, path)).toContain(requireCreate);
+  });
+
+  // Tudo o mais é decidido pelo acesso ao objeto, dentro do handler — um
+  // membro administra o que é seu ou lhe foi concedido, e nenhum guarda de
+  // papel pode estar na frente.
+  it.each([
+    ['get', '/api/skills'],
+    ['get', '/api/skills/:slug'],
     ['patch', '/api/skills/:slug'],
+    ['delete', '/api/skills/:slug'],
+    ['put', '/api/skills/:slug/files/*path'],
+    ['delete', '/api/skills/:slug/files/*path'],
     ['post', '/api/skills/:slug/upload'],
     ['post', '/api/skills/:slug/files'],
-  ])('%s %s exige papel de escrita', (method, path) => {
-    expect(handlers(method, path)).toContain(requireWrite);
-  });
-
-  it('apagar skill exige admin', () => {
-    expect(handlers('delete', '/api/skills/:slug')).toContain(requireDelete);
-  });
-
-  it('criar MCP virtual exige papel de escrita; o resto é decidido pelo dono', () => {
-    expect(handlers('post', '/api/mcps')).toContain(requireVirtualMcpCreate);
-    // Sem guarda de papel de propósito: `loadManaged` deixa passar o dono ou
-    // um admin, e um leitor que virou dono por transferência administra o seu.
-    // O vínculo pelo lado da skill segue a mesma regra: a permissão é a do
-    // vMCP alvo.
-    for (const [method, path] of [
-      ['patch', '/api/mcps/:slug'],
-      ['put', '/api/mcps/:slug/skills'],
-      ['post', '/api/mcps/:slug/keys'],
-      ['put', '/api/skills/:slug/mcps/:mcp'],
-      ['delete', '/api/skills/:slug/mcps/:mcp'],
-    ] as const) {
-      expect(handlers(method, path)).not.toContain(requireWrite);
-      expect(handlers(method, path)).not.toContain(requireAdmin);
-    }
-  });
-
-  // O canvas e as sessões de um servidor seguem a regra do servidor: dono ou
-  // admin, decidido por `loadManaged`. A lista global recorta por dono dentro
-  // de `listSessions` — também sem guarda de papel.
-  it.each([
+    ['put', '/api/skills/:slug/access/:email'],
+    ['delete', '/api/skills/:slug/access/:email'],
+    ['put', '/api/skills/:slug/mcps/:mcp'],
+    ['delete', '/api/skills/:slug/mcps/:mcp'],
+    ['get', '/api/mcps/:slug'],
+    ['patch', '/api/mcps/:slug'],
+    ['delete', '/api/mcps/:slug'],
+    ['put', '/api/mcps/:slug/skills'],
+    ['post', '/api/mcps/:slug/keys'],
+    ['put', '/api/mcps/:slug/access/:email'],
     ['put', '/api/mcps/:slug/canvas'],
     ['get', '/api/mcps/:slug/online'],
     ['get', '/api/mcps/:slug/sessions'],
     ['get', '/api/sessions'],
-  ])('%s %s é decidido pelo dono, não pelo papel', (method, path) => {
-    expect(handlers(method, path)).not.toContain(requireWrite);
+    ['get', '/api/catalogs/:slug'],
+    ['patch', '/api/catalogs/:slug'],
+    ['delete', '/api/catalogs/:slug'],
+    ['put', '/api/catalogs/:slug/skills'],
+    ['put', '/api/catalogs/:slug/skills/:skill'],
+    ['delete', '/api/catalogs/:slug/skills/:skill'],
+    ['put', '/api/catalogs/:slug/access/:email'],
+    ['put', '/api/mcps/:slug/catalogs'],
+    ['put', '/api/mcps/:slug/catalogs/:catalog'],
+    ['delete', '/api/mcps/:slug/catalogs/:catalog'],
+    ['get', '/api/users/lookup'],
+  ])('%s %s é decidido pelo acesso ao objeto, não pelo papel', (method, path) => {
+    expect(handlers(method, path)).not.toContain(requireCreate);
     expect(handlers(method, path)).not.toContain(requireAdmin);
   });
 
-  it('leitura do catálogo não exige papel além da sessão', () => {
-    const lista = handlers('get', '/api/skills');
-
-    expect(lista).not.toContain(requireWrite);
-    expect(lista).not.toContain(requireAdmin);
+  it('a busca de contas vem antes da rota por uuid, para o Express não a engolir', () => {
+    const layers = (api as unknown as { stack: Layer[] }).stack;
+    const lookup = layers.findIndex((layer) => layer.route?.path === '/api/users/lookup');
+    const byUuid = layers.findIndex((layer) => layer.route?.path === '/api/users/:uuid' && layer.route.methods.get);
+    expect(lookup).toBeGreaterThan(-1);
+    if (byUuid !== -1) expect(lookup).toBeLessThan(byUuid);
   });
 });
 

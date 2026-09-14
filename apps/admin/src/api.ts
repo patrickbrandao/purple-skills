@@ -6,8 +6,6 @@ import {
   createSkill,
   deleteFile,
   deleteSkill,
-  getSkillDetail,
-  getSkillSummary,
   getUserByUuid,
   healthCheck,
   listAuditPage,
@@ -22,7 +20,9 @@ import {
 } from '@purple-skills/db';
 import {
   ZipError,
+  canManage,
   composeSkillMd,
+  isAccessScope,
   contentDisposition,
   extractZip,
   isSkillMd,
@@ -39,14 +39,15 @@ import {
   issueSession,
   requireAdmin,
   requireAuth,
-  requireDelete,
+  requireCreate,
   requirePasswordChanged,
   requireSettingsAdmin,
-  requireVirtualMcpCreate,
-  requireWrite,
   resolveUser,
+  viewerOf,
 } from './auth.js';
+import * as access from './access.js';
 import * as mcps from './mcps.js';
+import * as catalogs from './catalogs.js';
 import {
   bootstrapAdmin,
   changeOwnPassword,
@@ -402,7 +403,7 @@ api.get('/api/me', (req, res) => {
     uuid: req.user?.uuid ?? null,
     email: req.user?.email ?? '',
     name: req.user?.name ?? '',
-    role: req.user?.role ?? 'leitor',
+    role: req.user?.role ?? 'membro',
     mustChangePassword: req.user?.mustChangePassword ?? false,
     legacy: req.user?.legacy ?? false,
   });
@@ -491,25 +492,33 @@ api.post(
   }),
 );
 
+// A busca de contas para compartilhar (`docs/12-acesso-granular.md` decisão
+// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel.
+api.get(
+  '/api/users/lookup',
+  route(async (req, res) => {
+    res.json({ items: await access.lookup(req.query.q) });
+  }),
+);
+
 // ----------------------------------------------------------- MCPs virtuais ---
 
 /**
- * O virtual é a única entidade com dono (`docs/08-mcp-virtual.md` §2): a
- * criação exige papel de escrita, e tudo depois passa por `loadManaged`, que
- * deixa passar o dono ou um admin. Por isso as rotas abaixo não levam
- * `requireWrite` — um leitor que virou dono por transferência administra o
- * seu.
+ * Criar exige papel (`requireCreate`); tudo depois é decidido pelo acesso ao
+ * objeto (`docs/12-acesso-granular.md` §3.2), dentro de `mcps.load` — por
+ * isso as rotas abaixo não levam guarda de papel: um membro administra o
+ * que é seu ou lhe foi concedido.
  */
 api.get(
   '/api/mcps',
   route(async (req, res) => {
-    res.json({ items: await mcps.listMine(req.user!) });
+    res.json({ items: await mcps.listMine(req.user!, req.query.scope) });
   }),
 );
 
 api.post(
   '/api/mcps',
-  requireVirtualMcpCreate,
+  requireCreate,
   route(async (req, res) => {
     res.status(201).json(await mcps.create(req.user!, req.body ?? {}));
   }),
@@ -518,7 +527,23 @@ api.post(
 api.get(
   '/api/mcps/:slug',
   route(async (req, res) => {
-    res.json(await mcps.loadManaged(req.user!, param(req, 'slug')));
+    res.json(await mcps.detail(req.user!, param(req, 'slug')));
+  }),
+);
+
+api.put(
+  '/api/mcps/:slug/access/:email',
+  route(async (req, res) => {
+    const level = (req.body as { level?: unknown } | undefined)?.level;
+    res.json(await mcps.share(req.user!, param(req, 'slug'), param(req, 'email'), level));
+  }),
+);
+
+api.delete(
+  '/api/mcps/:slug/access/:email',
+  route(async (req, res) => {
+    await mcps.unshare(req.user!, param(req, 'slug'), param(req, 'email'));
+    res.json({ revoked: true });
   }),
 );
 
@@ -544,6 +569,29 @@ api.put(
   }),
 );
 
+// Catálogos no vMCP (`docs/11-catalogos.md` §6.2): `edit` no servidor e
+// `view` no catálogo que entra (`docs/12` decisão 7), decidido em `catalogs`.
+api.put(
+  '/api/mcps/:slug/catalogs',
+  route(async (req, res) => {
+    res.json(await catalogs.setMcpCatalogs(req.user!, param(req, 'slug'), req.body ?? {}));
+  }),
+);
+
+api.put(
+  '/api/mcps/:slug/catalogs/:catalog',
+  route(async (req, res) => {
+    res.json(await catalogs.linkToMcp(req.user!, param(req, 'slug'), param(req, 'catalog'), req.body));
+  }),
+);
+
+api.delete(
+  '/api/mcps/:slug/catalogs/:catalog',
+  route(async (req, res) => {
+    res.json(await catalogs.unlinkFromMcp(req.user!, param(req, 'slug'), param(req, 'catalog')));
+  }),
+);
+
 // O canvas: posições dos nós, estado de tela compartilhado — sem auditoria.
 api.put(
   '/api/mcps/:slug/canvas',
@@ -553,8 +601,85 @@ api.put(
   }),
 );
 
+// ------------------------------------------------------------- catálogos ---
+
+/** Como o vMCP: criar exige papel; o resto é o acesso ao catálogo, em `catalogs.load`. */
+api.get(
+  '/api/catalogs',
+  route(async (req, res) => {
+    res.json({ items: await catalogs.listMine(req.user!, req.query.scope) });
+  }),
+);
+
+api.post(
+  '/api/catalogs',
+  requireCreate,
+  route(async (req, res) => {
+    res.status(201).json(await catalogs.create(req.user!, req.body ?? {}));
+  }),
+);
+
+api.get(
+  '/api/catalogs/:slug',
+  route(async (req, res) => {
+    res.json(await catalogs.detail(req.user!, param(req, 'slug')));
+  }),
+);
+
+api.put(
+  '/api/catalogs/:slug/access/:email',
+  route(async (req, res) => {
+    const level = (req.body as { level?: unknown } | undefined)?.level;
+    res.json(await catalogs.share(req.user!, param(req, 'slug'), param(req, 'email'), level));
+  }),
+);
+
+api.delete(
+  '/api/catalogs/:slug/access/:email',
+  route(async (req, res) => {
+    await catalogs.unshare(req.user!, param(req, 'slug'), param(req, 'email'));
+    res.json({ revoked: true });
+  }),
+);
+
+api.patch(
+  '/api/catalogs/:slug',
+  route(async (req, res) => {
+    res.json(await catalogs.update(req.user!, param(req, 'slug'), req.body ?? {}));
+  }),
+);
+
+api.delete(
+  '/api/catalogs/:slug',
+  route(async (req, res) => {
+    await catalogs.remove(req.user!, param(req, 'slug'));
+    res.json({ deleted: true });
+  }),
+);
+
+api.put(
+  '/api/catalogs/:slug/skills',
+  route(async (req, res) => {
+    res.json(await catalogs.setSkills(req.user!, param(req, 'slug'), req.body ?? {}));
+  }),
+);
+
+api.put(
+  '/api/catalogs/:slug/skills/:skill',
+  route(async (req, res) => {
+    res.json(await catalogs.putSkill(req.user!, param(req, 'slug'), param(req, 'skill'), req.body));
+  }),
+);
+
+api.delete(
+  '/api/catalogs/:slug/skills/:skill',
+  route(async (req, res) => {
+    res.json(await catalogs.removeSkill(req.user!, param(req, 'slug'), param(req, 'skill')));
+  }),
+);
+
 // Sessões do MCP público (`docs/10-admin-canvas-e-sessoes.md`): o contador do
-// globo e a lista por servidor. Mesma permissão do resto: dono ou admin.
+// globo (`view`) e a lista por servidor (`manage`, como as chaves).
 api.get(
   '/api/mcps/:slug/online',
   route(async (req, res) => {
@@ -569,8 +694,8 @@ api.get(
   }),
 );
 
-// A lista global: admin vê tudo, os demais só os próprios vMCPs — o recorte é
-// de `listSessions`, não de um guarda de papel.
+// A lista global: admin vê tudo, os demais só os vMCPs que administram — o
+// recorte é de `listSessions`, não de um guarda de papel.
 api.get(
   '/api/sessions',
   route(async (req, res) => {
@@ -663,8 +788,8 @@ api.get(
 
 api.get(
   '/api/tags',
-  route(async (_req, res) => {
-    res.json({ items: await listTags({ visibility: 'all' }) });
+  route(async (req, res) => {
+    res.json({ items: await listTags({ viewer: viewerOf(req.user!) }) });
   }),
 );
 
@@ -681,6 +806,8 @@ const bodyOnly = <T extends { skillMd: string }>(detail: T): T => ({
   skillMd: stripFrontmatter(detail.skillMd),
 });
 
+// O que a sessão enxerga (`docs/12` §3.1); `scope` é o filtro meus /
+// compartilhados / públicos das listas do painel.
 api.get(
   '/api/skills',
   route(async (req, res) => {
@@ -691,7 +818,8 @@ api.get(
         limit: Number(req.query.limit ?? 50),
         offset: Number(req.query.offset ?? 0),
         sort: (req.query.sort as never) ?? undefined,
-        visibility: 'all',
+        viewer: viewerOf(req.user!),
+        ...(isAccessScope(req.query.scope) ? { scope: req.query.scope } : {}),
       }),
     );
   }),
@@ -699,7 +827,7 @@ api.get(
 
 api.post(
   '/api/skills',
-  requireWrite,
+  requireCreate,
   route(async (req, res) => {
     const body = req.body as {
       name?: string;
@@ -713,6 +841,8 @@ api.post(
       icon?: unknown;
       /** Onde publicar já na criação: `[{ slug, asSkill, asPrompt, asResource }]`. */
       mcps?: unknown;
+      /** Legível por qualquer conta e pelo site (`docs/12` decisão 4). */
+      isPublic?: unknown;
     };
 
     // `stripFrontmatter` roda antes da validação da `@purple-skills/db`, então
@@ -733,8 +863,9 @@ api.post(
         skillMd: stripFrontmatter(body.skillMd ?? ''),
         tags: body.tags,
         icon: body.icon as string | null | undefined,
-        // Só nos vMCPs que a sessão administra; um que não seja é 403 antes
-        // de criar qualquer coisa.
+        isPublic: body.isPublic === true,
+        // Só nos vMCPs que a sessão edita; um que não seja é 403 antes de
+        // criar qualquer coisa.
         mcps: await mcps.resolveLinks(req.user!, body.mcps),
       },
       SOURCE,
@@ -747,7 +878,7 @@ api.post(
 /** Cria uma skill inteira a partir de um .zip contendo SKILL.md. */
 api.post(
   '/api/skills/import',
-  requireWrite,
+  requireCreate,
   limitRequestBytes,
   upload.single('file'),
   route(async (req, res) => {
@@ -808,20 +939,30 @@ api.post(
 api.get(
   '/api/skills/:slug',
   route(async (req, res) => {
-    // `visibility: 'all'`: o detalhe traz todos os vínculos, inclusive com
-    // vMCP fechado ou desligado — é o painel que lê.
-    const detail = await getSkillDetail(param(req, 'slug'), { visibility: 'all' });
-    if (!detail) {
-      res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
-      return;
-    }
-    res.json(bodyOnly(detail));
+    // `view` basta para ler; a lista de concessões só vai para `manage`.
+    res.json(bodyOnly(access.withGrants(await access.loadSkill(req.user!, param(req, 'slug'), 'view'))));
+  }),
+);
+
+api.put(
+  '/api/skills/:slug/access/:email',
+  route(async (req, res) => {
+    const level = (req.body as { level?: unknown } | undefined)?.level;
+    res.json(await access.shareSkill(req.user!, param(req, 'slug'), param(req, 'email'), level));
+  }),
+);
+
+api.delete(
+  '/api/skills/:slug/access/:email',
+  route(async (req, res) => {
+    await access.unshareSkill(req.user!, param(req, 'slug'), param(req, 'email'));
+    res.json({ revoked: true });
   }),
 );
 
 // Vínculo pelo lado da skill (`docs/09-mcp-padrao-e-skills-flutuantes.md`
 // §4.3). Sem guarda de papel de propósito, como nas rotas do MCP: quem
-// decide é `loadManaged` — o dono do vMCP alvo ou um admin.
+// decide é `mcps.load` — `edit` no vMCP alvo e `view` na skill.
 api.put(
   '/api/skills/:slug/mcps/:mcp',
   route(async (req, res) => {
@@ -840,7 +981,6 @@ api.delete(
 
 api.patch(
   '/api/skills/:slug',
-  requireWrite,
   route(async (req, res) => {
     const body = req.body as {
       name?: string;
@@ -850,32 +990,56 @@ api.patch(
       skillMd?: string;
       /** `undefined` não mexe; `null` ou vazio limpa. */
       icon?: string | null;
+      /** Desligada some de todo servidor e do site (`docs/11-catalogos.md` decisão 10). */
+      isActive?: boolean;
+      /** Legível por qualquer conta e pelo site (`docs/12` decisão 4). */
+      isPublic?: boolean;
+      /** Transferir o dono: só dono e admin. */
+      ownerUserUuid?: string | null;
     };
+
+    // Conteúdo, nome, descrição, ícone e tags são `edit`; slug, estado e
+    // público são `manage`; o dono, `owner` (`docs/12` §3.2).
+    const touchesProperties =
+      body.slug !== undefined || body.isActive !== undefined || body.isPublic !== undefined;
+    const current = await access.loadSkillSummary(
+      req.user!,
+      param(req, 'slug'),
+      touchesProperties ? 'manage' : 'edit',
+    );
+    const owner = await access.ownerFrom(req.user!, current.access, body.ownerUserUuid, 'skill');
 
     // Conteúdo e metadados numa transação só: se o slug colidir ou o nome vier
     // vazio, o SKILL.md também não é gravado.
     const detail = await updateSkillWithContent(
-      param(req, 'slug'),
+      current.slug,
       {
         name: body.name,
         slug: body.slug,
         description: body.description,
         tags: body.tags,
         icon: body.icon,
+        isActive: body.isActive,
+        isPublic: body.isPublic,
+        ...(owner !== undefined ? { ownerUserUuid: owner } : {}),
         skillMd: typeof body.skillMd === 'string' ? stripFrontmatter(body.skillMd) : undefined,
       },
       SOURCE,
       actorFrom(req),
     );
-    res.json(bodyOnly(detail));
+    // A escrita não conhece o leitor: devolve o acesso de quem chamou, e as
+    // concessões só a quem as administra.
+    const seen = { ...detail, access: current.access };
+    res.json(bodyOnly(canManage(seen.access) ? seen : { ...seen, grants: [] }));
   }),
 );
 
 api.delete(
   '/api/skills/:slug',
-  requireDelete,
   route(async (req, res) => {
-    await deleteSkill(param(req, 'slug'), SOURCE, actorFrom(req));
+    // Apagar é do dono e do admin: nenhum nível de concessão chega lá.
+    const current = await access.loadSkillSummary(req.user!, param(req, 'slug'), 'owner');
+    await deleteSkill(current.slug, SOURCE, actorFrom(req));
     res.json({ deleted: true });
   }),
 );
@@ -885,15 +1049,11 @@ api.delete(
 /**
  * Download do pacote da skill. `.zip` e `.skill` são o mesmo ZIP — só muda a
  * extensão do arquivo baixado (o `.skill` é o formato aberto de Agent Skills).
- * Serve skills privadas: a rota já está atrás de `requireAuth`.
+ * Serve skills privadas a quem as vê (`view`).
  */
 const serveSkillPackage = (ext: 'zip' | 'skill') =>
   route(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'all' });
-    if (!skill) {
-      res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
-      return;
-    }
+    const skill = await access.loadSkillSummary(req.user!, param(req, 'slug'), 'view');
 
     const files = await readAllFiles(skill.uuid);
     await streamSkillZip(res, skill.slug, files, skill, ext);
@@ -905,11 +1065,7 @@ api.get('/api/skills/:slug/download.skill', serveSkillPackage('skill'));
 api.get(
   '/api/skills/:slug/files/*path',
   route(async (req, res) => {
-    const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'all' });
-    if (!skill) {
-      res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
-      return;
-    }
+    const skill = await access.loadSkillSummary(req.user!, param(req, 'slug'), 'view');
 
     const path = normalizeRelativePath(param(req, 'path'));
     const file = path ? await readFile(skill.uuid, path) : null;
@@ -946,8 +1102,8 @@ api.get(
 
 api.put(
   '/api/skills/:slug/files/*path',
-  requireWrite,
   route(async (req, res) => {
+    await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
     const content = (req.body as { content?: unknown })?.content;
     if (typeof content !== 'string') {
       res.status(400).json({ error: 'bad_request', message: 'O campo "content" é obrigatório' });
@@ -964,8 +1120,8 @@ api.put(
 
 api.delete(
   '/api/skills/:slug/files/*path',
-  requireWrite,
   route(async (req, res) => {
+    await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
     await deleteFile(param(req, 'slug'), param(req, 'path'), SOURCE, actorFrom(req));
     res.json({ deleted: true });
   }),
@@ -974,7 +1130,7 @@ api.delete(
 /** Upload de .zip para uma skill existente. `replace=1` remove os omitidos. */
 api.post(
   '/api/skills/:slug/upload',
-  requireWrite,
+  access.requireSkillAccess('edit'),
   limitRequestBytes,
   upload.single('file'),
   route(async (req, res) => {
@@ -1011,7 +1167,7 @@ api.post(
 /** Upload de arquivos avulsos (não-zip) para uma skill existente. */
 api.post(
   '/api/skills/:slug/files',
-  requireWrite,
+  access.requireSkillAccess('edit'),
   limitRequestBytes,
   upload.array('files', 50),
   route(async (req, res) => {

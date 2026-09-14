@@ -117,6 +117,23 @@ export const fetchTags = () => get<{ items: { name: string; count: number }[] }>
 export const fetchMeta = () => get<SiteMeta>('/api/meta');
 export const fetchOpenMcps = () => get<{ items: PublicVirtualMcp[] }>('/api/mcps');
 
+/** Um catálogo público e ligado, como o site o lista (`docs/12-acesso-granular.md` decisão 14). */
+export type PublicCatalog = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** Membros com participação ativa e skill ativa. */
+  skillCount: number;
+};
+
+/** A página do catálogo: todos os membros ativos, mesmo os não marcados públicos. */
+export type PublicCatalogDetail = PublicCatalog & { skills: SkillSummary[] };
+
+export const fetchPublicCatalogs = () => get<{ items: PublicCatalog[] }>('/api/catalogs');
+export const fetchPublicCatalog = (slug: string) =>
+  get<PublicCatalogDetail>(`/api/catalogs/${encodeURIComponent(slug)}`);
+
 export const downloadUrl = (slug: string) => `/skills/${encodeURIComponent(slug)}/download`;
 
 /** Mesmo ZIP do `downloadUrl`, servido com a extensão `.skill`. */

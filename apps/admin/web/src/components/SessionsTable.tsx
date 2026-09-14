@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Radio } from 'lucide-react';
 import { formatDateTime, formatRelative, type McpSessionPage, type McpSessionSummary } from '../api.js';
-import { Badge, Button, EmptyState, Skel, Status, usePolling } from './ui.js';
+import { Badge, Button, EmptyRow, Skel, Status, usePolling } from './ui.js';
 
 const PAGE = 50;
 
@@ -91,16 +91,6 @@ export function SessionsTable({
 
       {!page ? (
         <Skel h={240} />
-      ) : page.items.length === 0 ? (
-        <EmptyState
-          icon={<Radio />}
-          title={onlineOnly ? 'Ninguém conectado agora' : 'Nenhuma sessão registrada'}
-          description={
-            onlineOnly
-              ? 'Assim que um cliente chamar o servidor, ele aparece aqui.'
-              : 'As sessões são gravadas pelo MCP público a cada conexão; a tabela começa a encher no primeiro cliente.'
-          }
-        />
       ) : (
         <div className="table-wrap">
           <table className="data">
@@ -122,6 +112,9 @@ export function SessionsTable({
               {page.items.map((session) => (
                 <SessionRow key={session.id} session={session} showMcp={showMcp} />
               ))}
+              {page.items.length === 0 && (
+                <EmptyRow colSpan={showMcp ? 10 : 9}>{onlineOnly ? 'Ninguém conectado agora' : 'Nenhuma sessão ainda'}</EmptyRow>
+              )}
             </tbody>
           </table>
         </div>

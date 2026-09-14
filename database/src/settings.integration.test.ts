@@ -195,6 +195,8 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
       '013-skill-icon.sql',
       '014-canvas-do-vmcp.sql',
       '015-mcp-sessions.sql',
+      '016-catalogos.sql',
+      '017-acesso-granular.sql',
     ];
     expect(await runMigrations(url!)).toEqual(NOVAS);
 
@@ -217,24 +219,32 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
       'sem-porta',
     ]);
 
-    // As quatro colunas foram embora, e os índices que dependiam delas também.
+    // As três `use_as_*` foram embora, e os índices que dependiam delas
+    // também. `is_public` foi embora no `012` e **voltou** no `017` com outro
+    // sentido (quem pode ler, não o que o MCP principal publicava): a que
+    // era pública antes não nasce pública agora — a exposição dela é o
+    // vínculo com o `public-2`.
     const { rows: colunas } = await raw.query(
       `SELECT column_name FROM information_schema.columns
         WHERE table_name = 'skills'
           AND column_name IN ('is_public', 'use_as_skill', 'use_as_prompt', 'use_as_resource')`,
     );
-    expect(colunas).toEqual([]);
+    expect(colunas).toEqual([{ column_name: 'is_public' }]);
+    expect((await listSkills({ visibility: 'all' })).items.every((s) => !s.isPublic)).toBe(true);
     const { rows: indices } = await raw.query(
       "SELECT indexname FROM pg_indexes WHERE tablename = 'skills' ORDER BY indexname",
     );
     expect(indices.map((r) => r.indexname)).not.toContain('skills_public_score_idx');
     expect(indices.map((r) => r.indexname)).toContain('skills_score_idx');
 
+    // Toda skill que já existia nasce ligada no `016`.
+    expect((await listSkills({ visibility: 'all' })).items.every((s) => s.isActive)).toBe(true);
+
     // Re-executar o SQL de todas não faz nada: o backfill vê a chave e sai
     // antes de tocar nas colunas que já não existem, o 012 é todo `IF EXISTS`
-    // e 013–015 são `IF NOT EXISTS` (com os CHECKs inline, pulados junto).
-    // Apagar do histórico é o que força o runner a rodar o arquivo de novo —
-    // uma segunda chamada normal só o pularia.
+    // e 013–016 são `IF NOT EXISTS` (com os CHECKs inline, pulados junto, e
+    // os nomeados em DROP + ADD). Apagar do histórico é o que força o runner
+    // a rodar o arquivo de novo — uma segunda chamada normal só o pularia.
     await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
     expect(await runMigrations(url!)).toEqual(NOVAS);
     expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('public'))).toHaveLength(2);
@@ -243,14 +253,18 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
       `SELECT (
          (SELECT count(*) FROM information_schema.columns
            WHERE (table_name, column_name) IN (('skills', 'icon'), ('virtual_mcps', 'layout'),
-                                               ('virtual_mcp_skills', 'pos_x'), ('virtual_mcp_skills', 'pos_y')))
+                                               ('virtual_mcp_skills', 'pos_x'), ('virtual_mcp_skills', 'pos_y'),
+                                               ('skills', 'is_active')))
          + (SELECT count(*) FROM pg_constraint
              WHERE conname IN ('skills_icon_length_chk', 'virtual_mcps_layout_object_chk',
-                               'virtual_mcp_skills_pos_pair_chk'))
-         + (SELECT count(*) FROM pg_indexes WHERE tablename = 'mcp_sessions')
+                               'virtual_mcp_skills_pos_pair_chk', 'virtual_mcp_catalogs_pos_pair_chk'))
+         + (SELECT count(*) FROM pg_indexes
+             WHERE tablename IN ('mcp_sessions', 'catalogs', 'catalog_skills', 'virtual_mcp_catalogs'))
        )::int AS n`,
     );
-    // 4 colunas + 3 CHECKs + 6 índices (pkey e os cinco de `015`), sem duplicata.
-    expect(objetos[0]?.n).toBe(13);
+    // 5 colunas + 4 CHECKs + 13 índices (6 de `015`: pkey e os cinco; 7 de
+    // `016`: pkey, slug único e dono em `catalogs`, pkey e skill em
+    // `catalog_skills`, pkey e catálogo em `virtual_mcp_catalogs`), sem duplicata.
+    expect(objetos[0]?.n).toBe(22);
   });
 });

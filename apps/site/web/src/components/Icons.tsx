@@ -164,3 +164,11 @@ export const CopyIcon = ({ className }: Props) => (
     <path d="M15 6.5V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h1.5" strokeLinecap="round" />
   </svg>
 );
+
+export const LayersIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m12 2 9 4.5-9 4.5-9-4.5L12 2Z" />
+    <path d="m3 12 9 4.5 9-4.5" />
+    <path d="m3 17 9 4.5 9-4.5" />
+  </svg>
+);

@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronDown, LayoutGrid, List, Plus, Search, Server, Star } from 'lucide-react';
+import { ChevronDown, LayoutGrid, List, Plus, Search, Star } from 'lucide-react';
 import {
-  canCreateVirtualMcp,
+  canCreate,
   canManageUsers,
   createMcp,
   formatRelative,
   getMcps,
   getStats,
   num,
+  type AccessScope,
   type Session,
   type SessionUser,
   type VirtualMcpSummary,
 } from '../api.js';
-import { Button, EmptyState, Field, Kbd, McpStateBadges, Menu, MenuItem, Modal, Skel, Status, useStored } from '../components/ui.js';
+import { AccessBadge } from '../components/AccessPanel.js';
+import { Button, EmptyRow, Field, Kbd, McpStateBadges, Menu, MenuItem, Modal, Skel, Status, useStored } from '../components/ui.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
@@ -25,6 +27,8 @@ const SORT_LABEL: Record<Sort, string> = {
   online: 'Clientes online',
   updated: 'Atualização',
 };
+type Scope = 'todos' | AccessScope;
+const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Meus', shared: 'Compartilhados comigo', public: 'Abertos' };
 
 /**
  * A home do painel: os servidores MCP virtuais como cards, cada um com a
@@ -36,8 +40,9 @@ export function ServersPage({ session, user }: { session: Session; user: Session
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const { open: openPalette } = usePalette();
-  const podeCriar = canCreateVirtualMcp(user.role);
+  const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<VirtualMcpSummary[] | null>(null);
+  const scope = (params.get('acesso') as Scope | null) ?? 'todos';
   const [openSkills, setOpenSkills] = useState<number | null>(null);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:mcps-sort', 'skills');
   const [view, setView] = useStored<'grid' | 'list'>('purple-skills-admin:mcps-view', 'grid');
@@ -46,14 +51,14 @@ export function ServersPage({ session, user }: { session: Session; user: Session
 
   const load = useCallback(async () => {
     try {
-      const [list, stats] = await Promise.all([getMcps(), getStats().catch(() => null)]);
+      const [list, stats] = await Promise.all([getMcps(scope === 'todos' ? '' : scope), getStats().catch(() => null)]);
       setItems(list.items);
       if (stats) setOpenSkills(stats.openSkills);
     } catch (err) {
       toast.error((err as Error).message);
       setItems([]);
     }
-  }, [toast]);
+  }, [toast, scope]);
 
   useEffect(() => {
     void load();
@@ -133,6 +138,21 @@ export function ServersPage({ session, user }: { session: Session; user: Session
             </MenuItem>
           ))}
         </Menu>
+        {user.role !== 'admin' && (
+          <Menu
+            trigger={(props) => (
+              <button type="button" className="sort" {...props}>
+                Acesso: <b>{SCOPE_LABEL[scope]}</b> <ChevronDown />
+              </button>
+            )}
+          >
+            {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
+              <MenuItem key={key} onSelect={() => setParams(key === 'todos' ? {} : { acesso: key })}>
+                {SCOPE_LABEL[key]}
+              </MenuItem>
+            ))}
+          </Menu>
+        )}
         <span className="end">
           <div className="segmented icons">
             <button type="button" className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')} title="Cards">
@@ -153,34 +173,16 @@ export function ServersPage({ session, user }: { session: Session; user: Session
         </div>
       )}
 
-      {items !== null && items.length === 0 && (
-        <EmptyState
-          icon={<Server />}
-          title={podeCriar ? 'Nenhum servidor ainda' : 'Nenhum servidor é seu'}
-          description={
-            podeCriar
-              ? 'Um servidor MCP virtual publica um recorte do catálogo em /virtual/<slug>/mcp, com chaves e dono próprios. O primeiro pode virar o MCP padrão da instalação.'
-              : 'Um administrador pode transferir um servidor para você.'
-          }
-          action={
-            podeCriar ? (
-              <Button onClick={() => setParams({ novo: '1' })}>
-                <Plus /> Novo vMCP
-              </Button>
-            ) : undefined
-          }
-        />
-      )}
-
       {items !== null && items.length > 0 && view === 'grid' && (
         <div className="card-grid">
           {sorted.map((mcp, index) => (
-            <ServerCard key={mcp.uuid} mcp={mcp} index={index} favorite={favorites.includes(mcp.uuid)} onFavorite={() => toggleFavorite(mcp)} />
+            <ServerCard key={mcp.uuid} mcp={mcp} user={user} index={index} favorite={favorites.includes(mcp.uuid)} onFavorite={() => toggleFavorite(mcp)} />
           ))}
         </div>
       )}
 
-      {items !== null && items.length > 0 && view === 'list' && (
+      {/* Sem servidores, a lista vale para as duas vistas: cards vazios não mostram nada. */}
+      {items !== null && (items.length === 0 || view === 'list') && (
         <div className="table-wrap">
           <table className="data">
             <thead>
@@ -213,6 +215,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Status tone={mcp.isActive ? 'ok' : 'off'}>{mcp.isActive ? 'Online' : 'Desativado'}</Status>
                       <McpStateBadges mcp={mcp} withActive={false} />
+                      <AccessBadge object={mcp} user={user} publicLabel="aberto" />
                     </div>
                   </td>
                   <td className="num">{mcp.skillCount}</td>
@@ -226,6 +229,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
                   </td>
                 </tr>
               ))}
+              {sorted.length === 0 && <EmptyRow colSpan={8}>{scope !== 'todos' ? 'Nenhum servidor nesse recorte' : podeCriar ? 'Nenhum servidor ainda' : 'Nenhum servidor é seu, compartilhado com você ou aberto'}</EmptyRow>}
             </tbody>
           </table>
         </div>
@@ -247,12 +251,13 @@ export function ServersPage({ session, user }: { session: Session; user: Session
   );
 }
 
-function ServerCard({ mcp, index, favorite, onFavorite }: { mcp: VirtualMcpSummary; index: number; favorite: boolean; onFavorite: () => void }) {
+function ServerCard({ mcp, user, index, favorite, onFavorite }: { mcp: VirtualMcpSummary; user: SessionUser; index: number; favorite: boolean; onFavorite: () => void }) {
   return (
     <Link to={`/mcps/${mcp.slug}`} className={`server-card${mcp.isActive ? '' : ' is-off'}`} style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}>
       <div className="head">
         <span className="nm">{mcp.name}</span>
         <McpStateBadges mcp={mcp} withActive={false} />
+        <AccessBadge object={mcp} user={user} publicLabel="aberto" />
         <button
           type="button"
           className={`row-action star${favorite ? ' on' : ''}`}
@@ -287,6 +292,7 @@ function ServerCard({ mcp, index, favorite, onFavorite }: { mcp: VirtualMcpSumma
           {mcp.isActive && (
             <span className="counts">
               · {mcp.skillCount} Skills, {mcp.resourceCount} Resources, {mcp.promptCount} Prompts
+              {mcp.catalogCount > 0 && `, ${mcp.catalogCount} Catálogo${mcp.catalogCount === 1 ? '' : 's'}`}
             </span>
           )}
           {mcp.onlineSessions > 0 && <span className="live">{mcp.onlineSessions} online</span>}
@@ -339,7 +345,7 @@ function NewServerModal({ open, onClose, onCreated }: { open: boolean; onClose: 
           Aberto: qualquer cliente conecta sem chave, e o site lista o servidor
         </label>
         <p className="hint">
-          O servidor nasce ligado e sem skills. Você é o dono: só você e os administradores mexem nele.
+          O servidor nasce ligado e sem skills. Você é o dono: compartilhe-o em Configurações → Acesso para outras contas mexerem nele.
         </p>
         <div className="actions">
           <Button variant="ghost" onClick={onClose} disabled={busy}>

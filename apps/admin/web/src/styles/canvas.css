@@ -235,6 +235,58 @@
   animation: spin 0.8s linear infinite;
 }
 
+/* ---- nó de catálogo: a mesma moldura da skill, com o número em destaque ---- */
+.node-catalog .ic {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--accent-tint);
+  color: var(--accent-soft);
+  flex: none;
+}
+.node-catalog .ic svg {
+  width: 18px;
+  height: 18px;
+}
+.node-catalog .cnt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--accent-tint);
+  color: var(--accent-soft);
+  line-height: 1.1;
+  flex: none;
+}
+.node-catalog .cnt b {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+.node-catalog .cnt small {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.node-catalog .cnt.zero,
+.node-catalog.off .cnt {
+  background: var(--surface-3);
+  color: var(--text-faint);
+}
+.node-catalog.off {
+  border-style: dashed;
+}
+.node-catalog.off .ic {
+  background: var(--surface-3);
+  color: var(--text-faint);
+}
+
 /* ---- nó da Internet ---- */
 .node-internet {
   display: flex;
@@ -477,6 +529,7 @@
   align-items: center;
   gap: 12px;
   padding: 18px 24px 12px;
+  border-bottom: 1px solid var(--surface-3);
 }
 .stage-head .tt {
   display: flex;

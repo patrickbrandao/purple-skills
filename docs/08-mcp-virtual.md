@@ -13,6 +13,12 @@ as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 > pelo vínculo, chaves `psv_`, dono, identidade da sessão, downloads próprios,
 > 404/401 — continua sendo o desenho de **todo** ponto de montagem, inclusive
 > a raiz.
+>
+> **Também parcialmente revogado por [`12`](12-acesso-granular.md):** a
+> decisão 9 e a `§3.1` ("admin manda em todos; o dono, no seu; ninguém mais";
+> só admin transfere) viraram o acesso por níveis — `view`, `edit`, `manage`
+> — com dono e admin transferindo. `canManageVirtualMcp` ficou como atalho
+> de `accessLevel` + `canOwn`.
 
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive

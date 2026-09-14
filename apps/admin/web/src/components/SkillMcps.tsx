@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Server } from 'lucide-react';
+import { Library, Server } from 'lucide-react';
 import {
   getMcps,
   linkSkillToMcp,
@@ -10,7 +10,7 @@ import {
   type SkillLinkInput,
   type VirtualMcpSummary,
 } from '../api.js';
-import { Badge, Button, Panel, Skel } from './ui.js';
+import { Badge, Button, EmptyRow, Panel, Skel } from './ui.js';
 import { useToast } from './Toast.js';
 
 /** As três portas de um vínculo, como o painel as rotula. */
@@ -46,6 +46,21 @@ export function FlagBoxes({ value, onChange, disabled }: { value: LinkFlags; onC
         </label>
       ))}
     </div>
+  );
+}
+
+/** As portas ligadas, em selos só de leitura. */
+function FlagBadges({ value }: { value: LinkFlags }) {
+  const on = SURFACES.filter((surface) => value[surface.key]);
+  if (on.length === 0) return <span className="row-sub">—</span>;
+  return (
+    <span className="flex gap-1">
+      {on.map((surface) => (
+        <Badge key={surface.key} tone="outline">
+          {surface.label}
+        </Badge>
+      ))}
+    </span>
   );
 }
 
@@ -91,17 +106,11 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
       <span className="label">Publicar em</span>
       <p className="panel-hint">
         A skill só é exibida — no site e nos servidores MCP — onde estiver publicada. Sem nenhum marcado, ela
-        nasce sem vínculo e fica visível só aqui no painel; dá para publicar depois, na página dela ou no canvas
-        do servidor.
+        nasce sem vínculo e fica visível só aqui no painel; dá para publicar depois, na página dela, no canvas
+        do servidor ou por um catálogo.
       </p>
       {mcps === null && <Skel h={48} />}
-      {mcps !== null && mcps.length === 0 && (
-        <p className="panel-hint">
-          Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
-          administrador para publicar a skill.
-        </p>
-      )}
-      {mcps !== null && mcps.length > 0 && (
+      {mcps !== null && (
         <div className="table-wrap">
           <table className="data">
             <thead>
@@ -129,6 +138,12 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
                   </tr>
                 );
               })}
+              {mcps.length === 0 && (
+                <EmptyRow colSpan={3}>
+                  Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
+                  administrador para publicar a skill.
+                </EmptyRow>
+              )}
             </tbody>
           </table>
         </div>
@@ -143,6 +158,12 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
  * "Publicada em", na página da skill: o vínculo pelo lado da skill. Cada
  * linha é um vMCP: os que a sessão administra são editáveis linha a linha; os
  * demais em que a skill está aparecem só para leitura.
+ *
+ * Um vMCP alcançado só por catálogo (`docs/11-catalogos.md` §3.2) aparece com
+ * as portas em selos e "via catálogo X": a edição é no catálogo. Quem
+ * administra o vMCP ainda pode publicar direto — o vínculo direto sobrescreve
+ * o catálogo naquele servidor, e é o jeito de restringir uma skill sem tirá-la
+ * do grupo.
  */
 export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onChanged: (detail: SkillDetail) => void }) {
   const toast = useToast();
@@ -179,7 +200,7 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
     const current = linked.get(uuid);
     const draft = drafts[uuid];
     if (!draft) return false;
-    if (!current) return true;
+    if (!current || !current.direct) return true;
     return draft.asSkill !== current.asSkill || draft.asPrompt !== current.asPrompt || draft.asResource !== current.asResource;
   }
 
@@ -223,8 +244,8 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
   return (
     <Panel title="Publicada em" icon={<Server />} className="mt-4">
       <p className="panel-hint">
-        A skill só é exibida — no site e nos servidores MCP — onde estiver publicada. Marque as portas por
-        servidor e salve a linha. O mesmo vínculo aparece como aresta no canvas do servidor.
+        A skill só é exibida — no site e nos servidores MCP — onde estiver publicada, direto ou por um catálogo. Marque as
+        portas por servidor e salve a linha. O mesmo vínculo aparece como aresta no canvas do servidor.
       </p>
 
       {manageable === null && <Skel h={48} />}
@@ -242,6 +263,7 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
             <tbody>
               {rows.map((mcp) => {
                 const current = linked.get(mcp.uuid);
+                const viaCatalog = current !== undefined && !current.direct;
                 const flags = draftFor(mcp.uuid);
                 const dirty = isDirty(mcp.uuid);
                 return (
@@ -254,17 +276,30 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
                         /virtual/{mcp.slug} · {estadoDo(mcp)}
                         {current ? '' : ' · não publicada'}
                       </span>
+                      {viaCatalog && (
+                        <span className="row-sub flex flex-wrap items-center gap-1">
+                          <Library style={{ width: 12, height: 12 }} /> via{' '}
+                          {current.catalogs.map((catalog, index) => (
+                            <span key={catalog.uuid}>
+                              {index > 0 && ', '}
+                              <Link to={`/catalogos/${catalog.slug}`} className="link">
+                                {catalog.name}
+                              </Link>
+                            </span>
+                          ))}
+                        </span>
+                      )}
                     </td>
                     <td>
                       {mcp.editable ? (
-                        <FlagBoxes value={flags} onChange={(next) => setDrafts((d) => ({ ...d, [mcp.uuid]: next }))} />
+                        <>
+                          <FlagBoxes value={flags} onChange={(next) => setDrafts((d) => ({ ...d, [mcp.uuid]: next }))} />
+                          {viaCatalog && !dirty && (
+                            <span className="hint">Portas do catálogo. Publicar aqui cria um vínculo direto, que passa a valer sozinho.</span>
+                          )}
+                        </>
                       ) : (
-                        <span className="flex gap-1">
-                          {SURFACES.filter((s) => current?.[s.key]).map((s) => (
-                            <Badge key={s.key} tone="outline">{s.label}</Badge>
-                          ))}
-                          {!SURFACES.some((s) => current?.[s.key]) && <span className="row-sub">—</span>}
-                        </span>
+                        <FlagBadges value={current ?? DEFAULT_FLAGS} />
                       )}
                     </td>
                     <td className="num whitespace-nowrap">
@@ -272,10 +307,10 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
                         <div className="flex justify-end gap-2">
                           {(dirty || !current) && (
                             <Button size="sm" disabled={busy === mcp.uuid} onClick={() => void save(mcp)}>
-                              {current ? 'Salvar' : 'Publicar'}
+                              {current?.direct ? 'Salvar' : 'Publicar'}
                             </Button>
                           )}
-                          {current && (
+                          {current?.direct && (
                             <Button size="sm" variant="ghost" disabled={busy === mcp.uuid} onClick={() => void remove(mcp)}>
                               Tirar
                             </Button>
@@ -287,19 +322,58 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
                 );
               })}
               {rows.length === 0 && (
-                <tr>
-                  <td colSpan={3}>
-                    <p className="list-empty">
-                      Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
-                      administrador para publicar a skill.
-                    </p>
-                  </td>
-                </tr>
+                <EmptyRow colSpan={3}>
+                  Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
+                  administrador para publicar a skill.
+                </EmptyRow>
               )}
             </tbody>
           </table>
         </div>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * "Nos catálogos", na página da skill: só leitura. Adicionar, remover e
+ * desativar a participação são ações da página do catálogo (`docs/11` §6.1).
+ */
+export function SkillCatalogsPanel({ skill }: { skill: SkillDetail }) {
+  return (
+    <Panel title="Nos catálogos" icon={<Library />} className="mt-4">
+      <p className="panel-hint">
+        Um catálogo vinculado a um servidor entrega todas as suas skills de uma vez. Quem decide o que entra é a página do
+        catálogo; aqui só se vê de quais esta skill participa.
+      </p>
+      <div className="table-wrap">
+        <table className="data">
+          <tbody>
+            {skill.catalogs.map((catalog) => (
+              <tr key={catalog.uuid} className={catalog.isActive && catalog.memberActive ? undefined : 'is-off'}>
+                <td>
+                  <Link to={`/catalogos/${catalog.slug}`} className="row-title">
+                    {catalog.name}
+                  </Link>
+                  <span className="row-sub">{catalog.slug}</span>
+                </td>
+                <td className="num">
+                  <span className="flex justify-end gap-1">
+                    {!catalog.isActive && <Badge tone="danger">catálogo desligado</Badge>}
+                    {!catalog.memberActive && <Badge tone="outline">participação desativada</Badge>}
+                    {catalog.isActive && catalog.memberActive && <Badge tone="ok">participa</Badge>}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {skill.catalogs.length === 0 && (
+              <EmptyRow colSpan={2}>
+                Em nenhum catálogo. <Link to="/catalogos" className="link">Ver os catálogos</Link>.
+              </EmptyRow>
+            )}
+          </tbody>
+        </table>
+      </div>
     </Panel>
   );
 }

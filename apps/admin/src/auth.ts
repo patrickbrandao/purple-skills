@@ -3,10 +3,8 @@ import { countUsers, getUserByUuid } from '@purple-skills/db';
 import {
   type AuditActor,
   type Role,
-  canCreateVirtualMcp,
-  canDelete,
+  canCreate,
   canManageUsers,
-  canWrite,
   isRole,
   safeEqual,
   signSession,
@@ -48,6 +46,16 @@ export const LEGACY_ADMIN: AuthUser = {
 export const actorOf = (user: AuthUser): AuditActor => ({
   userUuid: user.uuid,
   label: user.legacy ? 'bootstrap' : user.email,
+});
+
+/**
+ * Quem está lendo, para as consultas de `@purple-skills/db` recortarem o que
+ * a conta enxerga (`docs/12-acesso-granular.md` §3.1). Admin — inclusive a
+ * sessão de bootstrap, que é admin sem conta — vê tudo.
+ */
+export const viewerOf = (user: AuthUser): { role: Role; userUuid: string | null } => ({
+  role: user.role,
+  userUuid: user.uuid,
 });
 
 /** Ator da requisição, mesmo em rotas onde a sessão é opcional. */
@@ -200,11 +208,13 @@ function guard(check: Check, message: string) {
   };
 }
 
-/** Criar e editar skills, arquivos e visibilidade — admin e editor. */
-export const requireWrite = guard(canWrite, 'Seu papel não permite alterar o catálogo');
-
-/** Apagar skill — só admin. */
-export const requireDelete = guard(canDelete, 'Só um administrador pode apagar uma skill');
+/**
+ * Criar skill, catálogo ou MCP virtual — admin e editor
+ * (`docs/12-acesso-granular.md` decisão 12). É o único guarda de papel fora
+ * da administração da instalação: tudo o mais é decidido pelo acesso ao
+ * objeto (`access.ts`), e um membro administra o que é seu.
+ */
+export const requireCreate = guard(canCreate, 'Seu papel não permite criar no acervo');
 
 /** Gerenciar contas — só admin. */
 export const requireAdmin = guard(canManageUsers, 'Só um administrador pode gerenciar contas');
@@ -213,10 +223,4 @@ export const requireAdmin = guard(canManageUsers, 'Só um administrador pode ger
 export const requireSettingsAdmin = guard(
   canManageUsers,
   'Só um administrador altera a configuração da instalação',
-);
-
-/** Criar um MCP virtual — admin e editor; o dono é quem cria. */
-export const requireVirtualMcpCreate = guard(
-  canCreateVirtualMcp,
-  'Seu papel não permite criar MCPs virtuais',
 );
