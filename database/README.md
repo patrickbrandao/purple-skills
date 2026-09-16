@@ -58,6 +58,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `017-acesso-granular.sql` | acesso granular: `users.role` troca `leitor` por `membro` (com `UPDATE` das linhas), `skills.owner_user_uuid` (backfill de `created_by`, **uma vez**), `skills.is_public` e `catalogs.is_public`, as três tabelas de concessão (`skill_grants`, `catalog_grants`, `virtual_mcp_grants`) e o `CHECK` de `action` com `*.share`/`*.unshare` |
 | `018-acessos-por-skill.sql` | `skill_accesses` — uma linha por leitura de skill (MCP público, site, mcp-admin), com FKs `SET NULL` e as cópias que sobrevivem à remoção, os catálogos do caminho em arrays paralelos (índice GIN) e os índices por skill, vMCP e data; **nunca é podada** |
 | `019-acessos-por-conta.sql` | a guia "Acessos" da conta: índice composto `(user_uuid, created_at DESC)` em `skill_accesses`, no lugar do simples de `018` (derrubado) |
+| `020-rag.sql` | busca semântica: a extensão `vector`, `files.content_sha256` (por trigger), `skills.rag_stale` (com os triggers de skill, arquivo e tag), `rag_spaces`, `rag_texts`, `rag_skill_texts`, `rag_vectors` (FK composta + `CHECK` de dimensão) e o `CHECK` de `action` com `rag.settings`/`rag.reindex` |
 
 Regras:
 
@@ -78,7 +79,7 @@ Regras:
 | Tabela | Papel |
 |--------|-------|
 | `skills` | o acervo: `slug`, `name`, `description`, `icon` (emoji ou URL, nulo = monograma), `is_active` (desligada some de todo vMCP e do site sem perder vínculo), `is_public` (quem pode **ler**: qualquer conta e o site — não publica em MCP nenhum), `owner_user_uuid` (o dono; nulo = órfã, só do admin), contadores e `search_vector`. A skill é **exibida** onde está vinculada, direto ou por catálogo |
-| `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK) |
+| `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK), com o `content_sha256` do que está gravado (`020`, por trigger) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
 | `users` | contas: papel (`admin`/`editor`/`membro`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
@@ -91,9 +92,13 @@ Regras:
 | `catalog_skills` | a participação skill ↔ catálogo, com `is_active` (desativa a skill **neste** catálogo sem removê-la) — sem portas: quem as decide é o vínculo com o vMCP |
 | `virtual_mcp_catalogs` | vínculo catálogo ↔ MCP virtual, N:N, com as flags `as_skill`/`as_prompt`/`as_resource` (valem para todo membro) e a posição do nó no canvas (`pos_x`/`pos_y`) |
 | `skill_grants` / `catalog_grants` / `virtual_mcp_grants` | as concessões por objeto (`017`): PK `(objeto, conta)`, os dois `ON DELETE CASCADE`, `level` em `view`/`edit`/`manage` (CHECK), `granted_by_user_uuid` informativo (`SET NULL`) e `created_at`; índice reverso por `user_uuid`. Dono e admin **não** têm linha |
-| `settings` | configuração da instalação, chave-valor; `default_virtual_mcp` guarda o uuid do vMCP que responde em `/mcp`, sem FK |
+| `settings` | configuração da instalação, chave-valor; `default_virtual_mcp` guarda o uuid do vMCP que responde em `/mcp`, sem FK, e as três chaves `rag.*` guardam driver, modelo e estado do indexador (`020`) |
 | `mcp_sessions` | uma linha por cliente conectado a um vMCP pelo MCP público: transporte, por onde chegou, credencial, IP, `clientInfo`, atividade e fim. Sobrevive à remoção do vMCP e nunca é podada |
 | `skill_accesses` | uma linha por **leitura** de uma skill (`018`): o que foi lido (`kind`, `surface`), por onde (`origin`, o vMCP, os catálogos do caminho), com que credencial (`auth`, chave `psv_`, chave `psk_` e conta), de onde (`ip`, `user_agent`, `clientInfo`, `session_id`) e quando. Toda FK é `SET NULL` com a cópia ao lado; nunca é podada |
+| `rag_spaces` | um espaço de embedding (`020`): driver, modelo, dimensões e os **dois prefixos** do driver — a identidade é a combinação dos cinco |
+| `rag_texts` | o texto canônico, endereçado pelo próprio SHA-256 e guardado **sem** o prefixo do driver; o hash é conferido pelo banco |
+| `rag_skill_texts` | as ocorrências: onde cada texto aparece (skill, fonte, arquivo, parte). Texto em uso não pode ser apagado |
+| `rag_vectors` | o vetor de um texto num espaço; a FK composta com `rag_spaces` e o `CHECK` de `vector_dims` impedem vetor de dimensão errada |
 | `schema_migrations` | controle do runner (criado por ele, não por um `.sql`) |
 
 Chaves primárias são `uuidv7()` do PostgreSQL 18. A busca usa `tsvector` com
@@ -463,6 +468,37 @@ DESC)`, `(user_uuid, created_at DESC)` (`019`, a guia da conta) e
 feita sobre o resultado — barato no volume esperado; se um dia não for, é
 uma tabela de junção com `(catalog_uuid, created_at)`, numa migration).
 
+### Busca semântica (RAG)
+
+A `020` acrescenta a metade vetorial da busca (`tmp/RAG-GOOGLE.md`, futuro
+`docs/14`). A regra que organiza tudo é o **espaço de embedding**: a
+combinação (driver, modelo, dimensões, prefixo de documento, prefixo de
+consulta). Vetores de espaços diferentes nunca se misturam numa consulta, e
+**o prefixo entra na identidade** porque no `gemini-embedding-2` a tarefa vai
+escrita no próprio texto enviado — trocar o prefixo muda todo vetor, como
+trocar o modelo. Não há número de versão de receita: com o prefixo na
+identidade, editar o prefixo e esquecer de subir a versão é impossível.
+
+| Conceito | Onde mora |
+|----------|-----------|
+| **texto canônico** | `rag_texts`, endereçado pelo próprio SHA-256 (32 bytes) e guardado **sem** o prefixo. O `CHECK` recalcula o hash: um texto nunca fica sob o hash de outro, e um texto com o prefixo colado é recusado. Duas skills com o mesmo conteúdo dão uma linha só e um vetor por espaço |
+| **ocorrência** | `rag_skill_texts`, PK `(skill_uuid, source, relative_path, part)`. `source` é `meta` (nome + descrição + tags, sem arquivo) ou `file` (uma parte de um arquivo, com `file_id`). Cai com a skill e com o arquivo (`CASCADE`); `text_sha256` **não** tem cascata — texto em uso é protegido |
+| **vetor** | `rag_vectors`, PK `(space_uuid, text_sha256)`. `dimensions` vem do espaço pela FK composta e o `CHECK` confere `vector_dims(embedding)`. A busca é **exata**, sem índice: o HNSW do pgvector para em 2000 dimensões e o modelo tem 3072 |
+| **pendência de skill** | `skills.rag_stale`, marcada por trigger em skill (nome, descrição), arquivo (texto e caminho, nunca binário) e tag. Contador não marca. Quem limpa é o indexador, ao reservar |
+| **pendência de texto** | um anti-join: texto com ocorrência e sem vetor no espaço ativo (`listPendingRagTexts`) |
+| **hash do arquivo** | `files.content_sha256`, por trigger (coluna gerada não serve: `convert_to` é STABLE). Num arquivo que cabe inteiro num texto, é o **mesmo** hash de `rag_texts` |
+
+O indexador (container próprio, fora de `database/`) reserva um lote com
+`claimStaleSkills`, que marca a skill como limpa **antes** de ler o conteúdo:
+uma mudança feita durante o processamento volta a marcá-la pelo trigger, e
+nada se perde; uma falha chama `releaseStaleSkill`. A reserva usa CTE
+`MATERIALIZED` com `FOR UPDATE SKIP LOCKED` — dois indexadores em paralelo
+pegam lotes diferentes.
+
+**Limpeza de órfãos: nenhuma.** Vetor e texto sem ocorrência ficam guardados,
+como `mcp_sessions` e `skill_accesses`: se um dia for preciso podar, é uma
+migration com a política escrita, não um DELETE numa query.
+
 ## Containers
 
 Definidos em [`docker-compose.yml`](docker-compose.yml) e incluídos pelo compose
@@ -516,7 +552,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Grupo | Exportações |
 |-------|-------------|
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
-| Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail` (aceitam `visibility`, `viewer`, `virtualMcp`; a listagem também `scope`), `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
+| Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail` (aceitam `visibility`, `viewer`, `virtualMcp`; a listagem também `scope` e `semantic`), `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
 | Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`, `isActive` e `isPublic`; as duas últimas também `ownerUserUuid`), `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
 | Acesso | `setSkillGrant`, `removeSkillGrant`, `listSkillGrants`, `setCatalogGrant`, `removeCatalogGrant`, `listCatalogGrants`, `setVirtualMcpGrant`, `removeVirtualMcpGrant`, `listVirtualMcpGrants`, `lookupUsers` |
 | Site | `listOpenVirtualMcps`, `listPublicCatalogs`, `getPublicCatalog` |
@@ -527,6 +563,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Auditoria paginada | `listAuditPage` |
 | Acessos por skill | `recordSkillAccess` (grava a leitura **e** soma os contadores), `listSkillAccesses` |
 | Contadores | `incrementViewCount`, `incrementDownloadCount` (só somam; os apps migram para `recordSkillAccess`) |
+| RAG | `getRagSettings`, `seedRagSetting`, `setRagSetting`, `setRagIndexerStatus`, `resolveRagSpace`, `findRagSpace`, `ragSchemaReady`, `claimStaleSkills`, `releaseStaleSkill`, `readSkillForRag`, `replaceSkillTexts`, `listPendingRagTexts`, `insertRagVectors`, `ragCoverage`, `markAllSkillsStale`, `RAG_SETTING_KEYS`, `RAG_EDITABLE_SETTINGS` |
 | Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
 | Senha | `createResetToken`, `consumeResetToken` |
@@ -534,8 +571,8 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `skillAccesses`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `SkillAccessRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `RagVectorInput`, `RagCoverage` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -797,6 +834,110 @@ const doCatalogo = await listSkillAccesses({ catalogUuid });
   nada (a coluna foi a nulo); o pelo catálogo apagado ainda acha, porque o
   array guarda o uuid.
 
+### Busca semântica: as queries
+
+Quem escreve é o **indexador**; quem lê é o mcp-public, o site e o painel. O
+modelo está em [Busca semântica (RAG)](#busca-semântica-rag), acima.
+
+```ts
+// apps/indexer — um ciclo
+if (!(await ragSchemaReady())) return;                    // espera a migration, não cai
+const { 'rag.driver': driver } = await getRagSettings();  // o banco decide, não o ambiente
+const espaco = await resolveRagSpace({ driver: 'google', model: 'gemini-embedding-2',
+  dimensions: 3072, documentPrefix: 'title: none | text: ', queryPrefix: 'task: search result | query: ' });
+
+for (const uuid of await claimStaleSkills(20)) {
+  const skill = await readSkillForRag(uuid);              // null = sumiu; siga em frente
+  if (!skill) continue;
+  try {
+    await replaceSkillTexts(uuid, dividir(skill));        // declarativa, numa transação
+  } catch (err) {
+    await releaseStaleSkill(uuid);                        // volta para a fila
+    throw err;
+  }
+}
+const pendentes = await listPendingRagTexts(espaco.uuid, 64);
+await insertRagVectors(espaco.uuid, await embutir(pendentes));
+await setRagIndexerStatus({ at: new Date().toISOString(), keyPresent: true, lastError: null });
+
+// apps/admin — a seção "Busca semântica" de Configurações
+await seedRagSetting('rag.driver', process.env.RAG_DRIVER!);       // só no primeiro boot
+await setRagSetting('rag.model', modelo, 'web-admin', ator);       // audita rag.settings
+const { texts, withVector, pendingTexts, staleSkills } = await ragCoverage(espaco?.uuid ?? null);
+await markAllSkillsStale('web-admin', ator);                       // audita rag.reindex
+
+// apps/mcp-public e apps/site — a consulta
+const espacoAtivo = await findRagSpace(identidade);                // não cria nada
+const page = await listSkills({ query, virtualMcp, semantic: { spaceUuid: espacoAtivo.uuid, vector } });
+page.mode; // 'hybrid' | 'text'
+```
+
+- **A configuração.** `getRagSettings()` devolve só as chaves gravadas
+  (`rag.driver`, `rag.model`, `rag.indexer.status`) — a chave **ausente** do
+  objeto é o que diz que o banco ainda não decidiu. `seedRagSetting(key,
+  value)` grava **só** quando não há linha e devolve `{ written, value }`,
+  com o valor em uso: é com ele que o admin avisa no log que a variável de
+  ambiente foi ignorada; quando grava, audita `rag.settings` com o ator
+  `ambiente`. `setRagSetting(key, value, source, actor)` é o painel, e audita
+  igual, com `chave=valor` em `target_label`. As duas só aceitam
+  `rag.driver` e `rag.model` (400 no resto): o que é um driver ou um modelo
+  **válido** é regra do app, não do banco. `setRagIndexerStatus(objeto)` é
+  do indexador, guarda o JSON como texto (teto de 8 KB) e **não audita** —
+  ele é regravado a cada ciclo.
+- **O espaço.** `resolveRagSpace(identidade)` acha ou cria (é o indexador);
+  `findRagSpace(identidade)` só consulta — uma busca não pode inaugurar um
+  espaço vazio e concluir que não há vetor. Os cinco campos são obrigatórios;
+  os prefixos **não são aparados** (o espaço no fim de `'title: none | text: '`
+  faz parte do prefixo) e cabem em 200 caracteres.
+- **A fila.** `claimStaleSkills(limit)` reserva e devolve os uuids;
+  `releaseStaleSkill(uuid)` devolve um à fila (uuid torto é ignorado: isso
+  roda no `catch`); `markAllSkillsStale` marca todas e **não apaga vetor
+  nenhum** — o que ele refaz é a divisão, e o texto que não mudou reaproveita
+  o vetor. Nenhum dos três toca `updated_at`: reindexar não é publicar.
+- **Os textos.** `readSkillForRag(uuid)` devolve metadados, tags e os
+  arquivos **de texto** (com `id`, `content` e o `sha256` do arquivo), ou
+  `null` se a skill sumiu. `replaceSkillTexts(uuid, ocorrências)` é
+  **declarativa**: apaga as ocorrências da skill e grava a lista inteira numa
+  transação, calculando o hash **no banco**. Conteúdo vazio ou só com
+  espaços, ocorrência repetida, `meta` com caminho, `file` sem caminho ou sem
+  `fileId` são 400; skill inexistente é 404.
+- **Os vetores.** `listPendingRagTexts(spaceUuid, limit)` é o anti-join (texto
+  órfão fica de fora); `insertRagVectors(spaceUuid, vetores)` copia
+  `dimensions` do espaço, ignora o que já existe e devolve quantos entraram —
+  espaço inexistente grava zero, e vetor de dimensão errada bate no CHECK.
+- **`ragCoverage(spaceUuid | null)`** é o número do painel: `texts` (com
+  ocorrência), `withVector`, `pendingTexts` e `staleSkills`. Uuid nulo ou
+  torto é o driver desligado: `withVector` 0.
+
+### A busca híbrida
+
+`listSkills({ ..., semantic: { spaceUuid, vector, neighbors? } })` funde a
+busca textual de hoje com a perna vetorial por *Reciprocal Rank Fusion*
+(`1/(60 + posição)`), na **mesma** consulta que aplica o recorte de
+visibilidade. Quem embute a consulta é o app, com o prefixo de consulta do
+espaço — o prefixo não aparece no SQL.
+
+- o recorte (`visibility`/`viewer`/`virtualMcp` e o filtro de tag) vale nas
+  **duas** pernas: uma skill de vMCP fechado não vaza pela perna vetorial na
+  busca de outro servidor nem no site;
+- a perna textual entra com no máximo **100** skills e a vetorial com
+  `neighbors` vizinhos (padrão 20, clamp 1..100). **Não há corte por
+  distância** na v1;
+- `total` é o tamanho do **conjunto fundido**, e é contado à parte, como na
+  busca de sempre — paginar além do fim não zera o total;
+- `sort` continua valendo: `relevance` usa o RRF, e `name`/`recent`/`score`
+  reordenam o conjunto fundido;
+- sem `query` a opção é **ignorada** (não há o que fundir) e o modo é
+  `'text'`. Espaço torto ou vetor que não é lista de números finitos é 400:
+  a essa altura o app já decidiu que dá para buscar por significado.
+
+O retorno é `SkillSearchResult` — o `SearchResult` de shared **mais**
+`mode: 'text' | 'hybrid'` e `neighbors: { slug, distance }[]`, os vizinhos
+que chegaram à página. A distância fica **fora** de `items` de propósito:
+`SkillSummary` é o que os apps serializam para o cliente, e a distância não
+vai para o cliente na v1 — ela é o que o app registra no log. Quem tipava o
+retorno como `SearchResult` continua compilando.
+
 ## Contrato com os outros agentes
 
 **Podem:**
@@ -830,21 +971,27 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
   npx vitest run database/src/files.integration.test.ts database/src/users.integration.test.ts \
     database/src/virtual-mcps.integration.test.ts database/src/settings.integration.test.ts \
     database/src/sessions.integration.test.ts database/src/catalogs.integration.test.ts \
-    database/src/access.integration.test.ts database/src/accesses.integration.test.ts
+    database/src/access.integration.test.ts database/src/accesses.integration.test.ts \
+    database/src/rag.integration.test.ts
 ```
+
+A suíte do RAG exige **pgvector** no servidor (a imagem `pgvector/pgvector`
+já o traz) e um papel que possa `CREATE EXTENSION`, como o `pg_trgm` do
+`001`.
 
 | Suíte | Cobre |
 |-------|-------|
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
-| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` a `016` aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |
+| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |
 | `sessions.integration.test.ts` | sessões do MCP público: abrir/tocar/fechar, o `clientInfo` que só entra uma vez, o reuso de linha do stateless, a expiração com fim presumido por transporte, a listagem com filtros, recorte e `isOnline`, o contador por transporte, `onlineSessions` no resumo do vMCP com e sem janela, e a linha que sobrevive à remoção do vMCP sem ser podada |
 | `catalogs.integration.test.ts` | catálogos: criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; e a re-execução do `016` |
 | `virtual-mcps.integration.test.ts` também cobre | a visibilidade `'open'` do site (só vMCP aberto e ligado), `mcps` na skill, `listPublishedSkills` por vMCP, o `icon` da skill (regra de shared, 400 no inválido, CHECK de tamanho), os contadores por porta e os dois previews da colmeia (`preview` e `previewCatalogs`, com o teto `VIRTUAL_MCP_PREVIEW_SIZE` e o `isActive` do catálogo), e o canvas (`setVirtualMcpCanvas`, posição preservada por `setVirtualMcpSkills`, `linkSkill` com posição, `layout` que ignora lixo, os CHECKs de `014`) |
 | `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers`; `listPublicCatalogs`/`getPublicCatalog` com membros privados; as cascatas; e a re-execução do `017` que não devolve dono a ninguém |
+| `rag.integration.test.ts` | busca semântica (`020`): os 29 cenários de verificação do DDL — o backfill do hash numa base parada no `019` (sem tocar `updated_at`), a coluna gerada que o Postgres recusa, os triggers de pendência (skill, arquivo de texto, binário que não marca, UPDATE sem mudança, SKILL.md, tag, contador), o `CHECK` do hash e o texto com prefixo recusado, a deduplicação de textos iguais, o `CHECK` de dimensão e a FK composta, cobertura e pendências (com o texto órfão de fora), a fusão RRF, as cascatas de espaço, skill e arquivo e o texto em uso protegido, a reserva em lote e duas em paralelo, o HNSW acima de 2000 dimensões, a identidade do espaço com os dois prefixos (e os limites dos prefixos) e o mesmo texto em dois espaços; mais o **recorte de visibilidade real** nas duas pernas (o vMCP fechado que não vaza no site nem em outro servidor), a paginação e o `total` do conjunto fundido, a semeadura e o painel em `settings` com as duas ações novas de auditoria, e a re-execução da `020` |
 | `accesses.integration.test.ts` | acessos por skill (`018`): a leitura do site com as cópias e só o contador global; pelo MCP público por catálogo (os catálogos do caminho por nome, cada um somando, e a participação desativada saindo do caminho) e por vínculo direto (catálogos vazios, o contador do vínculo); pelo mcp-admin com o nome da chave `psk_` e o e-mail **e contador nenhum somado**; skill inexistente sem gravar nem lançar, opcionais tortos ou sumidos ignorados, e os 400; a listagem com cada filtro (skill, catálogo, vMCP, conta e chave `psk_` — duas contas, cada uma só vê a sua —, `origin`, `kind`), o `q` em cada coluna, a ordem, o clamp e os 400; as cópias sobrevivendo à remoção da skill, do catálogo, do vMCP (e da chave `psv_`) e da conta (e da chave `psk_`), sem poda; e a re-execução do `018` e do `019` juntos, com o conjunto exato de índices e o CHECK dos arrays |
 
-As oito recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
+As nove recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o
 arquivo. Suíte de integração nova aqui dentro precisa usar o mesmo número.

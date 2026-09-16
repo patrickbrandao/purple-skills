@@ -168,6 +168,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       '017-acesso-granular.sql',
       '018-acessos-por-skill.sql',
       '019-acessos-por-conta.sql',
+      '020-rag.sql',
     ]);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.

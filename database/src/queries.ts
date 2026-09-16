@@ -141,7 +141,62 @@ export type ListOptions = {
   /** Recorte de um MCP virtual — ver `VirtualScope`. Sobrepõe `visibility` e `viewer`. */
   virtualMcp?: VirtualScope;
   sort?: SortOrder;
+  /** A perna vetorial da busca — ver `SemanticScope`. Sem ela, a busca é a de sempre. */
+  semantic?: SemanticScope;
 };
+
+/**
+ * A perna vetorial da busca híbrida (`tmp/RAG-GOOGLE.md` §8.2, futuro
+ * `docs/14`). Quem a monta é o app: ele lê o driver e o modelo de `settings`,
+ * acha o espaço ativo (`findRagSpace`), embute a consulta com o **prefixo de
+ * consulta** daquele espaço e passa o vetor aqui. O prefixo não aparece no
+ * SQL: ele só existe na chamada ao provedor.
+ *
+ * Sem `query` a opção é ignorada e o modo é `'text'` — uma listagem sem
+ * termo não tem o que fundir. Espaço torto ou vetor que não é uma lista de
+ * números finitos é 400: a essa altura o app já decidiu que dá para buscar
+ * por significado, e degradar em silêncio seria responder `'hybrid'` sem
+ * perna vetorial nenhuma.
+ */
+export type SemanticScope = {
+  spaceUuid: string;
+  vector: readonly number[];
+  /** Vizinhos trazidos pela perna vetorial; padrão 20, clamp 1..100. */
+  neighbors?: number;
+};
+
+/** Como a página foi obtida: só texto, ou texto fundido com a perna vetorial. */
+export type SearchMode = 'text' | 'hybrid';
+
+/** Um vizinho da perna vetorial que chegou à página, com a distância do cosseno. */
+export type RagNeighbor = { slug: string; distance: number };
+
+/**
+ * O que `listSkills` devolve. É o `SearchResult` de shared **mais** o modo e
+ * os vizinhos.
+ *
+ * `mode` ainda não está em `SearchResult` — o tipo mora em `packages/shared`,
+ * fora do alcance do dba —, e por isso o acréscimo é feito aqui: quem já
+ * recebia `SearchResult` continua compilando, e o PR que mexer em shared pode
+ * mover o campo para lá.
+ *
+ * `neighbors` fica **fora** de `items` de propósito: `SkillSummary` é o que os
+ * apps serializam para o cliente, e a distância não vai para o cliente na v1
+ * (§8.1) — aqui ela é o que o app registra no log.
+ */
+export type SkillSearchResult = SearchResult & {
+  mode: SearchMode;
+  neighbors: RagNeighbor[];
+};
+
+/** `k` do Reciprocal Rank Fusion (§8.2): o mesmo das duas pernas. */
+const RRF_K = 60;
+
+/** Teto da perna textual antes da fusão (§8.2). */
+const TEXT_LEG_LIMIT = 100;
+
+/** Vizinhos da perna vetorial quando o chamador não pede outro número (§8.2). */
+const SEMANTIC_NEIGHBORS = 20;
 
 /** As chaves de `ListOptions` que também valem ao ler uma skill só, ou as tags. */
 type ReadOptions = Pick<ListOptions, 'visibility' | 'viewer' | 'virtualMcp'>;
@@ -527,8 +582,12 @@ function toSummary(row: Row): SkillSummary {
   };
 }
 
-/** Busca paginada de skills, com full-text + fallback por substring. */
-export async function listSkills(options: ListOptions = {}): Promise<SearchResult> {
+/**
+ * Busca paginada de skills, com full-text + fallback por substring e, quando
+ * o chamador passa `semantic`, a perna vetorial fundida por *Reciprocal Rank
+ * Fusion* (§8.2) — ver `hybridSkills`.
+ */
+export async function listSkills(options: ListOptions = {}): Promise<SkillSearchResult> {
   const limit = clamp(options.limit ?? 24, 1, 100);
   const offset = Math.max(0, options.offset ?? 0);
   const query = normalizeQuery(options.query);
@@ -550,20 +609,10 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
 
   const scope = readScope(options);
 
-  // Filtro compartilhado entre a contagem e a página de resultados.
-  const where = sql`
-    WHERE ${visibilityClause(options)}
+  // O recorte de quem pode ver o quê, mais o filtro de tag: vale para a
+  // consulta de sempre **e** para as duas pernas da híbrida.
+  const recorte = sql`${visibilityClause(options)}
       ${scope ? sql`AND ${skillScopeClause(scope, scopeUser(options))}` : sql``}
-      ${
-        query
-          ? sql`AND (
-              s.search_vector @@ websearch_to_tsquery('simple', ${query})
-              OR s.name ILIKE ${'%' + query + '%'}
-              OR s.description ILIKE ${'%' + query + '%'}
-              OR s.slug ILIKE ${'%' + query + '%'}
-            )`
-          : sql``
-      }
       ${
         tag
           ? sql`AND EXISTS (
@@ -571,8 +620,25 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
               WHERE st.skill_uuid = s.uuid AND lower(t.name) = lower(${tag})
             )`
           : sql``
-      }
-  `;
+      }`;
+
+  // A perna textual: o que a busca de hoje casa.
+  const textual = query
+    ? sql`AND (
+        s.search_vector @@ websearch_to_tsquery('simple', ${query})
+        OR s.name ILIKE ${'%' + query + '%'}
+        OR s.description ILIKE ${'%' + query + '%'}
+        OR s.slug ILIKE ${'%' + query + '%'}
+      )`
+    : sql``;
+
+  const semantic = options.semantic ? semanticScope(options.semantic) : null;
+  if (semantic && query) {
+    return hybridSkills({ options, recorte, order, query, semantic, limit, offset });
+  }
+
+  // Filtro compartilhado entre a contagem e a página de resultados.
+  const where = sql`WHERE ${recorte} ${textual}`;
 
   // `count(*) OVER ()` só chega nas linhas retornadas: paginar além do fim
   // devolvia total 0. A contagem precisa ser independente de LIMIT/OFFSET.
@@ -594,6 +660,118 @@ export async function listSkills(options: ListOptions = {}): Promise<SearchResul
     total,
     limit,
     offset,
+    mode: 'text',
+    neighbors: [],
+  };
+}
+
+/** A perna vetorial validada: uuid do espaço, o vetor em texto e o teto de vizinhos. */
+type SemanticLeg = { spaceUuid: string; vector: string; neighbors: number };
+
+function semanticScope(scope: SemanticScope): SemanticLeg {
+  if (!isUuid(scope?.spaceUuid)) {
+    throw badRequest(`Uuid de espaço inválido: ${String(scope?.spaceUuid)}`);
+  }
+  return {
+    spaceUuid: scope.spaceUuid,
+    vector: ragVectorLiteral(scope?.vector, 'semantic.vector'),
+    neighbors: clamp(scope?.neighbors ?? SEMANTIC_NEIGHBORS, 1, 100),
+  };
+}
+
+/**
+ * A busca híbrida (§8.2): a perna textual de sempre, limitada a
+ * `TEXT_LEG_LIMIT` skills, e a perna vetorial com os vizinhos mais próximos,
+ * fundidas por RRF (`1/(k + posição)`, `k = 60`) num `FULL OUTER JOIN`.
+ *
+ * Os dois pontos que fazem a diferença entre isto e uma busca vetorial solta:
+ *
+ *   - **o recorte vale nas duas pernas.** Uma skill de um vMCP fechado não
+ *     pode vazar pela perna vetorial na busca de outro servidor nem no site;
+ *   - **o `total` é o tamanho do conjunto fundido**, e não o da perna
+ *     textual: senão a paginação mentiria assim que um vizinho entrasse sem
+ *     casar no texto.
+ *
+ * A distância nunca corta nada na v1: os `neighbors` vizinhos vêm mesmo pouco
+ * relacionados, e o que decide a ordem é a fusão. A perna vetorial é uma
+ * busca **exata** (sem índice): `gemini-embedding-2` tem 3072 dimensões e o
+ * HNSW do pgvector para em 2000.
+ */
+async function hybridSkills(input: {
+  options: ListOptions;
+  recorte: SQL;
+  order: SQL;
+  query: string;
+  semantic: SemanticLeg;
+  limit: number;
+  offset: number;
+}): Promise<SkillSearchResult> {
+  const { options, recorte, order, query, semantic, limit, offset } = input;
+  const like = '%' + query + '%';
+  // `k` e o teto da perna textual são constantes nossas, não texto de fora.
+  const k = sql.raw(String(RRF_K));
+
+  const cte = sql`
+    consulta AS (
+      SELECT websearch_to_tsquery('simple', ${query}) AS tsq, ${semantic.vector}::vector AS qv
+    ),
+    texto AS (
+      SELECT s.uuid,
+             row_number() OVER (ORDER BY ts_rank(s.search_vector, c.tsq) DESC,
+                                         (s.view_count + s.download_count) DESC, s.uuid) AS pos
+        FROM skills s, consulta c
+       WHERE ${recorte}
+         AND (s.search_vector @@ c.tsq
+              OR s.name ILIKE ${like} OR s.description ILIKE ${like} OR s.slug ILIKE ${like})
+       ORDER BY pos
+       LIMIT ${TEXT_LEG_LIMIT}
+    ),
+    semantica AS (
+      SELECT o.skill_uuid AS uuid, min(v.embedding <=> c.qv) AS dist
+        FROM rag_skill_texts o
+        JOIN rag_vectors v ON v.space_uuid = ${semantic.spaceUuid}::uuid
+                          AND v.text_sha256 = o.text_sha256
+        JOIN skills s ON s.uuid = o.skill_uuid
+       CROSS JOIN consulta c
+       WHERE ${recorte}
+       GROUP BY o.skill_uuid
+       ORDER BY dist, o.skill_uuid
+       LIMIT ${semantic.neighbors}
+    ),
+    semantica_pos AS (
+      SELECT uuid, dist, row_number() OVER (ORDER BY dist, uuid) AS pos FROM semantica
+    ),
+    fusao AS (
+      SELECT COALESCE(t.uuid, v.uuid) AS uuid,
+             COALESCE(1.0 / (${k} + t.pos), 0) + COALESCE(1.0 / (${k} + v.pos), 0) AS rrf,
+             v.dist
+        FROM texto t FULL OUTER JOIN semantica_pos v ON v.uuid = t.uuid
+    )`;
+
+  // Como na busca de sempre, a contagem é uma consulta própria: `count(*)
+  // OVER ()` zeraria o total ao paginar além do fim.
+  const counted = await db().execute(sql`WITH ${cte} SELECT count(*)::int AS total FROM fusao`);
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    WITH ${cte}
+    SELECT ${skillColumns(options)}, f.rrf AS rank, f.dist AS distance
+    FROM fusao f
+    JOIN skills s ON s.uuid = f.uuid
+    ORDER BY ${order}
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  const rows = result.rows as Row[];
+  return {
+    items: rows.map(toSummary),
+    total,
+    limit,
+    offset,
+    mode: 'hybrid',
+    neighbors: rows
+      .filter((row) => row.distance !== null && row.distance !== undefined)
+      .map((row) => ({ slug: row.slug as string, distance: Number(row.distance) })),
   };
 }
 
@@ -1987,7 +2165,7 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
  * Espelho do `CHECK` de `audit_log.action` (`schema/017-acesso-granular.sql`),
  * para recusar um filtro inválido com 400 em vez de devolver uma página vazia.
  */
-const AUDIT_ACTIONS: readonly AuditAction[] = [
+const AUDIT_ACTIONS: readonly (AuditAction | RagAuditAction)[] = [
   'create',
   'update',
   'delete',
@@ -2013,6 +2191,8 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'mcp.unshare',
   'public.key.create',
   'public.key.revoke',
+  'rag.settings',
+  'rag.reindex',
 ];
 
 export type ListAuditOptions = {
@@ -2020,7 +2200,7 @@ export type ListAuditOptions = {
   limit?: number;
   offset?: number;
   /** Uma ação exata; fora da lista é 400. */
-  action?: AuditAction;
+  action?: AuditAction | RagAuditAction;
   /** Igualdade com `actor_label` (o e-mail, `token-global`, `bootstrap`, `seed`). */
   actor?: string;
   /** `ILIKE %q%` em `skill_slug`, `target_label`, `file_path` e `actor_label`. */
@@ -4938,6 +5118,677 @@ export async function listSkillAccesses(
   return { items: (result.rows as Row[]).map(toSkillAccessEntry), total, limit, offset };
 }
 
+// -------------------------------------------------------------------- RAG ---
+
+/**
+ * As chaves de `settings` da busca semântica (`tmp/RAG-GOOGLE.md` §4.3, futuro
+ * `docs/14`). `rag.driver` e `rag.model` são semeadas pelo ambiente no
+ * primeiro boot do admin e, dali em diante, mandam sobre ele — quem decide é
+ * o banco; `rag.indexer.status` é o estado que só o indexador conhece (a
+ * chave da API não chega ao painel), regravado a cada ciclo.
+ */
+export const RAG_SETTING_KEYS = ['rag.driver', 'rag.model', 'rag.indexer.status'] as const;
+export type RagSettingKey = (typeof RAG_SETTING_KEYS)[number];
+
+/** As duas que o ambiente semeia e o painel edita — as que entram na auditoria. */
+export const RAG_EDITABLE_SETTINGS = ['rag.driver', 'rag.model'] as const;
+export type RagEditableSetting = (typeof RAG_EDITABLE_SETTINGS)[number];
+
+/**
+ * As ações de auditoria do RAG. Elas **ainda não estão** em `AuditAction` de
+ * `@purple-skills/shared` — o tipo mora em `packages/shared`, fora do alcance
+ * do dba —, e por isso aparecem aqui como um apelido próprio. O `CHECK` de
+ * `audit_log.action` (`schema/020-rag.sql`) já as aceita; quando o tipo
+ * compartilhado as receber, este apelido pode sumir.
+ */
+type RagAuditAction = 'rag.settings' | 'rag.reindex';
+
+/** Quem assina a semeadura pelo ambiente (§4.1): não é conta, como o bootstrap. */
+const RAG_SEED_ACTOR: AuditActor = { userUuid: null, label: 'ambiente' };
+
+/** Teto do JSON de `rag.indexer.status` — o estado descrito na §4.3 cabe folgado. */
+const RAG_STATUS_MAX = 8_192;
+
+/** Teto de cada prefixo, o mesmo do `rag_spaces_prefix_length_chk`. */
+const RAG_PREFIX_MAX = 200;
+
+/** Uma linha de `settings` do RAG: o valor em uso e quando ele mudou. */
+export type RagSettingRow = {
+  key: RagSettingKey;
+  value: string | null;
+  updatedAt: string;
+};
+
+/**
+ * O que está gravado, chave a chave. A chave **ausente** do objeto é o que
+ * distingue "o banco ainda não tem linha" (o ambiente semeia) de "o banco
+ * diz nada" — ver `seedRagSetting`.
+ */
+export type RagSettings = Partial<Record<RagSettingKey, RagSettingRow>>;
+
+/** As três chaves do RAG que estão gravadas. Chave sem linha não aparece. */
+export async function getRagSettings(): Promise<RagSettings> {
+  const result = await db().execute(sql`
+    SELECT key, value, updated_at
+    FROM settings
+    WHERE key = ANY(${sql.param([...RAG_SETTING_KEYS])}::text[])
+  `);
+
+  const settings: RagSettings = {};
+  for (const row of result.rows as Row[]) {
+    const key = row.key as RagSettingKey;
+    settings[key] = {
+      key,
+      value: row.value ?? null,
+      updatedAt: new Date(row.updated_at).toISOString(),
+    };
+  }
+  return settings;
+}
+
+/** O resultado de uma semeadura: se gravou e qual valor ficou valendo. */
+export type RagSeedResult = {
+  /** `false` quando já havia linha — o ambiente foi ignorado. */
+  written: boolean;
+  /** O valor em uso depois da chamada: o semeado, ou o que já estava lá. */
+  value: string | null;
+};
+
+/**
+ * Semeia uma chave com o valor do ambiente (§4.1): grava **só** quando o
+ * banco ainda não tem linha para ela, e devolve o que ficou valendo — é com
+ * isso que o admin decide avisar no log que a variável foi ignorada.
+ *
+ * Quem semeia é o boot do admin, e só ele. A linha gravada entra na
+ * auditoria com o ator `ambiente`; quando não grava, nada é auditado — senão
+ * a trilha ganharia uma linha por reinício de container.
+ */
+export async function seedRagSetting(
+  key: RagEditableSetting,
+  value: string,
+  source: AuditSource = 'web-admin',
+): Promise<RagSeedResult> {
+  const chave = oneOf(key, RAG_EDITABLE_SETTINGS, 'key');
+  const valor = ragSettingValue(value);
+
+  return db().transaction(async (tx) => {
+    const inserted = await tx.execute(sql`
+      INSERT INTO settings (key, value) VALUES (${chave}, ${valor})
+      ON CONFLICT (key) DO NOTHING
+      RETURNING value
+    `);
+    if ((inserted.rows as Row[]).length > 0) {
+      await auditTx(tx, {
+        skillUuid: null,
+        skillSlug: null,
+        filePath: null,
+        action: 'rag.settings',
+        source,
+        previousContent: null,
+        actor: RAG_SEED_ACTOR,
+        targetLabel: `${chave}=${valor}`,
+      });
+      return { written: true, value: valor };
+    }
+
+    const current = await tx.execute(sql`SELECT value FROM settings WHERE key = ${chave}`);
+    return { written: false, value: (current.rows as Row[])[0]?.value ?? null };
+  });
+}
+
+/**
+ * Grava uma das chaves editáveis pelo painel e audita `rag.settings`, com
+ * `chave=valor` em `target_label`. **O sentido do valor é do app**: o que é
+ * um driver ou um modelo válido está no registro de `packages/rag`, não aqui
+ * — o banco só garante que é texto não vazio e dentro do tamanho.
+ *
+ * `rag.indexer.status` não passa por aqui (400): ele é do indexador, é
+ * regravado a cada ciclo e auditá-lo inundaria a trilha — ver
+ * `setRagIndexerStatus`.
+ */
+export async function setRagSetting(
+  key: RagEditableSetting,
+  value: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<RagSettings> {
+  const chave = oneOf(key, RAG_EDITABLE_SETTINGS, 'key');
+  const valor = ragSettingValue(value);
+
+  await db().transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO settings (key, value) VALUES (${chave}, ${valor})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'rag.settings',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: `${chave}=${valor}`,
+    });
+  });
+
+  return getRagSettings();
+}
+
+/**
+ * O estado do indexador (§4.3), gravado a cada ciclo: um objeto JSON com o
+ * que só ele sabe — se a chave da API existe, quando rodou, qual foi o
+ * último erro. Sem auditoria e sem ator de propósito: é telemetria, não
+ * decisão de ninguém. O formato do objeto é do indexador; o banco guarda o
+ * JSON como texto e só limita o tamanho.
+ */
+export async function setRagIndexerStatus(status: Record<string, unknown>): Promise<void> {
+  if (typeof status !== 'object' || status === null || Array.isArray(status)) {
+    throw badRequest('O estado do indexador deve ser um objeto');
+  }
+  let json: string;
+  try {
+    json = JSON.stringify(status);
+  } catch {
+    throw badRequest('O estado do indexador precisa ser serializável em JSON');
+  }
+  if (json.length > RAG_STATUS_MAX) {
+    throw badRequest(`O estado do indexador passa de ${RAG_STATUS_MAX} caracteres`);
+  }
+
+  await db().execute(sql`
+    INSERT INTO settings (key, value) VALUES ('rag.indexer.status', ${json})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+  `);
+}
+
+/**
+ * A identidade de um espaço de embedding (§5.1): driver, modelo, dimensões e
+ * os **dois prefixos** do driver. Trocar qualquer um deles é outro espaço —
+ * no `gemini-embedding-2` a tarefa vai escrita no próprio texto enviado, e um
+ * prefixo diferente muda todo vetor. Os prefixos não são aparados: o espaço
+ * em branco do fim de `'title: none | text: '` faz parte do prefixo.
+ */
+export type RagSpaceInput = {
+  driver: string;
+  model: string;
+  dimensions: number;
+  documentPrefix: string;
+  queryPrefix: string;
+};
+
+export type RagSpace = RagSpaceInput & {
+  uuid: string;
+  createdAt: string;
+};
+
+/**
+ * Acha (ou cria) o espaço com essa identidade e devolve a linha. Quem chama é
+ * o **indexador**: os leitores usam `findRagSpace`, que não cria nada — uma
+ * busca não pode inaugurar um espaço vazio e responder que não há vetor.
+ *
+ * Duas chamadas com a mesma identidade devolvem o mesmo uuid, inclusive em
+ * paralelo (o `ON CONFLICT DO NOTHING` sobre `rag_spaces_identity_uniq`).
+ */
+export async function resolveRagSpace(input: RagSpaceInput): Promise<RagSpace> {
+  const space = ragSpaceInput(input);
+
+  await db().execute(sql`
+    INSERT INTO rag_spaces (driver, model, dimensions, document_prefix, query_prefix)
+    VALUES (${space.driver}, ${space.model}, ${space.dimensions},
+            ${space.documentPrefix}, ${space.queryPrefix})
+    ON CONFLICT (driver, model, dimensions, document_prefix, query_prefix) DO NOTHING
+  `);
+
+  const found = await findRagSpace(space);
+  // Só acontece se alguém apagar o espaço entre o INSERT e o SELECT.
+  if (!found) throw conflict('O espaço de embedding sumiu durante a criação');
+  return found;
+}
+
+/** O espaço com essa identidade, ou `null`. Não cria nada — é o que os leitores usam. */
+export async function findRagSpace(input: RagSpaceInput): Promise<RagSpace | null> {
+  const space = ragSpaceInput(input);
+
+  const result = await db().execute(sql`
+    SELECT uuid, driver, model, dimensions, document_prefix, query_prefix, created_at
+    FROM rag_spaces
+    WHERE driver = ${space.driver}
+      AND model = ${space.model}
+      AND dimensions = ${space.dimensions}
+      AND document_prefix = ${space.documentPrefix}
+      AND query_prefix = ${space.queryPrefix}
+  `);
+
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+  return {
+    uuid: row.uuid as string,
+    driver: row.driver as string,
+    model: row.model as string,
+    dimensions: Number(row.dimensions),
+    documentPrefix: row.document_prefix as string,
+    queryPrefix: row.query_prefix as string,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/**
+ * As tabelas do RAG existem? É o que o indexador pergunta antes de começar
+ * (e o que os leitores conferem uma vez), para **esperar** a migration em vez
+ * de cair: o container do indexador sobe junto com o do banco e pode chegar
+ * antes do `migrate`.
+ */
+export async function ragSchemaReady(): Promise<boolean> {
+  const result = await db().execute(sql`
+    SELECT to_regclass('public.rag_spaces') IS NOT NULL
+       AND to_regclass('public.rag_texts') IS NOT NULL
+       AND to_regclass('public.rag_skill_texts') IS NOT NULL
+       AND to_regclass('public.rag_vectors') IS NOT NULL AS pronto
+  `);
+  return Boolean((result.rows as Row[])[0]?.pronto);
+}
+
+/**
+ * Reserva até `limit` skills pendentes e as marca como limpas **antes** de o
+ * indexador ler o conteúdo: uma mudança feita durante o processamento volta a
+ * marcá-las pelo trigger, e nada se perde. Se o processamento falhar, quem
+ * desfaz é `releaseStaleSkill`.
+ *
+ * A CTE é `MATERIALIZED` de propósito: sem isso o planner pode empurrar o
+ * `LIMIT` para depois do `UPDATE` e reservar mais linhas do que o lote pedido
+ * (§5.5, cenário 22). O `SKIP LOCKED` é o que faz dois indexadores em
+ * paralelo pegarem lotes diferentes em vez de esperar um pelo outro.
+ */
+export async function claimStaleSkills(limit = 20): Promise<string[]> {
+  const size = clamp(limit, 1, 500);
+  const result = await db().execute(sql`
+    WITH reservadas AS MATERIALIZED (
+      SELECT uuid FROM skills
+       WHERE rag_stale
+       ORDER BY updated_at, uuid
+       LIMIT ${size}
+         FOR UPDATE SKIP LOCKED
+    )
+    UPDATE skills s
+       SET rag_stale = false
+      FROM reservadas r
+     WHERE s.uuid = r.uuid
+    RETURNING s.uuid
+  `);
+  return (result.rows as Row[]).map((row) => row.uuid as string);
+}
+
+/**
+ * Devolve a skill à fila depois de uma falha. Uuid torto é ignorado: isto
+ * roda no `catch` do indexador, e um segundo erro aqui esconderia o primeiro.
+ */
+export async function releaseStaleSkill(uuid: string): Promise<void> {
+  if (!isUuid(uuid)) return;
+  await db().execute(sql`
+    UPDATE skills SET rag_stale = true WHERE uuid = ${uuid}::uuid AND NOT rag_stale
+  `);
+}
+
+/** Um arquivo de texto da skill, como o indexador o recebe para dividir. */
+export type RagSkillFile = {
+  id: string;
+  relativePath: string;
+  content: string;
+  /**
+   * `files.content_sha256`. Num arquivo que cabe inteiro num texto canônico
+   * ele **é** o hash do texto (§5.2): nenhuma normalização entra no meio.
+   */
+  sha256: Buffer;
+  sizeBytes: number;
+};
+
+/** Tudo que o indexador precisa para refatiar uma skill: metadados e arquivos de texto. */
+export type RagSkillContent = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** Em ordem alfabética — a divisão precisa ser determinística (§5.3). */
+  tags: string[];
+  /** Só os de texto, por caminho. Binário não é embutido. */
+  files: RagSkillFile[];
+};
+
+/**
+ * Lê a skill reservada. `null` quando ela sumiu entre a reserva e a leitura —
+ * caso normal, não erro: o indexador passa para a próxima.
+ */
+export async function readSkillForRag(uuid: string): Promise<RagSkillContent | null> {
+  if (!isUuid(uuid)) return null;
+
+  const result = await db().execute(sql`
+    SELECT s.uuid, s.slug, s.name, s.description,
+           COALESCE((
+             SELECT array_agg(t.name ORDER BY t.name)
+             FROM skill_tags st JOIN tags t ON t.id = st.tag_id
+             WHERE st.skill_uuid = s.uuid
+           ), '{}') AS tags
+    FROM skills s
+    WHERE s.uuid = ${uuid}::uuid
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  const files = await db().execute(sql`
+    SELECT id, relative_path, text_content, content_sha256, size_bytes
+    FROM files
+    WHERE skill_uuid = ${uuid}::uuid AND text_content IS NOT NULL
+    ORDER BY relative_path
+  `);
+
+  return {
+    uuid: row.uuid as string,
+    slug: row.slug as string,
+    name: row.name as string,
+    description: (row.description as string) ?? '',
+    tags: (row.tags ?? []) as string[],
+    files: (files.rows as Row[]).map((file) => ({
+      id: file.id as string,
+      relativePath: file.relative_path as string,
+      content: (file.text_content as string) ?? '',
+      sha256: file.content_sha256 as Buffer,
+      sizeBytes: Number(file.size_bytes ?? 0),
+    })),
+  };
+}
+
+/**
+ * Uma ocorrência: onde um texto canônico aparece dentro da skill.
+ *
+ * `source: 'meta'` é o texto de metadados (nome, descrição e tags), um por
+ * skill, sem caminho nem arquivo; `source: 'file'` é uma parte de um arquivo,
+ * com o caminho, o `fileId` e o número da parte, de 0 em diante na ordem do
+ * arquivo. O `content` é o texto **canônico** — sem o prefixo do driver, que
+ * só entra na chamada à API.
+ */
+export type RagTextInput = {
+  source: 'meta' | 'file';
+  content: string;
+  /** Vazio (ou omitido) em `meta`; o caminho do arquivo em `file`. */
+  relativePath?: string;
+  /** A parte, de 0 em diante; padrão 0. */
+  part?: number;
+  /** Nulo (ou omitido) em `meta`; o id do arquivo em `file`. */
+  fileId?: string | null;
+};
+
+/**
+ * Reescreve, numa transação, **todas** as ocorrências da skill: apaga as
+ * antigas e grava a lista inteira. Os textos canônicos entram em `rag_texts`
+ * com `ON CONFLICT DO NOTHING` — dois arquivos iguais, na mesma skill ou em
+ * skills diferentes, viram uma linha só e um vetor só por espaço (§5.2).
+ *
+ * O hash é calculado **no banco**, a partir do próprio conteúdo: assim o
+ * texto nunca fica guardado sob o hash de outro, e o `rag_texts_sha256_chk`
+ * não tem como ser contrariado. Lista vazia apaga as ocorrências da skill e
+ * não grava nada — é o caso da skill sem texto nenhum.
+ *
+ * Devolve quantas ocorrências ficaram. Conteúdo vazio ou só com espaços é 400
+ * (§5.3: arquivo em branco não gera texto), assim como ocorrência repetida,
+ * fonte fora das duas, parte negativa e `fileId` torto.
+ */
+export async function replaceSkillTexts(
+  skillUuid: string,
+  texts: readonly RagTextInput[],
+): Promise<number> {
+  if (!isUuid(skillUuid)) throw badRequest(`Uuid de skill inválido: ${String(skillUuid)}`);
+  if (!Array.isArray(texts)) throw badRequest('O campo "texts" deve ser uma lista');
+
+  const enderecos = new Set<string>();
+  const ocorrencias = texts.map((text, index) => {
+    const source = oneOf(text?.source, ['meta', 'file'] as const, `texts[${index}].source`);
+    const content = typeof text?.content === 'string' ? text.content : '';
+    if (!content.trim()) throw badRequest(`O texto de "texts[${index}]" está vazio`);
+
+    const part = requireCount(text?.part ?? 0, `texts[${index}].part`);
+    const relativePath = (optionalText(text?.relativePath, `texts[${index}].relativePath`) ?? '').trim();
+    const fileId = text?.fileId ?? null;
+
+    if (source === 'meta' && (relativePath !== '' || fileId !== null)) {
+      throw badRequest(`A fonte "meta" de "texts[${index}]" não tem arquivo nem caminho`);
+    }
+    if (source === 'file') {
+      if (!relativePath) throw badRequest(`O caminho de "texts[${index}]" é obrigatório`);
+      if (!isUuid(fileId)) throw badRequest(`O arquivo de "texts[${index}]" é inválido`);
+    }
+
+    const endereco = `${source} ${relativePath} ${part}`;
+    if (enderecos.has(endereco)) throw badRequest(`Ocorrência repetida em "texts[${index}]"`);
+    enderecos.add(endereco);
+
+    return { source, content, relativePath, part, fileId: source === 'file' ? (fileId as string) : null };
+  });
+
+  return db().transaction(async (tx) => {
+    const skill = await tx.execute(sql`SELECT 1 FROM skills WHERE uuid = ${skillUuid}::uuid`);
+    if ((skill.rows as Row[]).length === 0) throw notFound(`Skill não encontrada: ${skillUuid}`);
+
+    await tx.execute(sql`DELETE FROM rag_skill_texts WHERE skill_uuid = ${skillUuid}::uuid`);
+    if (ocorrencias.length === 0) return 0;
+
+    const conteudos = [...new Set(ocorrencias.map((o) => o.content))];
+    await tx.execute(sql`
+      INSERT INTO rag_texts (sha256, content)
+      SELECT sha256(convert_to(c, 'UTF8')), c
+      FROM unnest(${sql.param(conteudos)}::text[]) AS c
+      ON CONFLICT (sha256) DO NOTHING
+    `);
+
+    const linhas = ocorrencias.map(
+      (o) => sql`(${skillUuid}::uuid, ${o.source}, ${o.relativePath}, ${o.part},
+                  ${o.fileId}::uuid, sha256(convert_to(${o.content}, 'UTF8')))`,
+    );
+    try {
+      await tx.execute(sql`
+        INSERT INTO rag_skill_texts (skill_uuid, source, relative_path, part, file_id, text_sha256)
+        VALUES ${sql.join(linhas, sql`, `)}
+      `);
+    } catch (err) {
+      // O arquivo pode ter sumido entre a leitura da skill e a gravação.
+      if (isForeignKeyViolation(err)) throw badRequest('Arquivo não encontrado na skill');
+      throw err;
+    }
+    return ocorrencias.length;
+  });
+}
+
+/** Um texto canônico ainda sem vetor no espaço ativo. */
+export type RagPendingText = {
+  /** Os 32 bytes do SHA-256 — é assim que ele volta em `insertRagVectors`. */
+  sha256: Buffer;
+  content: string;
+};
+
+/**
+ * Os textos **com ocorrência** que ainda não têm vetor no espaço, dos mais
+ * antigos para os mais novos. Texto órfão (sem ocorrência) fica de fora: ele
+ * não é buscável, e embuti-lo custaria dinheiro à toa.
+ */
+export async function listPendingRagTexts(spaceUuid: string, limit = 64): Promise<RagPendingText[]> {
+  if (!isUuid(spaceUuid)) throw badRequest(`Uuid de espaço inválido: ${String(spaceUuid)}`);
+  const size = clamp(limit, 1, 500);
+
+  const result = await db().execute(sql`
+    SELECT t.sha256, t.content
+    FROM rag_texts t
+    WHERE EXISTS (SELECT 1 FROM rag_skill_texts o WHERE o.text_sha256 = t.sha256)
+      AND NOT EXISTS (
+        SELECT 1 FROM rag_vectors v
+        WHERE v.space_uuid = ${spaceUuid}::uuid AND v.text_sha256 = t.sha256
+      )
+    ORDER BY t.created_at
+    LIMIT ${size}
+  `);
+
+  return (result.rows as Row[]).map((row) => ({
+    sha256: row.sha256 as Buffer,
+    content: row.content as string,
+  }));
+}
+
+/** Um vetor pronto: o hash do texto que o gerou e o embedding. */
+export type RagVectorInput = {
+  sha256: Buffer;
+  embedding: readonly number[];
+};
+
+/**
+ * Grava os vetores no espaço. A `dimensions` de cada linha vem do **espaço**,
+ * não do chamador: é a FK composta que a prende, e o CHECK recusa um vetor de
+ * outro tamanho (§5.4). Espaço inexistente não grava nada; vetor já gravado é
+ * ignorado (`ON CONFLICT DO NOTHING`) — reprocessar um lote é inofensivo.
+ *
+ * Devolve quantos entraram.
+ */
+export async function insertRagVectors(
+  spaceUuid: string,
+  vectors: readonly RagVectorInput[],
+): Promise<number> {
+  if (!isUuid(spaceUuid)) throw badRequest(`Uuid de espaço inválido: ${String(spaceUuid)}`);
+  if (!Array.isArray(vectors)) throw badRequest('O campo "vectors" deve ser uma lista');
+  if (vectors.length === 0) return 0;
+
+  const linhas = vectors.map((item, index) => {
+    if (!Buffer.isBuffer(item?.sha256) || item.sha256.length !== 32) {
+      throw badRequest(`O hash de "vectors[${index}]" deve ter 32 bytes`);
+    }
+    return sql`(${item.sha256}::bytea, ${ragVectorLiteral(item?.embedding, `vectors[${index}]`)}::vector)`;
+  });
+
+  const result = await db().execute(sql`
+    INSERT INTO rag_vectors (space_uuid, dimensions, text_sha256, embedding)
+    SELECT sp.uuid, sp.dimensions, v.sha256, v.embedding
+    FROM rag_spaces sp, (VALUES ${sql.join(linhas, sql`, `)}) AS v(sha256, embedding)
+    WHERE sp.uuid = ${spaceUuid}::uuid
+    ON CONFLICT (space_uuid, text_sha256) DO NOTHING
+    RETURNING text_sha256
+  `);
+  return (result.rows as Row[]).length;
+}
+
+/** O número da seção "Busca semântica" do painel (§9). */
+export type RagCoverage = {
+  /** Textos canônicos com ocorrência — o denominador da cobertura. */
+  texts: number;
+  /** Quantos deles já têm vetor no espaço. */
+  withVector: number;
+  /** `texts - withVector`: o que o indexador ainda vai embutir. */
+  pendingTexts: number;
+  /** Skills marcadas para refatiar. */
+  staleSkills: number;
+};
+
+/**
+ * Cobertura do espaço e pendências. `spaceUuid` nulo (ou torto) é o caso do
+ * driver desligado: nenhum texto tem vetor, e os números continuam dizendo o
+ * tamanho do acervo.
+ */
+export async function ragCoverage(spaceUuid: string | null): Promise<RagCoverage> {
+  const space = optionalUuid(spaceUuid);
+  const result = await db().execute(sql`
+    SELECT
+      (SELECT count(DISTINCT o.text_sha256) FROM rag_skill_texts o)::int AS texts,
+      (SELECT count(DISTINCT o.text_sha256)
+         FROM rag_skill_texts o
+         JOIN rag_vectors v ON v.space_uuid = ${space}::uuid AND v.text_sha256 = o.text_sha256
+      )::int AS com_vetor,
+      (SELECT count(*) FROM skills WHERE rag_stale)::int AS pendentes
+  `);
+
+  const row = (result.rows as Row[])[0] ?? {};
+  const texts = Number(row.texts ?? 0);
+  const withVector = Number(row.com_vetor ?? 0);
+  return {
+    texts,
+    withVector,
+    pendingTexts: texts - withVector,
+    staleSkills: Number(row.pendentes ?? 0),
+  };
+}
+
+/**
+ * O botão "Reindexar" do painel: marca todo o acervo como pendente. **Não
+ * apaga vetor nenhum** — o que ele refaz é a divisão em textos, e o texto que
+ * não mudou reaproveita o vetor que já existe. Não toca `updated_at`:
+ * reindexar não é publicar, e a ordenação "recentes" do site não muda.
+ *
+ * Devolve quantas skills passaram a pendentes e audita `rag.reindex`.
+ */
+export async function markAllSkillsStale(source: AuditSource, actor: AuditActor): Promise<number> {
+  return db().transaction(async (tx) => {
+    const result = await tx.execute(sql`
+      UPDATE skills SET rag_stale = true WHERE NOT rag_stale RETURNING uuid
+    `);
+    const total = (result.rows as Row[]).length;
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'rag.reindex',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: `${total} skills`,
+    });
+    return total;
+  });
+}
+
+/** Valor de `settings` do RAG: texto não vazio, aparado, até 200 caracteres. */
+function ragSettingValue(value: unknown): string {
+  const text = requireText(value, 'value');
+  if (text.length > 200) throw badRequest('O valor da configuração passa de 200 caracteres');
+  return text;
+}
+
+/**
+ * Um prefixo do driver: texto (vazio é válido — há driver que não escreve a
+ * tarefa no texto) de até 200 caracteres, **sem aparar**. O espaço do fim de
+ * `'title: none | text: '` faz parte do prefixo e muda o vetor.
+ */
+function ragPrefix(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw badRequest(`O campo "${field}" é obrigatório`);
+  if (value.length > RAG_PREFIX_MAX) {
+    throw badRequest(`O campo "${field}" passa de ${RAG_PREFIX_MAX} caracteres`);
+  }
+  return value;
+}
+
+/** A identidade do espaço, validada. */
+function ragSpaceInput(input: RagSpaceInput): RagSpaceInput {
+  const dimensions = input?.dimensions;
+  if (typeof dimensions !== 'number' || !Number.isInteger(dimensions) || dimensions <= 0) {
+    throw badRequest('O campo "dimensions" deve ser um inteiro maior que zero');
+  }
+  return {
+    driver: requireText(input?.driver, 'driver'),
+    model: requireText(input?.model, 'model'),
+    dimensions,
+    documentPrefix: ragPrefix(input?.documentPrefix, 'documentPrefix'),
+    queryPrefix: ragPrefix(input?.queryPrefix, 'queryPrefix'),
+  };
+}
+
+/** Um embedding no formato textual do pgvector (`[x,y,z]`). */
+function ragVectorLiteral(value: unknown, field: string): string {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw badRequest(`O campo "${field}" deve ser uma lista de números`);
+  }
+  const numbers = value.map((n) => {
+    if (typeof n !== 'number' || !Number.isFinite(n)) {
+      throw badRequest(`O campo "${field}" tem valor que não é número finito`);
+    }
+    return n;
+  });
+  return `[${numbers.join(',')}]`;
+}
+
 /** Texto obrigatório, aparado: vazio é 400. */
 function requireText(value: unknown, field: string): string {
   const text = (optionalText(value, field) ?? '').trim();
@@ -5075,7 +5926,7 @@ type AuditInput = {
   skillUuid: string | null;
   skillSlug: string | null;
   filePath: string | null;
-  action: AuditAction;
+  action: AuditAction | RagAuditAction;
   source: AuditSource;
   previousContent: string | null;
   /**
