@@ -55,6 +55,16 @@ export {
 export { GoogleDriver, GEMINI_EMBEDDING_2, type GoogleDriverOptions } from './google.js';
 
 export {
+  criarBuscaSemantica,
+  logDaBusca,
+  type SearchPorts,
+  type SemanticOption,
+  type SemanticResolution,
+  type SemanticSearchOptions,
+  type TextReason,
+} from './search.js';
+
+export {
   FakeDriver,
   MODELO_FALSO,
   semPrefixo,

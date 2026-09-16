@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { composeSkillMd } from '@purple-skills/shared';
 
 const db = vi.hoisted(() => ({
+  // A busca semântica lê estas três; sem elas o módulo `rag.ts` nem carrega.
+  ragSchemaReady: vi.fn(async () => false),
+  getRagSettings: vi.fn(async () => ({})),
+  findRagSpace: vi.fn(async () => null),
   listSkills: vi.fn(),
   listPublishedSkills: vi.fn(),
   getSkillDetail: vi.fn(),
@@ -98,6 +102,59 @@ describe('search_skills', () => {
 
     expect(result.content[0].text).toContain('Nenhuma skill encontrada');
     expect(result.isError).toBeUndefined();
+  });
+
+  /**
+   * O critério de aceite do PR 4 (`tmp/RAG-GOOGLE.md` §12): com a busca
+   * semântica indisponível, os resultados são **idênticos aos de hoje**.
+   *
+   * Aqui `ragSchemaReady` devolve `false` (é o mock do topo), que é o caso de
+   * quem ainda não rodou a migration `020` — o mais comum numa instalação que
+   * acabou de atualizar.
+   */
+  it('sem a busca semântica, a consulta sai igual à de antes do RAG', async () => {
+    db.listSkills.mockResolvedValue({ items: [summary], total: 1, limit: 10, offset: 0, mode: 'text' });
+
+    const result = await handlers.search_skills({ query: 'git' });
+    const payload = JSON.parse(result.content[0].text);
+
+    // Nenhuma opção `semantic` foi para a consulta...
+    expect(db.listSkills.mock.calls[0][0]).not.toHaveProperty('semantic');
+    // ...e o espaço nem chegou a ser procurado, porque o schema não está pronto.
+    expect(db.findRagSpace).not.toHaveBeenCalled();
+
+    expect(payload.mode).toBe('text');
+    expect(payload.results[0].slug).toBe('minha-skill');
+  });
+
+  it('o modo vai na resposta, para o cliente saber o que leu', async () => {
+    db.listSkills.mockResolvedValue({ items: [summary], total: 1, limit: 10, offset: 0, mode: 'text' });
+
+    const payload = JSON.parse((await handlers.search_skills({ query: 'git' })).content[0].text);
+    expect(payload).toMatchObject({ mode: 'text', total: 1, limit: 10, offset: 0 });
+  });
+
+  it('a distância não vaza para o cliente', async () => {
+    db.listSkills.mockResolvedValue({
+      items: [summary],
+      total: 1,
+      limit: 10,
+      offset: 0,
+      mode: 'hybrid',
+      neighbors: [{ slug: 'minha-skill', distance: 0.12 }],
+    });
+
+    const bruto = (await handlers.search_skills({ query: 'git' })).content[0].text;
+    expect(bruto).not.toContain('distance');
+    expect(bruto).not.toContain('neighbors');
+    expect(JSON.parse(bruto).mode).toBe('hybrid');
+  });
+
+  it('consulta vazia não procura espaço nenhum', async () => {
+    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0, mode: 'text' });
+
+    await handlers.search_skills({});
+    expect(db.getRagSettings).not.toHaveBeenCalled();
   });
 });
 

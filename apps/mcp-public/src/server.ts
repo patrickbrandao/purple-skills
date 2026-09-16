@@ -11,7 +11,8 @@ import { config } from './config.js';
 import { createHandlers, createSurfaces, type VirtualScope } from './tools.js';
 
 const FLUXO = `Fluxo recomendado:
-1. search_skills("tema") para descobrir skills relevantes pelo conteúdo.
+1. search_skills("descreva a tarefa") para descobrir skills relevantes — a busca
+   entende linguagem natural, não só palavras que aparecem no texto.
 2. get_skill("<slug>") para ler o SKILL.md completo da skill escolhida.
 3. get_skill_file("<slug>", "<caminho>") para ler arquivos auxiliares.
 4. download_skill("<slug>") quando o usuário quiser o pacote .zip.
@@ -77,10 +78,14 @@ export function createMcpServer(scope: VirtualScope): McpServer {
     {
       title: 'Buscar skills',
       description:
-        'Busca as skills deste servidor por texto livre (nome, descrição e conteúdo do SKILL.md), ' +
-        'opcionalmente filtrando por tag. Retorna os slugs a usar em get_skill.',
+        'Busca as skills deste servidor por significado e por texto. Descreva a tarefa em ' +
+        'linguagem natural, em qualquer idioma; termos entre aspas e exclusão com hífen ' +
+        'continuam valendo. Retorna os slugs a usar em get_skill.',
       inputSchema: {
-        query: z.string().describe('Termos de busca. Vazio lista as mais acessadas.').optional(),
+        query: z
+          .string()
+          .describe('A tarefa em linguagem natural, ou termos. Vazio lista as mais acessadas.')
+          .optional(),
         tag: z.string().describe('Filtra por uma tag exata.').optional(),
         limit: z.number().int().min(1).max(50).describe('Máximo de resultados (padrão 10).').optional(),
         offset: z.number().int().min(0).describe('Deslocamento para paginação.').optional(),

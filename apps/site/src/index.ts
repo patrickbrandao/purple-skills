@@ -8,6 +8,7 @@ import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
 import { trustProxySetting } from '@purple-skills/shared';
 import { api } from './api.js';
 import { config } from './config.js';
+import { avisoDeBoot } from './rag.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** Assets da SPA: `dist-web/` ao lado de `dist/` (build) ou de `src/` (dev). */
@@ -66,6 +67,9 @@ app.use((req, res) => {
 async function main() {
   const { pool } = getDb();
   await waitForDatabase(pool);
+
+  const aviso = avisoDeBoot();
+  if (aviso) console.log(aviso);
 
   const server = app.listen(config.port, config.host, () => {
     console.log(`[site] ${config.siteName} ouvindo em http://${config.host}:${config.port}`);

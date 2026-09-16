@@ -46,6 +46,12 @@ export type SearchResult = {
   total: number;
   limit: number;
   offset: number;
+  /**
+   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   * `text` é a busca de sempre; `hybrid` soma a perna vetorial. Cair para
+   * `text` não é erro — é o que acontece com a busca semântica desligada.
+   */
+  mode: 'text' | 'hybrid';
 };
 
 /**

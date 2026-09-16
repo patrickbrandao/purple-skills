@@ -1,4 +1,5 @@
-import { readIntEnv, readPortEnv, readTextEnv } from '@purple-skills/shared';
+import { readIntEnv, readPortEnv, readSecret, readTextEnv } from '@purple-skills/shared';
+import { readBaseUrlEnv, readQueryTimeoutEnv } from '@purple-skills/rag';
 
 export const config = {
   port: readPortEnv('PORT', 3002),
@@ -21,6 +22,16 @@ export const config = {
    * stateless de um mesmo cliente numa sessão só e presume o fim delas.
    */
   onlineWindowMs: readIntEnv('MCP_SESSION_ONLINE_WINDOW_MS', 120_000, { min: 1000 }),
+  /**
+   * Busca semântica (`tmp/RAG-GOOGLE.md` §8, futuro `docs/14`). A chave vem do
+   * ambiente; se ela falta, a busca responde em modo textual — o que liga e
+   * desliga a busca semântica é `rag.driver` no banco, editado no painel.
+   */
+  rag: {
+    apiKey: readSecret('RAG_GOOGLE_API_KEY'),
+    baseUrl: readBaseUrlEnv(),
+    queryTimeoutMs: readQueryTimeoutEnv(),
+  },
 };
 
 /**
