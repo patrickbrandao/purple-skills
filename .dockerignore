@@ -7,6 +7,7 @@ node_modules
 .env
 .env.*
 .env-builder
+.env-skills-langwizard
 !.env.example
 *.log
 coverage

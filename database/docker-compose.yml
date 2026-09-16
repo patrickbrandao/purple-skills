@@ -26,7 +26,7 @@ x-db-env: &db-env
 # migrate e seed compartilham imagem, build e dependência do banco: são o mesmo
 # binário do DBA com comandos diferentes.
 x-db-job: &db-job
-  image: ghcr.io/patrickbrandao/purple-skills-db:${TAG:-latest}
+  image: tmsoftbrasil/purple-skills-db:${TAG:-latest}
   build:
     context: .
     dockerfile: database/Dockerfile

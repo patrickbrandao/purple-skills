@@ -7,6 +7,10 @@
 # Em produção cada imagem também roda isolada, apontando para um Postgres
 # externo via DATABASE_URL.
 #
+# As imagens vêm do Docker Hub (tmsoftbrasil/purple-skills-<serviço>), na tag
+# de TAG (padrão `latest`). Se a tag não existir lá, o compose gera a imagem a
+# partir do código, como o `docker compose build` faz sempre.
+#
 # Os serviços `postgres`, `migrate` e `seed` NÃO moram aqui: são do agente DBA
 # e vêm de `database/docker-compose.yml` pelo `include` abaixo. Alterações no
 # banco (imagem, volume, schema, carga de exemplo) vão naquele arquivo.
@@ -55,7 +59,7 @@ x-app-env: &app-env
 # os MESMOS três serviços (indexer, mcp-public, site) e nunca para o admin.
 # Quem escolhe entre os drivers é o painel; deixar mais de uma chave no `.env`
 # é o que permite trocar de provedor sem recriar container. Ver docs/14-rag.md.
-x-rag-provedores: &rag-provedores
+x-rag-providers: &rag-providers
   RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
   RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
   RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
@@ -81,7 +85,7 @@ services:
     hostname: homepage.intranet.br
     restart: unless-stopped
     networks: [internal]
-    image: ghcr.io/patrickbrandao/purple-skills-homepage:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-homepage:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/homepage/Dockerfile
@@ -96,12 +100,12 @@ services:
     <<: *app-common
     container_name: purple-skills-site
     hostname: site.intranet.br
-    image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-site:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/site/Dockerfile
     environment:
-      <<: *app-env
+      <<: [*app-env, *rag-providers]
       PORT: 3000
       SITE_TAGLINE: ${SITE_TAGLINE:-}
       # Endereços mostrados na seção "Endereços de acesso" do catálogo.
@@ -109,7 +113,6 @@ services:
       MCP_ADMIN_URL: ${MCP_ADMIN_URL:-}
       ADMIN_URL: ${ADMIN_URL:-}
       # Busca semântica em /api/skills?q= — mesmas credenciais do mcp-public.
-      <<: *rag-provedores
       RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${SITE_PORT:-3000}:3000'
@@ -118,7 +121,7 @@ services:
     <<: *app-common
     container_name: purple-skills-admin
     hostname: admin.intranet.br
-    image: ghcr.io/patrickbrandao/purple-skills-admin:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-admin:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/admin/Dockerfile
@@ -182,12 +185,12 @@ services:
     <<: *app-common
     container_name: purple-skills-mcp-public
     hostname: mcp-public.intranet.br
-    image: ghcr.io/patrickbrandao/purple-skills-mcp-public:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-mcp-public:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/mcp-public/Dockerfile
     environment:
-      <<: *app-env
+      <<: [*app-env, *rag-providers]
       PORT: 3002
       # O acesso a /mcp é decidido pelo MCP virtual padrão, escolhido no
       # painel: não há variável de autenticação aqui.
@@ -198,7 +201,6 @@ services:
       # Busca semântica: a consulta é embutida aqui mesmo. Sem chave para o
       # driver que o banco escolheu, ou com `off`, a busca responde
       # `mode: text` como sempre.
-      <<: *rag-provedores
       RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
@@ -207,7 +209,7 @@ services:
     <<: *app-common
     container_name: purple-skills-mcp-admin
     hostname: mcp-admin.intranet.br
-    image: ghcr.io/patrickbrandao/purple-skills-mcp-admin:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-mcp-admin:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/mcp-admin/Dockerfile
@@ -234,14 +236,13 @@ services:
   indexer:
     <<: *app-common
     profiles: [rag]
-    image: ghcr.io/patrickbrandao/purple-skills-indexer:${TAG:-latest}
+    image: tmsoftbrasil/purple-skills-indexer:${TAG:-latest}
     build:
       context: .
       dockerfile: apps/indexer/Dockerfile
     environment:
-      <<: *app-env
       # As chaves só existem aqui e nos dois que consultam; o painel nunca as vê.
-      <<: *rag-provedores
+      <<: [*app-env, *rag-providers]
       RAG_INDEX_INTERVAL_SECONDS: ${RAG_INDEX_INTERVAL_SECONDS:-}
 
   # Inspector oficial do MCP — ferramenta de depuração, parte oficial da
