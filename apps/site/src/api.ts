@@ -2,9 +2,8 @@ import { Router, type Request, type Response } from 'express';
 import {
   AppError,
   getSkillSummary,
-  incrementDownloadCount,
-  incrementViewCount,
   listSkills,
+  recordSkillAccess,
   listTags,
   readAllFiles,
   readFile,
@@ -173,7 +172,30 @@ api.get(
   }),
 );
 
-/** Detalhe da skill — conta um acesso (view_count). `mcps` traz só os abertos. */
+/**
+ * O registro por leitura (`docs/13-fichas-e-acessos.md`): o site é anônimo,
+ * então a linha leva só o IP e o agente. Melhor esforço, como os contadores
+ * sempre foram — o banco soma `view_count`/`download_count` na mesma escrita.
+ */
+function registrarAcesso(req: Request, skillUuid: string, kind: 'view' | 'download', surface: 'page' | 'file' | 'download'): void {
+  Promise.resolve()
+    .then(() =>
+      recordSkillAccess({
+        skillUuid,
+        kind,
+        surface,
+        origin: 'site',
+        auth: 'anonymous',
+        ip: req.ip,
+        userAgent: req.get('user-agent') ?? undefined,
+      }),
+    )
+    .catch((err: unknown) => {
+      console.warn('[site] não foi possível registrar o acesso:', (err as Error).message);
+    });
+}
+
+/** Detalhe da skill — registra um acesso (view_count). `mcps` traz só os abertos. */
 api.get(
   '/api/skills/:slug',
   asyncRoute(async (req, res) => {
@@ -183,7 +205,7 @@ api.get(
       return;
     }
 
-    await incrementViewCount(detail.uuid);
+    registrarAcesso(req, detail.uuid, 'view', 'page');
     res.json({
       ...detail,
       // Os metadados estão nos campos do próprio JSON; `skillMd` traz só o
@@ -223,7 +245,7 @@ const serveFile = asyncRoute(async (req, res) => {
   let buffer = file.buffer;
   if (isSkillMd(file.relativePath)) {
     buffer = Buffer.from(composeSkillMd(skill, file.buffer.toString('utf8')), 'utf8');
-    await incrementViewCount(skill.uuid);
+    registrarAcesso(req, skill.uuid, 'view', 'file');
   }
 
   // Arquivos de skill são conteúdo de terceiros. Servi-los como `text/html` ou
@@ -254,7 +276,7 @@ const serveZip = (ext: 'zip' | 'skill') =>
     }
 
     const files = await readAllFiles(skill.uuid);
-    await incrementDownloadCount(skill.uuid);
+    registrarAcesso(req, skill.uuid, 'download', 'download');
     streamSkillZip(res, skill.slug, files, skill, ext);
   });
 

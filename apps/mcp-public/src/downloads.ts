@@ -1,11 +1,5 @@
 import type { Request, RequestHandler, Response, Router } from 'express';
-import {
-  getSkillSummary,
-  incrementDownloadCount,
-  incrementViewCount,
-  readAllFiles,
-  readFile,
-} from '@purple-skills/db';
+import { getSkillSummary, readAllFiles, readFile } from '@purple-skills/db';
 import {
   composeSkillMd,
   contentDisposition,
@@ -14,6 +8,7 @@ import {
   safeContentType,
   writeZip,
 } from '@purple-skills/shared';
+import { accessContextOf, registrarAcesso } from './access.js';
 
 /**
  * Downloads de um MCP virtual — o `.zip` da skill e os arquivos avulsos —
@@ -71,7 +66,7 @@ const servirZip = (ext: 'zip' | 'skill') =>
     }
 
     const files = await readAllFiles(skill.uuid);
-    await incrementDownloadCount(skill.uuid, req.virtual!.mcp.uuid);
+    registrarAcesso({ mcp: req.virtual!.mcp, access: accessContextOf(req) }, skill.uuid, 'download', 'download');
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${skill.slug}.${ext}"`);
@@ -113,7 +108,7 @@ const servirArquivo = asyncRoute(async (req, res) => {
   let buffer = file.buffer;
   if (isSkillMd(file.relativePath)) {
     buffer = Buffer.from(composeSkillMd(skill, file.buffer.toString('utf8')), 'utf8');
-    await incrementViewCount(skill.uuid, req.virtual!.mcp.uuid);
+    registrarAcesso({ mcp: req.virtual!.mcp, access: accessContextOf(req) }, skill.uuid, 'view', 'file');
   }
 
   // Conteúdo de terceiros: tipos executáveis descem como texto, e nada é

@@ -33,6 +33,10 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/users'],
     ['patch', '/api/users/:uuid'],
     ['post', '/api/users/:uuid/reset-password'],
+    ['get', '/api/users/:uuid'],
+    ['get', '/api/users/:uuid/keys'],
+    ['delete', '/api/users/:uuid/keys/:id'],
+    ['get', '/api/users/:uuid/accesses'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireAdmin);
   });
@@ -62,6 +66,7 @@ describe('papéis exigidos pelas rotas', () => {
   it.each([
     ['get', '/api/skills'],
     ['get', '/api/skills/:slug'],
+    ['get', '/api/skills/:slug/accesses'],
     ['patch', '/api/skills/:slug'],
     ['delete', '/api/skills/:slug'],
     ['put', '/api/skills/:slug/files/*path'],
@@ -83,6 +88,7 @@ describe('papéis exigidos pelas rotas', () => {
     ['get', '/api/mcps/:slug/sessions'],
     ['get', '/api/sessions'],
     ['get', '/api/catalogs/:slug'],
+    ['get', '/api/catalogs/:slug/accesses'],
     ['patch', '/api/catalogs/:slug'],
     ['delete', '/api/catalogs/:slug'],
     ['put', '/api/catalogs/:slug/skills'],

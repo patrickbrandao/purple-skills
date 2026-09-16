@@ -203,6 +203,7 @@ export function AccessPanel<T extends AccessObject>({
   onChanged,
   publicHint,
   privateCount,
+  readOnly = false,
 }: {
   kind: AccessKind;
   object: T;
@@ -214,6 +215,8 @@ export function AccessPanel<T extends AccessObject>({
   publicHint?: string;
   /** Quantas skills privadas ficariam públicas ao marcar (o aviso da decisão 15). */
   privateCount?: number;
+  /** A ficha de leitura: dono, flag e concessões como texto, sem transferir, marcar, conceder ou revogar. */
+  readOnly?: boolean;
 }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -224,7 +227,9 @@ export function AccessPanel<T extends AccessObject>({
   const [newOwner, setNewOwner] = useState<UserLookup | null>(null);
 
   const manages = canManage(object.access);
-  const owns = canOwn(object.access);
+  // Só leitura: o que a sessão vê é o mesmo, mas nenhum controle aparece.
+  const owns = canOwn(object.access) && !readOnly;
+  const edits = manages && !readOnly;
   const what = KIND_LABEL[kind];
   const isAdminView = user.role === 'admin';
 
@@ -336,10 +341,19 @@ export function AccessPanel<T extends AccessObject>({
             </Button>
           )}
         </dd>
-        {!owns && (
+        {!canOwn(object.access) && (
           <>
             <dt>Seu acesso</dt>
             <dd>{object.access ? ACCESS_LABEL[object.access] : '—'}</dd>
+          </>
+        )}
+        {readOnly && object.isPublic !== undefined && (
+          <>
+            <dt>Visibilidade</dt>
+            <dd>
+              {object.isPublic ? 'público: qualquer conta do painel e o site leem, sem concessão' : 'privado: só o dono, os administradores e as contas com concessão'}
+              {publicHint && object.isPublic && <span className="hint block">{publicHint}</span>}
+            </dd>
           </>
         )}
       </dl>
@@ -365,7 +379,7 @@ export function AccessPanel<T extends AccessObject>({
         </form>
       )}
 
-      {object.isPublic !== undefined && (
+      {object.isPublic !== undefined && !readOnly && (
         <label className="check mt-3" title={publicHint}>
           <input
             type="checkbox"
@@ -379,7 +393,7 @@ export function AccessPanel<T extends AccessObject>({
           </span>
         </label>
       )}
-      {object.isPublic !== undefined && !object.isPublic && manages && (privateCount ?? 0) > 0 && (
+      {object.isPublic !== undefined && !object.isPublic && edits && (privateCount ?? 0) > 0 && (
         <p className="hint mt-1">
           Ao marcar, {privateCount === 1 ? '1 skill privada fica pública' : `${privateCount} skills privadas ficam públicas`} por
           aqui.
@@ -388,6 +402,7 @@ export function AccessPanel<T extends AccessObject>({
 
       {manages && (
         <>
+          {edits && (
           <form onSubmit={grant} className="mt-4 grid gap-2">
             <span className="label">Compartilhar com</span>
             <UserPicker value={target} onChange={setTarget} exclude={excluded} />
@@ -404,7 +419,9 @@ export function AccessPanel<T extends AccessObject>({
               </Button>
             </div>
           </form>
+          )}
 
+          {readOnly && <span className="label mt-4 block">Quem mais tem acesso</span>}
           <div className="table-wrap mt-3">
             <table className="data">
               <thead>
@@ -430,20 +447,26 @@ export function AccessPanel<T extends AccessObject>({
                       </span>
                     </td>
                     <td>
-                      <select
-                        className="field"
-                        style={{ minWidth: 120 }}
-                        value={item.level}
-                        disabled={busy}
-                        onChange={(event) => void changeLevel(item, event.target.value as AccessLevel)}
-                        aria-label={`Nível de ${item.email}`}
-                      >
-                        {ACCESS_LEVELS.map((option) => (
-                          <option key={option} value={option}>
-                            {ACCESS_LABEL[option]}
-                          </option>
-                        ))}
-                      </select>
+                      {readOnly ? (
+                        <Badge tone="info" title={ACCESS_HINT[item.level]}>
+                          {ACCESS_LABEL[item.level]}
+                        </Badge>
+                      ) : (
+                        <select
+                          className="field"
+                          style={{ minWidth: 120 }}
+                          value={item.level}
+                          disabled={busy}
+                          onChange={(event) => void changeLevel(item, event.target.value as AccessLevel)}
+                          aria-label={`Nível de ${item.email}`}
+                        >
+                          {ACCESS_LEVELS.map((option) => (
+                            <option key={option} value={option}>
+                              {ACCESS_LABEL[option]}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </td>
                     <td className="hidden md:table-cell">
                       <span className="row-sub whitespace-nowrap">
@@ -452,9 +475,11 @@ export function AccessPanel<T extends AccessObject>({
                       </span>
                     </td>
                     <td className="num">
-                      <button type="button" className="row-action danger" title="Revogar" disabled={busy} onClick={() => void revoke(item)}>
-                        <Trash2 />
-                      </button>
+                      {edits && (
+                        <button type="button" className="row-action danger" title="Revogar" disabled={busy} onClick={() => void revoke(item)}>
+                          <Trash2 />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

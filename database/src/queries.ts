@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   SKILL_MD,
+  VIRTUAL_MCP_PREVIEW_SIZE,
   isAccessLevel,
   isAccessScope,
   isRole,
@@ -46,6 +47,13 @@ import {
   type SkillMcpRef,
   type SkillSummary,
   type SearchResult,
+  type SkillAccessAuth,
+  type SkillAccessEntry,
+  type SkillAccessInput,
+  type SkillAccessKind,
+  type SkillAccessOrigin,
+  type SkillAccessPage,
+  type SkillAccessSurface,
   type UserLookup,
   type UserSummary,
   type VirtualMcpCatalog,
@@ -53,6 +61,7 @@ import {
   type VirtualMcpDetail,
   type VirtualMcpKeySummary,
   type VirtualMcpLayout,
+  type VirtualMcpPreviewCatalog,
   type VirtualMcpPreviewSkill,
   type VirtualMcpSkill,
   type VirtualMcpSkillInput,
@@ -752,6 +761,11 @@ export async function readAllFiles(skillUuid: string): Promise<FileContent[]> {
  *
  * UPDATEs sem transação: são contadores best-effort, e perder um incremento
  * numa falha no meio é preferível a segurar a leitura por um lock a mais.
+ *
+ * Desde o `018`, quem serve uma skill grava a leitura com
+ * `recordSkillAccess`, que soma estes mesmos contadores no mesmo caminho e
+ * ainda deixa a linha da guia "Acessos". As duas funções abaixo ficam para
+ * quem só quer o número — a semântica é idêntica.
  */
 export async function incrementViewCount(skillUuid: string, virtualMcpUuid?: string): Promise<void> {
   await bumpCounter('view_count', skillUuid, virtualMcpUuid);
@@ -2238,13 +2252,12 @@ export type VirtualMcpReadOptions = {
   viewer?: Viewer;
 };
 
-/** Quantas skills a miniatura do card mostra. */
-const VIRTUAL_MCP_PREVIEW_SIZE = 8;
-
 // `m` é o servidor, `u` o dono e `c` os contadores do vínculo, numa única
 // passada por `virtual_mcp_skills` (LATERAL) em vez de quatro subconsultas.
-// As chaves vivas e o preview continuam subconsultas: a listagem é de painel
-// (poucas linhas) e cada uma responde a uma pergunta distinta.
+// As chaves vivas e os dois previews continuam subconsultas: a listagem é de
+// painel (poucas linhas) e cada uma responde a uma pergunta distinta. Os
+// previews param em `VIRTUAL_MCP_PREVIEW_SIZE` (de shared: é o tamanho da
+// colmeia do card) — os contadores continuam contando tudo.
 function virtualMcpColumns({ onlineWindowMs, viewer }: VirtualMcpReadOptions): SQL {
   const access = accessColumn(readMode({ visibility: 'all', viewer }), sql`m.owner_user_uuid`, mcpGrantOf);
   const online =
@@ -2277,6 +2290,17 @@ function virtualMcpColumns({ onlineWindowMs, viewer }: VirtualMcpReadOptions): S
       LIMIT ${VIRTUAL_MCP_PREVIEW_SIZE}
     ) p
   ), '[]'::json) AS preview,
+  COALESCE((
+    SELECT json_agg(json_build_object('slug', p.slug, 'name', p.name, 'isActive', p.is_active)
+                    ORDER BY p.name, p.slug)
+    FROM (
+      SELECT c.slug, c.name, c.is_active
+      FROM virtual_mcp_catalogs vc JOIN catalogs c ON c.uuid = vc.catalog_uuid
+      WHERE vc.virtual_mcp_uuid = m.uuid
+      ORDER BY c.name ASC, c.slug ASC
+      LIMIT ${VIRTUAL_MCP_PREVIEW_SIZE}
+    ) p
+  ), '[]'::json) AS preview_catalogs,
   m.created_at, m.updated_at
 `;
 }
@@ -2315,6 +2339,7 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     onlineSessions: Number(row.online_sessions ?? 0),
     preview: toVirtualMcpPreview(row.preview),
     catalogCount: Number(row.catalog_count ?? 0),
+    previewCatalogs: toVirtualMcpPreviewCatalogs(row.preview_catalogs),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -2323,6 +2348,12 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
 function toVirtualMcpPreview(value: unknown): VirtualMcpPreviewSkill[] {
   const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
   return (rows ?? []).map((p) => ({ slug: p.slug, name: p.name, icon: p.icon ?? null }));
+}
+
+/** Os catálogos vinculados que a colmeia do card mostra, com o `is_active` do catálogo. */
+function toVirtualMcpPreviewCatalogs(value: unknown): VirtualMcpPreviewCatalog[] {
+  const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
+  return (rows ?? []).map((p) => ({ slug: p.slug, name: p.name, isActive: Boolean(p.isActive) }));
 }
 
 /** As chaves de `virtual_mcps.layout` que o canvas conhece. */
@@ -4635,6 +4666,278 @@ export async function countOnlineMcpSessions(options: {
   return { total, byTransport };
 }
 
+// ------------------------------------------------------ acessos por skill ---
+
+// Os CHECKs de `skill_accesses`, espelhados: um valor fora da lista é 400
+// aqui, e não uma violação de CHECK virando 500.
+const SKILL_ACCESS_KINDS: readonly SkillAccessKind[] = ['view', 'download'];
+const SKILL_ACCESS_SURFACES: readonly SkillAccessSurface[] = [
+  'tool', 'resource', 'prompt', 'file', 'download', 'page', 'admin-tool',
+];
+const SKILL_ACCESS_ORIGINS: readonly SkillAccessOrigin[] = ['mcp', 'site', 'mcp-admin'];
+const SKILL_ACCESS_AUTHS: readonly SkillAccessAuth[] = ['open', 'key', 'user', 'anonymous'];
+
+/**
+ * Grava uma leitura em `skill_accesses` (`docs/13-fichas-e-acessos.md`,
+ * `schema/018-acessos-por-skill.sql`) **e soma os contadores** exatamente
+ * como `incrementViewCount`/`incrementDownloadCount`: no global da skill
+ * sempre e, com `virtualMcpUuid`, no caminho — o vínculo direto se existir,
+ * senão cada catálogo que contribuiu (ligado, participação ativa, vinculado
+ * ao vMCP). Os catálogos que somam são os mesmos gravados na linha.
+ *
+ * **Exceção: `origin = 'mcp-admin'` só grava a linha.** O `get_skill` do
+ * mcp-admin nunca contou — é administração, não consumo — e a pontuação do
+ * acervo (`skillScore`, sobre os contadores) não pode mudar de significado
+ * porque a leitura passou a ser registrada. Os catálogos do caminho não se
+ * aplicam (não há vMCP) e nenhum contador é tocado.
+ *
+ * As cópias (slug e nome da skill e do vMCP, nome da chave `psv_` por
+ * `keyId`, da `psk_` por `apiKeyId`, e-mail por `userUuid`) são resolvidas
+ * aqui, num INSERT ... SELECT só: é o que fica legível depois que o objeto
+ * some. `kind`, `surface`, `origin` e `auth` fora dos CHECKs e `skillUuid`
+ * torto são 400 — é bug de quem chama. Uuid torto num campo **opcional** é
+ * ignorado (a coluna fica nula), assim como um vMCP, chave ou conta que já
+ * não existe: `auth` continua dizendo o que houve. Skill inexistente não
+ * grava nada e não lança — ela pode ter sumido entre a leitura e o registro.
+ *
+ * Uma instrução só, sem transação explícita, como `bumpCounter`: é
+ * best-effort e os chamadores disparam com `void … .catch(log)`. Os rótulos
+ * (`sessionId`, `ip`, `userAgent`, `clientName`, `clientVersion`) são
+ * aparados e cortados em 512 caracteres, como em `openMcpSession`.
+ */
+export async function recordSkillAccess(input: SkillAccessInput): Promise<void> {
+  if (!isUuid(input.skillUuid)) throw badRequest('O campo "skillUuid" precisa ser um uuid');
+  const kind = oneOf(input.kind, SKILL_ACCESS_KINDS, 'kind');
+  const surface = oneOf(input.surface, SKILL_ACCESS_SURFACES, 'surface');
+  const origin = oneOf(input.origin, SKILL_ACCESS_ORIGINS, 'origin');
+  const auth = oneOf(input.auth, SKILL_ACCESS_AUTHS, 'auth');
+  const virtualMcpUuid = optionalUuid(input.virtualMcpUuid);
+  const keyId = optionalUuid(input.keyId);
+  const apiKeyId = optionalUuid(input.apiKeyId);
+  const userUuid = optionalUuid(input.userUuid);
+  // O nome da coluna é um dos dois literais nossos — nunca texto do chamador.
+  const column = sql.raw(kind === 'view' ? 'view_count' : 'download_count');
+
+  // Os três UPDATEs leem o RETURNING de `ins`: sem skill, `ins` é vazio e
+  // nenhum deles toca linha alguma; sem vMCP, o vínculo não casa; com
+  // vínculo direto, `catalog_uuids` é vazio e os catálogos ficam. No
+  // mcp-admin os três ficam de fora — a linha entra, os contadores não.
+  const counters =
+    origin === 'mcp-admin'
+      ? sql``
+      : sql`,
+    global AS (
+      UPDATE skills s SET ${column} = s.${column} + 1
+      FROM ins WHERE s.uuid = ins.skill_uuid
+    ),
+    direct AS (
+      UPDATE virtual_mcp_skills v SET ${column} = v.${column} + 1
+      FROM ins WHERE v.virtual_mcp_uuid = ins.virtual_mcp_uuid AND v.skill_uuid = ins.skill_uuid
+    ),
+    via AS (
+      UPDATE catalogs c SET ${column} = c.${column} + 1
+      FROM ins WHERE c.uuid = ANY(ins.catalog_uuids)
+    )`;
+
+  // `ins` grava a linha com as cópias resolvidas por LEFT JOIN (o que não
+  // existe vira nulo, sem derrubar o INSERT) e com os catálogos do caminho
+  // em `p` — só quando há vMCP e **não** há vínculo direto, a precedência
+  // de `docs/11` §3.2.
+  await db().execute(sql`
+    WITH ins AS (
+      INSERT INTO skill_accesses (
+        skill_uuid, skill_slug, skill_name, kind, surface, origin, auth,
+        virtual_mcp_uuid, virtual_mcp_slug, virtual_mcp_name,
+        catalog_uuids, catalog_slugs, catalog_names,
+        key_id, key_name, api_key_id, api_key_name, user_uuid, user_email,
+        session_id, ip, user_agent, client_name, client_version
+      )
+      SELECT
+        s.uuid, s.slug, s.name, ${kind}, ${surface}, ${origin}, ${auth},
+        m.uuid, m.slug, m.name,
+        COALESCE(p.uuids, '{}'::uuid[]), COALESCE(p.slugs, '{}'::text[]), COALESCE(p.names, '{}'::text[]),
+        k.id, k.name, ak.id, ak.name, u.uuid, u.email,
+        ${sessionLabel(input.sessionId, 'sessionId')},
+        ${sessionLabel(input.ip, 'ip')},
+        ${sessionLabel(input.userAgent, 'userAgent')},
+        ${sessionLabel(input.clientName, 'clientName')},
+        ${sessionLabel(input.clientVersion, 'clientVersion')}
+      FROM skills s
+      LEFT JOIN virtual_mcps m ON m.uuid = ${virtualMcpUuid}::uuid
+      LEFT JOIN virtual_mcp_keys k ON k.id = ${keyId}::uuid
+      LEFT JOIN api_keys ak ON ak.id = ${apiKeyId}::uuid
+      LEFT JOIN users u ON u.uuid = ${userUuid}::uuid
+      LEFT JOIN LATERAL (
+        SELECT array_agg(c.uuid ORDER BY c.name, c.slug) AS uuids,
+               array_agg(c.slug ORDER BY c.name, c.slug) AS slugs,
+               array_agg(c.name ORDER BY c.name, c.slug) AS names
+        FROM catalogs c
+        JOIN catalog_skills cs
+          ON cs.catalog_uuid = c.uuid AND cs.skill_uuid = s.uuid AND cs.is_active
+        JOIN virtual_mcp_catalogs vc
+          ON vc.catalog_uuid = c.uuid AND vc.virtual_mcp_uuid = m.uuid
+        WHERE c.is_active
+          AND NOT EXISTS (
+            SELECT 1 FROM virtual_mcp_skills v
+            WHERE v.virtual_mcp_uuid = m.uuid AND v.skill_uuid = s.uuid
+          )
+      ) p ON true
+      WHERE s.uuid = ${input.skillUuid}::uuid
+      RETURNING skill_uuid, virtual_mcp_uuid, catalog_uuids
+    )${counters}
+    SELECT count(*)::int AS n FROM ins
+  `);
+}
+
+export type ListSkillAccessesOptions = {
+  /** A guia da skill. */
+  skillUuid?: string;
+  /** A guia do catálogo: leituras em que ele foi (um dos) caminho(s). */
+  catalogUuid?: string;
+  /** A guia do servidor. */
+  virtualMcpUuid?: string;
+  /** A guia da conta: as leituras feitas por ela (pelas chaves `psk_`, no mcp-admin). */
+  userUuid?: string;
+  /** Uma chave `psk_` só — normalmente junto com `userUuid`. */
+  apiKeyId?: string;
+  /** `ILIKE %q%` em `user_email`, `api_key_name`, `key_name`, `ip`, `client_name` e `session_id`. */
+  q?: string;
+  /** Igualdade; fora do `CHECK` é 400. */
+  origin?: SkillAccessOrigin;
+  kind?: SkillAccessKind;
+  /** Clamp 1..200; padrão 50. */
+  limit?: number;
+  offset?: number;
+};
+
+// `a` é o acesso. Os catálogos vêm dos três arrays, na ordem gravada
+// (`WITH ORDINALITY`), com o uuid conferido em `catalogs`: o de um catálogo
+// apagado sai nulo, o mesmo sinal das outras FKs — só que calculado aqui,
+// porque array não tem `ON DELETE SET NULL`.
+const SKILL_ACCESS_COLUMNS = sql`
+  a.id, a.skill_uuid, a.skill_slug, a.skill_name, a.kind, a.surface, a.origin, a.auth,
+  a.virtual_mcp_uuid, a.virtual_mcp_slug, a.virtual_mcp_name,
+  COALESCE((
+    SELECT json_agg(json_build_object('uuid', c.uuid, 'slug', p.slug, 'name', p.name)
+                    ORDER BY p.ord)
+    FROM unnest(a.catalog_uuids, a.catalog_slugs, a.catalog_names)
+         WITH ORDINALITY AS p(uuid, slug, name, ord)
+    LEFT JOIN catalogs c ON c.uuid = p.uuid
+  ), '[]'::json) AS catalogs,
+  a.key_id, a.key_name, a.api_key_id, a.api_key_name, a.user_uuid, a.user_email,
+  a.session_id, a.ip, a.user_agent, a.client_name, a.client_version, a.created_at
+`;
+
+function toSkillAccessEntry(row: Row): SkillAccessEntry {
+  const raw = (typeof row.catalogs === 'string' ? JSON.parse(row.catalogs) : row.catalogs) as
+    | Row[]
+    | null;
+  return {
+    id: row.id,
+    skillUuid: row.skill_uuid ?? null,
+    skillSlug: row.skill_slug,
+    skillName: row.skill_name,
+    kind: row.kind,
+    surface: row.surface,
+    origin: row.origin,
+    auth: row.auth,
+    virtualMcpUuid: row.virtual_mcp_uuid ?? null,
+    virtualMcpSlug: row.virtual_mcp_slug ?? null,
+    virtualMcpName: row.virtual_mcp_name ?? null,
+    catalogs: (raw ?? []).map((c) => ({ uuid: c.uuid ?? null, slug: c.slug, name: c.name })),
+    keyId: row.key_id ?? null,
+    keyName: row.key_name ?? null,
+    apiKeyId: row.api_key_id ?? null,
+    apiKeyName: row.api_key_name ?? null,
+    userUuid: row.user_uuid ?? null,
+    userEmail: row.user_email ?? null,
+    sessionId: row.session_id ?? null,
+    ip: row.ip ?? null,
+    userAgent: row.user_agent ?? null,
+    clientName: row.client_name ?? null,
+    clientVersion: row.client_version ?? null,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/**
+ * A guia "Acessos": as últimas leituras (`created_at DESC, id DESC`), de uma
+ * skill, de um catálogo (quando ele foi o caminho), de um vMCP ou de uma
+ * conta (e/ou de uma chave `psk_` dela), com os filtros da tela. `total`
+ * respeita os mesmos filtros da página. Uuid torto
+ * em qualquer filtro é 400, como em `listMcpSessions`; `q` vazio é ignorado.
+ * Uma leitura de skill, vMCP ou catálogo já apagados continua na lista, com
+ * as cópias. O filtro pela skill ou pelo vMCP apagados não a acha mais (a
+ * coluna foi a nulo); o filtro pelo catálogo apagado ainda acha, porque o
+ * array guarda o uuid — a página dele já não existe, e o histórico fica
+ * alcançável por quem tiver o uuid.
+ */
+export async function listSkillAccesses(
+  options: ListSkillAccessesOptions = {},
+): Promise<SkillAccessPage> {
+  const limit = clamp(options.limit ?? 50, 1, 200);
+  const offset = pageOffset(options.offset);
+  const conditions: SQL[] = [];
+
+  if (options.skillUuid !== undefined) {
+    if (!isUuid(options.skillUuid)) throw badRequest('O campo "skillUuid" precisa ser um uuid');
+    conditions.push(sql`a.skill_uuid = ${options.skillUuid}::uuid`);
+  }
+  if (options.catalogUuid !== undefined) {
+    if (!isUuid(options.catalogUuid)) throw badRequest('O campo "catalogUuid" precisa ser um uuid');
+    conditions.push(sql`a.catalog_uuids @> ARRAY[${options.catalogUuid}::uuid]`);
+  }
+  if (options.virtualMcpUuid !== undefined) {
+    if (!isUuid(options.virtualMcpUuid)) {
+      throw badRequest('O campo "virtualMcpUuid" precisa ser um uuid');
+    }
+    conditions.push(sql`a.virtual_mcp_uuid = ${options.virtualMcpUuid}::uuid`);
+  }
+  if (options.userUuid !== undefined) {
+    if (!isUuid(options.userUuid)) throw badRequest('O campo "userUuid" precisa ser um uuid');
+    conditions.push(sql`a.user_uuid = ${options.userUuid}::uuid`);
+  }
+  if (options.apiKeyId !== undefined) {
+    if (!isUuid(options.apiKeyId)) throw badRequest('O campo "apiKeyId" precisa ser um uuid');
+    conditions.push(sql`a.api_key_id = ${options.apiKeyId}::uuid`);
+  }
+  if (options.origin !== undefined) {
+    conditions.push(sql`a.origin = ${oneOf(options.origin, SKILL_ACCESS_ORIGINS, 'origin')}`);
+  }
+  if (options.kind !== undefined) {
+    conditions.push(sql`a.kind = ${oneOf(options.kind, SKILL_ACCESS_KINDS, 'kind')}`);
+  }
+  const q = normalizeQuery(optionalText(options.q, 'q'));
+  if (q) {
+    const pattern = '%' + q + '%';
+    conditions.push(sql`(
+      a.user_email ILIKE ${pattern}
+      OR a.api_key_name ILIKE ${pattern}
+      OR a.key_name ILIKE ${pattern}
+      OR a.ip ILIKE ${pattern}
+      OR a.client_name ILIKE ${pattern}
+      OR a.session_id ILIKE ${pattern}
+    )`);
+  }
+
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+  const counted = await db().execute(
+    sql`SELECT count(*)::int AS total FROM skill_accesses a ${where}`,
+  );
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    SELECT ${SKILL_ACCESS_COLUMNS}
+    FROM skill_accesses a
+    ${where}
+    ORDER BY a.created_at DESC, a.id DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  return { items: (result.rows as Row[]).map(toSkillAccessEntry), total, limit, offset };
+}
+
 /** Texto obrigatório, aparado: vazio é 400. */
 function requireText(value: unknown, field: string): string {
   const text = (optionalText(value, field) ?? '').trim();
@@ -4808,6 +5111,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
+}
+
+/**
+ * Um uuid num campo opcional de escrita best-effort: torto, vazio ou de outro
+ * tipo é ignorado (nulo), não é erro — o registro vale mais do que o campo.
+ */
+function optionalUuid(value: unknown): string | null {
+  return isUuid(value) ? value : null;
 }
 
 /** Timestamp opcional em ISO — o padrão de saída de datas do módulo. */

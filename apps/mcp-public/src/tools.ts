@@ -2,7 +2,6 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
   getSkillDetail,
   getSkillSummary,
-  incrementViewCount,
   listPublishedSkills,
   listSkills,
   listTags,
@@ -18,6 +17,7 @@ import {
   type SkillSummary,
 } from '@purple-skills/shared';
 import { config } from './config.js';
+import { registrarAcesso, type AccessContext } from './access.js';
 
 export type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -44,6 +44,8 @@ export type VirtualScope = {
   mcp: VirtualMcpRuntime;
   /** Base pública deste ponto de montagem: `<origem>` na raiz, `<origem>/virtual/<slug>` nos demais, sem barra final. */
   baseUrl: string;
+  /** Quem está lendo, para o registro de acessos; ausente nos testes e conta como "aberto". */
+  access?: AccessContext;
 };
 
 const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/');
@@ -92,7 +94,6 @@ const recorteDasFerramentas = (scope: VirtualScope) =>
 export function createHandlers(scope: VirtualScope) {
   const recorte = recorteDasFerramentas(scope);
   const urls = urlsFor(scope);
-  const mcpUuid = scope.mcp.uuid;
 
   return {
     async search_skills(args: {
@@ -138,7 +139,7 @@ export function createHandlers(scope: VirtualScope) {
       const detail = await getSkillDetail(args.slug, recorte);
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
-      await incrementViewCount(detail.uuid, mcpUuid);
+      registrarAcesso(scope, detail.uuid, 'view', 'tool');
 
       const attachments = detail.files.filter(
         (file) => file.relativePath.toLowerCase() !== 'skill.md',
@@ -276,7 +277,7 @@ export function createSurfaces(scope: VirtualScope) {
       const detail = await skillPublicada(name, 'prompt');
       if (!detail) throw naoEncontrado(`Prompt não encontrado: "${name}"`);
 
-      await incrementViewCount(detail.uuid, mcpUuid);
+      registrarAcesso(scope, detail.uuid, 'view', 'prompt');
 
       return {
         description: detail.description || undefined,
@@ -313,7 +314,7 @@ export function createSurfaces(scope: VirtualScope) {
       const detail = slug ? await skillPublicada(slug, 'resource') : null;
       if (!detail) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
 
-      await incrementViewCount(detail.uuid, mcpUuid);
+      registrarAcesso(scope, detail.uuid, 'view', 'resource');
 
       return {
         contents: [

@@ -46,6 +46,7 @@ import {
   viewerOf,
 } from './auth.js';
 import * as access from './access.js';
+import * as accesses from './accesses.js';
 import * as mcps from './mcps.js';
 import * as catalogs from './catalogs.js';
 import {
@@ -53,13 +54,16 @@ import {
   changeOwnPassword,
   confirmPasswordReset,
   createAccount,
+  getAccount,
   issueKey,
+  listAccountKeys,
   listAccounts,
   listKeys,
   loginWithPassword,
   requestPasswordReset,
   resetAccountPassword,
   resolveOidcUser,
+  revokeAccountKey,
   revokeKey,
   updateAccount,
 } from './accounts.js';
@@ -493,11 +497,48 @@ api.post(
 );
 
 // A busca de contas para compartilhar (`docs/12-acesso-granular.md` decisão
-// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel.
+// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel. Fica
+// antes de `/api/users/:uuid`, senão o Express a engole como um uuid.
 api.get(
   '/api/users/lookup',
   route(async (req, res) => {
     res.json({ items: await access.lookup(req.query.q) });
+  }),
+);
+
+// A ficha de uma conta (`docs/13-fichas-e-acessos.md` §3.4): a conta, as
+// chaves `psk_` dela e as leituras de skill feitas por elas. Só admin, como a
+// lista — a guia de acessos traz IPs e clientes.
+api.get(
+  '/api/users/:uuid',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json(await getAccount(param(req, 'uuid')));
+  }),
+);
+
+api.get(
+  '/api/users/:uuid/keys',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json({ items: await listAccountKeys(param(req, 'uuid')) });
+  }),
+);
+
+api.delete(
+  '/api/users/:uuid/keys/:id',
+  requireAdmin,
+  route(async (req, res) => {
+    await revokeAccountKey(req.user!, param(req, 'uuid'), param(req, 'id'));
+    res.json({ revoked: true });
+  }),
+);
+
+api.get(
+  '/api/users/:uuid/accesses',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json(await accesses.ofUser(param(req, 'uuid'), req.query as Record<string, unknown>));
   }),
 );
 
@@ -623,6 +664,14 @@ api.get(
   '/api/catalogs/:slug',
   route(async (req, res) => {
     res.json(await catalogs.detail(req.user!, param(req, 'slug')));
+  }),
+);
+
+// As leituras de skills entregues por este catálogo — `manage`, como na skill.
+api.get(
+  '/api/catalogs/:slug/accesses',
+  route(async (req, res) => {
+    res.json(await accesses.ofCatalog(req.user!, param(req, 'slug'), req.query as Record<string, unknown>));
   }),
 );
 
@@ -941,6 +990,15 @@ api.get(
   route(async (req, res) => {
     // `view` basta para ler; a lista de concessões só vai para `manage`.
     res.json(bodyOnly(access.withGrants(await access.loadSkill(req.user!, param(req, 'slug'), 'view'))));
+  }),
+);
+
+// A guia "Acessos" (`docs/13-fichas-e-acessos.md`): IPs, clientes e nomes de
+// chave são operação, como as sessões de um vMCP — só `manage`.
+api.get(
+  '/api/skills/:slug/accesses',
+  route(async (req, res) => {
+    res.json(await accesses.ofSkill(req.user!, param(req, 'slug'), req.query as Record<string, unknown>));
   }),
 );
 

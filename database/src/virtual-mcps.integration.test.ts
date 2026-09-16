@@ -14,12 +14,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { closeDb } from './client.js';
 import { runMigrations } from './migrate.js';
+import { VIRTUAL_MCP_PREVIEW_SIZE } from '@purple-skills/shared';
 import { AppError } from './errors.js';
 import {
+  createCatalog,
   createSkill,
   createUser,
   createVirtualMcp,
   createVirtualMcpKey,
+  deleteCatalog,
   deleteSkill,
   deleteVirtualMcp,
   getSkillDetail,
@@ -29,6 +32,7 @@ import {
   getVirtualMcpKeyByPrefix,
   incrementDownloadCount,
   incrementViewCount,
+  linkCatalog,
   linkSkill,
   listAudit,
   listPublishedSkills,
@@ -43,6 +47,7 @@ import {
   setVirtualMcpSkills,
   touchVirtualMcpKey,
   unlinkSkill,
+  updateCatalog,
   updateSkill,
   updateSkillWithContent,
   updateVirtualMcp,
@@ -583,19 +588,52 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(listado?.resourceCount).toBe(1);
     expect(listado?.preview.map((p) => p.slug)).toEqual(['com-icone', 'fora', 'privada']);
 
-    // Teto de 8 no preview: o `skillCount` continua contando tudo.
-    for (let i = 1; i <= 7; i += 1) {
-      await createSkill({ name: `Zz ${i}`, slug: `zz-${i}`, skillMd: '# z' }, SOURCE);
-      await linkSkill(`zz-${i}`, canvasUuid, { asSkill: false, asPrompt: false, asResource: false }, SOURCE, ana);
+    // Teto de `VIRTUAL_MCP_PREVIEW_SIZE` (19, a colmeia do card) no preview:
+    // o `skillCount` continua contando tudo.
+    const zz = (i: number) => String(i).padStart(2, '0');
+    for (let i = 1; i <= 18; i += 1) {
+      await createSkill({ name: `Zz ${zz(i)}`, slug: `zz-${zz(i)}`, skillMd: '# z' }, SOURCE);
+      await linkSkill(`zz-${zz(i)}`, canvasUuid, { asSkill: false, asPrompt: false, asResource: false }, SOURCE, ana);
     }
     const cheio = (await getVirtualMcpByUuid(canvasUuid))!;
-    expect(cheio.skillCount).toBe(10);
-    expect(cheio.preview).toHaveLength(8);
+    expect(cheio.skillCount).toBe(21);
+    expect(cheio.preview).toHaveLength(VIRTUAL_MCP_PREVIEW_SIZE);
     expect(cheio.preview.map((p) => p.slug)).toEqual([
-      'com-icone', 'fora', 'privada', 'zz-1', 'zz-2', 'zz-3', 'zz-4', 'zz-5',
+      'com-icone', 'fora', 'privada',
+      ...Array.from({ length: 16 }, (_, i) => `zz-${zz(i + 1)}`),
     ]);
-    for (let i = 1; i <= 7; i += 1) await deleteSkill(`zz-${i}`, SOURCE);
+    for (let i = 1; i <= 18; i += 1) await deleteSkill(`zz-${zz(i)}`, SOURCE);
     expect((await getVirtualMcpByUuid(canvasUuid))?.skillCount).toBe(3);
+
+    // Os catálogos vinculados entram na mesma colmeia: por nome, com o
+    // `is_active` do catálogo, e com o mesmo teto. Um catálogo não vinculado
+    // fica de fora; `catalogCount` acompanha.
+    expect(cheio.previewCatalogs).toEqual([]);
+    const catalogos: string[] = [];
+    for (let i = 1; i <= 20; i += 1) {
+      const catalogo = await createCatalog(
+        { name: `Cat ${zz(i)}`, slug: `cat-${zz(i)}`, ownerUserUuid: null },
+        SOURCE,
+        ana,
+      );
+      catalogos.push(catalogo.uuid);
+      if (i <= 19) await linkCatalog(canvasUuid, catalogo.uuid, { asSkill: true, asPrompt: false, asResource: false }, SOURCE, ana);
+    }
+    await updateCatalog(catalogos[1]!, { isActive: false }, SOURCE, ana);
+    const comCatalogos = (await getVirtualMcpByUuid(canvasUuid))!;
+    expect(comCatalogos.catalogCount).toBe(19);
+    expect(comCatalogos.previewCatalogs).toHaveLength(VIRTUAL_MCP_PREVIEW_SIZE);
+    expect(comCatalogos.previewCatalogs.slice(0, 3)).toEqual([
+      { slug: 'cat-01', name: 'Cat 01', isActive: true },
+      { slug: 'cat-02', name: 'Cat 02', isActive: false },
+      { slug: 'cat-03', name: 'Cat 03', isActive: true },
+    ]);
+    expect(comCatalogos.previewCatalogs.map((c) => c.slug)).not.toContain('cat-20');
+    // A listagem traz o mesmo.
+    const listadoComCatalogos = (await listVirtualMcps()).find((m) => m.uuid === canvasUuid);
+    expect(listadoComCatalogos?.previewCatalogs).toEqual(comCatalogos.previewCatalogs);
+    for (const uuid of catalogos) await deleteCatalog(uuid, SOURCE, ana);
+    expect((await getVirtualMcpByUuid(canvasUuid))?.previewCatalogs).toEqual([]);
   });
 
   it('grava o canvas: layout mesclado e posições por skill, sem auditar; slug não vinculado é 400', async () => {

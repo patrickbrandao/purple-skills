@@ -6,7 +6,7 @@ const db = vi.hoisted(() => ({
   listPublishedSkills: vi.fn(),
   getSkillDetail: vi.fn(),
   getSkillSummary: vi.fn(),
-  incrementViewCount: vi.fn(),
+  recordSkillAccess: vi.fn(),
   listTags: vi.fn(),
   readFile: vi.fn(),
 }));
@@ -108,7 +108,7 @@ describe('get_skill', () => {
     const result = await handlers.get_skill({ slug: 'minha-skill' });
 
     expect(db.getSkillDetail).toHaveBeenCalledWith('minha-skill', recorte);
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-1');
+    expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-1', origin: 'mcp' }));
     expect(result.content[0].text).toContain('Conteúdo.');
     expect(result.content[0].text).toContain('ref/extra.md');
     // Na raiz, o download é do próprio servidor, sem prefixo /virtual.
@@ -135,7 +135,7 @@ describe('get_skill', () => {
     const result = await handlers.get_skill({ slug: 'nao-existe' });
 
     expect(result.isError).toBe(true);
-    expect(db.incrementViewCount).not.toHaveBeenCalled();
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 });
 
@@ -154,7 +154,7 @@ describe('get_skill_file', () => {
 
     expect(db.getSkillSummary).toHaveBeenCalledWith('minha-skill', recorte);
     expect(result.content[0].text).toBe('extra');
-    expect(db.incrementViewCount).not.toHaveBeenCalled();
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 
   it('devolve a URL de download do próprio servidor para arquivos binários', async () => {
@@ -246,7 +246,7 @@ describe('a skill fora das ferramentas', () => {
     expect(
       (await handlers.get_skill_file({ slug: 'minha-skill', path: 'ref/extra.md' })).isError,
     ).toBe(true);
-    expect(db.incrementViewCount).not.toHaveBeenCalled();
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 
   // O caso que a feature existe para permitir: vinculada só como prompt e como
@@ -319,7 +319,7 @@ describe('resources/read', () => {
 
     const result = await surfaces.readResource('skill://minha-skill');
 
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-1');
+    expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-1', origin: 'mcp' }));
     expect(result.contents[0].uri).toBe('skill://minha-skill');
     expect(result.contents[0].mimeType).toBe('text/markdown');
     // Byte a byte o mesmo do .zip e do /files/SKILL.md.
@@ -330,7 +330,7 @@ describe('resources/read', () => {
     db.getSkillDetail.mockResolvedValue(null);
 
     await expect(surfaces.readResource('skill://minha-skill')).rejects.toThrow(/não encontrado/);
-    expect(db.incrementViewCount).not.toHaveBeenCalled();
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 
   it('recusa uma URI de outro esquema sem nem consultar o banco', async () => {
@@ -349,7 +349,7 @@ describe('prompts/get', () => {
 
     const result = await surfaces.getPrompt('minha-skill');
 
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-1');
+    expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-1', origin: 'mcp' }));
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe('user');
     expect(result.messages[0].content.text).toBe('# Minha Skill\n');
@@ -360,7 +360,7 @@ describe('prompts/get', () => {
     db.getSkillDetail.mockResolvedValue(null);
 
     await expect(surfaces.getPrompt('minha-skill')).rejects.toThrow(/não encontrado/);
-    expect(db.incrementViewCount).not.toHaveBeenCalled();
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 });
 
@@ -412,7 +412,7 @@ describe('escopo de outro MCP virtual', () => {
 
     const result = await virtual.get_skill({ slug: 'minha-skill' });
 
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-2');
+    expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-2', origin: 'mcp' }));
     expect(result.content[0].text).toContain(
       'download (zip): https://mcp.exemplo.dev/virtual/time-a/skills/minha-skill/download',
     );
@@ -468,6 +468,6 @@ describe('escopo de outro MCP virtual', () => {
     expect(db.getSkillDetail).toHaveBeenNthCalledWith(2, 'minha-skill', {
       virtualMcp: { uuid: 'mcp-2', surface: 'resource' },
     });
-    expect(db.incrementViewCount).toHaveBeenCalledWith('uuid-1', 'mcp-2');
+    expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-2', origin: 'mcp' }));
   });
 });

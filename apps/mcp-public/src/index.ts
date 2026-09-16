@@ -6,8 +6,9 @@ import { assertNoLegacyAuthEnv, config } from './config.js';
 import { registrarDownloads } from './downloads.js';
 import { SESSION_TTL_MS, createHttpApp, type McpApp } from './http.js';
 import { createMcpServer } from './server.js';
-import { createSessionTracker, type SessionScope } from './sessions.js';
+import { createSessionTracker, statelessSessionId, type SessionScope } from './sessions.js';
 import type { VirtualScope } from './tools.js';
+import { accessContextOf } from './access.js';
 
 /**
  * O escopo do vMCP desta requisição — `rootAuth` ou `virtualAuth` já o
@@ -20,7 +21,12 @@ import type { VirtualScope } from './tools.js';
  */
 function escopoDe(req: Request): VirtualScope {
   const origem = config.publicUrl || `${req.protocol}://${req.get('host')}`;
-  return { mcp: req.virtual!.mcp, baseUrl: `${origem}${req.baseUrl}` };
+  // O registro de acessos leva a credencial e a origem; no stateless, que não
+  // tem sessão, leva a mesma chave sintética com que a sessão é contabilizada.
+  const access = accessContextOf(req);
+  const sessao = escopoDaSessao(req);
+  if (sessao && req.path.endsWith('/mcp/stateless')) access.sessionId = statelessSessionId(req, sessao);
+  return { mcp: req.virtual!.mcp, baseUrl: `${origem}${req.baseUrl}`, access };
 }
 
 /**
@@ -31,13 +37,8 @@ function escopoDe(req: Request): VirtualScope {
 function escopoDaSessao(req: Request): SessionScope | undefined {
   const caller = req.virtual;
   if (!caller) return undefined;
-  const keyMatch = /:key:([^:]+)$/.exec(caller.identity);
-  return {
-    virtualMcpUuid: caller.mcp.uuid,
-    virtualMcpSlug: caller.mcp.slug,
-    auth: keyMatch ? 'key' : 'open',
-    keyId: keyMatch?.[1] ?? null,
-  };
+  const { auth, keyId } = accessContextOf(req);
+  return { virtualMcpUuid: caller.mcp.uuid, virtualMcpSlug: caller.mcp.slug, auth, keyId };
 }
 
 /** O que `GET /` anuncia sobre a raiz: qual vMCP responde nela, ou por que nenhum. */

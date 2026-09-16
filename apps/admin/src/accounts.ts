@@ -333,6 +333,36 @@ export async function issueKey(
   return { key, token: generated.token };
 }
 
+/** A ficha de uma conta no painel (`docs/13-fichas-e-acessos.md` §3.4): só admin chega aqui. */
+export async function getAccount(uuid: string): Promise<UserSummary> {
+  const target = await getUserByUuid(uuid);
+  if (!target) throw notFound('Conta não encontrada');
+  return toPublicUser(target);
+}
+
+/** As chaves `psk_` de uma conta, na guia Chaves da ficha — inclusive as revogadas, como histórico. */
+export async function listAccountKeys(uuid: string): Promise<ApiKeySummary[]> {
+  await getAccount(uuid);
+  return listApiKeys(uuid);
+}
+
+/**
+ * O admin revoga uma chave de outra conta pela ficha dela. O escopo pelo dono
+ * garante que o id pertence àquela conta — uma chave de terceiro é 404.
+ */
+export async function revokeAccountKey(actor: AuthUser, uuid: string, id: string): Promise<void> {
+  const target = await getAccount(uuid);
+  const revoked = await revokeApiKey(id, target.uuid);
+  if (!revoked) throw notFound('Chave não encontrada ou já revogada');
+
+  await recordAccountAudit({
+    action: 'key.revoke',
+    source: SOURCE,
+    actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
+    targetLabel: `${target.email}: ${id}`,
+  });
+}
+
 export async function revokeKey(user: AuthUser, id: string): Promise<void> {
   // Admin revoga qualquer chave; os demais, só as próprias.
   const scope = user.role === 'admin' ? null : user.uuid;

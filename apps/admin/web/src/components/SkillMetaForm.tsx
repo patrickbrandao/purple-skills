@@ -22,12 +22,18 @@ export function SkillMetaForm({
   slugPlaceholder,
   slugRequired = true,
   nameRequired = true,
+  hideDescription = false,
+  disabled = false,
 }: {
   values: SkillMetaValues;
   onChange: (patch: Partial<SkillMetaValues>) => void;
   slugPlaceholder?: string;
   slugRequired?: boolean;
   nameRequired?: boolean;
+  /** Na ficha de edição a descrição mora na guia Skill, não aqui. */
+  hideDescription?: boolean;
+  /** Quem não edita a skill vê os campos, mas travados. */
+  disabled?: boolean;
 }) {
   return (
     <div className="grid gap-4">
@@ -39,6 +45,7 @@ export function SkillMetaForm({
             onChange={(event) => onChange({ slug: event.target.value })}
             placeholder={slugPlaceholder}
             required={slugRequired}
+            disabled={disabled}
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
@@ -52,19 +59,23 @@ export function SkillMetaForm({
             onChange={(event) => onChange({ name: event.target.value })}
             placeholder="Conventional Commits"
             required={nameRequired}
+            disabled={disabled}
           />
         </Field>
       </div>
 
-      <Field label="Descrição" hint="Diz o que a skill faz e quando usá-la — é por ela que o agente decide acionar a skill.">
-        <textarea
-          className="field"
-          value={values.description}
-          onChange={(event) => onChange({ description: event.target.value })}
-          rows={3}
-          placeholder="O que esta skill faz, em uma frase."
-        />
-      </Field>
+      {!hideDescription && (
+        <Field label="Descrição" hint="Diz o que a skill faz e quando usá-la — é por ela que o agente decide acionar a skill.">
+          <textarea
+            className="field"
+            value={values.description}
+            onChange={(event) => onChange({ description: event.target.value })}
+            rows={3}
+            placeholder="O que esta skill faz, em uma frase."
+            disabled={disabled}
+          />
+        </Field>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Field label="Tags (separadas por vírgula)">
@@ -73,6 +84,7 @@ export function SkillMetaForm({
             value={values.tags}
             onChange={(event) => onChange({ tags: event.target.value })}
             placeholder="git, workflow, produtividade"
+            disabled={disabled}
           />
         </Field>
 
@@ -85,6 +97,7 @@ export function SkillMetaForm({
               onChange={(event) => onChange({ icon: event.target.value })}
               placeholder="🐘 ou https://…/logo.png"
               spellCheck={false}
+              disabled={disabled}
             />
           </div>
         </Field>

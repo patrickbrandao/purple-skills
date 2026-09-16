@@ -34,6 +34,8 @@ import { LoginPage } from './pages/LoginPage.js';
 import { ChangePasswordPage } from './pages/ChangePasswordPage.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { UsersPage } from './pages/UsersPage.js';
+import { UserPage } from './pages/UserPage.js';
+import { UserEditorPage } from './pages/UserEditorPage.js';
 import { SkillsPage } from './pages/SkillsPage.js';
 import { SkillViewPage } from './pages/SkillViewPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
@@ -41,6 +43,7 @@ import { NewSkillPage } from './pages/NewSkillPage.js';
 import { ServersPage } from './pages/ServersPage.js';
 import { CatalogsPage } from './pages/CatalogsPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
+import { CatalogEditorPage } from './pages/CatalogEditorPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { AuditPage } from './pages/AuditPage.js';
 
@@ -153,11 +156,13 @@ function Shell({ session, user, onLogout }: { session: Session; user: SessionUse
           path="/skills/new"
           element={canCreate(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
         />
-        <Route path="/skills/:slug" element={<SkillViewPage session={session} user={user} />} />
-        {/* Sem trava de papel: o editor já esconde o que o papel não permite. */}
-        <Route path="/skills/:slug/editar" element={<SkillEditorPage session={session} user={user} />} />
+        {/* As fichas têm guias em rotas próprias (`/propriedades`, `/acessos`); a edição fica sob `/editar`. */}
+        {/* Sem trava de papel: o editor já trava o que o acesso não permite. */}
+        <Route path="/skills/:slug/editar/*" element={<SkillEditorPage session={session} user={user} />} />
+        <Route path="/skills/:slug/*" element={<SkillViewPage session={session} user={user} />} />
         <Route path="/catalogos" element={<CatalogsPage user={user} />} />
-        <Route path="/catalogos/:slug" element={<CatalogPage user={user} />} />
+        <Route path="/catalogos/:slug/editar/*" element={<CatalogEditorPage user={user} />} />
+        <Route path="/catalogos/:slug/*" element={<CatalogPage session={session} user={user} />} />
         <Route
           path="/auditoria/*"
           element={admin ? <AuditPage session={session} /> : <Navigate to="/mcps" replace />}
@@ -166,6 +171,14 @@ function Shell({ session, user, onLogout }: { session: Session; user: SessionUse
         <Route
           path="/users"
           element={admin && !user.legacy ? <UsersPage me={user} /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/users/:uuid/editar/*"
+          element={admin && !user.legacy ? <UserEditorPage me={user} /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/users/:uuid/*"
+          element={admin && !user.legacy ? <UserPage me={user} /> : <Navigate to="/mcps" replace />}
         />
         <Route
           path="/configuracoes"

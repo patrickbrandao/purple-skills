@@ -173,7 +173,8 @@ vezes, e o total do servidor deixaria de bater com o que se vê.
 | Rota | O que é |
 |------|---------|
 | `/catalogos` | Lista (todos para admin, os próprios para os demais): nome, dono, membros ativos/total, vMCPs, acessos, estado; "Novo catálogo" num modal com nome, slug e descrição |
-| `/catalogos/:slug` | O catálogo: a tabela de skills (ícone, nome, participação como caixa, alerta de skill desligada, "Remover"), a busca "Adicionar skill" (paleta), o painel "Vinculado em" com os vMCPs e as portas, e a configuração (nome, slug, descrição, ligado, dono para admin, remover) |
+| `/catalogos/:slug/*` | A ficha só leitura (`13` §3.3): guias Catálogo (descrição), Skills (os membros com o estado), Propriedades (configuração, "Vinculado em" com os vMCPs e as portas, acesso) e Acessos |
+| `/catalogos/:slug/editar/*` | A ficha de edição, mesmas guias: a tabela de skills com a participação como caixa e "Remover", a busca "Adicionar skill" (paleta), a configuração (nome, slug, descrição, ligado), o acesso e a zona de perigo |
 
 Na página da skill, o painel "Publicada em" ganha as linhas indiretas: um
 vMCP alcançado só por catálogo aparece com as portas em selos e "via

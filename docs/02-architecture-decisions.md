@@ -495,6 +495,31 @@ Desenho em [`12-acesso-granular.md`](12-acesso-granular.md). Migration `017`.
   `catalog.unshare`, `mcp.share` / `mcp.unshare`; transferência e flag
   público são `update` do objeto.
 
+## 12.4 Fichas, colmeia e registro de acessos
+
+Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). Migration `018`.
+
+- **Lista → visualizar → editar.** A ficha de uma skill ou de um catálogo é
+  só leitura; toda alteração — conteúdo, metadados, publicação, acesso,
+  remover — mora em `/editar`, com a mesma organização de guias: Skill,
+  Propriedades e Acessos na skill; Catálogo, Skills, Propriedades e Acessos
+  no catálogo. Guias são rotas.
+- **Registro por leitura** em `skill_accesses`: cada `get_skill`,
+  resource, prompt, SKILL.md avulso e pacote do MCP público, o detalhe, o
+  SKILL.md e o pacote do site, e o `get_skill` do mcp-admin por chave `psk_`
+  viram uma linha com quem leu (chave `psv_`, conta, aberto ou anônimo), o
+  servidor, os catálogos por onde a skill chegou, sessão, IP e cliente. Os
+  contadores são somados na mesma escrita; nunca é podada; cópias de slug,
+  nome, chave e e-mail sobrevivem à remoção do que nomeiam. A guia é de
+  quem administra o objeto (`manage`).
+- **A colmeia** do card do servidor: um hexágono liso por skill direta
+  (`rgb(59, 145, 145)`) e por catálogo (`rgb(112, 59, 145)`), até 19, e um
+  "+N" com o resto.
+- **Usuários seguem o mesmo princípio**: lista que só navega, "Nova conta"
+  num modal, ficha só leitura e edição com as guias Conta, Chaves, Acessos
+  (as leituras pelas chaves `psk_` da conta) e Atividade (a auditoria
+  filtrada pelo ator). Migration `019` (índice por conta).
+
 ## 13. Riscos aceitos conscientemente (v1)
 
 Para manter o software "simples, bonito e pontual" conforme pedido, as
@@ -544,3 +569,9 @@ migração nasce aberto, e quem protegia o principal com `MCP_PUBLIC_KEY` é
 avisado só pela trava de boot; trocar o padrão derruba as sessões abertas na
 raiz até reconectar; todo MCP virtual aberto é público de fato e listado no
 site, sem a confirmação que `08` exigia.
+
+**Riscos introduzidos pelo registro de acessos**
+([`13`](13-fichas-e-acessos.md) §7): `skill_accesses` cresce uma linha por
+leitura, para sempre, por decisão; as cópias de nome, chave e e-mail
+envelhecem (dizem o que aconteceu, não o que é); e quem só administra um
+servidor entra na edição da skill com os campos travados, para publicá-la.

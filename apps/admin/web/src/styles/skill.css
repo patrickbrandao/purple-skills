@@ -29,6 +29,37 @@
   line-height: 1.55;
 }
 
+/* ---- a descrição: uma caixa da largura da guia, acima do prompt ---- */
+.desc-box {
+  margin-bottom: 18px;
+}
+.desc-box .desc-text {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.desc-box .desc-text.empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.desc-box .desc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* ---- as propriedades em leitura: pares chave/valor mais largos ---- */
+.props-kv {
+  grid-template-columns: 140px minmax(0, 1fr);
+  font-size: 13px;
+}
+.props-kv dd.mono {
+  font-family: var(--font-mono);
+}
+
 /* ---- o prompt em duas guias ---- */
 .doc-box {
   border: 1px solid var(--surface-3);
@@ -78,6 +109,72 @@
 }
 .doc-body {
   padding: 20px 24px;
+}
+/* a guia de um arquivo aberto no editor: o caminho e o botão de fechar */
+.doc-tabs .doc-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-width: 320px;
+}
+.doc-tabs .doc-file .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-tabs .doc-file .close {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--text-faint);
+}
+.doc-tabs .doc-file .close:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.doc-tabs .doc-file .close svg {
+  width: 11px;
+  height: 11px;
+}
+.doc-tabs .doc-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 6px;
+}
+/* a edição do SKILL.md: o frontmatter gerado (travado) sobre o corpo (livre) */
+.doc-edit {
+  padding: 16px 20px 20px;
+}
+.doc-edit .doc-frontmatter {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-surface);
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-sunken);
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-muted);
+  white-space: pre;
+}
+.doc-edit .doc-frontmatter .t {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+  white-space: normal;
+}
+.doc-edit textarea {
+  min-height: 420px;
 }
 .doc-source {
   margin: 0;

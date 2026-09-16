@@ -197,6 +197,8 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
       '015-mcp-sessions.sql',
       '016-catalogos.sql',
       '017-acesso-granular.sql',
+      '018-acessos-por-skill.sql',
+      '019-acessos-por-conta.sql',
     ];
     expect(await runMigrations(url!)).toEqual(NOVAS);
 

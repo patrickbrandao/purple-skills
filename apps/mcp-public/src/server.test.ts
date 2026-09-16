@@ -7,7 +7,7 @@ const db = vi.hoisted(() => ({
   listPublishedSkills: vi.fn(),
   getSkillDetail: vi.fn(),
   getSkillSummary: vi.fn(),
-  incrementViewCount: vi.fn(),
+  recordSkillAccess: vi.fn(),
   listTags: vi.fn(),
   readFile: vi.fn(),
 }));

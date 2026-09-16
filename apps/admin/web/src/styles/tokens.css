@@ -60,6 +60,12 @@
   --port-resources: #4f9fd8;
   --port-prompts: #d8a24f;
 
+  /* a colmeia do card de servidor: skill, catálogo e o "+N" — iguais nos dois temas, por pedido */
+  --hex-skill: rgb(59, 145, 145);
+  --hex-catalog: rgb(112, 59, 145);
+  --hex-more: var(--surface-4);
+  --hex-more-text: var(--text-dim);
+
   /* anel difuso de foco/hover e a única sombra "de verdade" (flutuantes) */
   --ring: 0 0 0 4px rgba(255, 255, 255, 0.06);
   --ring-accent: 0 0 0 3px rgba(121, 52, 199, 0.35);
@@ -117,6 +123,11 @@
   --port-tools: #7934c7;
   --port-resources: #2f7fbf;
   --port-prompts: #b47a1c;
+
+  --hex-skill: rgb(59, 145, 145);
+  --hex-catalog: rgb(112, 59, 145);
+  --hex-more: var(--surface-4);
+  --hex-more-text: var(--text-dim);
 
   --ring: 0 0 0 4px rgba(20, 18, 27, 0.05);
   --ring-accent: 0 0 0 3px rgba(121, 52, 199, 0.25);

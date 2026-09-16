@@ -498,6 +498,70 @@ export const mcpSessions = pgTable(
   ],
 );
 
+// ------------------------------------------------------ acessos por skill ---
+
+/**
+ * Uma linha por leitura de uma skill (`docs/13-fichas-e-acessos.md`,
+ * `schema/018-acessos-por-skill.sql`): o que a guia "Acessos" da skill e do
+ * catálogo listam. Gravada pelo MCP público, pelo site e pelo mcp-admin; o
+ * painel não grava. Toda FK é `SET NULL` e ao lado de cada uma vai a cópia
+ * (slug, nome, e-mail) que fica quando o objeto some. Os catálogos por onde
+ * a skill chegou ao vMCP são três arrays paralelos (mesma posição = mesmo
+ * catálogo), sem FK: a listagem confere `catalogs` para devolver o uuid nulo
+ * de um catálogo apagado. Nunca é podada. Os CHECKs de `kind`, `surface`,
+ * `origin` e `auth`, o de paralelismo dos arrays e o índice GIN ficam só no
+ * SQL.
+ */
+export const skillAccesses = pgTable(
+  'skill_accesses',
+  {
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    /** Nulo depois que a skill é apagada; slug e nome abaixo são as cópias que ficam. */
+    skillUuid: uuid('skill_uuid').references(() => skills.uuid, { onDelete: 'set null' }),
+    skillSlug: text('skill_slug').notNull(),
+    skillName: text('skill_name').notNull(),
+    kind: text('kind').notNull(),
+    surface: text('surface').notNull(),
+    origin: text('origin').notNull(),
+    auth: text('auth').notNull(),
+    /** Só no MCP público; nulo no site e no mcp-admin, ou depois que o vMCP é apagado. */
+    virtualMcpUuid: uuid('virtual_mcp_uuid').references(() => virtualMcps.uuid, {
+      onDelete: 'set null',
+    }),
+    virtualMcpSlug: text('virtual_mcp_slug'),
+    virtualMcpName: text('virtual_mcp_name'),
+    catalogUuids: uuid('catalog_uuids').array().notNull().default(sql`'{}'::uuid[]`),
+    catalogSlugs: text('catalog_slugs').array().notNull().default(sql`'{}'::text[]`),
+    catalogNames: text('catalog_names').array().notNull().default(sql`'{}'::text[]`),
+    /** A chave `psv_` do vMCP (`auth = 'key'`). */
+    keyId: uuid('key_id').references(() => virtualMcpKeys.id, { onDelete: 'set null' }),
+    keyName: text('key_name'),
+    /** A chave `psk_` e a conta dona dela (`auth = 'user'`, o mcp-admin). */
+    apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
+    apiKeyName: text('api_key_name'),
+    userUuid: uuid('user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
+    userEmail: text('user_email'),
+    /** O de `mcp_sessions.session_id`, sem FK: lá ele não é único. */
+    sessionId: text('session_id'),
+    /** Já resolvido pelo `trust proxy` do app. */
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    clientName: text('client_name'),
+    clientVersion: text('client_version'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('skill_accesses_skill_created_idx').on(table.skillUuid, table.createdAt),
+    index('skill_accesses_catalog_uuids_idx').using('gin', table.catalogUuids),
+    index('skill_accesses_virtual_mcp_created_idx').on(table.virtualMcpUuid, table.createdAt),
+    index('skill_accesses_created_idx').on(table.createdAt),
+    index('skill_accesses_key_id_idx').on(table.keyId),
+    index('skill_accesses_api_key_id_idx').on(table.apiKeyId),
+    // A guia da conta (`schema/019-acessos-por-conta.sql`), que substituiu o simples do `018`.
+    index('skill_accesses_user_created_idx').on(table.userUuid, table.createdAt),
+  ],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -516,3 +580,4 @@ export type CatalogGrantRow = typeof catalogGrants.$inferSelect;
 export type VirtualMcpGrantRow = typeof virtualMcpGrants.$inferSelect;
 export type SettingRow = typeof settings.$inferSelect;
 export type McpSessionRow = typeof mcpSessions.$inferSelect;
+export type SkillAccessRow = typeof skillAccesses.$inferSelect;
