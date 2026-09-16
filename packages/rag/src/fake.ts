@@ -387,7 +387,9 @@ export async function subirServidorFalso(
           embeddings: pedidos.map((p) => ({
             values: vetorFalso(textoDe(p.content?.parts), tamanho),
           })),
-          usageMetadata: { totalTokenCount: pedidos.length * 10 },
+          // O nome do campo é o da API real (conferido em 16/09/2026); não é
+          // `totalTokenCount`, que é o da API de geração.
+          usageMetadata: { promptTokenCount: pedidos.length * 10 },
         });
         return;
       }

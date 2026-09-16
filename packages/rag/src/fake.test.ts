@@ -22,7 +22,12 @@ import {
   TEXT_EMBEDDING_3_SMALL,
   VOYAGE_4_LITE,
 } from './models.js';
-import { RagAuthError, RagConfigError, RagRateLimitError } from './driver.js';
+import {
+  RagAuthError,
+  RagConfigError,
+  RagRateLimitError,
+  type UsoDeTokens,
+} from './driver.js';
 
 let servidor: ServidorFalso | null = null;
 
@@ -169,6 +174,27 @@ describe('o servidor falso fala os três protocolos', () => {
     expect(corpo.input).toEqual(['alfa', 'bravo']);
     expect(corpo).not.toHaveProperty('dimensions');
     expect(servidor.requisicoes[0]!.caminho).toBe('/v1/embeddings');
+  });
+
+  it('google: a contagem de tokens do lote chega pelo onUsage', async () => {
+    // Só `batchEmbedContents` traz `usageMetadata`; a consulta fica sem
+    // contagem, e é assim que o indexador sabe quando está estimando.
+    const usos: UsoDeTokens[] = [];
+    servidor = await subirServidorFalso({ provedor: 'google' });
+    const driver = new GoogleDriver({
+      apiKey: 'k',
+      baseUrl: servidor.baseUrl,
+      maxRetries: 0,
+      onUsage: (u) => usos.push(u),
+    });
+
+    await driver.embedDocuments(GEMINI_EMBEDDING_2, ['alfa', 'bravo']);
+    expect(usos).toEqual([
+      { model: 'gemini-embedding-2', tokens: 20, textos: 2, metodo: 'documents' },
+    ]);
+
+    await driver.embedQuery(GEMINI_EMBEDDING_2, 'x');
+    expect(usos).toHaveLength(1);
   });
 
   it('openai: o modelo grande devolve 3072, como o pequeno devolve 1536', async () => {

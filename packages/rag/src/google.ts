@@ -25,6 +25,7 @@ import {
   RagUnavailableError,
   type EmbeddingDriver,
   type EmbeddingModel,
+  type UsoDeTokens,
 } from './driver.js';
 import { BASE_URL_GOOGLE, GEMINI_EMBEDDING_2 } from './models.js';
 import {
@@ -56,6 +57,7 @@ export class GoogleDriver implements EmbeddingDriver {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly http: ClienteHttp;
+  private readonly onUsage: ((uso: UsoDeTokens) => void) | undefined;
 
   constructor(options: GoogleDriverOptions) {
     if (!options.apiKey || options.apiKey.trim() === '') {
@@ -64,6 +66,7 @@ export class GoogleDriver implements EmbeddingDriver {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? BASE_URL_GOOGLE).replace(/\/+$/, '');
     this.http = new ClienteHttp('o Google', options);
+    this.onUsage = options.onUsage;
   }
 
   /**
@@ -113,6 +116,21 @@ export class GoogleDriver implements EmbeddingDriver {
 
     const resposta = await this.pedir(`${model.id}:batchEmbedContents`, corpo, signal);
     const embeddings = (resposta as { embeddings?: { values?: unknown }[] }).embeddings;
+
+    // Só o lote informa `usageMetadata`; `embedContent` não traz contagem
+    // nenhuma, e a consulta fica sem token informado — o que é honesto.
+    //
+    // O campo é `promptTokenCount`, conferido contra a API real em 16/09/2026.
+    // A especificação dizia `totalTokenCount`, que é o nome que a API de
+    // geração usa; os dois são lidos para não quebrar se ela mudar de ideia.
+    const uso = (resposta as {
+      usageMetadata?: { totalTokenCount?: number; promptTokenCount?: number };
+    }).usageMetadata;
+    const tokens = uso?.totalTokenCount ?? uso?.promptTokenCount;
+    if (typeof tokens === 'number') {
+      this.onUsage?.({ model: model.id, tokens, textos: lote.length, metodo: 'documents' });
+    }
+
     if (!Array.isArray(embeddings) || embeddings.length !== lote.length) {
       throw new RagConfigError(
         `batchEmbedContents: esperados ${lote.length} vetores, recebidos ${
