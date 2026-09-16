@@ -105,14 +105,17 @@ npm test                   # testes unitários (Vitest)
 npm run typecheck          # TypeScript em todos os workspaces
 ```
 
-Os testes das queries de `database/` exigem um Postgres real e ficam
-desligados por padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
+Os testes de integração — as queries de `database/`, o indexador e a busca —
+exigem um Postgres real **com a extensão `vector`** e ficam desligados por
+padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
 **descartável** — o schema é recriado do zero a cada execução:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
   npx vitest run database/src/files.integration.test.ts
 ```
+
+Com a variável definida, `npm test` roda a suíte inteira, integração incluída.
 
 ## Estrutura do repositório
 
