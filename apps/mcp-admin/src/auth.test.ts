@@ -15,9 +15,13 @@ vi.mock('./config.js', () => ({
 
 const { resolveCaller } = await import('./auth.js');
 
-/** Requisição mínima: `resolveCaller` só lê o header Authorization. */
+/** Requisição mínima: `resolveCaller` lê o header Authorization e, para o registro de acessos, o IP e o agente. */
 const request = (authorization?: string) =>
-  ({ header: (name: string) => (name.toLowerCase() === 'authorization' ? authorization : undefined) }) as never;
+  ({
+    header: (name: string) => (name.toLowerCase() === 'authorization' ? authorization : undefined),
+    get: (name: string) => (name.toLowerCase() === 'user-agent' ? 'agente-de-teste/1.0' : undefined),
+    ip: '203.0.113.7',
+  }) as never;
 
 const user = {
   uuid: 'uuid-do-dono',
@@ -39,6 +43,8 @@ describe('credencial do MCP administrativo', () => {
       actor: { userUuid: null, label: 'token-global' },
       role: 'admin',
       identity: 'token-global',
+      ip: '203.0.113.7',
+      userAgent: 'agente-de-teste/1.0',
     });
   });
 
@@ -63,10 +69,14 @@ describe('credencial do MCP administrativo', () => {
     const caller = await resolveCaller(request(`Bearer ${key.token}`));
 
     expect(db.getApiKeyByPrefix).toHaveBeenCalledWith(key.prefix);
+    // A chave, o IP e o agente vão junto: é o que o registro de acessos grava.
     expect(caller).toEqual({
       actor: { userUuid: user.uuid, label: user.email },
       role: 'editor',
       identity: 'key:id-da-chave',
+      apiKeyId: 'id-da-chave',
+      ip: '203.0.113.7',
+      userAgent: 'agente-de-teste/1.0',
     });
     expect(db.touchApiKey).toHaveBeenCalledWith('id-da-chave');
   });

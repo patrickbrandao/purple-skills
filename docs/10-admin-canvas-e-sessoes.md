@@ -138,11 +138,11 @@ Nada disso é tabela nova.
 
 | Rota | O que é |
 |------|---------|
-| `/mcps` | Servidores MCP, a home: cards (ou lista) com miniatura das skills, selos, estado e clientes online; ordenação; "Novo vMCP" num modal |
+| `/mcps` | Servidores MCP, a home: cards (ou lista) com a colmeia de skills e catálogos (`13` §4), selos, estado e clientes online; ordenação; "Novo vMCP" num modal |
 | `/mcps/:slug` | O servidor: abas Canvas, Sessões, Chaves, Configurações |
-| `/skills`, `/skills/:slug`, `/skills/:slug/editar`, `/skills/new` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), leitura, editor e criação/importação |
+| `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/skills/new` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação |
 | `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
-| `/users` | Usuários (admin) |
+| `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
 | `/configuracoes` | Instalação: o MCP padrão e o que veio do ambiente (admin) |
 | `/account` | Minha conta: senha e chaves `psk_` |
 

@@ -8,6 +8,7 @@ import {
   listSkills,
   listTags,
   readFile,
+  recordSkillAccess,
   removeSkillGrant,
   setFile,
   setFiles,
@@ -122,6 +123,33 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
   const actor = caller.actor;
   const viewer = viewerOf(caller);
 
+  /**
+   * O registro por leitura (`docs/13-fichas-e-acessos.md`): `get_skill` por
+   * uma chave `psk_` vira uma linha com a conta e a chave. O token global não
+   * é uma conta e não entra — como o painel, é o operador lendo o próprio
+   * acervo. Melhor esforço: uma falha vai para o log, não para a resposta.
+   */
+  const registrarLeitura = (skillUuid: string): void => {
+    if (!actor.userUuid) return;
+    Promise.resolve()
+      .then(() =>
+        recordSkillAccess({
+          skillUuid,
+          kind: 'view',
+          surface: 'admin-tool',
+          origin: 'mcp-admin',
+          auth: 'user',
+          userUuid: actor.userUuid ?? undefined,
+          apiKeyId: caller.apiKeyId ?? undefined,
+          ip: caller.ip,
+          userAgent: caller.userAgent,
+        }),
+      )
+      .catch((err: unknown) => {
+        console.warn('[mcp-admin] não foi possível registrar o acesso:', (err as Error).message);
+      });
+  };
+
   /** `null` quando pode criar; um `ToolResult` de recusa quando não. */
   const denyCreate = (): ToolResult | null =>
     canCreate(caller.role)
@@ -208,6 +236,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     async get_skill(args: { slug: string }): Promise<ToolResult> {
       const detail = await getSkillDetail(args.slug, { viewer });
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
+
+      registrarLeitura(detail.uuid);
 
       return asJson({
         slug: detail.slug,

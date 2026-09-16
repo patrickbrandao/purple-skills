@@ -50,13 +50,25 @@ servidor e aceitam a mesma credencial usada para conectar.${
  * no `serverInfo`.
  */
 export function createMcpServer(scope: VirtualScope): McpServer {
-  const handlers = createHandlers(scope);
-  const surfaces = createSurfaces(scope);
-
   const server = new McpServer(
     { name: `${config.serverName}-${scope.mcp.slug}`, version: config.version },
     { instructions: instrucoes(scope) },
   );
+
+  // O registro de acessos quer saber que cliente leu e em que sessão: os
+  // dois só existem depois do `initialize`, por isso chegam como getters.
+  const scoped: VirtualScope = scope.access
+    ? {
+        ...scope,
+        access: {
+          ...scope.access,
+          client: () => server.server.getClientVersion(),
+          transportSessionId: () => server.server.transport?.sessionId,
+        },
+      }
+    : scope;
+  const handlers = createHandlers(scoped);
+  const surfaces = createSurfaces(scoped);
 
   registrarSuperficies(server, surfaces);
 

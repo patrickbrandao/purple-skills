@@ -16,7 +16,7 @@ import {
 } from '../api.js';
 import { AccessBadge } from '../components/AccessPanel.js';
 import { Button, EmptyRow, Field, Kbd, McpStateBadges, Menu, MenuItem, Modal, Skel, Status, useStored } from '../components/ui.js';
-import { SkillIcon } from '../components/SkillIcon.js';
+import { Honeycomb } from '../components/Honeycomb.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
@@ -271,19 +271,9 @@ function ServerCard({ mcp, user, index, favorite, onFavorite }: { mcp: VirtualMc
         </button>
       </div>
       <div className="preview">
-        {mcp.preview.length > 0 ? (
-          <div className="icons">
-            {mcp.preview.map((skill) => (
-              <SkillIcon key={skill.slug} icon={skill.icon} name={skill.name} slug={skill.slug} />
-            ))}
-            {mcp.skillCount > mcp.preview.length && (
-              <span className="skill-icon" title={`mais ${mcp.skillCount - mcp.preview.length}`}>
-                <span className="mono" style={{ color: 'var(--text-muted)' }}>
-                  +{mcp.skillCount - mcp.preview.length}
-                </span>
-              </span>
-            )}
-          </div>
+        {/* A colmeia: um hexágono por skill direta e por catálogo, até 19, e o "+N" com o resto. */}
+        {mcp.skillCount + mcp.catalogCount > 0 ? (
+          <Honeycomb mcp={mcp} />
         ) : (
           <span className="none">{mcp.isActive ? 'Nenhuma skill ainda' : ''}</span>
         )}

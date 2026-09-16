@@ -588,6 +588,52 @@ implementação decidiu além dele:
 - **O selo de origem** do painel (`AccessBadge`) some para admin: ele é dono
   de tudo e o selo não diria nada.
 
+## Fichas, colmeia e registro de acessos
+
+Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). O que a
+implementação decidiu além dele:
+
+- **Um `recordSkillAccess` no lugar dos dois incrementos.** Os apps chamam
+  `recordSkillAccess(input)`, que grava a linha e soma os contadores pela
+  mesma regra de caminho de antes; `incrementViewCount`/`incrementDownloadCount`
+  continuam exportados por compatibilidade, sem chamadores no repositório.
+  Para `origin: 'mcp-admin'` a linha entra e os contadores **não** mudam: o
+  `get_skill` do mcp-admin nunca contou.
+- **Disparo sem `await`.** O registro é `Promise.resolve().then(() =>
+  recordSkillAccess(…)).catch(log)`: o mock dos testes pode devolver
+  `undefined`, e uma falha síncrona cai no mesmo `catch`. As respostas do
+  site e do MCP não esperam o INSERT.
+- **O contexto do MCP público viaja no escopo** (`VirtualScope.access`):
+  credencial, IP e agente vêm da requisição que criou o servidor; o
+  `clientInfo` e o id da sessão do transporte são getters ligados ao
+  `McpServer` em `server.ts`, porque só existem depois do `initialize`. No
+  stateless, o id é a chave sintética das sessões. Os downloads (`.zip` e
+  SKILL.md avulso) montam o contexto da própria requisição.
+- **O mcp-admin registra pela chave `psk_`** e ignora o token global: `Caller`
+  ganhou `apiKeyId`, `ip` e `userAgent`, preenchidos em `resolveCaller`.
+- **O painel não registra** nem ao abrir a ficha nem ao baixar o `.zip`, como
+  já não contava.
+- **`SkillMcpsPanel` e `AccessPanel` ganharam `readOnly`**, em vez de um
+  segundo componente: a ficha de leitura mostra as mesmas tabelas sem
+  nenhum controle. `SkillMetaForm` ganhou `hideDescription` e `disabled`,
+  porque a descrição mora na guia Skill.
+- **"Público" saiu do formulário da skill.** Em Editar ele só existe na seção
+  Acesso, gravado na hora; o Salvar do cabeçalho grava descrição, SKILL.md,
+  metadados e "ligada".
+- **O botão Editar da skill** consulta `GET /api/mcps` para saber se a conta
+  edita algum servidor — é o mesmo pedido que "Publicada em" já fazia em
+  edição, feito uma vez na leitura.
+- **`preview` sobe de 8 para 19** e a listagem de vMCPs ganha
+  `previewCatalogs`; o fixture do `import.test.ts` acompanha.
+- **A ficha de conta reusa o que existe.** `GET /api/users/:uuid` é
+  `getUserByUuid` + `toPublicUser`; as chaves vêm de `listApiKeys`; revogar
+  pela ficha usa `revokeApiKey(id, uuidDaConta)` — o escopo pelo dono
+  garante que o id é daquela conta — e audita `key.revoke` com
+  `"<e-mail>: <id>"`; a guia Acessos é `listSkillAccesses({ userUuid })`
+  (migration `019`, índice `(user_uuid, created_at DESC)`); a guia
+  Atividade é `GET /api/audit?actor=`. `ROLES` e `ROLE_HINT` foram para o
+  `api.ts` do painel, porque três telas os usam.
+
 ## Portas
 
 | Serviço | Porta |

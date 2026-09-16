@@ -225,6 +225,14 @@ export const ROLE_LABEL: Record<Role, string> = {
  * papel decide só criar e gerenciar a instalação; o resto é o `access` de
  * cada objeto (`docs/12-acesso-granular.md`).
  */
+export const ROLES: Role[] = ['admin', 'editor', 'membro'];
+
+export const ROLE_HINT: Record<Role, string> = {
+  admin: 'Vê e administra tudo, inclusive contas, auditoria e o MCP padrão.',
+  editor: 'Cria skills, catálogos e servidores (e vira dono); administra o que é seu ou lhe foi concedido.',
+  membro: 'Não cria nada; administra o que é seu ou lhe foi concedido e lê o que é público.',
+};
+
 export const canCreate = (role: Role) => role === 'admin' || role === 'editor';
 export const canManageUsers = (role: Role) => role === 'admin';
 
@@ -292,6 +300,7 @@ export type ApiKeySummary = {
 export type CanvasPoint = { x: number; y: number };
 export type VirtualMcpLayout = { server?: CanvasPoint; internet?: CanvasPoint };
 export type VirtualMcpPreviewSkill = { slug: string; name: string; icon: string | null };
+export type VirtualMcpPreviewCatalog = { slug: string; name: string; isActive: boolean };
 
 export type VirtualMcpSummary = Accessible & {
   uuid: string;
@@ -308,9 +317,12 @@ export type VirtualMcpSummary = Accessible & {
   /** É o vMCP que responde em `/mcp`. */
   isDefault: boolean;
   onlineSessions: number;
+  /** Até 19 skills com vínculo direto, por nome, para a colmeia do card. */
   preview: VirtualMcpPreviewSkill[];
   /** Catálogos vinculados, ligados ou não. */
   catalogCount: number;
+  /** Até 19 catálogos vinculados, por nome, para a colmeia do card. */
+  previewCatalogs: VirtualMcpPreviewCatalog[];
   createdAt: string;
   updatedAt: string;
 };
@@ -484,6 +496,63 @@ export type McpSessionPage = {
 
 export type OnlineCount = { total: number; byTransport: Record<McpSessionTransport, number> };
 
+// ------------------------------------------------------- acessos por skill ---
+
+/**
+ * Uma leitura de skill registrada pelo MCP público, pelo site ou pelo
+ * mcp-admin (`docs/13-fichas-e-acessos.md`): a guia "Acessos" da skill e do
+ * catálogo. Cópias de slug, nome, e-mail e chave sobrevivem à remoção do que
+ * elas nomeiam.
+ */
+export type SkillAccessKind = 'view' | 'download';
+export type SkillAccessSurface = 'tool' | 'resource' | 'prompt' | 'file' | 'download' | 'page' | 'admin-tool';
+export type SkillAccessOrigin = 'mcp' | 'site' | 'mcp-admin';
+export type SkillAccessAuth = 'open' | 'key' | 'user' | 'anonymous';
+
+export type SkillAccessEntry = {
+  id: string;
+  skillUuid: string | null;
+  skillSlug: string;
+  skillName: string;
+  kind: SkillAccessKind;
+  surface: SkillAccessSurface;
+  origin: SkillAccessOrigin;
+  auth: SkillAccessAuth;
+  virtualMcpUuid: string | null;
+  virtualMcpSlug: string | null;
+  virtualMcpName: string | null;
+  /** Os catálogos por onde a skill chegou ao vMCP nesta leitura; vazio no vínculo direto, no site e no mcp-admin. */
+  catalogs: { uuid: string | null; slug: string; name: string }[];
+  keyId: string | null;
+  keyName: string | null;
+  apiKeyId: string | null;
+  apiKeyName: string | null;
+  userUuid: string | null;
+  userEmail: string | null;
+  sessionId: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  clientName: string | null;
+  clientVersion: string | null;
+  createdAt: string;
+};
+
+export type SkillAccessPage = {
+  items: SkillAccessEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AccessLogQuery = {
+  /** Texto livre: e-mail, nome de chave, IP, cliente ou id de sessão. */
+  q?: string;
+  origin?: SkillAccessOrigin | '';
+  kind?: SkillAccessKind | '';
+  limit?: number;
+  offset?: number;
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -576,6 +645,18 @@ export const updateUser = (uuid: string, body: { name?: string; role?: Role; isA
     method: 'PATCH',
     body: json(body),
   });
+
+/** A ficha de uma conta (`docs/13-fichas-e-acessos.md` §3.4), só admin. */
+export const getUser = (uuid: string) => request<UserSummary>(`/api/users/${encodeURIComponent(uuid)}`);
+
+export const getUserKeys = (uuid: string) =>
+  request<{ items: ApiKeySummary[] }>(`/api/users/${encodeURIComponent(uuid)}/keys`);
+
+export const revokeUserKey = (uuid: string, id: string) =>
+  request<{ revoked: boolean }>(`/api/users/${encodeURIComponent(uuid)}/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+export const getUserAccesses = (uuid: string, query: AccessLogQuery = {}) =>
+  request<SkillAccessPage>(`/api/users/${encodeURIComponent(uuid)}/accesses${qs(query)}`);
 
 export const resetUserPassword = (uuid: string) =>
   request<{ user: UserSummary; temporaryPassword: string }>(
@@ -848,6 +929,13 @@ export const getMcpSessions = (slug: string, query: { online?: boolean; limit?: 
 
 export const getSessions = (query: { mcp?: string; online?: boolean; limit?: number; offset?: number } = {}) =>
   request<McpSessionPage>(`/api/sessions${qs(query)}`);
+
+/** Os últimos acessos a uma skill (quem administra) e a um catálogo (idem), paginados. */
+export const getSkillAccesses = (slug: string, query: AccessLogQuery = {}) =>
+  request<SkillAccessPage>(`/api/skills/${encodeURIComponent(slug)}/accesses${qs(query)}`);
+
+export const getCatalogAccesses = (slug: string, query: AccessLogQuery = {}) =>
+  request<SkillAccessPage>(`${catalogPath(slug)}/accesses${qs(query)}`);
 
 export const getMcpKeys = (slug: string) =>
   request<{ items: VirtualMcpKeySummary[] }>(`${mcpPath(slug)}/keys`);

@@ -15,6 +15,7 @@ const { AppError } = vi.hoisted(() => ({
 
 const db = vi.hoisted(() => ({
   createSkill: vi.fn(),
+  recordSkillAccess: vi.fn(),
   updateSkill: vi.fn(),
   getVirtualMcp: vi.fn(),
   getSkillSummary: vi.fn(),

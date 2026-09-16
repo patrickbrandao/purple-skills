@@ -65,18 +65,19 @@ function FlagBadges({ value }: { value: LinkFlags }) {
 }
 
 /** Os vMCPs que a sessão administra: admin vê todos, os demais os seus. */
-function useManageableMcps() {
+function useManageableMcps(enabled = true) {
   const toast = useToast();
-  const [mcps, setMcps] = useState<VirtualMcpSummary[] | null>(null);
+  const [mcps, setMcps] = useState<VirtualMcpSummary[] | null>(enabled ? null : []);
 
   useEffect(() => {
+    if (!enabled) return;
     getMcps()
       .then((data) => setMcps(data.items))
       .catch((err) => {
         toast.error((err as Error).message);
         setMcps([]);
       });
-  }, [toast]);
+  }, [toast, enabled]);
 
   return mcps;
 }
@@ -165,16 +166,26 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
  * o catálogo naquele servidor, e é o jeito de restringir uma skill sem tirá-la
  * do grupo.
  */
-export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onChanged: (detail: SkillDetail) => void }) {
+export function SkillMcpsPanel({
+  skill,
+  onChanged,
+  readOnly = false,
+}: {
+  skill: SkillDetail;
+  onChanged: (detail: SkillDetail) => void;
+  /** A ficha de leitura: só os servidores em que a skill está, com as portas em selos. */
+  readOnly?: boolean;
+}) {
   const toast = useToast();
-  const manageable = useManageableMcps();
+  const manageable = useManageableMcps(!readOnly);
   const [drafts, setDrafts] = useState<Record<string, LinkFlags>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   const linked = useMemo(() => new Map(skill.mcps.map((mcp) => [mcp.uuid, mcp])), [skill]);
 
   const rows = useMemo(() => {
-    const own = manageable ?? [];
+    // Só leitura: nenhuma linha é editável, e só os servidores em que a skill está aparecem.
+    const own = readOnly ? [] : (manageable ?? []);
     const ownUuids = new Set(own.map((mcp) => mcp.uuid));
     const foreign = skill.mcps.filter((mcp) => !ownUuids.has(mcp.uuid));
     const all = [
@@ -186,7 +197,7 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
       const lb = linked.has(b.uuid) ? 0 : 1;
       return la - lb || a.name.localeCompare(b.name);
     });
-  }, [manageable, skill.mcps, linked]);
+  }, [manageable, skill.mcps, linked, readOnly]);
 
   function draftFor(uuid: string): LinkFlags {
     const current = linked.get(uuid);
@@ -242,10 +253,12 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
   }
 
   return (
-    <Panel title="Publicada em" icon={<Server />} className="mt-4">
+    <Panel title="Publicada em" icon={<Server />}>
       <p className="panel-hint">
-        A skill só é exibida — no site e nos servidores MCP — onde estiver publicada, direto ou por um catálogo. Marque as
-        portas por servidor e salve a linha. O mesmo vínculo aparece como aresta no canvas do servidor.
+        A skill só é exibida — no site e nos servidores MCP — onde estiver publicada, direto ou por um catálogo.
+        {readOnly
+          ? ' As portas de cada servidor se mudam em Editar → Propriedades, ou no canvas do servidor.'
+          : ' Marque as portas por servidor e salve a linha. O mesmo vínculo aparece como aresta no canvas do servidor.'}
       </p>
 
       {manageable === null && <Skel h={48} />}
@@ -323,8 +336,14 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
               })}
               {rows.length === 0 && (
                 <EmptyRow colSpan={3}>
-                  Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
-                  administrador para publicar a skill.
+                  {readOnly ? (
+                    'Em nenhum servidor: a skill está flutuante e não é exibida em lugar nenhum.'
+                  ) : (
+                    <>
+                      Você não administra nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a
+                      um administrador para publicar a skill.
+                    </>
+                  )}
                 </EmptyRow>
               )}
             </tbody>
@@ -341,7 +360,7 @@ export function SkillMcpsPanel({ skill, onChanged }: { skill: SkillDetail; onCha
  */
 export function SkillCatalogsPanel({ skill }: { skill: SkillDetail }) {
   return (
-    <Panel title="Nos catálogos" icon={<Library />} className="mt-4">
+    <Panel title="Nos catálogos" icon={<Library />}>
       <p className="panel-hint">
         Um catálogo vinculado a um servidor entrega todas as suas skills de uma vez. Quem decide o que entra é a página do
         catálogo; aqui só se vê de quais esta skill participa.

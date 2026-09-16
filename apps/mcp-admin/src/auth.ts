@@ -29,6 +29,11 @@ export type Caller = {
   role: Role;
   /** Identidade estável — prende uma sessão MCP à credencial que a abriu. */
   identity: string;
+  /** A chave `psk_` usada, para o registro de acessos; nula no token global. */
+  apiKeyId?: string | null;
+  /** De onde a conexão veio, para o registro de acessos. */
+  ip?: string;
+  userAgent?: string;
 };
 
 declare module 'express-serve-static-core' {
@@ -66,10 +71,13 @@ export async function resolveCaller(req: Request): Promise<Caller | null> {
       actor: { userUuid: user.uuid, label: user.email },
       role: user.role,
       identity: `key:${record.id}`,
+      apiKeyId: record.id,
+      ip: req.ip,
+      userAgent: req.get('user-agent') ?? undefined,
     };
   }
 
-  return safeEqual(provided, adminToken()) ? TOKEN_CALLER : null;
+  return safeEqual(provided, adminToken()) ? { ...TOKEN_CALLER, ip: req.ip, userAgent: req.get('user-agent') ?? undefined } : null;
 }
 
 /** Autenticação obrigatória por Bearer token no MCP administrativo. */

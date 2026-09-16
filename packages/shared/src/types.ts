@@ -279,15 +279,27 @@ export type VirtualMcpSummary = {
    * listagem foi feita sem janela.
    */
   onlineSessions: number;
-  /** Até 8 skills vinculadas, para a miniatura do card: slug, nome e ícone. */
+  /**
+   * Até `VIRTUAL_MCP_PREVIEW_SIZE` skills com vínculo direto, por nome, para a
+   * colmeia do card: slug, nome e ícone. `skillCount` continua contando tudo.
+   */
   preview: VirtualMcpPreviewSkill[];
   /** Catálogos vinculados (`virtual_mcp_catalogs`), ligados ou não. */
   catalogCount: number;
+  /** Até `VIRTUAL_MCP_PREVIEW_SIZE` catálogos vinculados, por nome, para a colmeia do card. */
+  previewCatalogs: VirtualMcpPreviewCatalog[];
   createdAt: string;
   updatedAt: string;
 };
 
 export type VirtualMcpPreviewSkill = { slug: string; name: string; icon: string | null };
+export type VirtualMcpPreviewCatalog = { slug: string; name: string; isActive: boolean };
+
+/**
+ * Quantas skills e quantos catálogos a miniatura de um vMCP carrega: a colmeia
+ * do card tem 19 células (1 + 6 + 12) e um hexágono "+N" para o resto.
+ */
+export const VIRTUAL_MCP_PREVIEW_SIZE = 19;
 
 /** Um ponto do canvas do painel, em pixels do React Flow. */
 export type CanvasPoint = { x: number; y: number };
@@ -552,6 +564,91 @@ export type McpSessionSummary = {
 
 export type McpSessionPage = {
   items: McpSessionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+// ---------------------------------------------------- acessos por skill ------
+
+/**
+ * Registro por leitura de uma skill (`docs/13-fichas-e-acessos.md`): uma
+ * linha por `get_skill`, resource, prompt, SKILL.md ou pacote servido pelo
+ * MCP público, pelo site ou pelo mcp-admin. É o que a guia "Acessos" da
+ * skill e do catálogo listam; os contadores `view_count`/`download_count`
+ * continuam existindo e são somados na mesma escrita.
+ */
+export type SkillAccessKind = 'view' | 'download';
+/**
+ * Por onde a leitura foi feita: `tool` (get_skill), `resource`
+ * (resources/read), `prompt` (prompts/get), `file` (o SKILL.md avulso),
+ * `download` (o pacote .zip/.skill), `page` (o detalhe no site) e
+ * `admin-tool` (o get_skill do mcp-admin).
+ */
+export type SkillAccessSurface = 'tool' | 'resource' | 'prompt' | 'file' | 'download' | 'page' | 'admin-tool';
+export type SkillAccessOrigin = 'mcp' | 'site' | 'mcp-admin';
+/**
+ * Quem leu: `open` (vMCP aberto, sem credencial), `key` (chave `psv_` do
+ * vMCP), `user` (conta do painel, pela chave `psk_` do mcp-admin) ou
+ * `anonymous` (o site).
+ */
+export type SkillAccessAuth = 'open' | 'key' | 'user' | 'anonymous';
+
+/** O que cada superfície informa ao gravar; o banco resolve o caminho por catálogo e soma os contadores. */
+export type SkillAccessInput = {
+  skillUuid: string;
+  kind: SkillAccessKind;
+  surface: SkillAccessSurface;
+  origin: SkillAccessOrigin;
+  auth: SkillAccessAuth;
+  /** O vMCP por onde a skill foi lida (MCP público); ausente no site e no mcp-admin. */
+  virtualMcpUuid?: string;
+  /** A chave `psv_` do vMCP, quando `auth = 'key'`. */
+  keyId?: string;
+  /** A chave `psk_` e a conta, quando `auth = 'user'`. */
+  apiKeyId?: string;
+  userUuid?: string;
+  /** `mcp-session-id`, o `sessionId` do SSE ou a chave sintética do stateless. */
+  sessionId?: string;
+  ip?: string;
+  userAgent?: string;
+  /** `clientInfo` do `initialize`, quando o servidor MCP o conhece. */
+  clientName?: string;
+  clientVersion?: string;
+};
+
+export type SkillAccessEntry = {
+  id: string;
+  /** Nulo quando a skill foi apagada depois; o slug fica como histórico. */
+  skillUuid: string | null;
+  skillSlug: string;
+  skillName: string;
+  kind: SkillAccessKind;
+  surface: SkillAccessSurface;
+  origin: SkillAccessOrigin;
+  auth: SkillAccessAuth;
+  /** Nulo fora do MCP público ou quando o vMCP foi apagado; o slug fica. */
+  virtualMcpUuid: string | null;
+  virtualMcpSlug: string | null;
+  virtualMcpName: string | null;
+  /** Os catálogos por onde a skill chegou ao vMCP nesta leitura; vazio no vínculo direto, no site e no mcp-admin. */
+  catalogs: { uuid: string | null; slug: string; name: string }[];
+  keyId: string | null;
+  keyName: string | null;
+  apiKeyId: string | null;
+  apiKeyName: string | null;
+  userUuid: string | null;
+  userEmail: string | null;
+  sessionId: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  clientName: string | null;
+  clientVersion: string | null;
+  createdAt: string;
+};
+
+export type SkillAccessPage = {
+  items: SkillAccessEntry[];
   total: number;
   limit: number;
   offset: number;
