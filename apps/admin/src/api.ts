@@ -46,6 +46,7 @@ import {
   viewerOf,
 } from './auth.js';
 import * as access from './access.js';
+import { gravarRag, lerPainelRag, reindexarRag } from './rag.js';
 import * as accesses from './accesses.js';
 import * as mcps from './mcps.js';
 import * as catalogs from './catalogs.js';
@@ -217,6 +218,12 @@ api.get(
         chat: config.chatUrl || null,
       },
       onlineWindowMs: config.onlineWindowMs,
+      // O que o `.env` deste container define para a busca semântica. Quem
+      // decide é o banco (§4.1); isto é só o que o operador escreveu.
+      rag: {
+        driver: (process.env.RAG_DRIVER ?? '').trim() || null,
+        model: (process.env.RAG_MODEL ?? '').trim() || null,
+      },
       version: config.version,
     });
   }),
@@ -793,6 +800,35 @@ api.put(
   requireSettingsAdmin,
   route(async (req, res) => {
     res.json(await mcps.setDefaultMcp(req.user!, (req.body as { uuid?: unknown })?.uuid));
+  }),
+);
+
+/**
+ * Busca semântica (`tmp/RAG-GOOGLE.md` §9, futuro `docs/14`). Mesmo papel das
+ * demais rotas de configuração: é ajuste da instalação inteira.
+ */
+api.get(
+  '/api/settings/rag',
+  requireSettingsAdmin,
+  route(async (_req, res) => {
+    res.json(await lerPainelRag());
+  }),
+);
+
+api.put(
+  '/api/settings/rag',
+  requireSettingsAdmin,
+  route(async (req, res) => {
+    res.json(await gravarRag(actorFrom(req), (req.body ?? {}) as Record<string, unknown>));
+  }),
+);
+
+// Não apaga vetor nenhum: só marca o acervo para refatiar (§9).
+api.post(
+  '/api/settings/rag/reindex',
+  requireSettingsAdmin,
+  route(async (req, res) => {
+    res.json(await reindexarRag(actorFrom(req)));
   }),
 );
 
