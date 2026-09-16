@@ -53,6 +53,17 @@ compose da raiz — rode sempre a partir da raiz do repositório.
 - MCP público: <http://localhost:3002>
 - MCP admin: <http://localhost:3003>
 
+### Imagens no Docker Hub
+
+Cada release publica as imagens no Docker Hub, na conta
+[`tmsoftbrasil`](https://hub.docker.com/u/tmsoftbrasil), como
+`tmsoftbrasil/purple-skills-<nome>`: `homepage`, `site`, `admin`,
+`mcp-public`, `mcp-admin`, `indexer` e `db` (a do `migrate` e do `seed`). A tag
+é a versão sem o `v` (`v1.2.3` sai como `1.2.3`), e `latest` só acompanha
+versão estável. O compose usa a tag de `TAG` no `.env` (padrão `latest`); se
+ela não existir no Hub, a imagem é gerada a partir do código, como o
+`docker compose build` faz sempre.
+
 ### Atrás do Traefik
 
 Preencha os `*_FQDN` no `.env` e suba com o override:

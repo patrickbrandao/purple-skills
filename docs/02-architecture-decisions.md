@@ -416,8 +416,10 @@ CRUD completo, espelhando o painel administrativo:
   desligado sem `TEST_DATABASE_URL`. Sem E2E no v1.
 - **CI/CD** (GitHub Actions):
   - Workflow de PR: lint + testes.
-  - Workflow de release: build e push das 5 imagens (os 4 apps mais
-    `purple-skills-db`) para o GitHub Container Registry (ghcr.io).
+  - Workflow de release: build e push das 7 imagens (os 6 apps mais
+    `purple-skills-db`) para o Docker Hub, na conta `tmsoftbrasil`
+    (`tmsoftbrasil/purple-skills-<nome>`). O login usa a variável
+    `DOCKERHUB_USERNAME` e o secret `DOCKERHUB_TOKEN` do repositório.
 
 ## 12. Licença
 

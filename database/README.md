@@ -513,11 +513,13 @@ docker compose run --rm seed       # skills de exemplo (opcional)
 | Serviço | Imagem | Papel |
 |---------|--------|-------|
 | `postgres` | `pgvector/pgvector:pg18-trixie` | o banco; volume `pgdata` |
-| `migrate` | `purple-skills-db` (perfil `migrate`) | aplica o schema e sai |
-| `seed` | `purple-skills-db` (perfil `seed`) | popula o catálogo de exemplo e sai |
+| `migrate` | `tmsoftbrasil/purple-skills-db` (perfil `migrate`) | aplica o schema e sai |
+| `seed` | `tmsoftbrasil/purple-skills-db` (perfil `seed`) | popula o catálogo de exemplo e sai |
 
 `migrate` e `seed` usam o mesmo `database/Dockerfile` — é a única imagem que
-carrega o SQL. As imagens dos apps recebem só o `dist/` do cliente.
+carrega o SQL. Ela é publicada no Docker Hub como `tmsoftbrasil/purple-skills-db`,
+e `docker compose build` a gera a partir do código. As imagens dos apps recebem
+só o `dist/` do cliente.
 
 Sem Docker, com um Postgres acessível:
 
