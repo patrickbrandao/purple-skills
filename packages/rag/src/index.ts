@@ -78,6 +78,7 @@ export {
 
 export { GoogleDriver, type GoogleDriverOptions } from './google.js';
 export { OpenAIDriver, type OpenAIDriverOptions } from './openai.js';
+export { VoyageDriver, type VoyageDriverOptions } from './voyage.js';
 
 export {
   embutirEmLotes,
@@ -113,6 +114,7 @@ export {
 
 import { GoogleDriver } from './google.js';
 import { OpenAIDriver } from './openai.js';
+import { VoyageDriver } from './voyage.js';
 import type { DriverResolver } from './search.js';
 import type { EmbeddingDriver, EmbeddingModel } from './driver.js';
 import { RagConfigError } from './driver.js';
@@ -131,9 +133,7 @@ type Construtor = (options: { apiKey: string; baseUrl?: string }) => EmbeddingDr
 const CONSTRUTORES: Record<RagProviderId, Construtor> = {
   google: (options) => new GoogleDriver(options),
   openai: (options) => new OpenAIDriver(options),
-  voyage: () => {
-    throw new RagConfigError('o driver "voyage" ainda não tem implementação neste commit');
-  },
+  voyage: (options) => new VoyageDriver(options),
 };
 
 /**

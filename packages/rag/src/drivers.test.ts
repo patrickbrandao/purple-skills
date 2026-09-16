@@ -10,6 +10,8 @@
 import { describe, expect, it } from 'vitest';
 import { criarDriver, criarDriversDoAmbiente, modeloPadrao } from './index.js';
 import { GoogleDriver } from './google.js';
+import { OpenAIDriver } from './openai.js';
+import { VoyageDriver } from './voyage.js';
 
 describe('criarDriver', () => {
   it('com o driver off ou sem chave devolve nulo, sem lançar', () => {
@@ -21,9 +23,12 @@ describe('criarDriver', () => {
   });
 
   it('escolhe a classe pelo driver', () => {
-    const google = criarDriver({ driver: 'google', apiKey: 'k' });
-    expect(google).toBeInstanceOf(GoogleDriver);
-    expect(google?.id).toBe('google');
+    expect(criarDriver({ driver: 'google', apiKey: 'k' })).toBeInstanceOf(GoogleDriver);
+    expect(criarDriver({ driver: 'openai', apiKey: 'k' })).toBeInstanceOf(OpenAIDriver);
+    expect(criarDriver({ driver: 'voyage', apiKey: 'k' })).toBeInstanceOf(VoyageDriver);
+    // O `id` do driver é o que vai para `rag_spaces.driver`: errá-lo apontaria
+    // a busca para o espaço de outro provedor.
+    expect(criarDriver({ driver: 'voyage', apiKey: 'k' })?.id).toBe('voyage');
   });
 });
 
@@ -50,18 +55,35 @@ describe('criarDriversDoAmbiente', () => {
     expect(comChave).toEqual(['voyage']);
   });
 
+  it('monta os três quando as três chaves estão no ambiente', () => {
+    const { resolver, comChave, problemas } = criarDriversDoAmbiente({
+      RAG_GOOGLE_API_KEY: 'k',
+      RAG_OPENAI_API_KEY: 'k',
+      RAG_VOYAGE_API_KEY: 'k',
+    });
+
+    expect(comChave).toEqual(['google', 'openai', 'voyage']);
+    expect(problemas).toEqual([]);
+    expect(resolver('google')).toBeInstanceOf(GoogleDriver);
+    expect(resolver('openai')).toBeInstanceOf(OpenAIDriver);
+    expect(resolver('voyage')).toBeInstanceOf(VoyageDriver);
+  });
+
   it('um driver que não sobe não derruba os outros', () => {
-    // `voyage` ainda não tem classe neste commit: ele entra em `problemas`, e
-    // o `google` continua montado. É a regra que vale para sempre — chave
-    // presente com driver quebrado não pode calar o provedor que funciona.
+    // Chave presente com configuração quebrada — aqui, URL base relativa — não
+    // pode calar o provedor que funciona. O motivo vai para `problemas`, o boot
+    // registra uma linha, e a busca segue com quem subiu.
     const { resolver, comChave, problemas } = criarDriversDoAmbiente({
       RAG_GOOGLE_API_KEY: 'k',
       RAG_VOYAGE_API_KEY: 'k',
+      RAG_VOYAGE_BASE_URL: '/v1',
     });
 
     expect(comChave).toEqual(['google', 'voyage']);
     expect(resolver('google')).toBeInstanceOf(GoogleDriver);
-    expect(problemas.map((p) => p.id)).toContain('voyage');
+    expect(resolver('voyage')).toBeNull();
+    expect(problemas.map((p) => p.id)).toEqual(['voyage']);
+    expect(problemas[0]!.motivo).toMatch(/RAG_VOYAGE_BASE_URL inválida/);
   });
 });
 
