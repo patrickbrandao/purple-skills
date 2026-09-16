@@ -55,14 +55,23 @@ compose da raiz — rode sempre a partir da raiz do repositório.
 
 ### Imagens no Docker Hub
 
-Cada release publica as imagens no Docker Hub, na conta
+As imagens ficam no Docker Hub, na conta
 [`tmsoftbrasil`](https://hub.docker.com/u/tmsoftbrasil), como
 `tmsoftbrasil/purple-skills-<nome>`: `homepage`, `site`, `admin`,
-`mcp-public`, `mcp-admin`, `indexer` e `db` (a do `migrate` e do `seed`). A tag
-é a versão sem o `v` (`v1.2.3` sai como `1.2.3`), e `latest` só acompanha
-versão estável. O compose usa a tag de `TAG` no `.env` (padrão `latest`); se
-ela não existir no Hub, a imagem é gerada a partir do código, como o
-`docker compose build` faz sempre.
+`mcp-public`, `mcp-admin`, `indexer` e `db` (a do `migrate` e do `seed`) —
+sempre como `latest`, sem tag por versão. **A publicação não é automática:**
+nenhum workflow de CI tem credencial de registry. Depois de criar a tag da
+release, quem mantém builda e publica à mão, de uma máquina já autenticada
+(`docker login`) na conta:
+
+```bash
+./release-images.sh              # builda e publica as 7 imagens
+./release-images.sh site admin   # só as passadas por nome
+```
+
+O compose usa a tag de `TAG` no `.env` (padrão `latest`); se a imagem não
+existir no Hub, ele a gera a partir do código, como o `docker compose build`
+faz sempre.
 
 ### Atrás do Traefik
 
