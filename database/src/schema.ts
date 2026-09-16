@@ -31,6 +31,16 @@ const tsvector = customType<{ data: string; driverData: string }>({
   dataType: () => 'tsvector',
 });
 
+/**
+ * `vector` do pgvector (`schema/020-rag.sql`), **sem dimensão fixa**: a coluna
+ * serve a qualquer espaço de embedding e quem trava o tamanho de cada linha é
+ * a FK composta com `rag_spaces` mais o `rag_vectors_dimensions_chk`. O driver
+ * troca o vetor no formato textual `[x,y,z]`.
+ */
+const vector = customType<{ data: string; driverData: string }>({
+  dataType: () => 'vector',
+});
+
 export const skills = pgTable(
   'skills',
   {
@@ -64,6 +74,12 @@ export const skills = pgTable(
     /** Informativo (`docs/05-accounts-and-roles.md` §2.1): não autoriza nada. */
     createdByUserUuid: uuid('created_by_user_uuid'),
     /**
+     * A skill precisa ser refatiada pelo RAG (`schema/020-rag.sql`). Nasce
+     * `true` e é marcada pelos triggers de skill, arquivo e tag; quem limpa é
+     * o indexador, ao reservar o lote. Incremento de contador não marca.
+     */
+    ragStale: boolean('rag_stale').notNull().default(true),
+    /**
      * O dono (`docs/12` decisão 8): apaga, transfere e concede. Nulo é órfã —
      * só o admin —, o que acontece quando a conta é removida (`SET NULL`) ou
      * quando quem criou não era conta (bootstrap, token global, seed).
@@ -75,6 +91,8 @@ export const skills = pgTable(
   (table) => [
     index('skills_search_vector_idx').using('gin', table.searchVector),
     index('skills_owner_user_uuid_idx').on(table.ownerUserUuid),
+    // O índice da fila do indexador é **parcial** (`WHERE rag_stale`) e por
+    // isso fica só no SQL: `skills_rag_stale_idx` em `schema/020-rag.sql`.
   ],
 );
 
@@ -90,11 +108,19 @@ export const files = pgTable(
     binaryContent: bytea('binary_content'),
     mimeType: text('mime_type').notNull().default('application/octet-stream'),
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+    /**
+     * SHA-256 do conteúdo gravado, texto ou binário (`schema/020-rag.sql`).
+     * Quem preenche é o trigger `files_content_sha256_trg` — coluna gerada não
+     * serve, `convert_to` é STABLE. Num arquivo que cabe inteiro num texto
+     * canônico, este é o mesmo hash de `rag_texts`.
+     */
+    contentSha256: bytea('content_sha256').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('files_skill_uuid_idx').on(table.skillUuid),
+    index('files_content_sha256_idx').on(table.contentSha256),
     // A unicidade de `relative_path` é case-insensitive e não cabe aqui: vive na
     // migration 003-case-insensitive-file-paths.sql, no índice funcional
     // `files_skill_path_lower_uniq` sobre (skill_uuid, lower(relative_path)).
@@ -562,6 +588,98 @@ export const skillAccesses = pgTable(
   ],
 );
 
+// -------------------------------------------------------------------- RAG ---
+
+/**
+ * Um espaço de embedding (`schema/020-rag.sql`, `tmp/RAG-GOOGLE.md` §5):
+ * driver, modelo, dimensões e os **dois prefixos** do driver. A identidade é
+ * a combinação dos cinco — trocar o prefixo cria outro espaço, como trocar o
+ * modelo, e vetores de espaços diferentes nunca se misturam numa consulta. O
+ * `UNIQUE (driver, model, dimensions, document_prefix, query_prefix)`, o
+ * `UNIQUE (uuid, dimensions)` que a FK de `rag_vectors` usa e o CHECK de
+ * tamanho dos prefixos ficam só no SQL.
+ */
+export const ragSpaces = pgTable('rag_spaces', {
+  uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+  driver: text('driver').notNull(),
+  model: text('model').notNull(),
+  dimensions: integer('dimensions').notNull(),
+  /** O que o driver põe antes do texto ao embutir um documento; vazio é válido. */
+  documentPrefix: text('document_prefix').notNull(),
+  /** O mesmo, para a consulta. Sem DEFAULT no banco: esquecê-lo é erro. */
+  queryPrefix: text('query_prefix').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * O texto canônico, endereçado pelo próprio SHA-256 e guardado **sem** o
+ * prefixo do driver — é o que permite ao mesmo texto servir a qualquer espaço
+ * e a duas skills iguais compartilharem um vetor. O `rag_texts_sha256_chk`,
+ * que recalcula o hash do conteúdo, fica só no SQL.
+ */
+export const ragTexts = pgTable(
+  'rag_texts',
+  {
+    sha256: bytea('sha256').primaryKey(),
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('rag_texts_created_at_idx').on(table.createdAt)],
+);
+
+/**
+ * A ocorrência: onde um texto aparece. `source: 'meta'` é o texto de
+ * metadados da skill (sem caminho nem arquivo); `source: 'file'` é uma parte
+ * de um arquivo. `text_sha256` **não** tem cascata de propósito: texto em uso
+ * não pode ser apagado. O CHECK que amarra `source` a `relative_path`/
+ * `file_id` fica só no SQL.
+ */
+export const ragSkillTexts = pgTable(
+  'rag_skill_texts',
+  {
+    skillUuid: uuid('skill_uuid')
+      .notNull()
+      .references(() => skills.uuid, { onDelete: 'cascade' }),
+    source: text('source').notNull(),
+    relativePath: text('relative_path').notNull().default(''),
+    part: integer('part').notNull().default(0),
+    fileId: uuid('file_id').references(() => files.id, { onDelete: 'cascade' }),
+    textSha256: bytea('text_sha256')
+      .notNull()
+      .references(() => ragTexts.sha256),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.skillUuid, table.source, table.relativePath, table.part] }),
+    index('rag_skill_texts_sha256_idx').on(table.textSha256),
+    index('rag_skill_texts_file_idx').on(table.fileId),
+  ],
+);
+
+/**
+ * O vetor de um texto num espaço. `dimensions` é copiada do espaço pela FK
+ * composta `(space_uuid, dimensions) → rag_spaces (uuid, dimensions)` e o
+ * `rag_vectors_dimensions_chk` confere o vetor contra ela: as duas ficam só
+ * no SQL, como a FK composta, que o Drizzle não declara aqui. A busca é
+ * exata, sem índice — o HNSW do pgvector para em 2000 dimensões.
+ */
+export const ragVectors = pgTable(
+  'rag_vectors',
+  {
+    spaceUuid: uuid('space_uuid').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    textSha256: bytea('text_sha256')
+      .notNull()
+      .references(() => ragTexts.sha256, { onDelete: 'cascade' }),
+    embedding: vector('embedding').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.spaceUuid, table.textSha256] }),
+    index('rag_vectors_text_idx').on(table.textSha256),
+  ],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -581,3 +699,7 @@ export type VirtualMcpGrantRow = typeof virtualMcpGrants.$inferSelect;
 export type SettingRow = typeof settings.$inferSelect;
 export type McpSessionRow = typeof mcpSessions.$inferSelect;
 export type SkillAccessRow = typeof skillAccesses.$inferSelect;
+export type RagSpaceRow = typeof ragSpaces.$inferSelect;
+export type RagTextRow = typeof ragTexts.$inferSelect;
+export type RagSkillTextRow = typeof ragSkillTexts.$inferSelect;
+export type RagVectorRow = typeof ragVectors.$inferSelect;
