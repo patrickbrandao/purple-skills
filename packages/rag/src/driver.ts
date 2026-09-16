@@ -1,6 +1,6 @@
 /**
  * A interface que todo driver de embedding implementa, e os erros que ela
- * promete (`tmp/RAG-GOOGLE.md` §6.1, futuro `docs/14`).
+ * promete (`docs/14-rag.md` §6.1).
  *
  * Documento e consulta têm métodos separados porque não são a mesma chamada:
  * num provedor a distinção é um parâmetro, e no `gemini-embedding-2` ela vai
@@ -23,6 +23,24 @@
  * Ela existe para o indexador.
  */
 
+/**
+ * O que o provedor cobrou por uma chamada.
+ *
+ * Existe porque a conta só o provedor sabe fazer: o indexador estima tokens
+ * por caractere, o que erra em texto com muito símbolo ou muito acento, e a
+ * estimativa é justamente o número que alguém usaria para decidir se liga a
+ * busca semântica no acervo inteiro.
+ */
+export type UsoDeTokens = {
+  /** O modelo que cobrou. */
+  model: string;
+  /** Tokens da requisição, como o provedor os contou. */
+  tokens: number;
+  /** Textos da requisição, para a média sair sem outra conta. */
+  textos: number;
+  metodo: 'documents' | 'query';
+};
+
 /** Um modelo de embedding, com tudo que o projeto precisa saber dele. */
 export type EmbeddingModel = {
   /** Identificador no provedor, como aparece na URL. */
@@ -44,7 +62,9 @@ export type EmbeddingModel = {
 };
 
 export interface EmbeddingDriver {
-  readonly id: 'google' | 'fake';
+  /** Escrito à mão, e não importado do registro, para `driver.ts` não
+   * depender de `settings.ts` — é o registro que depende dos modelos. */
+  readonly id: 'google' | 'openai' | 'voyage' | 'fake';
   readonly models: readonly EmbeddingModel[];
   /** Recebe textos canônicos; aplica `documentPrefix` na chamada. */
   embedDocuments(

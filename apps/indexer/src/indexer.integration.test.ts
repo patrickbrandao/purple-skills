@@ -1,5 +1,5 @@
 /**
- * O critério de aceite do PR 3 (`tmp/RAG-GOOGLE.md` §12): o **modo único**
+ * O critério de aceite do PR 3 (`docs/14-rag.md` §12): o **modo único**
  * indexa a base de smoke contra o **servidor falso** e sai com código 0; sem a
  * migration, espera sem cair.
  *

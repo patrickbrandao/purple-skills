@@ -138,7 +138,7 @@ export type SearchResult = {
   limit: number;
   offset: number;
   /**
-   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   * Como a busca foi resolvida (`docs/14-rag.md` §8.3).
    *
    * `hybrid` é a fusão da perna textual com a vetorial; `text` é a busca de
    * sempre. Cair para `text` não é erro — é o que acontece com o driver
@@ -188,7 +188,7 @@ export type AuditAction =
   | 'catalog.unshare'
   | 'mcp.share'
   | 'mcp.unshare'
-  // Busca semântica (`tmp/RAG-GOOGLE.md` §9, futuro `docs/14`).
+  // Busca semântica (`docs/14-rag.md` §9).
   // `rag.settings` leva `chave=valor`; `rag.reindex` leva a quantidade de
   // skills marcadas. O estado do indexador **não** é auditado: ele é
   // regravado a cada ciclo e inundaria a trilha.

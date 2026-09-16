@@ -45,6 +45,10 @@ describe('papéis exigidos pelas rotas', () => {
   it.each([
     ['get', '/api/settings'],
     ['put', '/api/settings/default-mcp'],
+    // A busca semântica é ajuste da instalação inteira, como o vMCP padrão.
+    ['get', '/api/settings/rag'],
+    ['put', '/api/settings/rag'],
+    ['post', '/api/settings/rag/reindex'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireSettingsAdmin);
   });

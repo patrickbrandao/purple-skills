@@ -1,5 +1,5 @@
 /**
- * A divisão de uma skill em textos canônicos (`tmp/RAG-GOOGLE.md` §5.3).
+ * A divisão de uma skill em textos canônicos (`docs/14-rag.md` §5.3).
  *
  * Uma skill vira:
  *

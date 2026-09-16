@@ -1,5 +1,5 @@
 /**
- * A divisão, o texto de metadados e o hash (§13.1 de `tmp/RAG-GOOGLE.md`).
+ * A divisão, o texto de metadados e o hash (§13.1 de `docs/14-rag.md`).
  *
  * O ponto que os testes protegem é o determinismo: a mesma skill tem que dar
  * os mesmos textos, na mesma ordem, com os mesmos hashes. É o que faz uma

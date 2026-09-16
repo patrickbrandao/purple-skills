@@ -105,7 +105,7 @@ describe('search_skills', () => {
   });
 
   /**
-   * O critério de aceite do PR 4 (`tmp/RAG-GOOGLE.md` §12): com a busca
+   * O critério de aceite do PR 4 (`docs/14-rag.md` §12): com a busca
    * semântica indisponível, os resultados são **idênticos aos de hoje**.
    *
    * Aqui `ragSchemaReady` devolve `false` (é o mock do topo), que é o caso de

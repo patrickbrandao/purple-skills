@@ -1,5 +1,5 @@
 /**
- * A busca híbrida ponta a ponta (`tmp/RAG-GOOGLE.md` §8, futuro `docs/14`).
+ * A busca híbrida ponta a ponta (`docs/14-rag.md` §8).
  *
  * Aqui não há mock: o handler real do `search_skills`, o `listSkills` real do
  * `@purple-skills/db` sobre um PostgreSQL com pgvector, e o `GoogleDriver` real

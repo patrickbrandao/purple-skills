@@ -52,15 +52,18 @@ O que todo agente **fora** de `packages/rag/` deve seguir:
 
 - Não chame a API do provedor direto, e não monte `fetch` para ela. Use o
   driver (`criarDriver`, `embedDocuments`, `embedQuery`).
-- Não leia `RAG_GOOGLE_API_KEY` por conta própria — o segredo entra pelo
+- Não leia `RAG_<DRIVER>_API_KEY` por conta própria — o segredo entra pelo
   `readSecret` do `shared` e vai para o driver, nunca para log ou URL.
-- Não repita a lista de variáveis do RAG: ela vive uma vez só, no registro
-  `RAG_SETTINGS`.
+- Não repita a lista de variáveis do RAG nem a de drivers e modelos: elas vivem
+  uma vez só, nos registros `RAG_SETTINGS` e `RAG_DRIVERS`.
+- Não escolha o driver no boot. Quem escolhe é o `rag.driver` do **banco**, a
+  cada uso; o container monta todos os que tiverem chave
+  (`criarDriversDoAmbiente`) e deixa o painel decidir.
 - **O texto guardado no banco nunca leva o prefixo do driver.** Quem aplica o
   prefixo é o driver, na hora da chamada; é isso que deixa o mesmo texto servir
   a espaços diferentes.
 
-O desenho está em `tmp/RAG-GOOGLE.md` (futuro `docs/14-rag.md`).
+O desenho está em [`docs/14-rag.md`](docs/14-rag.md).
 
 ## Homepage e site são páginas diferentes
 

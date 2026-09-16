@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@purple-skills/db": "*",
+    "@purple-skills/rag": "*",
     "@purple-skills/shared": "*",
     "compression": "^1.7.5",
     "cookie-parser": "^1.4.7",

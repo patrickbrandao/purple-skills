@@ -129,7 +129,7 @@ export type SearchResult = {
   limit: number;
   offset: number;
   /**
-   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   * Como a busca foi resolvida (`docs/14-rag.md` §8.3).
    * `text` é a busca de sempre; `hybrid` soma a perna vetorial. Cair para
    * `text` não é erro — é o que acontece com a busca semântica desligada.
    */
@@ -273,6 +273,11 @@ export type Session = {
   links: AdminLinks;
   /** Janela em que um cliente conta como online (MCP_SESSION_ONLINE_WINDOW_MS). */
   onlineWindowMs: number;
+  /**
+   * O que o `.env` do painel define para a busca semântica — só leitura. Quem
+   * decide é o valor gravado no banco (`docs/14-rag.md` §4.1).
+   */
+  rag?: { driver: string | null; model: string | null };
   version: string;
 };
 
@@ -999,3 +1004,61 @@ export const num = (value: number | undefined | null) =>
   value === undefined || value === null ? '—' : value.toLocaleString('pt-BR');
 
 export const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
+
+/**
+ * A busca semântica, como o painel a vê (`docs/14-rag.md` §9).
+ *
+ * O painel **não recebe** a chave da API: quem sabe se ela existe e se o
+ * provedor a aceitou é o indexador, que publica o estado no banco a cada ciclo.
+ * Por isso `keyState` pode ser `desconhecido` — é o caso honesto de quando o
+ * indexador ainda não rodou.
+ */
+export type RagValue = {
+  value: string;
+  origem: 'banco' | 'ambiente' | 'padrão';
+  updatedAt: string | null;
+  /** O `.env` diz outra coisa e está sendo ignorado: o banco decide (§4.1). */
+  ambienteIgnorado: string | null;
+};
+
+export type RagCoverage = {
+  texts: number;
+  withVector: number;
+  pendingTexts: number;
+  staleSkills: number;
+};
+
+export type RagIndexerState = {
+  at?: string;
+  driver?: string;
+  model?: string;
+  keyPresent?: boolean;
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+};
+
+export type RagSettings = {
+  driver: RagValue;
+  model: RagValue;
+  drivers: string[];
+  /** Os modelos do driver em uso. */
+  models: string[];
+  /** Um item por driver implementado, com o rótulo e os modelos dele. */
+  driverOptions: { id: string; label: string; models: string[] }[];
+  /** Falso enquanto a migration do RAG não rodou nesta instalação. */
+  schemaReady: boolean;
+  spaceUuid: string | null;
+  coverage: RagCoverage | null;
+  indexer: RagIndexerState | null;
+  keyState: 'presente' | 'ausente' | 'recusada' | 'cota-esgotada' | 'desconhecido';
+  /** Só o Google tem nível gratuito que lê o conteúdo enviado; nos outros é nulo. */
+  freeTierWarning: string | null;
+};
+
+export const getRagSettings = () => request<RagSettings>('/api/settings/rag');
+
+export const saveRagSettings = (body: { driver?: string; model?: string }) =>
+  request<RagSettings>('/api/settings/rag', { method: 'PUT', body: json(body) });
+
+export const reindexRag = () =>
+  request<{ skills: number }>('/api/settings/rag/reindex', { method: 'POST' });

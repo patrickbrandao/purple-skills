@@ -105,14 +105,17 @@ npm test                   # testes unitários (Vitest)
 npm run typecheck          # TypeScript em todos os workspaces
 ```
 
-Os testes das queries de `database/` exigem um Postgres real e ficam
-desligados por padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
+Os testes de integração — as queries de `database/`, o indexador e a busca —
+exigem um Postgres real **com a extensão `vector`** e ficam desligados por
+padrão. Para rodá-los, aponte `TEST_DATABASE_URL` para um banco
 **descartável** — o schema é recriado do zero a cada execução:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_test \
   npx vitest run database/src/files.integration.test.ts
 ```
+
+Com a variável definida, `npm test` roda a suíte inteira, integração incluída.
 
 ## Estrutura do repositório
 
@@ -333,6 +336,52 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 | `set_catalog_skills(slug, [{slug, isActive?}])` | Substitui a lista inteira de skills do catálogo; `isActive: false` mantém sem entregar |
 | `set_virtual_mcp_catalogs(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista de catálogos do MCP virtual; exige administrar o MCP e cada catálogo |
 
+## Busca semântica (opcional)
+
+Além da busca full-text de sempre, o catálogo pode buscar **por significado**:
+"como padronizar mensagem de commit" acha `conventional-commits` mesmo sem a
+palavra "padronizar" no texto. As duas pernas são fundidas por RRF, e a
+resposta traz `mode` — `text` ou `hybrid` — para o cliente saber o que leu.
+
+**Ela vem desligada.** Sem `RAG_DRIVER`, sem chave, sem a migration `020` ou
+com o provedor fora do ar, tudo responde exatamente como antes, em modo `text`
+— e isso não é erro.
+
+Três provedores, um modelo por vez:
+
+| `RAG_DRIVER` | Modelos | Dimensões |
+|---|---|---|
+| `google` | `gemini-embedding-2` | 3072 |
+| `openai` | `text-embedding-3-small`, `text-embedding-3-large` | 1536 / 3072 |
+| `voyage` | `voyage-4-lite`, `voyage-4`, `voyage-4-large` | 1024 |
+
+Para ligar:
+
+```bash
+docker compose run --rm migrate                 # a 020 cria as tabelas rag_*
+docker compose --profile rag up -d indexer      # o indexador fica fora do up -d normal
+```
+
+Depois, no painel, em **Configurações → Busca semântica**, escolha o driver e o
+modelo. O `.env` só semeia esses dois valores no primeiro boot: dali em diante
+quem manda é o painel, e mudar a variável vira só um aviso no log. As **chaves**,
+essas sim, são do `.env` — e dá para deixar mais de uma configurada, o que
+permite trocar de provedor pelo painel sem recriar container nenhum.
+
+Trocar de driver ou de modelo cria outro espaço de embedding: o acervo é
+reindexado nele e os vetores do anterior ficam onde estão, prontos para quando
+alguém voltar atrás. **Nada é apagado numa troca**, e o botão "Reindexar" não
+gasta embedding com texto que não mudou.
+
+> **Aviso, e é só do Google.** No nível gratuito da Gemini API o conteúdo
+> enviado — inclusive o de skills privadas — é usado para melhorar produtos, e
+> revisores humanos podem lê-lo. Para que não seja, gere a chave num projeto com
+> faturamento ativo. No Espaço Econômico Europeu, na Suíça e no Reino Unido, só
+> o nível pago é permitido para quem oferece o serviço a usuários dessas
+> regiões. OpenAI e Voyage não treinam sobre o tráfego da API.
+
+O desenho está em [`docs/14-rag.md`](docs/14-rag.md).
+
 ## API REST pública
 
 A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
@@ -340,6 +389,7 @@ A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
 ```
 GET  /api/mcps                                  MCPs virtuais abertos, com endereço
 GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (o que está em MCP virtual aberto)
+                                                a resposta traz `mode`: text ou hybrid
 GET  /api/skills/:slug                          detalhe + corpo do SKILL.md (conta acesso)
 GET  /api/skills/:slug/files/<caminho>          arquivo avulso
 GET  /api/tags                                  tags com contagem
@@ -477,6 +527,10 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
 | `SMTP_URL` / `_FILE`, `SMTP_FROM` | não | Ligam a redefinição de senha por e-mail |
 | `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS` | não | Trava da conta após tentativas erradas (padrão: 8 / 900s) |
+| `RAG_DRIVER`, `RAG_MODEL` | não | Ligam a [busca semântica](#busca-semântica-opcional): `google`, `openai`, `voyage` ou `off`. Lidas **só pelo admin**, que as semeia no banco no primeiro boot — depois quem manda é o painel. Sem `RAG_MODEL`, vale o padrão do driver |
+| `RAG_GOOGLE_API_KEY`, `RAG_OPENAI_API_KEY`, `RAG_VOYAGE_API_KEY` / `_FILE` | sim, com o driver ligado | A chave de cada provedor. Vão para o indexer, o mcp-public e o site; **nunca** para o painel. Mais de uma configurada permite trocar de driver sem recriar container |
+| `RAG_GOOGLE_BASE_URL`, `RAG_OPENAI_BASE_URL`, `RAG_VOYAGE_BASE_URL` | não | URL base de cada provedor, já com a versão da API. Usada como está |
+| `RAG_QUERY_TIMEOUT_MS`, `RAG_INDEX_INTERVAL_SECONDS` | não | Prazo do embedding da consulta (padrão 2000 ms) e intervalo do indexador (padrão 30 s) |
 
 Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
 cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Os

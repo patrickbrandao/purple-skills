@@ -7,6 +7,7 @@ import express from 'express';
 import { closeDb, countUsers, getDb, waitForDatabase } from '@purple-skills/db';
 import { trustProxySetting } from '@purple-skills/shared';
 import { api } from './api.js';
+import { semearRag } from './rag.js';
 import { config, getAdminPassword, getSessionSecret, oidcEnabled, smtpEnabled } from './config.js';
 import { onError } from './errors.js';
 
@@ -57,6 +58,10 @@ async function main() {
 
   const { pool } = getDb();
   await waitForDatabase(pool);
+
+  // O ambiente semeia a busca semântica no primeiro boot; daqui em diante quem
+  // manda é o painel, e um `.env` divergente vira só este aviso (§4.1).
+  for (const aviso of await semearRag()) console.warn(aviso);
 
   // A ADMIN_PASSWORD deixou de ser obrigatória: ela só cria o primeiro
   // administrador. Sem conta nenhuma e sem senha, porém, não há como entrar —

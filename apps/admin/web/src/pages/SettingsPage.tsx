@@ -10,6 +10,7 @@ import {
   type VirtualMcpSummary,
 } from '../api.js';
 import { Button, CopyButton, Field, Panel, Skel } from '../components/ui.js';
+import { RagPanel } from '../components/RagPanel.js';
 import { useToast } from '../components/Toast.js';
 
 /**
@@ -151,6 +152,8 @@ export function SettingsPage({ session }: { session: Session }) {
             )}
           </Panel>
 
+          <RagPanel />
+
           <Panel title="O que veio do ambiente" icon={<Link2 />}>
             <p className="panel-hint">Lido do <code>.env</code> na subida do painel; aqui é só leitura.</p>
             <dl className="kv">
@@ -167,6 +170,12 @@ export function SettingsPage({ session }: { session: Session }) {
               <dd className="mono">
                 {[session.links.docs && 'docs', session.links.support && 'suporte', session.links.chat && 'chat'].filter(Boolean).join(', ') || 'nenhum'}{' '}
                 <span style={{ color: 'var(--text-faint)' }}>(ADMIN_DOCS_URL, ADMIN_SUPPORT_URL, ADMIN_CHAT_URL)</span>
+              </dd>
+              <dt>Busca semântica</dt>
+              <dd className="mono">
+                {session.rag?.driver || 'não configurada'}
+                {session.rag?.model ? ` / ${session.rag.model}` : ''}{' '}
+                <span style={{ color: 'var(--text-faint)' }}>(RAG_DRIVER, RAG_MODEL)</span>
               </dd>
               <dt>Versão</dt>
               <dd className="mono">{session.version || '—'}</dd>

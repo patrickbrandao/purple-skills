@@ -10,6 +10,7 @@ WORKDIR /app
 # Manifests primeiro: a camada de dependências fica em cache entre builds.
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
+COPY packages/rag/package.json packages/rag/
 COPY database/package.json database/
 COPY apps/site/package.json apps/site/
 COPY apps/admin/package.json apps/admin/
@@ -24,6 +25,7 @@ COPY database ./database
 COPY apps/admin ./apps/admin
 
 RUN npm run build -w @purple-skills/shared \
+ && npm run build -w @purple-skills/rag \
  && npm run build -w @purple-skills/db \
  && npm run build -w @purple-skills/admin \
  && npm prune --omit=dev
@@ -42,6 +44,8 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build --chown=node:node /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build --chown=node:node /app/packages/rag/package.json ./packages/rag/package.json
+COPY --from=build --chown=node:node /app/packages/rag/dist ./packages/rag/dist
 COPY --from=build --chown=node:node /app/database/package.json ./database/package.json
 COPY --from=build --chown=node:node /app/database/dist ./database/dist
 COPY --from=build --chown=node:node /app/apps/admin/package.json ./apps/admin/package.json
