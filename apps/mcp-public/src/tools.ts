@@ -16,7 +16,9 @@ import {
   type SkillDetail,
   type SkillSummary,
 } from '@purple-skills/shared';
+import { logDaBusca } from '@purple-skills/rag';
 import { config } from './config.js';
+import { buscaSemantica } from './rag.js';
 import { registrarAcesso, type AccessContext } from './access.js';
 
 export type ToolResult = {
@@ -102,13 +104,21 @@ export function createHandlers(scope: VirtualScope) {
       limit?: number;
       offset?: number;
     }): Promise<ToolResult> {
+      // A perna vetorial é resolvida antes da consulta: falha ou prazo estourado
+      // devolvem `undefined` e a busca sai textual, sem erro para o cliente.
+      const { semantic } = await buscaSemantica.resolver(args.query);
+
       const result = await listSkills({
         query: args.query ?? null,
         tag: args.tag ?? null,
         limit: args.limit ?? 10,
         offset: args.offset ?? 0,
         ...recorte,
+        ...(semantic ? { semantic } : {}),
       });
+
+      // As distâncias vão para o log, não para o cliente (§8.1 item 7).
+      if (result.mode === 'hybrid') console.log(logDaBusca(result.mode, result.neighbors));
 
       if (result.items.length === 0) {
         return text(
@@ -119,6 +129,7 @@ export function createHandlers(scope: VirtualScope) {
       }
 
       return asJson({
+        mode: result.mode,
         total: result.total,
         limit: result.limit,
         offset: result.offset,

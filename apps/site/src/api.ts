@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { logDaBusca } from '@purple-skills/rag';
 import {
   AppError,
   getSkillSummary,
@@ -23,6 +24,7 @@ import {
   stripFrontmatter,
 } from '@purple-skills/shared';
 import { config } from './config.js';
+import { buscaSemantica } from './rag.js';
 import { streamSkillZip } from './zip.js';
 
 /** Junta os segmentos capturados por um wildcard do Express 5. */
@@ -153,15 +155,26 @@ api.get(
 api.get(
   '/api/skills',
   asyncRoute(async (req, res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q : null;
+    // Falha ou prazo estourado devolvem `undefined`: a busca sai textual, e o
+    // campo `mode` da resposta diz ao cliente o que ele leu.
+    const { semantic } = await buscaSemantica.resolver(query);
+
     const result = await listSkills({
-      query: typeof req.query.q === 'string' ? req.query.q : null,
+      query,
       tag: typeof req.query.tag === 'string' ? req.query.tag : null,
       limit: asInt(req.query.limit, 24),
       offset: asInt(req.query.offset, 0),
       sort: (req.query.sort as never) ?? undefined,
       visibility: 'open',
+      ...(semantic ? { semantic } : {}),
     });
-    res.json(result);
+
+    if (result.mode === 'hybrid') console.log(logDaBusca(result.mode, result.neighbors));
+
+    // `neighbors` é do servidor: as distâncias não vão para o cliente (§8.1).
+    const { neighbors: _distancias, ...resposta } = result;
+    res.json(resposta);
   }),
 );
 

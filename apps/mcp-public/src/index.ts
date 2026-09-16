@@ -3,6 +3,7 @@ import { closeDb, getDb, resolveDefaultVirtualMcp, waitForDatabase } from '@purp
 import { readTextEnv } from '@purple-skills/shared';
 import { rootAuth, virtualAuth } from './auth.js';
 import { assertNoLegacyAuthEnv, config } from './config.js';
+import { avisoDeBoot } from './rag.js';
 import { registrarDownloads } from './downloads.js';
 import { SESSION_TTL_MS, createHttpApp, type McpApp } from './http.js';
 import { createMcpServer } from './server.js';
@@ -101,6 +102,9 @@ async function main() {
 
   const { pool } = getDb();
   await waitForDatabase(pool);
+
+  const aviso = avisoDeBoot();
+  if (aviso) console.log(aviso);
 
   const server = app.listen(config.port, config.host, async () => {
     console.log(`[mcp-public] ouvindo em http://${config.host}:${config.port}`);

@@ -3,6 +3,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const db = vi.hoisted(() => ({
+  // A busca semântica lê estas três; sem elas o módulo `rag.ts` nem carrega.
+  ragSchemaReady: vi.fn(async () => false),
+  getRagSettings: vi.fn(async () => ({})),
+  findRagSpace: vi.fn(async () => null),
   listSkills: vi.fn(),
   listPublishedSkills: vi.fn(),
   getSkillDetail: vi.fn(),
