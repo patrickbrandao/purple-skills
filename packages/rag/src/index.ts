@@ -16,6 +16,7 @@ export {
   RagUnavailableError,
   type EmbeddingDriver,
   type EmbeddingModel,
+  type UsoDeTokens,
 } from './driver.js';
 
 export { textSha256, textSha256Hex } from './hash.js';
@@ -76,6 +77,17 @@ export {
 
 
 export { GoogleDriver, type GoogleDriverOptions } from './google.js';
+export { OpenAIDriver, type OpenAIDriverOptions } from './openai.js';
+
+export {
+  embutirEmLotes,
+  lotes,
+  retryAfterMs,
+  ClienteHttp,
+  type MapearErro,
+  type OpcoesHttp,
+  type Requisicao,
+} from './http.js';
 
 export {
   criarBuscaSemantica,
@@ -100,6 +112,7 @@ export {
 } from './fake.js';
 
 import { GoogleDriver } from './google.js';
+import { OpenAIDriver } from './openai.js';
 import type { DriverResolver } from './search.js';
 import type { EmbeddingDriver, EmbeddingModel } from './driver.js';
 import { RagConfigError } from './driver.js';
@@ -117,9 +130,7 @@ type Construtor = (options: { apiKey: string; baseUrl?: string }) => EmbeddingDr
 
 const CONSTRUTORES: Record<RagProviderId, Construtor> = {
   google: (options) => new GoogleDriver(options),
-  openai: () => {
-    throw new RagConfigError('o driver "openai" ainda não tem implementação neste commit');
-  },
+  openai: (options) => new OpenAIDriver(options),
   voyage: () => {
     throw new RagConfigError('o driver "voyage" ainda não tem implementação neste commit');
   },
