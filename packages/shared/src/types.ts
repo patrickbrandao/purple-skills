@@ -137,6 +137,16 @@ export type SearchResult = {
   total: number;
   limit: number;
   offset: number;
+  /**
+   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   *
+   * `hybrid` é a fusão da perna textual com a vetorial; `text` é a busca de
+   * sempre. Cair para `text` não é erro — é o que acontece com o driver
+   * desligado, sem chave, sem a migration do RAG aplicada, ou quando o
+   * provedor demora mais que `RAG_QUERY_TIMEOUT_MS`. O cliente recebe o campo
+   * para saber o que leu, não para escolher o modo.
+   */
+  mode: 'text' | 'hybrid';
 };
 
 /** Tipos compartilhados entre a API REST, o frontend e os servidores MCP. */
@@ -178,6 +188,12 @@ export type AuditAction =
   | 'catalog.unshare'
   | 'mcp.share'
   | 'mcp.unshare'
+  // Busca semântica (`tmp/RAG-GOOGLE.md` §9, futuro `docs/14`).
+  // `rag.settings` leva `chave=valor`; `rag.reindex` leva a quantidade de
+  // skills marcadas. O estado do indexador **não** é auditado: ele é
+  // regravado a cada ciclo e inundaria a trilha.
+  | 'rag.settings'
+  | 'rag.reindex'
   // Chaves `psp_` do antigo MCP principal. Nada mais as produz desde o `011`;
   // ficam no tipo porque a trilha ainda carrega linhas com elas.
   | 'public.key.create'

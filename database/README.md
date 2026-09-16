@@ -931,12 +931,12 @@ espaço — o prefixo não aparece no SQL.
   `'text'`. Espaço torto ou vetor que não é lista de números finitos é 400:
   a essa altura o app já decidiu que dá para buscar por significado.
 
-O retorno é `SkillSearchResult` — o `SearchResult` de shared **mais**
-`mode: 'text' | 'hybrid'` e `neighbors: { slug, distance }[]`, os vizinhos
-que chegaram à página. A distância fica **fora** de `items` de propósito:
-`SkillSummary` é o que os apps serializam para o cliente, e a distância não
-vai para o cliente na v1 — ela é o que o app registra no log. Quem tipava o
-retorno como `SearchResult` continua compilando.
+O retorno é `SkillSearchResult`: o `SearchResult` de shared — que já traz
+`mode: 'text' | 'hybrid'` — **mais** `neighbors: { slug, distance }[]`, os
+vizinhos da perna vetorial que chegaram à página. A distância fica **fora**
+de `items`, e no banco em vez de em shared, de propósito: `SkillSummary` é o
+que os apps serializam para o cliente, e a distância não vai para o cliente
+na v1 — ela é o que o app registra no log.
 
 ## Contrato com os outros agentes
 

@@ -165,27 +165,26 @@ export type SemanticScope = {
   neighbors?: number;
 };
 
-/** Como a página foi obtida: só texto, ou texto fundido com a perna vetorial. */
-export type SearchMode = 'text' | 'hybrid';
+/**
+ * Como a página foi obtida: só texto, ou texto fundido com a perna vetorial.
+ * É o campo `mode` de `SearchResult`, com nome — derivado dele para não haver
+ * duas listas a manter.
+ */
+export type SearchMode = SearchResult['mode'];
 
 /** Um vizinho da perna vetorial que chegou à página, com a distância do cosseno. */
 export type RagNeighbor = { slug: string; distance: number };
 
 /**
- * O que `listSkills` devolve. É o `SearchResult` de shared **mais** o modo e
- * os vizinhos.
+ * O que `listSkills` devolve: o `SearchResult` de shared — que já traz o
+ * `mode` — **mais** os vizinhos da perna vetorial.
  *
- * `mode` ainda não está em `SearchResult` — o tipo mora em `packages/shared`,
- * fora do alcance do dba —, e por isso o acréscimo é feito aqui: quem já
- * recebia `SearchResult` continua compilando, e o PR que mexer em shared pode
- * mover o campo para lá.
- *
- * `neighbors` fica **fora** de `items` de propósito: `SkillSummary` é o que os
- * apps serializam para o cliente, e a distância não vai para o cliente na v1
- * (§8.1) — aqui ela é o que o app registra no log.
+ * `neighbors` fica **fora** de `items`, e no banco em vez de em shared, de
+ * propósito: `SkillSummary` é o que os apps serializam para o cliente, e a
+ * distância não vai para o cliente na v1 (§8.1) — aqui ela é o que o app
+ * registra no log.
  */
 export type SkillSearchResult = SearchResult & {
-  mode: SearchMode;
   neighbors: RagNeighbor[];
 };
 
@@ -2162,10 +2161,11 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
 }
 
 /**
- * Espelho do `CHECK` de `audit_log.action` (`schema/017-acesso-granular.sql`),
- * para recusar um filtro inválido com 400 em vez de devolver uma página vazia.
+ * Espelho do `CHECK` de `audit_log.action` (hoje em `schema/020-rag.sql`, que
+ * repete a lista inteira), para recusar um filtro inválido com 400 em vez de
+ * devolver uma página vazia.
  */
-const AUDIT_ACTIONS: readonly (AuditAction | RagAuditAction)[] = [
+const AUDIT_ACTIONS: readonly AuditAction[] = [
   'create',
   'update',
   'delete',
@@ -2200,7 +2200,7 @@ export type ListAuditOptions = {
   limit?: number;
   offset?: number;
   /** Uma ação exata; fora da lista é 400. */
-  action?: AuditAction | RagAuditAction;
+  action?: AuditAction;
   /** Igualdade com `actor_label` (o e-mail, `token-global`, `bootstrap`, `seed`). */
   actor?: string;
   /** `ILIKE %q%` em `skill_slug`, `target_label`, `file_path` e `actor_label`. */
@@ -5134,15 +5134,6 @@ export type RagSettingKey = (typeof RAG_SETTING_KEYS)[number];
 export const RAG_EDITABLE_SETTINGS = ['rag.driver', 'rag.model'] as const;
 export type RagEditableSetting = (typeof RAG_EDITABLE_SETTINGS)[number];
 
-/**
- * As ações de auditoria do RAG. Elas **ainda não estão** em `AuditAction` de
- * `@purple-skills/shared` — o tipo mora em `packages/shared`, fora do alcance
- * do dba —, e por isso aparecem aqui como um apelido próprio. O `CHECK` de
- * `audit_log.action` (`schema/020-rag.sql`) já as aceita; quando o tipo
- * compartilhado as receber, este apelido pode sumir.
- */
-type RagAuditAction = 'rag.settings' | 'rag.reindex';
-
 /** Quem assina a semeadura pelo ambiente (§4.1): não é conta, como o bootstrap. */
 const RAG_SEED_ACTOR: AuditActor = { userUuid: null, label: 'ambiente' };
 
@@ -5926,7 +5917,7 @@ type AuditInput = {
   skillUuid: string | null;
   skillSlug: string | null;
   filePath: string | null;
-  action: AuditAction | RagAuditAction;
+  action: AuditAction;
   source: AuditSource;
   previousContent: string | null;
   /**
