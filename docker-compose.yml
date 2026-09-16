@@ -89,6 +89,11 @@ services:
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       MCP_ADMIN_URL: ${MCP_ADMIN_URL:-}
       ADMIN_URL: ${ADMIN_URL:-}
+      # Busca semântica em /api/skills?q= — mesmo par do mcp-public.
+      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
+      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
+      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${SITE_PORT:-3000}:3000'
 
@@ -132,6 +137,11 @@ services:
       LOGIN_IP_WINDOW_SECONDS: ${LOGIN_IP_WINDOW_SECONDS:-}
       # Login por OIDC — opcional. Sem OIDC_ALLOWED_DOMAINS o
       # auto-provisionamento fica desligado, de propósito.
+      # Semeadura da busca semântica: o admin grava estas duas no banco no
+      # primeiro boot e, dali em diante, quem manda é o painel. A chave da API
+      # NÃO vem para cá — só o indexer e os dois que consultam a recebem.
+      RAG_DRIVER: ${RAG_DRIVER:-}
+      RAG_MODEL: ${RAG_MODEL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
@@ -163,6 +173,12 @@ services:
       # de cada requisição (proto://host), o que funciona atrás do Traefik do
       # override.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
+      # Busca semântica: a consulta é embutida aqui mesmo. Sem chave, ou com o
+      # driver `off` no banco, a busca responde `mode: text` como sempre.
+      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
+      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
+      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
 
@@ -181,6 +197,30 @@ services:
       MCP_MAX_ZIP_BASE64: ${MCP_MAX_ZIP_BASE64:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
+
+  # Indexador do RAG — perfil `rag`, fora do `up -d` do dia a dia:
+  #
+  #   docker compose --profile rag up -d indexer
+  #
+  # Ele não abre porta e não tem healthcheck HTTP: quem diz se está vivo é
+  # `rag.indexer.status`, regravado a cada ciclo e mostrado no painel.
+  #
+  # Pode subir ANTES do `migrate`: enquanto as tabelas `rag_*` não existirem ele
+  # espera, sem cair. Sem chave, refatia as skills e não embute nada.
+  indexer:
+    <<: *app-common
+    profiles: [rag]
+    image: ghcr.io/patrickbrandao/purple-skills-indexer:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: apps/indexer/Dockerfile
+    environment:
+      <<: *app-env
+      # A chave só existe aqui e nos dois que consultam; o painel nunca a vê.
+      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
+      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
+      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      RAG_INDEX_INTERVAL_SECONDS: ${RAG_INDEX_INTERVAL_SECONDS:-}
 
   # Inspector oficial do MCP — ferramenta de depuração, parte oficial da
   # stack: sobe junto no `up -d` do dia a dia, como os demais serviços.
