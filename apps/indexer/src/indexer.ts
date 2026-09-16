@@ -23,6 +23,8 @@
 import {
   chunkSkill,
   modeloPeloId,
+  DRIVERS_IMPLEMENTADOS,
+  type RagProviderId,
   RagAuthError,
   RagConfigError,
   RagRateLimitError,
@@ -57,10 +59,15 @@ export type IndexerPorts = {
   insertRagVectors: (spaceUuid: string, vectors: readonly RagVectorInput[]) => Promise<number>;
   ragCoverage: (spaceUuid: string | null) => Promise<RagCoverage>;
   setRagIndexerStatus: (status: Record<string, unknown>) => Promise<void>;
-  /** `null` quando o driver está `off` ou não há chave. */
-  driver: EmbeddingDriver | null;
+  /**
+   * O driver. Um `EmbeddingDriver` fixo (ou `null`) para o teste; uma função
+   * para escolher pelo id que o **banco** configurou — é assim que o container
+   * monta no boot todos os drivers para os quais tem chave e deixa o painel
+   * decidir qual deles roda, sem recriar container nenhum.
+   */
+  driver: EmbeddingDriver | null | ((id: RagProviderId) => EmbeddingDriver | null);
   /** Presença da chave, separada do driver: sem ela dá para refatiar, não embutir. */
-  keyPresent: boolean;
+  keyPresent: boolean | ((id: RagProviderId) => boolean);
   log: (mensagem: string) => void;
   now?: () => Date;
 };
@@ -121,12 +128,34 @@ export async function runCycle(
   const driverConfigurado = settings['rag.driver']?.value ?? 'off';
   const modeloConfigurado = settings['rag.model']?.value ?? null;
 
-  if (driverConfigurado === 'off' || ports.driver === null) {
+  // O id vem do banco: pode ser um driver que este binário não conhece.
+  const conhecido =
+    driverConfigurado !== 'off' &&
+    (DRIVERS_IMPLEMENTADOS as readonly string[]).includes(driverConfigurado);
+  const idDoDriver = conhecido ? (driverConfigurado as RagProviderId) : null;
+
+  const driver = resolver(ports.driver, idDoDriver);
+  const keyPresent = resolver(ports.keyPresent, idDoDriver) ?? false;
+
+  if (driverConfigurado !== 'off' && !conhecido) {
+    const mensagem = `rag.driver="${driverConfigurado}" não é um driver conhecido`;
+    ports.log(`[indexer] configuração recusada: ${mensagem}`);
+    await ports.setRagIndexerStatus({
+      at: agora().toISOString(),
+      driver: driverConfigurado,
+      keyPresent: false,
+      lastError: mensagem,
+      lastErrorAt: agora().toISOString(),
+    });
+    return { ...resultado, state: 'ok', erros: 1, lastError: mensagem, continuar: false };
+  }
+
+  if (driverConfigurado === 'off' || driver === null) {
     const cobertura = await ports.ragCoverage(null);
     await ports.setRagIndexerStatus({
       at: agora().toISOString(),
       driver: driverConfigurado,
-      keyPresent: ports.keyPresent,
+      keyPresent,
       ...cobertura,
     });
     if (driverConfigurado === 'off') {
@@ -136,7 +165,6 @@ export async function runCycle(
     // Driver ligado no banco, mas sem chave: dá para refatiar, não para embutir.
   }
 
-  const driver = ports.driver;
   let modelo: EmbeddingModel | null = null;
   if (driver !== null) {
     try {
@@ -147,7 +175,7 @@ export async function runCycle(
       await ports.setRagIndexerStatus({
         at: agora().toISOString(),
         driver: driverConfigurado,
-        keyPresent: ports.keyPresent,
+        keyPresent,
         lastError: mensagem,
         lastErrorAt: agora().toISOString(),
       });
@@ -227,11 +255,11 @@ export async function runCycle(
     await ports.setRagIndexerStatus({
       at: agora().toISOString(),
       driver: driverConfigurado,
-      keyPresent: ports.keyPresent,
+      keyPresent,
       ...(await ports.ragCoverage(espaco?.uuid ?? null)),
       lastError: resultado.lastError,
     });
-    if (!ports.keyPresent) {
+    if (!keyPresent) {
       ports.log(
         `[indexer] sem RAG_GOOGLE_API_KEY: ${resultado.skillsRefatiadas} skills refatiadas, ` +
           'nenhum texto embutido',
@@ -279,7 +307,7 @@ export async function runCycle(
     driver: driverConfigurado,
     model: modelo.id,
     spaceUuid: espaco.uuid,
-    keyPresent: ports.keyPresent,
+    keyPresent,
     ...cobertura,
     lastError: resultado.lastError,
     lastErrorAt: resultado.lastError ? agora().toISOString() : null,
@@ -351,4 +379,19 @@ export async function runOnce(
   }
 
   return { exitCode: erros > 0 ? 1 : 0, rodadas, result: ultimo };
+}
+
+/**
+ * Resolve uma porta que pode ser fixa ou depender do driver configurado.
+ *
+ * O teste passa o valor pronto; o container passa a função, porque só descobre
+ * qual driver vale depois de ler o banco.
+ */
+function resolver<T>(
+  porta: T | ((id: RagProviderId) => T),
+  id: RagProviderId | null,
+): T | null {
+  if (typeof porta !== 'function') return porta;
+  if (id === null) return null;
+  return (porta as (id: RagProviderId) => T)(id);
 }

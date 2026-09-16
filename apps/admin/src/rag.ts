@@ -27,11 +27,15 @@ import {
 } from '@purple-skills/db';
 import {
   decideSeed,
-  GEMINI_EMBEDDING_2,
-  MODELO_PADRAO,
+  driverInfo,
+  modeloPadraoDe,
+  modelosDo,
   readDriverEnv,
   readModelEnv,
+  DRIVERS_IMPLEMENTADOS,
+  RAG_DRIVERS,
   type RagDriverId,
+  type RagProviderId,
   type RagSettingKey,
 } from '@purple-skills/rag';
 import type { AuditActor } from '@purple-skills/shared';
@@ -71,7 +75,14 @@ export type RagPainel = {
   model: RagValor;
   /** Opções que o select oferece. */
   drivers: readonly RagDriverId[];
+  /** Os modelos do driver **em uso**, que é o que o select de modelo mostra. */
   models: readonly string[];
+  /**
+   * Um item por driver implementado, com o rótulo e os modelos dele. O painel
+   * troca o select de modelo sem ir ao servidor de novo — e sem repetir a
+   * lista, que vive uma vez só no registro.
+   */
+  driverOptions: readonly { id: RagProviderId; label: string; models: readonly string[] }[];
   /** Falso enquanto a migration `020` não rodou. */
   schemaReady: boolean;
   /** `null` enquanto o indexador não criou o espaço. */
@@ -80,11 +91,17 @@ export type RagPainel = {
   indexer: RagEstadoIndexador | null;
   keyState: RagEstadoChave;
   /**
-   * O aviso fixo da §9. O painel **não sabe** o nível da chave, então ele é
-   * sempre exibido: com uma chave gratuita o Google usa o conteúdo enviado,
-   * inclusive o de skills privadas, e revisores humanos podem lê-lo.
+   * O aviso da §9, ou `null` quando o driver em uso não o merece.
+   *
+   * Ele é **do Google**: é lá que o nível gratuito usa o conteúdo enviado para
+   * melhorar produtos, com revisores humanos podendo lê-lo. O painel não sabe
+   * se a chave é gratuita ou paga, então com o driver `google` ele avisa
+   * sempre — errar para o lado de avisar é barato, e o contrário manda
+   * conteúdo de skill privada para treinamento sem ninguém ver. OpenAI e
+   * Voyage não treinam sobre o tráfego da API, e repetir o aviso neles seria
+   * ensinar o operador a ignorá-lo.
    */
-  freeTierWarning: string;
+  freeTierWarning: string | null;
 };
 
 export const AVISO_NIVEL_GRATUITO =
@@ -111,11 +128,18 @@ export async function semearRag(): Promise<string[]> {
 
   const gravadas = await getRagSettings();
 
+  // `rag.model` é validada contra os modelos do driver que vai valer: o do
+  // ambiente quando ele semeia, o do banco quando o banco já decidiu.
+  const driverEmUso = (doAmbiente['rag.driver'] ??
+    gravadas['rag.driver']?.value ??
+    'off') as RagDriverId;
+
   for (const key of ['rag.driver', 'rag.model'] as const) {
     const decisao = decideSeed({
       key,
       envValue: doAmbiente[key],
       dbValue: gravadas[key]?.value ?? null,
+      driver: driverEmUso,
     });
 
     if (decisao.action === 'gravar') {
@@ -135,21 +159,30 @@ export async function lerPainelRag(): Promise<RagPainel> {
   const schemaReady = await ragSchemaReady().catch(() => false);
 
   const driver = valor('rag.driver', gravadas, process.env.RAG_DRIVER, 'off');
-  const model = valor('rag.model', gravadas, process.env.RAG_MODEL, MODELO_PADRAO);
+  const emUso = ehDriver(driver.value) ? driver.value : null;
+  const model = valor(
+    'rag.model',
+    gravadas,
+    process.env.RAG_MODEL,
+    modeloPadraoDe(emUso ?? 'google'),
+  );
 
   const indexer = lerEstado(gravadas['rag.indexer.status']?.value ?? null);
 
-  // O espaço só existe depois do primeiro ciclo do indexador.
+  // O espaço só existe depois do primeiro ciclo do indexador, e ele é o do par
+  // driver+modelo em uso: trocar qualquer um dos dois aponta para outro espaço,
+  // com a cobertura dele — os vetores do anterior continuam onde estavam.
   let spaceUuid: string | null = null;
-  if (schemaReady && driver.value === 'google') {
+  const modelo = emUso === null ? undefined : driverInfo(emUso).models.find((m) => m.id === model.value);
+  if (schemaReady && emUso !== null && modelo !== undefined) {
     spaceUuid =
       (
         await findRagSpace({
-          driver: 'google',
-          model: GEMINI_EMBEDDING_2.id,
-          dimensions: GEMINI_EMBEDDING_2.dimensions,
-          documentPrefix: GEMINI_EMBEDDING_2.documentPrefix,
-          queryPrefix: GEMINI_EMBEDDING_2.queryPrefix,
+          driver: emUso,
+          model: modelo.id,
+          dimensions: modelo.dimensions,
+          documentPrefix: modelo.documentPrefix,
+          queryPrefix: modelo.queryPrefix,
         }).catch(() => null)
       )?.uuid ?? null;
   }
@@ -159,14 +192,19 @@ export async function lerPainelRag(): Promise<RagPainel> {
   return {
     driver,
     model,
-    drivers: ['off', 'google'],
-    models: [MODELO_PADRAO],
+    drivers: ['off', ...DRIVERS_IMPLEMENTADOS],
+    models: modelosDo(emUso ?? 'google'),
+    driverOptions: RAG_DRIVERS.map((d) => ({
+      id: d.id,
+      label: d.label,
+      models: d.models.map((m) => m.id),
+    })),
     schemaReady,
     spaceUuid,
     coverage,
     indexer,
     keyState: estadoDaChave(indexer),
-    freeTierWarning: AVISO_NIVEL_GRATUITO,
+    freeTierWarning: emUso === 'google' ? AVISO_NIVEL_GRATUITO : null,
   };
 }
 
@@ -176,21 +214,34 @@ export async function gravarRag(
   body: { driver?: unknown; model?: unknown },
 ): Promise<RagPainel> {
   const mudancas: [RagSettingKey, string][] = [];
+  const gravadas = await getRagSettings();
+
+  let driver: RagDriverId = (gravadas['rag.driver']?.value ?? 'off') as RagDriverId;
 
   if (body.driver !== undefined) {
     const valor = String(body.driver);
-    if (valor !== 'off' && valor !== 'google') {
-      throw badRequest(`Driver inválido: "${valor}". Use "google" ou "off".`);
+    if (valor !== 'off' && !ehDriver(valor)) {
+      const aceitos = ['off', ...DRIVERS_IMPLEMENTADOS].map((d) => `"${d}"`).join(', ');
+      throw badRequest(`Driver inválido: "${valor}". Use ${aceitos}.`);
     }
+    driver = valor as RagDriverId;
     mudancas.push(['rag.driver', valor]);
   }
 
   if (body.model !== undefined) {
     const valor = String(body.model);
-    if (valor !== MODELO_PADRAO) {
-      throw badRequest(`Modelo inválido: "${valor}". A v1 só tem "${MODELO_PADRAO}".`);
+    const aceitos = modelosDo(driver);
+    if (driver !== 'off' && !aceitos.includes(valor)) {
+      throw badRequest(
+        `Modelo inválido: "${valor}". O driver "${driver}" aceita ${aceitos.join(', ')}.`,
+      );
     }
     mudancas.push(['rag.model', valor]);
+  } else if (driver !== 'off' && !modelosDo(driver).includes(gravadas['rag.model']?.value ?? '')) {
+    // Trocar de driver sem dizer o modelo deixaria gravado um modelo que o
+    // driver novo não conhece, e o indexador recusaria a configuração. O
+    // padrão do driver escolhido é a única resposta que não quebra nada.
+    mudancas.push(['rag.model', modeloPadraoDe(driver)]);
   }
 
   if (mudancas.length === 0) {
@@ -217,6 +268,11 @@ export async function reindexarRag(actor: AuditActor): Promise<{ skills: number 
 }
 
 // ------------------------------------------------------------ auxiliares ---
+
+/** O valor é um driver de verdade, e não `off` nem lixo gravado à mão? */
+function ehDriver(valor: string): valor is RagProviderId {
+  return (DRIVERS_IMPLEMENTADOS as readonly string[]).includes(valor);
+}
 
 function valor(
   key: 'rag.driver' | 'rag.model',

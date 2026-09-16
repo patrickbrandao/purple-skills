@@ -19,15 +19,21 @@ import { useToast } from './Toast.js';
  * 1. **O painel não recebe a chave da API.** Tudo que ele sabe sobre ela vem
  *    de `rag.indexer.status`, que o indexador regrava a cada ciclo. Por isso
  *    "desconhecido" é um estado legítimo, e não um erro a esconder.
- * 2. **O aviso do nível gratuito é fixo.** O painel não tem como saber se a
- *    chave é gratuita ou paga, então ele avisa sempre — errar para o lado de
- *    avisar é barato; o contrário manda conteúdo privado para treinamento sem
- *    ninguém saber.
+ * 2. **O aviso do nível gratuito é do Google.** Com esse driver o painel avisa
+ *    sempre, porque não tem como saber se a chave é gratuita ou paga — errar
+ *    para o lado de avisar é barato; o contrário manda conteúdo privado para
+ *    treinamento sem ninguém saber. Quem decide é o servidor, que manda `null`
+ *    nos outros drivers.
+ * 3. **Driver e modelo andam juntos.** O par identifica o espaço de embedding:
+ *    trocar qualquer um aponta a busca para outro espaço, com a cobertura
+ *    dele. Nada é apagado — os vetores do espaço anterior ficam lá, prontos
+ *    para quando alguém voltar atrás.
  */
 export function RagPanel() {
   const toast = useToast();
   const [dados, setDados] = useState<RagSettings | null>(null);
   const [driver, setDriver] = useState('');
+  const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -35,6 +41,7 @@ export function RagPanel() {
       const atual = await getRagSettings();
       setDados(atual);
       setDriver(atual.driver.value);
+      setModel(atual.model.value);
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -44,14 +51,31 @@ export function RagPanel() {
     void load();
   }, [load]);
 
-  const dirty = dados !== null && driver !== dados.driver.value;
+  /** Os modelos do driver escolhido na tela, que pode não ser o gravado. */
+  const modelos = dados?.driverOptions.find((d) => d.id === driver)?.models ?? [];
+  const dirty =
+    dados !== null && (driver !== dados.driver.value || model !== dados.model.value);
+
+  /**
+   * Trocar de driver troca o modelo junto: um modelo do driver anterior não
+   * existe no novo, e deixá-lo na tela ofereceria salvar uma combinação que o
+   * servidor recusa.
+   */
+  function trocarDriver(novo: string) {
+    setDriver(novo);
+    const doNovo = dados?.driverOptions.find((d) => d.id === novo)?.models ?? [];
+    if (!doNovo.includes(model)) setModel(doNovo[0] ?? '');
+  }
 
   async function salvar() {
     setBusy(true);
     try {
-      const salvo = await saveRagSettings({ driver });
+      const salvo = await saveRagSettings(
+        driver === 'off' ? { driver } : { driver, model },
+      );
       setDados(salvo);
       setDriver(salvo.driver.value);
+      setModel(salvo.model.value);
       toast.success(
         salvo.driver.value === 'off'
           ? 'Busca semântica desligada. A busca volta ao modo textual em até 10 segundos.'
@@ -126,12 +150,40 @@ export function RagPanel() {
           className="input"
           value={driver}
           disabled={busy}
-          onChange={(e) => setDriver(e.target.value)}
+          onChange={(e) => trocarDriver(e.target.value)}
         >
           <option value="off">Desligada</option>
-          <option value="google">Google — {dados.model.value}</option>
+          {dados.driverOptions.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.label}
+            </option>
+          ))}
         </select>
       </Field>
+
+      {driver !== 'off' && (
+        <Field
+          label="Modelo"
+          hint={
+            model === dados.model.value
+              ? origemDe(dados.model)
+              : 'trocar o modelo cria outro espaço; os vetores do atual continuam onde estão'
+          }
+        >
+          <select
+            className="input"
+            value={model}
+            disabled={busy}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {modelos.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {dados.driver.ambienteIgnorado !== null && (
         <p className="panel-hint mt-2" style={{ color: 'var(--warn)' }}>
@@ -181,22 +233,27 @@ export function RagPanel() {
       </dl>
 
       {/*
-        Fixo de propósito: o painel não sabe o nível da chave, e a consequência
-        de não avisar é conteúdo privado indo para treinamento sem ninguém ver.
+        Só o Google tem nível gratuito que lê o conteúdo enviado, e o painel não
+        sabe se a chave é gratuita ou paga: com esse driver ele avisa sempre,
+        porque a consequência de não avisar é conteúdo de skill privada indo
+        para treinamento sem ninguém ver. Nos outros drivers o servidor manda
+        `null`, e repetir o aviso ali só ensinaria a ignorá-lo.
       */}
-      <p className="panel-hint mt-4" style={{ display: 'flex', gap: 8 }}>
-        <AlertTriangle size={16} style={{ flexShrink: 0, color: 'var(--warn)' }} />
-        <span>{dados.freeTierWarning}</span>
-      </p>
+      {dados.freeTierWarning !== null && (
+        <p className="panel-hint mt-4" style={{ display: 'flex', gap: 8 }}>
+          <AlertTriangle size={16} style={{ flexShrink: 0, color: 'var(--warn)' }} />
+          <span>{dados.freeTierWarning}</span>
+        </p>
+      )}
     </Panel>
   );
 }
 
 const ROTULO_DA_CHAVE: Record<RagSettings['keyState'], string> = {
-  presente: 'aceita pelo Google no último ciclo',
+  presente: 'aceita pelo provedor no último ciclo',
   ausente: 'não configurada — as skills são refatiadas, nada é embutido',
-  recusada: 'recusada pelo Google',
-  'cota-esgotada': 'cota esgotada (a diária zera à meia-noite do Pacífico)',
+  recusada: 'recusada pelo provedor',
+  'cota-esgotada': 'cota esgotada (no Google, a diária zera à meia-noite do Pacífico)',
   desconhecido: 'ainda não se sabe — o indexador não publicou estado nenhum',
 };
 

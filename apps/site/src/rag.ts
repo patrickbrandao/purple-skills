@@ -12,32 +12,26 @@
 import { findRagSpace, getRagSettings, ragSchemaReady } from '@purple-skills/db';
 import {
   criarBuscaSemantica,
-  criarDriver,
-  readBaseUrlEnv,
+  criarDriversDoAmbiente,
   readQueryTimeoutEnv,
+  RAG_DRIVERS,
 } from '@purple-skills/rag';
-import { readSecret } from '@purple-skills/shared';
 
-const apiKey = readSecret('RAG_GOOGLE_API_KEY');
-
-const driver = criarDriver({
-  // Quem liga e desliga é `rag.driver` no banco, conferido a cada busca com
-  // cache curto; aqui só se resolve *como* falar com o provedor.
-  driver: 'google',
-  apiKey,
-  baseUrl: readBaseUrlEnv(),
-});
+// Quem liga e desliga, e quem escolhe entre os drivers montados, é
+// `rag.driver` no banco, conferido a cada busca com cache curto; aqui só se
+// resolve *como* falar com cada provedor que tem chave no ambiente.
+const drivers = criarDriversDoAmbiente();
 
 export const buscaSemantica = criarBuscaSemantica({
   ports: { ragSchemaReady, getRagSettings, findRagSpace },
-  driver,
+  driver: drivers.resolver,
   timeoutMs: readQueryTimeoutEnv(),
   log: (mensagem) => console.log(`[site] ${mensagem}`),
 });
 
 /** Aviso de boot, uma vez, para o operador saber por que a busca é textual. */
 export function avisoDeBoot(): string | null {
-  return driver === null
-    ? '[site] RAG_GOOGLE_API_KEY ausente: a busca responde em modo textual'
-    : null;
+  if (drivers.comChave.length > 0) return null;
+  const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
+  return `[site] nenhuma chave de RAG no ambiente (${vars}): a busca responde em modo textual`;
 }

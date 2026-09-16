@@ -44,7 +44,9 @@ export type EmbeddingModel = {
 };
 
 export interface EmbeddingDriver {
-  readonly id: 'google' | 'fake';
+  /** Escrito à mão, e não importado do registro, para `driver.ts` não
+   * depender de `settings.ts` — é o registro que depende dos modelos. */
+  readonly id: 'google' | 'openai' | 'voyage' | 'fake';
   readonly models: readonly EmbeddingModel[];
   /** Recebe textos canônicos; aplica `documentPrefix` na chamada. */
   embedDocuments(

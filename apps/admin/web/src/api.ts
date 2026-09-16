@@ -1010,7 +1010,7 @@ export const plural = (n: number, one: string, many: string) => `${num(n)} ${n =
  * `docs/14`).
  *
  * O painel **não recebe** a chave da API: quem sabe se ela existe e se o
- * Google a aceitou é o indexador, que publica o estado no banco a cada ciclo.
+ * provedor a aceitou é o indexador, que publica o estado no banco a cada ciclo.
  * Por isso `keyState` pode ser `desconhecido` — é o caso honesto de quando o
  * indexador ainda não rodou.
  */
@@ -1042,14 +1042,18 @@ export type RagSettings = {
   driver: RagValue;
   model: RagValue;
   drivers: string[];
+  /** Os modelos do driver em uso. */
   models: string[];
+  /** Um item por driver implementado, com o rótulo e os modelos dele. */
+  driverOptions: { id: string; label: string; models: string[] }[];
   /** Falso enquanto a migration do RAG não rodou nesta instalação. */
   schemaReady: boolean;
   spaceUuid: string | null;
   coverage: RagCoverage | null;
   indexer: RagIndexerState | null;
   keyState: 'presente' | 'ausente' | 'recusada' | 'cota-esgotada' | 'desconhecido';
-  freeTierWarning: string;
+  /** Só o Google tem nível gratuito que lê o conteúdo enviado; nos outros é nulo. */
+  freeTierWarning: string | null;
 };
 
 export const getRagSettings = () => request<RagSettings>('/api/settings/rag');

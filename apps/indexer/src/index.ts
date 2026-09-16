@@ -13,12 +13,11 @@
  * estado. O `run-local.sh` roda o `migrate` depois do `up`, então subir antes
  * das tabelas é o caso normal.
  */
-import { readSecret } from '@purple-skills/shared';
 import {
-  readBaseUrlEnv,
+  criarDriversDoAmbiente,
   readIndexIntervalEnv,
-  GoogleDriver,
-  type EmbeddingDriver,
+  RAG_DRIVERS,
+  type DriversDoAmbiente,
 } from '@purple-skills/rag';
 import {
   claimStaleSkills,
@@ -41,26 +40,26 @@ import { runCycle, runOnce, type IndexerPorts } from './indexer.js';
 const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Monta o driver a partir do ambiente.
+ * Monta, do ambiente, **todos** os drivers para os quais há chave.
  *
- * O `rag.driver` do banco decide se a busca está ligada; aqui só se resolve
- * *como* falar com o provedor. Sem chave o driver é nulo, e o ciclo refatia
- * sem embutir — não é erro, é o estado de quem ainda não configurou a chave.
+ * O `rag.driver` do banco decide qual deles vale; aqui só se resolve *como*
+ * falar com cada provedor. Com as três chaves no `.env`, trocar o driver no
+ * painel passa a valer no ciclo seguinte, sem recriar container nenhum. Sem
+ * chave nenhuma o ciclo refatia sem embutir — não é erro, é o estado de quem
+ * ainda não configurou chave.
  */
-export function driverDoAmbiente(env: NodeJS.ProcessEnv = process.env): {
-  driver: EmbeddingDriver | null;
-  keyPresent: boolean;
-} {
-  const apiKey = readSecret('RAG_GOOGLE_API_KEY', env);
-  const baseUrl = readBaseUrlEnv(env);
-
-  if (!apiKey) return { driver: null, keyPresent: false };
-  return { driver: new GoogleDriver({ apiKey, baseUrl }), keyPresent: true };
+export function driverDoAmbiente(env: NodeJS.ProcessEnv = process.env): DriversDoAmbiente {
+  return criarDriversDoAmbiente(env);
 }
 
 function montarPortas(): IndexerPorts {
-  const { driver, keyPresent } = driverDoAmbiente();
+  const { resolver, comChave, problemas } = driverDoAmbiente();
+  for (const { id, motivo } of problemas) {
+    console.warn(`[indexer] driver ${id} tem chave mas não subiu: ${motivo}`);
+  }
   return {
+    driver: resolver,
+    keyPresent: (id) => comChave.includes(id),
     ragSchemaReady,
     getRagSettings,
     resolveRagSpace,
@@ -72,8 +71,6 @@ function montarPortas(): IndexerPorts {
     insertRagVectors,
     ragCoverage,
     setRagIndexerStatus,
-    driver,
-    keyPresent,
     log: (mensagem) => console.log(mensagem),
   };
 }
@@ -86,8 +83,12 @@ async function main(): Promise<void> {
   await waitForDatabase(pool);
   const portas = montarPortas();
 
-  if (!portas.keyPresent) {
-    console.log('[indexer] RAG_GOOGLE_API_KEY ausente: as skills são refatiadas, nada é embutido');
+  const comChave = criarDriversDoAmbiente().comChave;
+  if (comChave.length === 0) {
+    const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
+    console.log(`[indexer] nenhuma chave no ambiente (${vars}): as skills são refatiadas, nada é embutido`);
+  } else {
+    console.log(`[indexer] chave presente para: ${comChave.join(', ')}`);
   }
 
   if (umaVez) {

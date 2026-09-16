@@ -19,7 +19,7 @@ import {
   type EmbeddingDriver,
   type EmbeddingModel,
 } from './driver.js';
-import { GEMINI_EMBEDDING_2 } from './google.js';
+import { GEMINI_EMBEDDING_2 } from './models.js';
 
 /** Um modelo pequeno, para teste não carregar 3072 floats a cada asserção. */
 export const MODELO_FALSO: EmbeddingModel = {

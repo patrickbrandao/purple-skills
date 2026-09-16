@@ -14,6 +14,19 @@
  * saiu, e o motivo ficou no log".
  */
 import type { EmbeddingDriver, EmbeddingModel } from './driver.js';
+import { DRIVERS_IMPLEMENTADOS, type RagProviderId } from './settings.js';
+
+/**
+ * Resolve o driver pelo id que o **banco** escolheu.
+ *
+ * A configuração do driver vive no banco e é lida por requisição, com cache
+ * curto; as chaves vivem no ambiente e são lidas no boot. Passar uma função,
+ * em vez de um driver pronto, é o que reconcilia os dois: o processo monta no
+ * boot todos os drivers para os quais tem chave, e a busca escolhe entre eles
+ * a cada requisição. Trocar o driver no painel passa a valer em dez segundos,
+ * sem recriar container nenhum.
+ */
+export type DriverResolver = (id: RagProviderId) => EmbeddingDriver | null;
 
 /** O que a busca precisa do banco. Injetado para o pacote não depender do db. */
 export type SearchPorts = {
@@ -36,8 +49,12 @@ export type SearchPorts = {
 
 export type SemanticSearchOptions = {
   ports: SearchPorts;
-  /** `null` com o driver `off` ou sem chave. */
-  driver: EmbeddingDriver | null;
+  /**
+   * O driver. Um `EmbeddingDriver` fixo (ou `null`, sem chave nenhuma) para
+   * quem só fala com um provedor; uma `DriverResolver` para escolher pelo que
+   * o banco disser.
+   */
+  driver: EmbeddingDriver | null | DriverResolver;
   /** Prazo do embedding da consulta. */
   timeoutMs: number;
   /** Quanto tempo a configuração fica em cache. Padrão: 10 s (§4.1). */
@@ -109,8 +126,10 @@ export function criarBuscaSemantica(options: SemanticSearchOptions) {
       const consulta = (query ?? '').trim();
       if (consulta === '') return TEXTO('consulta-vazia');
 
-      const driver = options.driver;
-      if (driver === null) return TEXTO('sem-driver');
+      // Driver fixo e nulo: não há chave nenhuma, então não vale nem gastar o
+      // SELECT da configuração para descobrir qual deles usaríamos.
+      const fixo = typeof options.driver === 'function' ? undefined : options.driver;
+      if (fixo === null) return TEXTO('sem-driver');
 
       let config: Cache;
       try {
@@ -120,6 +139,18 @@ export function criarBuscaSemantica(options: SemanticSearchOptions) {
         return TEXTO('driver-off');
       }
       if (config.driver === 'off') return TEXTO('driver-off');
+
+      let driver: EmbeddingDriver | null;
+      if (fixo !== undefined) {
+        driver = fixo;
+      } else if (!(DRIVERS_IMPLEMENTADOS as readonly string[]).includes(config.driver)) {
+        log(`[rag] rag.driver="${config.driver}" não é um driver conhecido`);
+        return TEXTO('sem-driver');
+      } else {
+        driver = (options.driver as DriverResolver)(config.driver as RagProviderId);
+      }
+      // O banco pede um driver para o qual este container não tem chave.
+      if (driver === null) return TEXTO('sem-driver');
 
       // As tabelas podem não existir: `findRagSpace` bateria em 42P01.
       if (!schemaPronto) {

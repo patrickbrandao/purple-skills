@@ -5,6 +5,15 @@
  * validação, a semeadura e o que o painel mostra. Sem isso, cada container
  * repetiria a mesma lista e elas divergiriam com o tempo.
  *
+ * São dois registros, e eles se alimentam:
+ *
+ *   * `RAG_DRIVERS` — **por driver**: a variável da chave, a variável e o valor
+ *     padrão da URL base, e os modelos que ele aceita;
+ *   * `RAG_SETTINGS` — **por variável de ambiente**. As variáveis de chave e de
+ *     URL base não são escritas à mão: saem de `RAG_DRIVERS`, e é isso que
+ *     garante que acrescentar um driver não deixe metade do sistema sem saber
+ *     da variável nova.
+ *
  * A precedência é a da §4.1: **o ambiente semeia, o banco decide.** Vários
  * containers leem a mesma configuração; se o ambiente valesse sempre, um
  * container com a variável diferente divergiria dos outros em silêncio. Então
@@ -14,22 +23,108 @@
  *
  * Nada de variável `config` em JSON: cada opção é uma variável própria.
  */
-import { readIntEnv, readTextEnv } from '@purple-skills/shared';
+import { readIntEnv, readSecret, readTextEnv } from '@purple-skills/shared';
+import type { EmbeddingModel } from './driver.js';
+import {
+  BASE_URL_GOOGLE,
+  BASE_URL_OPENAI,
+  BASE_URL_VOYAGE,
+  MODELOS_GOOGLE,
+  MODELOS_OPENAI,
+  MODELOS_VOYAGE,
+} from './models.js';
 
 /** As chaves que este registro grava em `settings`. */
 export type RagSettingKey = 'rag.driver' | 'rag.model';
 
 /** O driver em uso. `off` desliga a busca semântica. */
-export type RagDriverId = 'off' | 'google';
+export type RagDriverId = 'off' | 'google' | 'openai' | 'voyage';
+
+/** Um driver de verdade: o `RagDriverId` sem o `off`. */
+export type RagProviderId = Exclude<RagDriverId, 'off'>;
 
 /** Os drivers previstos na interface, mas ainda sem implementação. */
-export const DRIVERS_FUTUROS = ['openai', 'voyage', 'cohere'] as const;
-
-/** O único modelo da v1. */
-export const MODELO_PADRAO = 'gemini-embedding-2';
+export const DRIVERS_FUTUROS = ['cohere'] as const;
 
 /** A chave onde o indexador publica o próprio estado. Não passa por este registro. */
 export const CHAVE_ESTADO_INDEXADOR = 'rag.indexer.status';
+
+/** Tudo que o projeto precisa saber de um driver antes de construí-lo. */
+export type RagDriverInfo = {
+  id: RagProviderId;
+  /** Como o painel e o log o chamam. */
+  label: string;
+  /** Variável da chave. Aceita `<env>_FILE`, como todo segredo do projeto. */
+  apiKeyEnv: string;
+  /** Variável da URL base. */
+  baseUrlEnv: string;
+  /** URL base padrão, já com a versão da API. */
+  baseUrlPadrao: string;
+  /** Os modelos aceitos, na ordem; o primeiro é o padrão do driver. */
+  models: readonly EmbeddingModel[];
+};
+
+/**
+ * O registro por driver.
+ *
+ * Acrescentar um driver é acrescentar uma linha aqui e um arquivo com a classe
+ * — o resto (variáveis do `.env`, validação de `RAG_MODEL`, opções do painel,
+ * montagem a partir do ambiente) sai daqui sozinho.
+ */
+export const RAG_DRIVERS: readonly RagDriverInfo[] = [
+  {
+    id: 'google',
+    label: 'Google — Gemini API',
+    apiKeyEnv: 'RAG_GOOGLE_API_KEY',
+    baseUrlEnv: 'RAG_GOOGLE_BASE_URL',
+    baseUrlPadrao: BASE_URL_GOOGLE,
+    models: MODELOS_GOOGLE,
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    apiKeyEnv: 'RAG_OPENAI_API_KEY',
+    baseUrlEnv: 'RAG_OPENAI_BASE_URL',
+    baseUrlPadrao: BASE_URL_OPENAI,
+    models: MODELOS_OPENAI,
+  },
+  {
+    id: 'voyage',
+    label: 'Voyage AI',
+    apiKeyEnv: 'RAG_VOYAGE_API_KEY',
+    baseUrlEnv: 'RAG_VOYAGE_BASE_URL',
+    baseUrlPadrao: BASE_URL_VOYAGE,
+    models: MODELOS_VOYAGE,
+  },
+];
+
+/** Os ids dos drivers implementados, na ordem do registro. */
+export const DRIVERS_IMPLEMENTADOS: readonly RagProviderId[] = RAG_DRIVERS.map((d) => d.id);
+
+/** O que se sabe do driver. Lança para id que não é driver de verdade. */
+export function driverInfo(id: RagProviderId): RagDriverInfo {
+  const achado = RAG_DRIVERS.find((d) => d.id === id);
+  if (!achado) throw new Error(`Driver de RAG desconhecido: ${id}`);
+  return achado;
+}
+
+/** Os ids de modelo que o driver aceita. Vazio com o driver `off`. */
+export function modelosDo(driver: RagDriverId): readonly string[] {
+  if (driver === 'off') return [];
+  return driverInfo(driver).models.map((m) => m.id);
+}
+
+/** O modelo padrão do driver: o primeiro do registro. */
+export function modeloPadraoDe(driver: RagProviderId): string {
+  const [primeiro] = driverInfo(driver).models;
+  if (!primeiro) throw new Error(`O driver ${driver} não declara modelo nenhum`);
+  return primeiro.id;
+}
+
+/** O driver que tem este modelo, ou `null` se nenhum tem. */
+export function driverDoModelo(model: string): RagProviderId | null {
+  return RAG_DRIVERS.find((d) => d.models.some((m) => m.id === model))?.id ?? null;
+}
 
 export type RagSetting = {
   /** Chave em `settings`, ou nula para opção só de ambiente. */
@@ -42,54 +137,80 @@ export type RagSetting = {
   editable: boolean;
   /** Padrão do código quando não há ambiente nem banco. */
   fallback: string | number | null;
-  /** Valida e normaliza; lança erro com mensagem em português. */
-  parse: (raw: string) => string | number;
+  /**
+   * Valida e normaliza; lança erro com mensagem em português. `driver` é o
+   * contexto de quem valida `RAG_MODEL`: o mesmo texto é válido num driver e
+   * inválido no outro.
+   */
+  parse: (raw: string, driver?: RagDriverId) => string | number;
 };
-
-/** URL base padrão da Gemini API, já com a versão. */
-export const BASE_URL_PADRAO = 'https://generativelanguage.googleapis.com/v1beta';
 
 function parseDriver(raw: string): string {
   const valor = raw.trim().toLowerCase();
   if (valor === '' || valor === 'off') return 'off';
-  if (valor === 'google') return 'google';
+  if ((DRIVERS_IMPLEMENTADOS as readonly string[]).includes(valor)) return valor;
 
+  const aceitos = ['off', ...DRIVERS_IMPLEMENTADOS].map((d) => `"${d}"`).join(', ');
   if ((DRIVERS_FUTUROS as readonly string[]).includes(valor)) {
     throw new Error(
-      `RAG_DRIVER inválida: o driver "${valor}" ainda não foi implementado; use "google" ou "off"`,
+      `RAG_DRIVER inválida: o driver "${valor}" ainda não foi implementado; use ${aceitos}`,
     );
   }
-  throw new Error(`RAG_DRIVER inválida: esperado "google" ou "off", recebido "${raw}"`);
+  throw new Error(`RAG_DRIVER inválida: esperado ${aceitos}, recebido "${raw}"`);
 }
 
-function parseModel(raw: string): string {
+/**
+ * Valida `RAG_MODEL` **contra os modelos do driver escolhido**.
+ *
+ * Sem driver — na validação solta do registro — vale qualquer modelo que algum
+ * driver conheça: quem sabe o driver é quem chama, e recusar aqui o que o
+ * driver certo aceitaria seria recusar por ignorância. Com o driver `off` o
+ * modelo não tem efeito nenhum, e a mesma regra frouxa serve: o valor fica
+ * guardado à espera de alguém ligar a busca.
+ */
+function parseModel(raw: string, driver?: RagDriverId): string {
   const valor = raw.trim();
-  if (valor === MODELO_PADRAO) return valor;
-  throw new Error(`RAG_MODEL inválida: a v1 só tem "${MODELO_PADRAO}", recebido "${raw}"`);
+
+  if (driver === undefined || driver === 'off') {
+    if (driverDoModelo(valor) !== null) return valor;
+    const todos = RAG_DRIVERS.flatMap((d) => d.models.map((m) => m.id)).join(', ');
+    throw new Error(`RAG_MODEL inválida: "${raw}" não é modelo de driver nenhum; há ${todos}`);
+  }
+
+  const aceitos = modelosDo(driver);
+  if (aceitos.includes(valor)) return valor;
+  throw new Error(
+    `RAG_MODEL inválida: o driver "${driver}" não tem "${raw}"; ele aceita ${aceitos.join(', ')}`,
+  );
 }
 
 /**
  * A URL base é usada **como está**, sem acrescentar versão.
  *
- * O driver só concatena `/models/<modelo>:<método>`. Acrescentar `v1beta`
- * sozinho impediria apontar para o servidor falso, e esconderia do operador
- * qual versão da API está em uso.
+ * O driver só concatena o caminho do método. Acrescentar a versão sozinho
+ * impediria apontar para o servidor falso, e esconderia do operador qual
+ * versão da API está em uso.
  */
-export function parseBaseUrl(raw: string): string {
+export function parseBaseUrl(raw: string, env = 'RAG_GOOGLE_BASE_URL'): string {
   const valor = raw.trim();
   let url: URL;
   try {
     url = new URL(valor);
   } catch {
-    throw new Error(`RAG_GOOGLE_BASE_URL inválida: esperada uma URL absoluta, recebido "${raw}"`);
+    throw new Error(`${env} inválida: esperada uma URL absoluta, recebido "${raw}"`);
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`RAG_GOOGLE_BASE_URL inválida: esperado http ou https, recebido "${url.protocol}"`);
+    throw new Error(`${env} inválida: esperado http ou https, recebido "${url.protocol}"`);
   }
   return valor.replace(/\/+$/, '');
 }
 
-/** O registro. Cada opção aparece aqui uma vez só. */
+/**
+ * O registro por variável de ambiente.
+ *
+ * O par chave/URL base de cada driver sai de `RAG_DRIVERS`: escrevê-lo à mão
+ * aqui seria repetir a lista que a §4.2 manda existir uma vez só.
+ */
 export const RAG_SETTINGS: readonly RagSetting[] = [
   {
     key: 'rag.driver',
@@ -104,25 +225,27 @@ export const RAG_SETTINGS: readonly RagSetting[] = [
     env: 'RAG_MODEL',
     secret: false,
     editable: true,
-    fallback: MODELO_PADRAO,
+    fallback: modeloPadraoDe('google'),
     parse: parseModel,
   },
-  {
-    key: null,
-    env: 'RAG_GOOGLE_API_KEY',
-    secret: true,
-    editable: false,
-    fallback: null,
-    parse: (raw) => raw,
-  },
-  {
-    key: null,
-    env: 'RAG_GOOGLE_BASE_URL',
-    secret: false,
-    editable: false,
-    fallback: BASE_URL_PADRAO,
-    parse: parseBaseUrl,
-  },
+  ...RAG_DRIVERS.flatMap((driver): RagSetting[] => [
+    {
+      key: null,
+      env: driver.apiKeyEnv,
+      secret: true,
+      editable: false,
+      fallback: null,
+      parse: (raw) => raw,
+    },
+    {
+      key: null,
+      env: driver.baseUrlEnv,
+      secret: false,
+      editable: false,
+      fallback: driver.baseUrlPadrao,
+      parse: (raw) => parseBaseUrl(raw, driver.baseUrlEnv),
+    },
+  ]),
   {
     key: null,
     env: 'RAG_QUERY_TIMEOUT_MS',
@@ -158,16 +281,34 @@ export function readDriverEnv(env: NodeJS.ProcessEnv = process.env): RagDriverId
   return parseDriver(raw) as RagDriverId;
 }
 
-/** Lê e valida `RAG_MODEL` do ambiente. */
+/**
+ * Lê e valida `RAG_MODEL`, **contra os modelos do driver que o ambiente
+ * escolheu**. Sem `RAG_MODEL`, vale o modelo padrão desse driver.
+ */
 export function readModelEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const driver = readDriverEnv(env);
   const raw = env.RAG_MODEL;
-  if (raw === undefined || raw.trim() === '') return MODELO_PADRAO;
-  return parseModel(raw);
+  if (raw === undefined || raw.trim() === '') {
+    return modeloPadraoDe(driver === 'off' ? 'google' : driver);
+  }
+  return parseModel(raw, driver);
 }
 
-/** Lê e valida `RAG_GOOGLE_BASE_URL`. */
-export function readBaseUrlEnv(env: NodeJS.ProcessEnv = process.env): string {
-  return parseBaseUrl(readTextEnv('RAG_GOOGLE_BASE_URL', BASE_URL_PADRAO, env));
+/** Lê e valida a URL base **deste** driver. */
+export function readBaseUrlEnv(
+  driver: RagProviderId,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const info = driverInfo(driver);
+  return parseBaseUrl(readTextEnv(info.baseUrlEnv, info.baseUrlPadrao, env), info.baseUrlEnv);
+}
+
+/** Lê a chave **deste** driver, com o `_FILE` tendo prioridade. */
+export function readApiKeyEnv(
+  driver: RagProviderId,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return readSecret(driverInfo(driver).apiKeyEnv, env);
 }
 
 /** Prazo do embedding da consulta, em milissegundos. */
@@ -202,6 +343,8 @@ export function decideSeed(input: {
   key: RagSettingKey;
   envValue: string | undefined;
   dbValue: string | null;
+  /** Driver em que validar `rag.model`. Omitido, vale qualquer driver. */
+  driver?: RagDriverId;
   /** Como o painel descreve quem mudou, para a mensagem de aviso. */
   changedBy?: string | null;
 }): SeedDecision {
@@ -209,11 +352,16 @@ export function decideSeed(input: {
   if (!setting) throw new Error(`Chave de RAG desconhecida: ${input.key}`);
 
   const bruto = input.envValue?.trim();
-  const doAmbiente = bruto === undefined || bruto === '' ? null : String(setting.parse(bruto));
+  const doAmbiente =
+    bruto === undefined || bruto === '' ? null : String(setting.parse(bruto, input.driver));
 
   if (input.dbValue === null) {
     if (doAmbiente === null) {
-      return { action: 'nada', key: input.key, value: String(setting.fallback), reason: 'sem-ambiente' };
+      const padrao =
+        input.key === 'rag.model' && input.driver !== undefined && input.driver !== 'off'
+          ? modeloPadraoDe(input.driver)
+          : String(setting.fallback);
+      return { action: 'nada', key: input.key, value: padrao, reason: 'sem-ambiente' };
     }
     return { action: 'gravar', key: input.key, value: doAmbiente };
   }

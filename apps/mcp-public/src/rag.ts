@@ -12,32 +12,29 @@
  * antes do RAG.
  */
 import { findRagSpace, getRagSettings, ragSchemaReady } from '@purple-skills/db';
-import { criarBuscaSemantica, criarDriver } from '@purple-skills/rag';
+import { criarBuscaSemantica, criarDriversDoAmbiente, RAG_DRIVERS } from '@purple-skills/rag';
 import { config } from './config.js';
 
 /**
- * O driver do ambiente. `null` sem chave — e aí a busca é textual, sem que
- * isso apareça como erro para o cliente.
+ * Os drivers do ambiente, um por chave presente. Qual deles vale é o
+ * `rag.driver` do banco, conferido a cada busca com cache curto; aqui só se
+ * resolve *como* falar com cada provedor. Sem chave nenhuma, a busca é
+ * textual, sem que isso apareça como erro para o cliente.
  */
-const driver = criarDriver({
-  // O `off` do banco é conferido a cada busca, com cache curto; aqui só se
-  // resolve *como* falar com o provedor, caso ele seja usado.
-  driver: 'google',
-  apiKey: config.rag.apiKey,
-  baseUrl: config.rag.baseUrl,
-});
+const drivers = criarDriversDoAmbiente();
 
 export const buscaSemantica = criarBuscaSemantica({
   ports: { ragSchemaReady, getRagSettings, findRagSpace },
-  driver,
+  driver: drivers.resolver,
   timeoutMs: config.rag.queryTimeoutMs,
   log: (mensagem) => console.log(`[mcp-public] ${mensagem}`),
 });
 
 /** Para o boot dizer, uma vez, o que o operador precisa saber. */
 export function avisoDeBoot(): string | null {
-  if (driver === null) {
-    return '[mcp-public] RAG_GOOGLE_API_KEY ausente: a busca responde em modo textual';
+  if (drivers.comChave.length === 0) {
+    const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
+    return `[mcp-public] nenhuma chave de RAG no ambiente (${vars}): a busca responde em modo textual`;
   }
   return null;
 }

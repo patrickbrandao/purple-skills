@@ -27,28 +27,12 @@ import {
   type EmbeddingDriver,
   type EmbeddingModel,
 } from './driver.js';
-import { BASE_URL_PADRAO, MODELO_PADRAO } from './settings.js';
+import { BASE_URL_GOOGLE, GEMINI_EMBEDDING_2 } from './models.js';
 
-/**
- * O `gemini-embedding-2`.
- *
- * As dimensões, o limite por texto e os prefixos são fatos da API, conferidos
- * em 15/09/2026. O tamanho do lote **não** é documentado pelo Google: 100
- * textos e 60.000 caracteres são um teto nosso, conservador.
- *
- * `maxPartChars` é 6.000 porque, somado ao prefixo de até 200 caracteres,
- * fica com folga abaixo dos 8.192 tokens por texto.
- */
-export const GEMINI_EMBEDDING_2: EmbeddingModel = {
-  id: MODELO_PADRAO,
-  dimensions: 3072,
-  documentPrefix: 'title: none | text: ',
-  queryPrefix: 'task: search result | query: ',
-  maxInputTokens: 8192,
-  maxBatch: 100,
-  maxBatchChars: 60_000,
-  maxPartChars: 6000,
-};
+// O modelo mora em `models.ts`, com os dos outros drivers: é de lá que o
+// registro por driver o lê, sem fazer ciclo de importação com este arquivo.
+export { BASE_URL_GOOGLE, GEMINI_EMBEDDING_2 };
+
 
 export type GoogleDriverOptions = {
   apiKey: string;
@@ -83,7 +67,7 @@ export class GoogleDriver implements EmbeddingDriver {
       throw new RagAuthError('RAG_GOOGLE_API_KEY ausente: o driver google precisa de uma chave');
     }
     this.apiKey = options.apiKey;
-    this.baseUrl = (options.baseUrl ?? BASE_URL_PADRAO).replace(/\/+$/, '');
+    this.baseUrl = (options.baseUrl ?? BASE_URL_GOOGLE).replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.maxRetries = options.maxRetries ?? 5;
     this.sleep = options.sleep ?? dormir;

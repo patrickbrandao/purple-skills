@@ -88,8 +88,15 @@ describe('a semeadura no boot (§4.1)', () => {
   });
 
   it('ambiente inválido derruba o boot em vez de virar linha no banco', async () => {
-    process.env.RAG_DRIVER = 'openai';
+    process.env.RAG_DRIVER = 'cohere';
     await expect(semearRag()).rejects.toThrow(/ainda não foi implementado/);
+    expect(db.seedRagSetting).not.toHaveBeenCalled();
+  });
+
+  it('o modelo é semeado validado contra o driver que o ambiente escolheu', async () => {
+    process.env.RAG_DRIVER = 'openai';
+    process.env.RAG_MODEL = 'gemini-embedding-2';
+    await expect(semearRag()).rejects.toThrow(/o driver "openai" não tem/);
     expect(db.seedRagSetting).not.toHaveBeenCalled();
   });
 });
@@ -129,13 +136,32 @@ describe('o que a tela mostra (§9)', () => {
     expect(painel.driver.ambienteIgnorado).toBe('google');
   });
 
-  it('o aviso do nível gratuito vai sempre, ligado ou desligado', async () => {
-    for (const driver of ['off', 'google']) {
+  it('o aviso do nível gratuito é do Google, e só dele', async () => {
+    db.getRagSettings.mockResolvedValue({ 'rag.driver': { value: 'google', updatedAt: 'x' } });
+    const comGoogle = await lerPainelRag();
+    expect(comGoogle.freeTierWarning).toBe(AVISO_NIVEL_GRATUITO);
+    expect(comGoogle.freeTierWarning).toContain('skills privadas');
+
+    // OpenAI e Voyage não treinam sobre o tráfego da API: repetir o aviso ali
+    // só ensinaria o operador a ignorá-lo. Desligado, também não há o que avisar.
+    for (const driver of ['off', 'openai', 'voyage']) {
       db.getRagSettings.mockResolvedValue({ 'rag.driver': { value: driver, updatedAt: 'x' } });
-      const painel = await lerPainelRag();
-      expect(painel.freeTierWarning).toBe(AVISO_NIVEL_GRATUITO);
-      expect(painel.freeTierWarning).toContain('skills privadas');
+      expect((await lerPainelRag()).freeTierWarning).toBeNull();
     }
+  });
+
+  it('as opções do select saem do registro, com os modelos de cada driver', async () => {
+    db.getRagSettings.mockResolvedValue({ 'rag.driver': { value: 'openai', updatedAt: 'x' } });
+    const painel = await lerPainelRag();
+
+    expect(painel.drivers).toEqual(['off', 'google', 'openai', 'voyage']);
+    expect(painel.models).toEqual(['text-embedding-3-small', 'text-embedding-3-large']);
+    expect(painel.driverOptions.map((d) => d.id)).toEqual(['google', 'openai', 'voyage']);
+    expect(painel.driverOptions.find((d) => d.id === 'voyage')?.models).toEqual([
+      'voyage-4-lite',
+      'voyage-4',
+      'voyage-4-large',
+    ]);
   });
 
   it('sem a migration, não procura espaço nem cobertura', async () => {
@@ -214,11 +240,32 @@ describe('gravar pelo painel', () => {
   });
 
   it('recusa driver ainda não implementado', async () => {
-    await expect(gravarRag(ATOR, { driver: 'openai' })).rejects.toThrow(/Driver inválido/);
+    await expect(gravarRag(ATOR, { driver: 'cohere' })).rejects.toThrow(/Driver inválido/);
   });
 
-  it('recusa modelo fora da v1', async () => {
-    await expect(gravarRag(ATOR, { model: 'gemini-embedding-1' })).rejects.toThrow(/Modelo inválido/);
+  it('recusa modelo que o driver em uso não tem', async () => {
+    db.getRagSettings.mockResolvedValue({ 'rag.driver': { value: 'google', updatedAt: 'x' } });
+    await expect(gravarRag(ATOR, { model: 'gemini-embedding-1' })).rejects.toThrow(
+      /Modelo inválido/,
+    );
+    await expect(gravarRag(ATOR, { driver: 'openai', model: 'gemini-embedding-2' })).rejects.toThrow(
+      /O driver "openai" aceita/,
+    );
+    expect(db.setRagSetting).not.toHaveBeenCalled();
+  });
+
+  it('trocar de driver sem dizer o modelo grava o padrão do driver novo', async () => {
+    db.getRagSettings.mockResolvedValue({
+      'rag.driver': { value: 'google', updatedAt: 'x' },
+      'rag.model': { value: 'gemini-embedding-2', updatedAt: 'x' },
+    });
+
+    await gravarRag(ATOR, { driver: 'voyage' });
+
+    // Sem isto o banco ficaria com voyage + gemini-embedding-2, e o indexador
+    // recusaria a configuração no ciclo seguinte.
+    expect(db.setRagSetting).toHaveBeenCalledWith('rag.driver', 'voyage', 'web-admin', ATOR);
+    expect(db.setRagSetting).toHaveBeenCalledWith('rag.model', 'voyage-4-lite', 'web-admin', ATOR);
   });
 
   it('corpo vazio é 400, não uma gravação silenciosa', async () => {
