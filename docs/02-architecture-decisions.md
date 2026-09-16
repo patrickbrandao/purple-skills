@@ -415,11 +415,14 @@ CRUD completo, espelhando o painel administrativo:
   `database/` têm um teste de integração que exige um Postgres real e fica
   desligado sem `TEST_DATABASE_URL`. Sem E2E no v1.
 - **CI/CD** (GitHub Actions):
-  - Workflow de PR: lint + testes.
-  - Workflow de release: build e push das 7 imagens (os 6 apps mais
-    `purple-skills-db`) para o Docker Hub, na conta `tmsoftbrasil`
-    (`tmsoftbrasil/purple-skills-<nome>`). O login usa a variável
-    `DOCKERHUB_USERNAME` e o secret `DOCKERHUB_TOKEN` do repositório.
+  - Workflow de PR: lint + testes + build das 7 imagens **sem push** (só
+    valida que o Dockerfile de cada app e o de `database/` constroem).
+  - **Sem workflow de release.** Nenhum job de CI tem credencial de registry.
+    Publicar imagem é passo manual: depois de criar a tag da versão, quem
+    mantém roda [`release-images.sh`](../release-images.sh) — builda e faz
+    `docker push` das 7 imagens (os 6 apps mais `purple-skills-db`) para o
+    Docker Hub, na conta `tmsoftbrasil` (`tmsoftbrasil/purple-skills-<nome>`),
+    sempre como `latest`. Requer `docker login` prévio nessa conta.
 
 ## 12. Licença
 
