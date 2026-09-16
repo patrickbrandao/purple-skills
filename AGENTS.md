@@ -14,6 +14,7 @@ Cursor, Gemini CLI, …). O arquivo `CLAUDE.md` aponta para cá.
 | MCP público | `apps/mcp-public/` | agente do mcp-public |
 | MCP administrativo | `apps/mcp-admin/` | agente do mcp-admin |
 | Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos cinco apps |
+| Busca semântica | `packages/rag/` | agente do rag |
 
 ## Regra do banco de dados
 
@@ -39,6 +40,26 @@ O que todo agente **fora** de `database/` deve seguir:
 O agente dba, por sua vez, fica **confinado a `database/`**: ele não edita
 `apps/` nem `packages/`. Quando uma mudança de schema quebra um app, ele
 descreve o impacto e a correção fica com o agente daquele app.
+
+## Regra da busca semântica
+
+`packages/rag/` é o único lugar que fala com o provedor de embeddings. Ele não
+importa `@purple-skills/db` e não acessa o banco: recebe texto, devolve vetor.
+Quem grava é o dba, pelas funções `rag*` de `@purple-skills/db`.
+
+O que todo agente **fora** de `packages/rag/` deve seguir:
+
+- Não chame a API do provedor direto, e não monte `fetch` para ela. Use o
+  driver (`criarDriver`, `embedDocuments`, `embedQuery`).
+- Não leia `RAG_GOOGLE_API_KEY` por conta própria — o segredo entra pelo
+  `readSecret` do `shared` e vai para o driver, nunca para log ou URL.
+- Não repita a lista de variáveis do RAG: ela vive uma vez só, no registro
+  `RAG_SETTINGS`.
+- **O texto guardado no banco nunca leva o prefixo do driver.** Quem aplica o
+  prefixo é o driver, na hora da chamada; é isso que deixa o mesmo texto servir
+  a espaços diferentes.
+
+O desenho está em `tmp/RAG-GOOGLE.md` (futuro `docs/14-rag.md`).
 
 ## Homepage e site são páginas diferentes
 
