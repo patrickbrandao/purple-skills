@@ -15,6 +15,7 @@ Cursor, Gemini CLI, …). O arquivo `CLAUDE.md` aponta para cá.
 | MCP administrativo | `apps/mcp-admin/` | agente do mcp-admin |
 | Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos cinco apps |
 | Busca semântica | `packages/rag/` | agente do rag |
+| Indexador do RAG | `apps/indexer/` | agente do indexador |
 
 ## Regra do banco de dados
 

@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       # `database` publica purple-skills-db, a imagem que aplica o schema e o
-      # seed; os 5 apps seguem o padrão apps/<nome>/Dockerfile.
+      # seed; os 6 apps seguem o padrão apps/<nome>/Dockerfile.
       matrix:
         include:
           - { app: homepage, file: apps/homepage/Dockerfile }
@@ -29,6 +29,7 @@ jobs:
           - { app: admin, file: apps/admin/Dockerfile }
           - { app: mcp-public, file: apps/mcp-public/Dockerfile }
           - { app: mcp-admin, file: apps/mcp-admin/Dockerfile }
+          - { app: indexer, file: apps/indexer/Dockerfile }
           - { app: db, file: database/Dockerfile }
     steps:
       - uses: actions/checkout@v4
