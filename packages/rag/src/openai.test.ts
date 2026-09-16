@@ -1,5 +1,5 @@
 /**
- * O driver `openai` (§13.1 de `tmp/RAG-GOOGLE.md`).
+ * O driver `openai` (§13.1 de `docs/14-rag.md`).
  *
  * Aqui o `fetch` é simulado: o que importa é o **contrato** com a API —
  * endereço, header, corpo, e como a resposta é casada com o pedido — e não a

@@ -1,5 +1,5 @@
 /**
- * O registro, a validação e a semeadura (§13.1 de `tmp/RAG-GOOGLE.md`).
+ * O registro, a validação e a semeadura (§13.1 de `docs/14-rag.md`).
  *
  * A semeadura é testada como função pura: dados o ambiente e o banco, ela diz
  * se grava, se avisa ou se não faz nada. Quem lê e grava é o admin.

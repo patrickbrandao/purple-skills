@@ -1,5 +1,5 @@
 /**
- * O endereço de um texto canônico (`tmp/RAG-GOOGLE.md` §5.2).
+ * O endereço de um texto canônico (`docs/14-rag.md` §5.2).
  *
  * SHA-256 sobre os bytes UTF-8 do **texto canônico** — o texto como o projeto
  * o monta, sem o prefixo do driver. A especificação anterior falava do "texto

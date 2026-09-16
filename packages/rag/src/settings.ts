@@ -1,5 +1,5 @@
 /**
- * O registro único de configurações do RAG (`tmp/RAG-GOOGLE.md` §4).
+ * O registro único de configurações do RAG (`docs/14-rag.md` §4).
  *
  * Uma opção é descrita **uma vez** aqui, e daqui saem a leitura do ambiente, a
  * validação, a semeadura e o que o painel mostra. Sem isso, cada container

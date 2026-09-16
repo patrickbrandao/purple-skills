@@ -1,5 +1,5 @@
 /**
- * O driver `google`, sobre a Gemini API (`tmp/RAG-GOOGLE.md` §6.2).
+ * O driver `google`, sobre a Gemini API (`docs/14-rag.md` §6.2).
  *
  * Três coisas a não esquecer ao mexer aqui:
  *

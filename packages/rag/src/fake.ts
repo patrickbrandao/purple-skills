@@ -1,5 +1,5 @@
 /**
- * O driver falso e o servidor falso (`tmp/RAG-GOOGLE.md` §6.3).
+ * O driver falso e o servidor falso (`docs/14-rag.md` §6.3).
  *
  * Os dois existem para o fluxo inteiro — indexador, busca, painel — rodar sem
  * chave, sem rede e sem custo, e para os testes conferirem coisas que a API

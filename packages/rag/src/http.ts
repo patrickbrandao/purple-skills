@@ -1,6 +1,6 @@
 /**
  * O que os três drivers HTTP têm em comum: as tentativas, o recuo e o corte em
- * lotes (`tmp/RAG-GOOGLE.md` §6).
+ * lotes (`docs/14-rag.md` §6).
  *
  * Os provedores diferem no endereço, no header da chave, no formato do corpo e
  * na forma do erro — e é só nisso. A **política** é a mesma nos três, porque

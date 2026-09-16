@@ -1,6 +1,6 @@
 /**
  * O driver `openai`, sobre a API de embeddings da OpenAI
- * (`tmp/RAG-GOOGLE.md` §6.4, futuro `docs/14`).
+ * (`docs/14-rag.md` §6.4).
  *
  * Três coisas a não esquecer ao mexer aqui:
  *

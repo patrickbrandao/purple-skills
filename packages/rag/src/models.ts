@@ -1,6 +1,6 @@
 /**
  * Os modelos de embedding dos três provedores, num lugar só
- * (`tmp/RAG-GOOGLE.md` §6, futuro `docs/14`).
+ * (`docs/14-rag.md` §6).
  *
  * Eles moram aqui, e não no arquivo de cada driver, por dois motivos:
  *

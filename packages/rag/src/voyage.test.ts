@@ -1,5 +1,5 @@
 /**
- * O driver `voyage` (§13.1 de `tmp/RAG-GOOGLE.md`).
+ * O driver `voyage` (§13.1 de `docs/14-rag.md`).
  *
  * O que estes testes protegem, e que nenhum outro driver tem: o `input_type`.
  * Ele é a única coisa que separa "isto é acervo" de "isto é busca" — trocá-lo

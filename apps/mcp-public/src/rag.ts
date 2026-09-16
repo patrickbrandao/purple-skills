@@ -1,6 +1,5 @@
 /**
- * A perna semântica da busca deste servidor (`tmp/RAG-GOOGLE.md` §8.1, futuro
- * `docs/14`).
+ * A perna semântica da busca deste servidor (`docs/14-rag.md` §8.1).
  *
  * O resolvedor é **um por processo**, não um por vMCP: o que ele guarda é a
  * configuração da instalação (`rag.driver`, `rag.model`) e o espaço ativo, que

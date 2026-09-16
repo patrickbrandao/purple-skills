@@ -1,5 +1,5 @@
 /**
- * A escolha do driver pela configuração (§4.1 e §6 de `tmp/RAG-GOOGLE.md`).
+ * A escolha do driver pela configuração (§4.1 e §6 de `docs/14-rag.md`).
  *
  * O que estes testes protegem é a reconciliação entre as duas metades da
  * configuração: as **chaves** vivem no ambiente e são lidas no boot; o

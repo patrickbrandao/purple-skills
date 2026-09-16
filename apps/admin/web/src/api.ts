@@ -129,7 +129,7 @@ export type SearchResult = {
   limit: number;
   offset: number;
   /**
-   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   * Como a busca foi resolvida (`docs/14-rag.md` §8.3).
    * `text` é a busca de sempre; `hybrid` soma a perna vetorial. Cair para
    * `text` não é erro — é o que acontece com a busca semântica desligada.
    */
@@ -275,7 +275,7 @@ export type Session = {
   onlineWindowMs: number;
   /**
    * O que o `.env` do painel define para a busca semântica — só leitura. Quem
-   * decide é o valor gravado no banco (`tmp/RAG-GOOGLE.md` §4.1).
+   * decide é o valor gravado no banco (`docs/14-rag.md` §4.1).
    */
   rag?: { driver: string | null; model: string | null };
   version: string;
@@ -1006,8 +1006,7 @@ export const num = (value: number | undefined | null) =>
 export const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
 
 /**
- * A busca semântica, como o painel a vê (`tmp/RAG-GOOGLE.md` §9, futuro
- * `docs/14`).
+ * A busca semântica, como o painel a vê (`docs/14-rag.md` §9).
  *
  * O painel **não recebe** a chave da API: quem sabe se ela existe e se o
  * provedor a aceitou é o indexador, que publica o estado no banco a cada ciclo.

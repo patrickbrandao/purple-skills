@@ -1,5 +1,5 @@
 /**
- * A busca semântica no painel (`tmp/RAG-GOOGLE.md` §4.1 e §9).
+ * A busca semântica no painel (`docs/14-rag.md` §4.1 e §9).
  *
  * Os dois comportamentos que mais custariam caro se quebrassem:
  *

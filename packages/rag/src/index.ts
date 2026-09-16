@@ -3,7 +3,7 @@
  * precisam para a busca semântica, sem nenhum deles falar com o provedor
  * direto.
  *
- * O desenho está em `tmp/RAG-GOOGLE.md` (futuro `docs/14`). O pacote não
+ * O desenho está em `docs/14-rag.md`. O pacote não
  * acessa o banco: quem grava é `@purple-skills/db`.
  */
 export {

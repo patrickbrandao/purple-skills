@@ -804,7 +804,7 @@ api.put(
 );
 
 /**
- * Busca semântica (`tmp/RAG-GOOGLE.md` §9, futuro `docs/14`). Mesmo papel das
+ * Busca semântica (`docs/14-rag.md` §9). Mesmo papel das
  * demais rotas de configuração: é ajuste da instalação inteira.
  */
 api.get(

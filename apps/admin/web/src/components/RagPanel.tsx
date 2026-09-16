@@ -11,8 +11,7 @@ import { Button, Field, Panel, Skel } from './ui.js';
 import { useToast } from './Toast.js';
 
 /**
- * A busca semântica na tela de Configurações (`tmp/RAG-GOOGLE.md` §9, futuro
- * `docs/14`).
+ * A busca semântica na tela de Configurações (`docs/14-rag.md` §9).
  *
  * Duas coisas a lembrar ao mexer aqui:
  *

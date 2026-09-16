@@ -1,5 +1,5 @@
 /**
- * O indexador do RAG (`tmp/RAG-GOOGLE.md` §7, futuro `docs/14`).
+ * O indexador do RAG (`docs/14-rag.md` §7).
  *
  * Dois modos:
  *

@@ -1,6 +1,6 @@
 /**
  * A interface que todo driver de embedding implementa, e os erros que ela
- * promete (`tmp/RAG-GOOGLE.md` §6.1, futuro `docs/14`).
+ * promete (`docs/14-rag.md` §6.1).
  *
  * Documento e consulta têm métodos separados porque não são a mesma chamada:
  * num provedor a distinção é um parâmetro, e no `gemini-embedding-2` ela vai

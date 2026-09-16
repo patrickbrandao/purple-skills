@@ -23,7 +23,7 @@ export const config = {
    */
   onlineWindowMs: readIntEnv('MCP_SESSION_ONLINE_WINDOW_MS', 120_000, { min: 1000 }),
   /**
-   * Busca semântica (`tmp/RAG-GOOGLE.md` §8, futuro `docs/14`). As chaves e as
+   * Busca semântica (`docs/14-rag.md` §8). As chaves e as
    * URLs base dos provedores são lidas em `rag.ts`, pelo registro de drivers;
    * aqui fica só o prazo, que não é de driver nenhum. O que liga e desliga a
    * busca semântica é `rag.driver` no banco, editado no painel.

@@ -1,6 +1,5 @@
 /**
- * A perna semântica da busca do site (`tmp/RAG-GOOGLE.md` §8.1, futuro
- * `docs/14`).
+ * A perna semântica da busca do site (`docs/14-rag.md` §8.1).
  *
  * O site busca sempre com a visibilidade `'open'`, e o recorte vale nas duas
  * pernas da fusão — uma skill que o site não mostra não aparece por ter vetor

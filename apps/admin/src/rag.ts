@@ -1,6 +1,5 @@
 /**
- * A busca semântica no painel (`tmp/RAG-GOOGLE.md` §4.1 e §9, futuro
- * `docs/14`).
+ * A busca semântica no painel (`docs/14-rag.md` §4.1 e §9).
  *
  * O admin é o **único** que semeia a configuração e o único que a edita. Ele
  * também é o único container que **não** recebe a chave da API: quem sabe se

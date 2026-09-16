@@ -1,5 +1,5 @@
 /**
- * O ciclo do indexador (`tmp/RAG-GOOGLE.md` §7, futuro `docs/14`).
+ * O ciclo do indexador (`docs/14-rag.md` §7).
  *
  * Ele varre o acervo no intervalo configurado e faz duas coisas bem separadas:
  *

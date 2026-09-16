@@ -47,7 +47,7 @@ export type SearchResult = {
   limit: number;
   offset: number;
   /**
-   * Como a busca foi resolvida (`tmp/RAG-GOOGLE.md` §8.3, futuro `docs/14`).
+   * Como a busca foi resolvida (`docs/14-rag.md` §8.3).
    * `text` é a busca de sempre; `hybrid` soma a perna vetorial. Cair para
    * `text` não é erro — é o que acontece com a busca semântica desligada.
    */

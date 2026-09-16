@@ -51,6 +51,21 @@ x-app-env: &app-env
   # mcp-public agrupa o stateless por ela (docs/10-admin-canvas-e-sessoes.md).
   MCP_SESSION_ONLINE_WINDOW_MS: ${MCP_SESSION_ONLINE_WINDOW_MS:-120000}
 
+# As credenciais dos três provedores de embedding, num lugar só: elas vão para
+# os MESMOS três serviços (indexer, mcp-public, site) e nunca para o admin.
+# Quem escolhe entre os drivers é o painel; deixar mais de uma chave no `.env`
+# é o que permite trocar de provedor sem recriar container. Ver docs/14-rag.md.
+x-rag-provedores: &rag-provedores
+  RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
+  RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
+  RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+  RAG_OPENAI_API_KEY: ${RAG_OPENAI_API_KEY:-}
+  RAG_OPENAI_API_KEY_FILE: ${RAG_OPENAI_API_KEY_FILE:-}
+  RAG_OPENAI_BASE_URL: ${RAG_OPENAI_BASE_URL:-}
+  RAG_VOYAGE_API_KEY: ${RAG_VOYAGE_API_KEY:-}
+  RAG_VOYAGE_API_KEY_FILE: ${RAG_VOYAGE_API_KEY_FILE:-}
+  RAG_VOYAGE_BASE_URL: ${RAG_VOYAGE_BASE_URL:-}
+
 x-app-common: &app-common
   restart: unless-stopped
   depends_on:
@@ -89,10 +104,8 @@ services:
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       MCP_ADMIN_URL: ${MCP_ADMIN_URL:-}
       ADMIN_URL: ${ADMIN_URL:-}
-      # Busca semântica em /api/skills?q= — mesmo par do mcp-public.
-      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
-      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
-      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      # Busca semântica em /api/skills?q= — mesmas credenciais do mcp-public.
+      <<: *rag-provedores
       RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${SITE_PORT:-3000}:3000'
@@ -138,8 +151,9 @@ services:
       # Login por OIDC — opcional. Sem OIDC_ALLOWED_DOMAINS o
       # auto-provisionamento fica desligado, de propósito.
       # Semeadura da busca semântica: o admin grava estas duas no banco no
-      # primeiro boot e, dali em diante, quem manda é o painel. A chave da API
-      # NÃO vem para cá — só o indexer e os dois que consultam a recebem.
+      # primeiro boot e, dali em diante, quem manda é o painel — inclusive a
+      # escolha entre `google`, `openai` e `voyage`. As chaves das APIs NÃO vêm
+      # para cá: só o indexer e os dois que consultam as recebem.
       RAG_DRIVER: ${RAG_DRIVER:-}
       RAG_MODEL: ${RAG_MODEL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
@@ -173,11 +187,10 @@ services:
       # de cada requisição (proto://host), o que funciona atrás do Traefik do
       # override.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
-      # Busca semântica: a consulta é embutida aqui mesmo. Sem chave, ou com o
-      # driver `off` no banco, a busca responde `mode: text` como sempre.
-      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
-      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
-      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      # Busca semântica: a consulta é embutida aqui mesmo. Sem chave para o
+      # driver que o banco escolheu, ou com `off`, a busca responde
+      # `mode: text` como sempre.
+      <<: *rag-provedores
       RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
@@ -206,7 +219,8 @@ services:
   # `rag.indexer.status`, regravado a cada ciclo e mostrado no painel.
   #
   # Pode subir ANTES do `migrate`: enquanto as tabelas `rag_*` não existirem ele
-  # espera, sem cair. Sem chave, refatia as skills e não embute nada.
+  # espera, sem cair. Sem chave para o driver escolhido no painel, refatia as
+  # skills e não embute nada.
   indexer:
     <<: *app-common
     profiles: [rag]
@@ -216,10 +230,8 @@ services:
       dockerfile: apps/indexer/Dockerfile
     environment:
       <<: *app-env
-      # A chave só existe aqui e nos dois que consultam; o painel nunca a vê.
-      RAG_GOOGLE_API_KEY: ${RAG_GOOGLE_API_KEY:-}
-      RAG_GOOGLE_API_KEY_FILE: ${RAG_GOOGLE_API_KEY_FILE:-}
-      RAG_GOOGLE_BASE_URL: ${RAG_GOOGLE_BASE_URL:-}
+      # As chaves só existem aqui e nos dois que consultam; o painel nunca as vê.
+      <<: *rag-provedores
       RAG_INDEX_INTERVAL_SECONDS: ${RAG_INDEX_INTERVAL_SECONDS:-}
 
   # Inspector oficial do MCP — ferramenta de depuração, parte oficial da

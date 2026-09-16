@@ -1,5 +1,5 @@
 /**
- * O fluxo da busca por requisição (`tmp/RAG-GOOGLE.md` §8.1, futuro `docs/14`).
+ * O fluxo da busca por requisição (`docs/14-rag.md` §8.1).
  *
  * É o mesmo no `search_skills` do mcp-public e no `GET /api/skills?q=` do site,
  * então mora aqui uma vez só. O pacote continua sem importar

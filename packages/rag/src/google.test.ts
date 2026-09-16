@@ -1,5 +1,5 @@
 /**
- * O driver `google` (§13.1 de `tmp/RAG-GOOGLE.md`).
+ * O driver `google` (§13.1 de `docs/14-rag.md`).
  *
  * Os testes rodam contra o **servidor falso**, que fala o mesmo protocolo da
  * Gemini API: nenhuma chamada sai da máquina e nenhuma chave é usada.
