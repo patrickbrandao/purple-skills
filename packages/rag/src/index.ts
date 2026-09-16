@@ -108,6 +108,7 @@ export {
   subirServidorFalso,
   vetorFalso,
   type FalhaSimulada,
+  type ProvedorFalso,
   type ServidorFalso,
   type ServidorFalsoOptions,
 } from './fake.js';
