@@ -77,6 +77,8 @@ services:
   # A homepage é estática: não usa banco nenhum, então fica fora de
   # `app-common` (nada de `depends_on: postgres`) e de `app-env`.
   homepage:
+    container_name: purple-skills-homepage
+    hostname: homepage.intranet.br
     restart: unless-stopped
     networks: [internal]
     image: ghcr.io/patrickbrandao/purple-skills-homepage:${TAG:-latest}
@@ -92,6 +94,8 @@ services:
 
   site:
     <<: *app-common
+    container_name: purple-skills-site
+    hostname: site.intranet.br
     image: ghcr.io/patrickbrandao/purple-skills-site:${TAG:-latest}
     build:
       context: .
@@ -112,6 +116,8 @@ services:
 
   admin:
     <<: *app-common
+    container_name: purple-skills-admin
+    hostname: admin.intranet.br
     image: ghcr.io/patrickbrandao/purple-skills-admin:${TAG:-latest}
     build:
       context: .
@@ -174,6 +180,8 @@ services:
 
   mcp-public:
     <<: *app-common
+    container_name: purple-skills-mcp-public
+    hostname: mcp-public.intranet.br
     image: ghcr.io/patrickbrandao/purple-skills-mcp-public:${TAG:-latest}
     build:
       context: .
@@ -197,6 +205,8 @@ services:
 
   mcp-admin:
     <<: *app-common
+    container_name: purple-skills-mcp-admin
+    hostname: mcp-admin.intranet.br
     image: ghcr.io/patrickbrandao/purple-skills-mcp-admin:${TAG:-latest}
     build:
       context: .
@@ -237,7 +247,7 @@ services:
   # Inspector oficial do MCP — ferramenta de depuração, parte oficial da
   # stack: sobe junto no `up -d` do dia a dia, como os demais serviços.
   #
-  # Abra http://localhost:6274 e aponte para os servidores pelo NOME do serviço
+  # Abra http://localhost:3010 e aponte para os servidores pelo NOME do serviço
   # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
   # do container — `localhost` ali é o próprio inspector, não o seu host:
   #
@@ -245,13 +255,14 @@ services:
   #   http://mcp-admin:3003/mcp     + header `Authorization: Bearer $MCP_ADMIN_TOKEN`
   #
   # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a
-  # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 6274.
+  # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 3010.
   mcp-inspector:
     image: ghcr.io/modelcontextprotocol/inspector:${INSPECTOR_TAG:-latest}
     # Equivalente ao `docker pull` que o script fazia a cada execução.
     pull_policy: always
     restart: unless-stopped
     hostname: mcp-inspector.intranet.br
+    container_name: purple-skills-mcp-inspector
     networks: [internal]
     # Tetos de memória do script original. O inspector guarda em memória tudo
     # o que trafega na sessão; um servidor tagarela não deve derrubar o host.
@@ -263,13 +274,13 @@ services:
       # ficam explícitos porque a allow-list de origens e a CSP do sandbox são
       # derivadas da CLIENT_PORT — ela precisa ser fixa, remapeie só no host.
       HOST: 0.0.0.0
-      CLIENT_PORT: '6274'
+      CLIENT_PORT: '3010'
       MCP_AUTO_OPEN_ENABLED: 'false'
       # Origem do NAVEGADOR (a URL que você abre), não o endereço dos MCPs. A
       # lista SUBSTITUI a padrão e cada item precisa do esquema; por isso ela
       # acompanha a INSPECTOR_PORT. Atrás de um proxy, acrescente a origem dele.
       ALLOWED_ORIGINS:
-      # ${INSPECTOR_ALLOWED_ORIGINS:-http://localhost:${INSPECTOR_PORT:-6274},http://127.0.0.1:${INSPECTOR_PORT:-6274}}
+      # ${INSPECTOR_ALLOWED_ORIGINS:-http://localhost:${INSPECTOR_PORT:-3010},http://127.0.0.1:${INSPECTOR_PORT:-3010}}
       # Inspector sem autenticação: aceitável porque a porta fica no loopback.
       # Com BIND_ADDR=0.0.0.0 isto vira um cliente MCP aberto para a rede, com
       # acesso ao mcp-admin — só suba assim em máquina de teste isolada.
@@ -280,12 +291,10 @@ services:
       # catálogo de servidores, em /home/node/.mcp-inspector, some no recreate).
       MCP_INSPECTOR_SECRET_STORE: ${INSPECTOR_SECRET_STORE:-memory}
     ports:
-      - '${BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-6274}:6274'
+      - '${BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-3010}:3010'
       # A aba "MCP Apps" serve um sandbox em 6275/6278. Publique se for usá-la.
       # - '${BIND_ADDR:-127.0.0.1}:6275:6275'
       # - '${BIND_ADDR:-127.0.0.1}:6278:6278'
-
-# O volume `pgdata` é declarado em database/docker-compose.yml.
 
 networks:
   internal:
