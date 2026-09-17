@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronDown, LayoutGrid, List, Plus, Search, Table2, Trash2, Upload } from 'lucide-react';
+import { BookOpenCheck, ChevronDown, LayoutGrid, List, Plus, Search, Trash2, Upload } from 'lucide-react';
 import {
   canCreate,
   canOwn,
@@ -27,7 +27,11 @@ const FILTER_LABEL: Record<Filter, string> = { todas: 'Todas', 'sem-vinculo': 'S
 /** O recorte de acesso (`docs/12-acesso-granular.md` decisão 19): quem vê tudo não precisa dele. */
 export const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Minhas', shared: 'Compartilhadas comigo', public: 'Públicas' };
 
-export function SkillsPage({ user }: { user: SessionUser }) {
+/**
+ * A lista de skills. Com `mine`, é a "Minhas Skills" do Meu espaço: o recorte
+ * de acesso fica preso em `mine` (as skills de que a conta é dona).
+ */
+export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: boolean }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [params, setParams] = useSearchParams();
@@ -39,7 +43,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:skills-sort', 'recent');
   const [view, setView] = useStored<'grid' | 'list'>('purple-skills-admin:skills-view', 'grid');
   const filter = (params.get('filtro') as Filter | null) ?? 'todas';
-  const scope = (params.get('acesso') as Scope | null) ?? 'todos';
+  const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
 
   const load = useCallback(async () => {
     try {
@@ -64,7 +68,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
   useRegisterCommands(
     [
       { id: 'skills-grid', label: view === 'grid' ? 'Ver skills em lista' : 'Ver skills em cards', group: 'Recurso', icon: view === 'grid' ? <List /> : <LayoutGrid />, run: () => setView(view === 'grid' ? 'list' : 'grid') },
-      { id: 'skills-unlinked', label: 'Mostrar skills sem vínculo', group: 'Recurso', icon: <Table2 />, run: () => setParams({ filtro: 'sem-vinculo' }) },
+      { id: 'skills-unlinked', label: 'Mostrar skills sem vínculo', group: 'Recurso', icon: <BookOpenCheck />, run: () => setParams({ filtro: 'sem-vinculo' }) },
     ],
     [view],
   );
@@ -103,7 +107,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Skills</h1>
+        <h1>{mine ? 'Minhas Skills' : 'Skills'}</h1>
         <div className="page-actions">
           <label className="search-bar">
             <Search />
@@ -131,7 +135,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
 
       <div className="meta-line">
         <span className="stat">
-          <Table2 />
+          <BookOpenCheck />
           {items
             ? `${num(total)} skill${total === 1 ? '' : 's'}, ${num(onSite)} no site, ${num(unlinked)} sem vínculo${off > 0 ? `, ${num(off)} desligada${off === 1 ? '' : 's'}` : ''}`
             : 'Carregando…'}
@@ -145,24 +149,26 @@ export function SkillsPage({ user }: { user: SessionUser }) {
           )}
         >
           {(Object.keys(FILTER_LABEL) as Filter[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setParams({ ...(key === 'todas' ? {} : { filtro: key }), ...(scope === 'todos' ? {} : { acesso: scope }) })}>
+            <MenuItem key={key} onSelect={() => setParams({ ...(key === 'todas' ? {} : { filtro: key }), ...(mine || scope === 'todos' ? {} : { acesso: scope }) })}>
               {FILTER_LABEL[key]}
             </MenuItem>
           ))}
         </Menu>
-        <Menu
-          trigger={(props) => (
-            <button type="button" className="sort" {...props}>
-              Acesso: <b>{SCOPE_LABEL[scope]}</b> <ChevronDown />
-            </button>
-          )}
-        >
-          {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) })}>
-              {SCOPE_LABEL[key]}
-            </MenuItem>
-          ))}
-        </Menu>
+        {!mine && (
+          <Menu
+            trigger={(props) => (
+              <button type="button" className="sort" {...props}>
+                Acesso: <b>{SCOPE_LABEL[scope]}</b> <ChevronDown />
+              </button>
+            )}
+          >
+            {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
+              <MenuItem key={key} onSelect={() => setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) })}>
+                {SCOPE_LABEL[key]}
+              </MenuItem>
+            ))}
+          </Menu>
+        )}
         <Menu
           trigger={(props) => (
             <button type="button" className="sort" {...props}>
@@ -294,7 +300,7 @@ export function SkillsPage({ user }: { user: SessionUser }) {
               ))}
               {visible.length === 0 && (
                 <EmptyRow colSpan={7}>
-                  {query ? 'Nenhuma skill encontrada' : filter !== 'todas' || scope !== 'todos' ? 'Nenhuma skill com esse filtro' : 'Nenhuma skill ainda'}
+                  {query ? 'Nenhuma skill encontrada' : mine && filter === 'todas' ? 'Você ainda não é dono de nenhuma skill' : filter !== 'todas' || scope !== 'todos' ? 'Nenhuma skill com esse filtro' : 'Nenhuma skill ainda'}
                 </EmptyRow>
               )}
             </tbody>

@@ -208,7 +208,7 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
     ).rows[0]!.updated_at.toISOString();
 
     // Cenário 01, primeira metade: a `020` aplicada pelo runner, numa base com dados.
-    expect(await runMigrations(url!)).toEqual(['020-rag.sql']);
+    expect(await runMigrations(url!)).toEqual(['020-rag.sql', '021-chaves-por-emissor.sql']);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;

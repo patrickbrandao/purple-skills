@@ -306,7 +306,14 @@ export const virtualMcpKeys = pgTable(
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid)],
+  (table) => [
+    index('virtual_mcp_keys_virtual_mcp_uuid_idx').on(table.virtualMcpUuid),
+    // `021`: "Chaves emitidas" da conta e a varredura do SET NULL.
+    index('virtual_mcp_keys_created_by_created_idx').on(
+      table.createdByUserUuid,
+      table.createdAt.desc(),
+    ),
+  ],
 );
 
 // -------------------------------------------------------------- catálogos ---

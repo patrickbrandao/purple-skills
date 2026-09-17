@@ -8,6 +8,7 @@ import {
   linkSkill as dbLinkSkill,
   listMcpSessions,
   listVirtualMcpKeys,
+  listVirtualMcpKeysByCreator,
   listVirtualMcps,
   notFound,
   recordAccountAudit,
@@ -22,6 +23,7 @@ import {
   updateVirtualMcp,
   type DefaultMcpResolution,
   type SkillLinkFlags,
+  type VirtualMcpKeyWithMcp,
 } from '@purple-skills/db';
 import {
   VIRTUAL_KEY_SCHEME,
@@ -382,6 +384,18 @@ export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillL
 export async function listKeys(user: AuthUser, slug: string): Promise<VirtualMcpKeySummary[]> {
   const current = await load(user, slug, 'manage');
   return listVirtualMcpKeys(current.uuid);
+}
+
+/**
+ * As chaves `psv_` que a conta emitiu (Meu espaço → Chaves emitidas), só dos
+ * servidores que ela ainda enxerga: perdido o acesso, nem o nome aparece.
+ */
+export async function listIssuedKeys(user: AuthUser): Promise<VirtualMcpKeyWithMcp[]> {
+  // A sessão de bootstrap não tem conta: não emitiu nada.
+  if (!user.uuid) return [];
+  const [keys, visible] = await Promise.all([listVirtualMcpKeysByCreator(user.uuid), listMine(user)]);
+  const uuids = new Set(visible.map((mcp) => mcp.uuid));
+  return keys.filter((key) => uuids.has(key.virtualMcpUuid));
 }
 
 /** Emite uma chave `psv_`. O texto completo só existe na resposta desta chamada. */

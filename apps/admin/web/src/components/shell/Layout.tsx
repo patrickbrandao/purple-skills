@@ -4,6 +4,7 @@ import { ChevronRight, PanelLeftOpen, Search } from 'lucide-react';
 import type { Session, SessionUser } from '../../api.js';
 import { usePalette } from '../commands.js';
 import { Badge, Kbd, useStored } from '../ui.js';
+import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 import { Notifications } from './Notifications.js';
 import { NARROW, Sidebar } from './Sidebar.js';
 import type { OnLogout } from './UserMenu.js';
@@ -30,8 +31,14 @@ function crumbsFor(pathname: string): Crumb[] {
       return [{ label: 'Auditoria', to: '/auditoria' }, ...(second ? [{ label: 'sessões MCP' }] : [{ label: 'trilha' }])];
     case 'users':
       return [{ label: 'Usuários' }];
-    case 'configuracoes':
-      return [{ label: 'Configurações' }, { label: 'instalação' }];
+    case 'configuracoes': {
+      const section = SETTINGS_SECTIONS.find((item) => item.path === second);
+      return [{ label: 'Configurações' }, ...(section ? [{ label: section.label.toLowerCase() }] : [])];
+    }
+    case 'meu-espaco': {
+      const label = { skills: 'minhas skills', catalogos: 'meus catálogos', chaves: 'chaves emitidas' }[second ?? ''];
+      return [{ label: 'Meu espaço' }, ...(label ? [{ label }] : [])];
+    }
     case 'account':
       return [{ label: 'Configurações' }, { label: 'minha conta' }];
     default:

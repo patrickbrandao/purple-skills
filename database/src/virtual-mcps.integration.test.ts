@@ -39,6 +39,7 @@ import {
   listSkills,
   listTags,
   listVirtualMcpKeys,
+  listVirtualMcpKeysByCreator,
   listVirtualMcps,
   recordAccountAudit,
   resolveVirtualMcp,
@@ -413,6 +414,64 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(linha?.targetLabel).toBe('agente-de-dados');
 
     await deleteVirtualMcp(outro.uuid, SOURCE, ana);
+  });
+
+  it('lista as chaves emitidas por uma conta, ativas primeiro, com o servidor', async () => {
+    const emissor = await createVirtualMcp({ name: 'Emissor', ownerUserUuid: null }, SOURCE, ana);
+    const emitir = (name: string, prefix: string, createdByUserUuid: string) =>
+      createVirtualMcpKey({
+        virtualMcpUuid: emissor.uuid,
+        name,
+        prefix,
+        keyHash: 'scrypt$nao-deve-sair',
+        createdByUserUuid,
+      });
+    await emitir('b-velha', 'vvvb0001', brunoUuid);
+    const revogada = await emitir('b-revogada', 'vvvb0002', brunoUuid);
+    await emitir('b-nova', 'vvvb0003', brunoUuid);
+    await emitir('a-unica', 'vvva0001', anaUuid);
+    expect(await revokeVirtualMcpKey(revogada.id, emissor.uuid)).toBe(true);
+
+    // A `agente-de-dados` do caso anterior é do Bruno, revogada e mais velha.
+    const doBruno = await listVirtualMcpKeysByCreator(brunoUuid);
+    expect(doBruno.map((k) => k.name)).toEqual([
+      'b-nova',
+      'b-velha',
+      'b-revogada',
+      'agente-de-dados',
+    ]);
+    expect(doBruno.every((k) => k.createdByUserUuid === brunoUuid)).toBe(true);
+    expect(doBruno[0]).toMatchObject({
+      virtualMcpUuid: emissor.uuid,
+      virtualMcpSlug: emissor.slug,
+      virtualMcpName: 'Emissor',
+      revokedAt: null,
+    });
+    expect(doBruno[3]).toMatchObject({
+      virtualMcpUuid: mcpUuid,
+      virtualMcpSlug: 'time-de-dados',
+      virtualMcpName: 'Time de Dados',
+    });
+    expect(doBruno[2]?.revokedAt).not.toBeNull();
+    // Nunca o hash.
+    expect(doBruno.some((k) => 'keyHash' in k)).toBe(false);
+
+    expect((await listVirtualMcpKeysByCreator(anaUuid)).map((k) => k.name)).toEqual(['a-unica']);
+    expect(await listVirtualMcpKeysByCreator('torto')).toEqual([]);
+    expect(await listVirtualMcpKeysByCreator('00000000-0000-0000-0000-000000000000')).toEqual([]);
+
+    // O índice do `021` existe.
+    const { rows } = await raw.query(
+      `SELECT 1 FROM pg_indexes WHERE indexname = 'virtual_mcp_keys_created_by_created_idx'`,
+    );
+    expect(rows).toHaveLength(1);
+
+    // Servidor apagado leva as chaves junto (CASCADE).
+    await deleteVirtualMcp(emissor.uuid, SOURCE, ana);
+    expect((await listVirtualMcpKeysByCreator(brunoUuid)).map((k) => k.name)).toEqual([
+      'agente-de-dados',
+    ]);
+    expect(await listVirtualMcpKeysByCreator(anaUuid)).toEqual([]);
   });
 
   it('atualiza parcialmente, renomeia e some do runtime quando inativo', async () => {

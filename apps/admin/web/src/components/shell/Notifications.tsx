@@ -58,9 +58,9 @@ export function Notifications({
     if (settings) {
       const status = settings.defaultMcp.status;
       if (status === 'none') {
-        next.push({ id: 'default-none', text: 'Nenhum MCP padrão: /mcp responde 404 até você escolher um servidor.', to: '/configuracoes', tone: 'warn' });
+        next.push({ id: 'default-none', text: 'Nenhum MCP padrão: /mcp responde 404 até você escolher um servidor.', to: '/configuracoes/mcp-padrao', tone: 'warn' });
       } else if (status === 'deleted') {
-        next.push({ id: 'default-deleted', text: 'O MCP padrão foi removido: /mcp responde 404 até escolher outro.', to: '/configuracoes', tone: 'warn' });
+        next.push({ id: 'default-deleted', text: 'O MCP padrão foi removido: /mcp responde 404 até escolher outro.', to: '/configuracoes/mcp-padrao', tone: 'warn' });
       } else if (status === 'inactive') {
         next.push({ id: 'default-off', text: `O MCP padrão "${settings.defaultMcp.slug}" está desligado: /mcp responde 404.`, to: `/mcps/${settings.defaultMcp.slug}`, tone: 'warn' });
       }
@@ -80,7 +80,7 @@ export function Notifications({
       }
     }
     if (!session.mcpPublicUrl) {
-      next.push({ id: 'public-url', text: 'MCP_PUBLIC_URL não está configurada: os endereços de conexão saem incompletos.', to: '/configuracoes', tone: 'info' });
+      next.push({ id: 'public-url', text: 'MCP_PUBLIC_URL não está configurada: os endereços de conexão saem incompletos.', to: '/configuracoes/ambiente', tone: 'info' });
     }
     setWarnings(next);
     if (trail) setAudit(trail.items);

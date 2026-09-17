@@ -145,7 +145,8 @@ abertura contam como não lidos (`localStorage`). Nada disso é tabela nova.
 | `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/skills/new` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação |
 | `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
 | `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
-| `/configuracoes` | Instalação: o MCP padrão e o que veio do ambiente (admin) |
+| `/meu-espaco/skills`, `/meu-espaco/catalogos`, `/meu-espaco/chaves` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` e as chaves que a conta emitiu — as `psk_` dela e as `psv_` dos servidores que ainda enxerga (`GET /api/me/mcp-keys`) |
+| `/configuracoes/mcp-padrao`, `/configuracoes/busca-semantica`, `/configuracoes/ambiente`, `/configuracoes/conectar` | Configurações da instalação (admin), uma tela por assunto e um item por tela no submenu; `/configuracoes` leva à primeira |
 | `/account` | Minha conta: senha e chaves `psk_`; fechada na sessão de bootstrap, que não tem conta |
 
 ## 4. O canvas

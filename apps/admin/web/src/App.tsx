@@ -1,17 +1,20 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import {
+  BookOpenCheck,
   ExternalLink,
+  KeyRound,
   LayoutGrid,
   Library,
   ListChecks,
   LogOut,
   Moon,
+  Plug,
   Plus,
   Server,
   SlidersHorizontal,
+  Sparkles,
   Sun,
-  Table2,
   Upload,
   UserPlus,
   UserRound,
@@ -46,7 +49,13 @@ import { ServersPage } from './pages/ServersPage.js';
 import { CatalogsPage } from './pages/CatalogsPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
 import { CatalogEditorPage } from './pages/CatalogEditorPage.js';
-import { SettingsPage } from './pages/SettingsPage.js';
+import {
+  ConnectSettingsPage,
+  DefaultMcpSettingsPage,
+  EnvironmentSettingsPage,
+  RagSettingsPage,
+} from './pages/SettingsPage.js';
+import { MyKeysPage } from './pages/MyKeysPage.js';
 import { AuditPage } from './pages/AuditPage.js';
 
 // O palco carrega o React Flow: fica num chunk próprio, pago só por quem abre um servidor.
@@ -184,7 +193,7 @@ function Shell({
             </Suspense>
           }
         />
-        <Route path="/skills" element={<SkillsPage user={user} />} />
+        <Route path="/skills" element={<SkillsPage key="all" user={user} />} />
         <Route
           path="/skills/new"
           element={canCreate(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
@@ -193,7 +202,7 @@ function Shell({
         {/* Sem trava de papel: o editor já trava o que o acesso não permite. */}
         <Route path="/skills/:slug/editar/*" element={<SkillEditorPage session={session} user={user} />} />
         <Route path="/skills/:slug/*" element={<SkillViewPage session={session} user={user} />} />
-        <Route path="/catalogos" element={<CatalogsPage user={user} />} />
+        <Route path="/catalogos" element={<CatalogsPage key="all" user={user} />} />
         <Route path="/catalogos/:slug/editar/*" element={<CatalogEditorPage user={user} />} />
         <Route path="/catalogos/:slug/*" element={<CatalogPage session={session} user={user} />} />
         <Route
@@ -217,9 +226,31 @@ function Shell({
           path="/users/:uuid/*"
           element={admin && !user.legacy ? <UserPage me={user} /> : <Navigate to="/mcps" replace />}
         />
+        {/* Meu espaço: as listas recortadas no que é da conta. */}
+        <Route path="/meu-espaco" element={<Navigate to="/meu-espaco/skills" replace />} />
+        <Route path="/meu-espaco/skills" element={<SkillsPage key="mine" user={user} mine />} />
+        <Route path="/meu-espaco/catalogos" element={<CatalogsPage key="mine" user={user} mine />} />
+        <Route path="/meu-espaco/chaves" element={<MyKeysPage user={user} />} />
+        {/* Uma tela por assunto da instalação; a raiz leva à primeira. */}
         <Route
           path="/configuracoes"
-          element={admin ? <SettingsPage session={session} /> : <Navigate to="/mcps" replace />}
+          element={<Navigate to={admin ? '/configuracoes/mcp-padrao' : '/mcps'} replace />}
+        />
+        <Route
+          path="/configuracoes/mcp-padrao"
+          element={admin ? <DefaultMcpSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/configuracoes/busca-semantica"
+          element={admin ? <RagSettingsPage /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/configuracoes/ambiente"
+          element={admin ? <EnvironmentSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/configuracoes/conectar"
+          element={admin ? <ConnectSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
         />
         <Route path="*" element={<Navigate to="/mcps" replace />} />
       </Routes>
@@ -290,12 +321,18 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
           ]
         : []),
       { id: 'go-mcps', label: 'Servidores MCP', group: 'Ir para', icon: <LayoutGrid />, shortcut: 'g s', run: () => navigate('/mcps') },
-      { id: 'go-skills', label: 'Skills', group: 'Ir para', icon: <Table2 />, shortcut: 'g k', run: () => navigate('/skills') },
+      { id: 'go-skills', label: 'Skills', group: 'Ir para', icon: <BookOpenCheck />, shortcut: 'g k', run: () => navigate('/skills') },
+      { id: 'go-my-skills', label: 'Minhas Skills', group: 'Ir para', icon: <BookOpenCheck />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/skills') },
+      { id: 'go-my-catalogs', label: 'Meus catálogos', group: 'Ir para', icon: <Library />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/catalogos') },
+      { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeyRound />, keywords: ['meu espaço', 'api', 'psk', 'psv'], run: () => navigate('/meu-espaco/chaves') },
       { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogos') },
       ...(admin
         ? [
             { id: 'go-audit', label: 'Auditoria', group: 'Ir para' as const, icon: <ListChecks />, shortcut: 'g a', run: () => navigate('/auditoria') },
-            { id: 'go-settings', label: 'Configurações da instalação', group: 'Ir para' as const, icon: <SlidersHorizontal />, keywords: ['mcp padrão', 'instalação'], run: () => navigate('/configuracoes') },
+            { id: 'go-settings', label: 'Configurações: MCP padrão', group: 'Ir para' as const, icon: <Server />, keywords: ['mcp padrão', 'instalação'], run: () => navigate('/configuracoes/mcp-padrao') },
+            { id: 'go-settings-rag', label: 'Configurações: busca semântica', group: 'Ir para' as const, icon: <Sparkles />, keywords: ['rag', 'embeddings', 'instalação'], run: () => navigate('/configuracoes/busca-semantica') },
+            { id: 'go-settings-env', label: 'Configurações: ambiente', group: 'Ir para' as const, icon: <SlidersHorizontal />, keywords: ['env', 'variáveis', 'instalação'], run: () => navigate('/configuracoes/ambiente') },
+            { id: 'go-settings-connect', label: 'Configurações: conectar ao MCP público', group: 'Ir para' as const, icon: <Plug />, keywords: ['mcp.json', 'instalação'], run: () => navigate('/configuracoes/conectar') },
           ]
         : []),
       ...(admin && !user.legacy

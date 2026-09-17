@@ -59,6 +59,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `018-acessos-por-skill.sql` | `skill_accesses` — uma linha por leitura de skill (MCP público, site, mcp-admin), com FKs `SET NULL` e as cópias que sobrevivem à remoção, os catálogos do caminho em arrays paralelos (índice GIN) e os índices por skill, vMCP e data; **nunca é podada** |
 | `019-acessos-por-conta.sql` | a guia "Acessos" da conta: índice composto `(user_uuid, created_at DESC)` em `skill_accesses`, no lugar do simples de `018` (derrubado) |
 | `020-rag.sql` | busca semântica: a extensão `vector`, `files.content_sha256` (por trigger), `skills.rag_stale` (com os triggers de skill, arquivo e tag), `rag_spaces`, `rag_texts`, `rag_skill_texts`, `rag_vectors` (FK composta + `CHECK` de dimensão) e o `CHECK` de `action` com `rag.settings`/`rag.reindex` |
+| `021-chaves-por-emissor.sql` | "Chaves emitidas" da conta: índice composto `(created_by_user_uuid, created_at DESC)` em `virtual_mcp_keys` (também cobre o `SET NULL` da remoção da conta) |
 
 Regras:
 
@@ -570,11 +571,11 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
-| MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
+| MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `listVirtualMcpKeysByCreator`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
 | Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `RagVectorInput`, `RagCoverage` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `RagVectorInput`, `RagCoverage` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -735,6 +736,15 @@ administra o vMCP (`canManageVirtualMcp`) vem antes de chamar.
   da URL é do app — e `revokeVirtualMcpKey(id, virtualMcpUuid)` é sempre
   restrita ao MCP. A auditoria das chaves (`mcp.key.create` / `mcp.key.revoke`)
   é gravada pelo app via `recordAccountAudit`, com `targetLabel` = nome da chave.
+- `listVirtualMcpKeysByCreator(userUuid)` é "Meu espaço → Chaves emitidas":
+  as chaves que a conta emitiu (`created_by_user_uuid`), em todos os vMCPs,
+  como `VirtualMcpKeyWithMcp` — o `VirtualMcpKeySummary` de
+  `listVirtualMcpKeys` (nunca o hash) mais `virtualMcpSlug` e
+  `virtualMcpName`. Ativas primeiro, depois `created_at DESC`; inclui as
+  revogadas. Uuid torto é `[]`. Não filtra por acesso ao servidor (a chave é
+  de quem emitiu; o que mostrar é do app); chave de vMCP apagado some com ele
+  (`CASCADE`), e a de conta removida perde o emissor (`SET NULL`) e sai da
+  lista. Índice do `021`.
 
 ### MCP padrão
 
@@ -1036,7 +1046,7 @@ já o traz) e um papel que possa `CREATE EXTENSION`, como o `pg_trgm` do
 |-------|-------|
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa; `createFile`: arquivo vazio (texto e binário) na raiz e em pasta, com o retorno igual à listagem; as quatro recusas com a mensagem exata, sem alterar conteúdo nem auditar (inclusive o `SKILL.md` sem linha); `_` e `%` literais; a auditoria `create`; os 404/400; criações concorrentes (o mesmo caminho em várias caixas e arquivo × pasta); e o INSERT alheio em andamento que vira 409 pelo `ON CONFLICT`, sem deadlock, com a skill indexada |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
-| `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
+| `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` (inclusive as emitidas por conta, `listVirtualMcpKeysByCreator`, e o índice do `021`) e o runtime que ignora inativos |
 | `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |
 | `sessions.integration.test.ts` | sessões do MCP público: abrir/tocar/fechar, o `clientInfo` que só entra uma vez, o reuso de linha do stateless, a expiração com fim presumido por transporte, a listagem com filtros, recorte e `isOnline`, o contador por transporte, `onlineSessions` no resumo do vMCP com e sem janela, e a linha que sobrevive à remoção do vMCP sem ser podada |
 | `catalogs.integration.test.ts` | catálogos: criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; e a re-execução do `016` |
