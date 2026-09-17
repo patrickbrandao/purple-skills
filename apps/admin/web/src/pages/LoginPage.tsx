@@ -17,10 +17,14 @@ import { Button } from '../components/ui.js';
 type Mode = 'login' | 'setup' | 'forgot' | 'reset';
 
 export function LoginPage({ session, onSuccess }: { session: Session; onSuccess: () => void }) {
-  const resetToken = new URLSearchParams(window.location.search).get('reset');
-  const ssoError = new URLSearchParams(window.location.search).get('sso_error');
+  const params = new URLSearchParams(window.location.search);
+  const resetToken = params.get('reset');
+  const ssoError = params.get('sso_error');
+  // `?setup=1` vem de quem sai da sessão de bootstrap para criar a conta; com
+  // a conta já criada, o cadastro fechou e vale o login de sempre.
+  const openSetup = params.get('setup') === '1' && session.needsSetup;
 
-  const [mode, setMode] = useState<Mode>(resetToken ? 'reset' : 'login');
+  const [mode, setMode] = useState<Mode>(resetToken ? 'reset' : openSetup ? 'setup' : 'login');
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -121,6 +125,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
               value={adminPassword}
               onChange={(event) => setAdminPassword(event.target.value)}
               placeholder="ADMIN_PASSWORD (do .env)"
+              autoFocus
               autoComplete="off"
               aria-label="ADMIN_PASSWORD do ambiente"
             />
@@ -151,7 +156,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="E-mail"
-              autoFocus
+              autoFocus={mode !== 'setup'}
               autoComplete="username"
               aria-label="E-mail"
             />

@@ -156,6 +156,12 @@ remover `a.md` levava junto um eventual `A.md`.
   `X-Forwarded-Proto` via `trust proxy`) em vez de `NODE_ENV`. Fixá-la em
   produção quebraria qualquer deploy HTTP interno; `ADMIN_COOKIE_SECURE`
   permite forçar.
+- **Sair mostra o spinner antes de navegar.** Com o Shell ainda montado,
+  `navigate('/')` abria `/mcps`, cuja busca voltava 401 com o cookie já
+  apagado. Como os ramos do `App` tinham o mesmo `ToastProvider` na raiz, o
+  React reaproveitava o provider, e o toast "Sessão expirada ou ausente"
+  aparecia na tela de login. Agora o spinner desmonta o Shell antes da
+  navegação, e cada ramo tem o seu provider (`key`).
 
 ## Contas, papéis e credenciais
 
@@ -199,7 +205,14 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
   rebaixada ou desligada: o caminho de volta seria editar o banco à mão.
 - **A tela de contas some na sessão de bootstrap.** Criar uma conta por ali
   invalidaria a própria sessão na requisição seguinte (a legada só vale com
-  `users` vazia). O caminho oferecido é sair e passar pelo `/setup`.
+  `users` vazia). O caminho oferecido é sair e passar pelo `/setup`: o aviso
+  do sino, o menu da conta e a paleta fazem as duas coisas num clique e
+  abrem o login em `/?setup=1`, já no cadastro. `/account` também fica
+  fechada nessa sessão: sem conta, trocar a senha e emitir chave só dariam 400.
+- **O login não abre no cadastro por padrão**, mesmo com `users` vazia. A
+  sessão de bootstrap é o modo de quem não quer contas (§4.1 da spec), e o
+  cadastro esconderia o botão do SSO. Ele abre com `?setup=1` e continua a um
+  clique pelo link "Criar o primeiro administrador".
 - **Token de redefinição em SHA-256, não scrypt.** São 32 bytes aleatórios e a
   busca é por igualdade exata do hash; não há entropia baixa a compensar.
 - **`registerFailedLogin`/`registerSuccessfulLogin` não tocam `updated_at`**

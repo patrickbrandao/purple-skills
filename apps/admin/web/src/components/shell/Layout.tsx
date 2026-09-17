@@ -6,6 +6,7 @@ import { usePalette } from '../commands.js';
 import { Badge, Kbd, useStored } from '../ui.js';
 import { Notifications } from './Notifications.js';
 import { NARROW, Sidebar } from './Sidebar.js';
+import type { OnLogout } from './UserMenu.js';
 
 type Crumb = { label: string; to?: string };
 
@@ -48,7 +49,7 @@ export function Layout({
   children: ReactNode;
   session: Session;
   user: SessionUser;
-  onLogout: () => void;
+  onLogout: OnLogout;
   /** A página é um palco: o painel não rola nem tem padding. */
   stage?: boolean;
 }) {
@@ -105,7 +106,7 @@ export function Layout({
           <Kbd>⌘</Kbd>
           <Kbd>K</Kbd>
         </span>
-        <Notifications session={session} user={user} />
+        <Notifications session={session} user={user} onLogout={onLogout} />
       </header>
 
       <main className="main">

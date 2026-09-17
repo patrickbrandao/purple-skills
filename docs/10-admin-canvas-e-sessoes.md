@@ -129,10 +129,12 @@ adiciona e `f` enquadra; no editor, ⌘S salva.
 
 Avisos calculados a partir do que as telas já sabem, cada um com o link para
 onde se resolve: sem MCP padrão (ou padrão removido/desligado), skills sem
-vínculo, contas com senha temporária, `MCP_PUBLIC_URL` vazia, sessão de
-bootstrap. Para admin, seguem os dez eventos mais recentes da trilha; os
-mais novos que a última abertura contam como não lidos (`localStorage`).
-Nada disso é tabela nova.
+vínculo, contas com senha temporária, `MCP_PUBLIC_URL` vazia. A sessão de
+bootstrap também gera aviso, mas nenhuma tela a resolve: o aviso sai da
+sessão e abre o login já no cadastro do primeiro administrador
+(`/?setup=1`), a mesma ação do menu da conta e da paleta. Para admin,
+seguem os dez eventos mais recentes da trilha; os mais novos que a última
+abertura contam como não lidos (`localStorage`). Nada disso é tabela nova.
 
 ### 3.4 Telas
 
@@ -144,7 +146,7 @@ Nada disso é tabela nova.
 | `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
 | `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
 | `/configuracoes` | Instalação: o MCP padrão e o que veio do ambiente (admin) |
-| `/account` | Minha conta: senha e chaves `psk_` |
+| `/account` | Minha conta: senha e chaves `psk_`; fechada na sessão de bootstrap, que não tem conta |
 
 ## 4. O canvas
 

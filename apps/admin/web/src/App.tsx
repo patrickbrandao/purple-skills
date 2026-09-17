@@ -13,6 +13,7 @@ import {
   Sun,
   Table2,
   Upload,
+  UserPlus,
   UserRound,
   Users,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import { ConfirmProvider, Skel, isTypingTarget } from './components/ui.js';
 import { CommandProvider, useRegisterCommands } from './components/commands.js';
 import { CommandPalette } from './components/shell/CommandPalette.js';
 import { Layout } from './components/shell/Layout.js';
+import type { OnLogout } from './components/shell/UserMenu.js';
 import { useTheme } from './useTheme.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { ChangePasswordPage } from './pages/ChangePasswordPage.js';
@@ -68,6 +70,7 @@ const OFFLINE: Session = {
 };
 
 export default function App() {
+  const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -80,6 +83,22 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  /**
+   * Sai da sessão e volta ao login; com `'setup'`, o login abre já no
+   * cadastro do primeiro administrador (`/?setup=1`). O spinner vem antes de
+   * tudo porque desmonta o Shell: navegar com ele montado abriria `/mcps`,
+   * cuja busca voltaria 401 com o cookie já apagado.
+   */
+  const signOut = useCallback(
+    async (then?: 'setup') => {
+      setLoading(true);
+      await logout().catch(() => void 0);
+      navigate(then === 'setup' ? '/?setup=1' : '/');
+      await refresh();
+    },
+    [navigate, refresh],
+  );
 
   useEffect(() => {
     void refresh();
@@ -103,9 +122,12 @@ export default function App() {
 
   const current = session ?? OFFLINE;
 
+  // Cada ramo tem o seu ToastProvider (`key`). Sem ela o React reaproveita o
+  // mesmo provider na troca de ramo, e um toast da tela anterior — o 401 de
+  // uma busca que terminou depois da saída — aparece na seguinte.
   if (!current.authenticated || !current.user) {
     return (
-      <ToastProvider>
+      <ToastProvider key="login">
         <LoginPage session={current} onSuccess={refresh} />
       </ToastProvider>
     );
@@ -115,17 +137,17 @@ export default function App() {
   // recusa as demais rotas de qualquer forma.
   if (current.user.mustChangePassword) {
     return (
-      <ToastProvider>
+      <ToastProvider key="password">
         <ChangePasswordPage iconUrl={current.brand.iconUrl} onDone={refresh} />
       </ToastProvider>
     );
   }
 
   return (
-    <ToastProvider>
+    <ToastProvider key="shell">
       <ConfirmProvider>
         <CommandProvider>
-          <Shell session={current} user={current.user} onLogout={refresh} />
+          <Shell session={current} user={current.user} onRefresh={refresh} onLogout={signOut} />
           <CommandPalette />
         </CommandProvider>
       </ConfirmProvider>
@@ -133,7 +155,18 @@ export default function App() {
   );
 }
 
-function Shell({ session, user, onLogout }: { session: Session; user: SessionUser; onLogout: () => void }) {
+function Shell({
+  session,
+  user,
+  onRefresh,
+  onLogout,
+}: {
+  session: Session;
+  user: SessionUser;
+  /** Relê a sessão — depois de trocar a senha, por exemplo. */
+  onRefresh: () => void;
+  onLogout: OnLogout;
+}) {
   const stage = Boolean(useMatch('/mcps/:slug/*'));
   const admin = canManageUsers(user.role);
 
@@ -167,7 +200,11 @@ function Shell({ session, user, onLogout }: { session: Session; user: SessionUse
           path="/auditoria/*"
           element={admin ? <AuditPage session={session} /> : <Navigate to="/mcps" replace />}
         />
-        <Route path="/account" element={<AccountPage user={user} onChanged={onLogout} />} />
+        {/* A sessão de bootstrap não tem conta: não há senha para trocar nem chave para emitir. */}
+        <Route
+          path="/account"
+          element={user.legacy ? <Navigate to="/mcps" replace /> : <AccountPage user={user} onChanged={onRefresh} />}
+        />
         <Route
           path="/users"
           element={admin && !user.legacy ? <UsersPage me={user} /> : <Navigate to="/mcps" replace />}
@@ -200,7 +237,7 @@ function StageSkeleton() {
 }
 
 /** Os comandos que valem em qualquer tela: criar, navegar, conta. */
-function GlobalCommands({ session, user, onLogout }: { session: Session; user: SessionUser; onLogout: () => void }) {
+function GlobalCommands({ session, user, onLogout }: { session: Session; user: SessionUser; onLogout: OnLogout }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [theme, toggleTheme] = useTheme();
@@ -264,25 +301,15 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
       ...(admin && !user.legacy
         ? [{ id: 'go-users', label: 'Usuários', group: 'Ir para' as const, icon: <Users />, shortcut: 'g u', run: () => navigate('/users') }]
         : []),
-      ...(!user.legacy
-        ? [{ id: 'go-account', label: 'Minha conta', group: 'Conta' as const, icon: <UserRound />, keywords: ['senha', 'chave', 'api'], run: () => navigate('/account') }]
-        : []),
+      ...(user.legacy
+        ? [{ id: 'setup-admin', label: 'Sair e criar o primeiro administrador', group: 'Conta' as const, icon: <UserPlus />, keywords: ['bootstrap', 'setup', 'conta', 'admin'], run: () => onLogout('setup') }]
+        : [{ id: 'go-account', label: 'Minha conta', group: 'Conta' as const, icon: <UserRound />, keywords: ['senha', 'chave', 'api'], run: () => navigate('/account') }]),
       { id: 'site', label: 'Ver o site do catálogo', group: 'Conta', icon: <ExternalLink />, run: () => {
           window.open(session.siteBaseUrl, '_blank', 'noreferrer');
         },
       },
       { id: 'theme', label: theme === 'dark' ? 'Tema claro' : 'Tema escuro', group: 'Conta', icon: theme === 'dark' ? <Sun /> : <Moon />, keywords: ['tema', 'dark', 'light'], run: toggleTheme },
-      {
-        id: 'logout',
-        label: 'Sair',
-        group: 'Conta',
-        icon: <LogOut />,
-        run: async () => {
-          await logout().catch(() => void 0);
-          navigate('/');
-          onLogout();
-        },
-      },
+      { id: 'logout', label: 'Sair', group: 'Conta', icon: <LogOut />, run: () => onLogout() },
     ],
     [user.role, user.legacy, theme, session.siteBaseUrl],
   );

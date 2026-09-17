@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { ROLE_LABEL, canManageUsers, type Session, type SessionUser } from '../../api.js';
 import { initials } from '../SkillIcon.js';
-import { UserMenu } from './UserMenu.js';
+import { UserMenu, type OnLogout } from './UserMenu.js';
 
 /** Mesma quebra do CSS: abaixo dela a sidebar é gaveta, não coluna. */
 export const NARROW = '(max-width: 900px)';
@@ -40,7 +40,7 @@ export function Sidebar({
 }: {
   session: Session;
   user: SessionUser;
-  onLogout: () => void;
+  onLogout: OnLogout;
   open: boolean;
   onClose: () => void;
   onCollapse: () => void;

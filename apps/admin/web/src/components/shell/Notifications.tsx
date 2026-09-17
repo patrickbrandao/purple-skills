@@ -14,6 +14,7 @@ import {
 } from '../../api.js';
 import { EmptyState, useClickOutside, useStored } from '../ui.js';
 import { ACTION_LABEL } from '../../audit.js';
+import type { OnLogout } from './UserMenu.js';
 
 type Warning = { id: string; text: string; to: string; tone: 'warn' | 'info' };
 
@@ -24,8 +25,19 @@ const SEEN_KEY = 'purple-skills-admin:audit-seen';
  * cada um com o link para a tela que resolve) e, para admin, os últimos
  * eventos da trilha — os mais novos que a última abertura contam como não
  * lidos. Nada disso é tabela nova: é o que as telas já sabem, reunido.
+ *
+ * A sessão de bootstrap é a exceção: nenhuma tela do painel a resolve, então
+ * o próprio aviso sai e abre o cadastro do primeiro administrador.
  */
-export function Notifications({ session, user }: { session: Session; user: SessionUser }) {
+export function Notifications({
+  session,
+  user,
+  onLogout,
+}: {
+  session: Session;
+  user: SessionUser;
+  onLogout: OnLogout;
+}) {
   const admin = canManageUsers(user.role);
   const [open, setOpen] = useState(false);
   const [warnings, setWarnings] = useState<Warning[]>([]);
@@ -37,14 +49,6 @@ export function Notifications({ session, user }: { session: Session; user: Sessi
 
   const load = useCallback(async () => {
     const next: Warning[] = [];
-    if (user.legacy) {
-      next.push({
-        id: 'legacy',
-        text: 'Você entrou com a ADMIN_PASSWORD e a auditoria não sabe quem é você. Saia e crie o primeiro administrador.',
-        to: '/account',
-        tone: 'warn',
-      });
-    }
     const [stats, settings, users, trail] = await Promise.all([
       getStats().catch(() => null),
       admin ? getSettings().catch(() => null) : null,
@@ -94,7 +98,8 @@ export function Notifications({ session, user }: { session: Session; user: Sessi
     () => audit.filter((entry) => !seenAt || entry.createdAt > seenAt).length,
     [audit, seenAt],
   );
-  const count = warnings.length + unread;
+  const pending = warnings.length + (user.legacy ? 1 : 0);
+  const count = pending + unread;
 
   function toggle() {
     setOpen((o) => {
@@ -115,12 +120,28 @@ export function Notifications({ session, user }: { session: Session; user: Sessi
           <div className="nh">
             <span>Avisos</span>
             <span className="text-xs font-normal" style={{ color: 'var(--text-faint)' }}>
-              {warnings.length} pendente{warnings.length === 1 ? '' : 's'}
+              {pending} pendente{pending === 1 ? '' : 's'}
             </span>
           </div>
           <div className="nb">
-            {warnings.length === 0 && audit.length === 0 && (
+            {pending === 0 && audit.length === 0 && (
               <EmptyState icon={<Bell />} title="Tudo em ordem" description="Nenhum aviso e nenhuma atividade recente." />
+            )}
+            {user.legacy && (
+              <button
+                type="button"
+                className="ni"
+                onClick={() => {
+                  close();
+                  onLogout('setup');
+                }}
+              >
+                <AlertTriangle className="ic" />
+                <span>
+                  Você entrou com a ADMIN_PASSWORD e a auditoria não sabe quem é você.
+                  <span className="act">Sair e criar o primeiro administrador</span>
+                </span>
+              </button>
             )}
             {warnings.map((warning) => (
               <Link key={warning.id} to={warning.to} className="ni" onClick={close}>
