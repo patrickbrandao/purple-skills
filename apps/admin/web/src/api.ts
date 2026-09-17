@@ -461,6 +461,9 @@ export type VirtualMcpKeySummary = {
   createdAt: string;
 };
 
+/** Uma chave `psv_` com o servidor a que pertence (Meu espaço → Chaves emitidas). */
+export type IssuedMcpKey = VirtualMcpKeySummary & { virtualMcpSlug: string; virtualMcpName: string };
+
 /** Cópia manual de `InstallationSettings` de `@purple-skills/shared`. */
 export type InstallationSettings = {
   defaultMcp:
@@ -636,6 +639,9 @@ export const createKey = (name: string) =>
 
 export const revokeKey = (id: string) =>
   request<unknown>(`/api/me/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+/** As chaves `psv_` que a conta emitiu, em qualquer servidor. */
+export const getMyMcpKeys = () => request<{ items: IssuedMcpKey[] }>('/api/me/mcp-keys');
 
 // ----------------------------------------------------------------- contas ---
 

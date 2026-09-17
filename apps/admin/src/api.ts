@@ -459,6 +459,14 @@ api.post(
   }),
 );
 
+// As `psv_` que a conta emitiu, em qualquer servidor que ela ainda enxerga.
+api.get(
+  '/api/me/mcp-keys',
+  route(async (req, res) => {
+    res.json({ items: await mcps.listIssuedKeys(req.user!) });
+  }),
+);
+
 api.delete(
   '/api/me/keys/:id',
   route(async (req, res) => {

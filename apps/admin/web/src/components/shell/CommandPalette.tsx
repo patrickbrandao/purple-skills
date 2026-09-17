@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Command } from 'cmdk';
-import { ArrowLeft, Library, Server, Table2 } from 'lucide-react';
+import { ArrowLeft, BookOpenCheck, Library, Server } from 'lucide-react';
 import { getCatalogs, getMcps, listSkills, type CatalogSummary, type SkillSummary, type VirtualMcpSummary } from '../../api.js';
 import { GROUP_ORDER, fuzzyScore, useCommandRegistry, type Command as Cmd } from '../commands.js';
 import { SkillIcon } from '../SkillIcon.js';
@@ -267,7 +267,7 @@ export function CommandPalette() {
                     run(command.run);
                   }}
                 >
-                  {command.icon ?? <Table2 />}
+                  {command.icon ?? <BookOpenCheck />}
                   <span className="lbl">{command.label}</span>
                   {command.disabled && <span className="sub">{command.disabled}</span>}
                   {command.shortcut && !command.disabled && (

@@ -29,9 +29,10 @@ const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Meus
 /**
  * Os catálogos (`docs/11-catalogos.md` §6.1): admin vê todos, os demais só os
  * seus. Um catálogo é um grupo de skills que entra num servidor de uma vez;
- * a lista mostra quanto de cada um está de fato sendo entregue.
+ * a lista mostra quanto de cada um está de fato sendo entregue. Com `mine`,
+ * é o "Meus catálogos" do Meu espaço: só os de que a conta é dona.
  */
-export function CatalogsPage({ user }: { user: SessionUser }) {
+export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?: boolean }) {
   const toast = useToast();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -40,7 +41,7 @@ export function CatalogsPage({ user }: { user: SessionUser }) {
   const [items, setItems] = useState<CatalogSummary[] | null>(null);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:catalogs-sort', 'name');
   const creating = params.get('novo') === '1';
-  const scope = (params.get('acesso') as Scope | null) ?? 'todos';
+  const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
 
   const load = useCallback(async () => {
     try {
@@ -79,7 +80,7 @@ export function CatalogsPage({ user }: { user: SessionUser }) {
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Catálogos</h1>
+        <h1>{mine ? 'Meus catálogos' : 'Catálogos'}</h1>
         <div className="page-actions">
           <button type="button" className="search-trigger" onClick={() => openPalette()}>
             <Search />
@@ -116,7 +117,7 @@ export function CatalogsPage({ user }: { user: SessionUser }) {
             </MenuItem>
           ))}
         </Menu>
-        {user.role !== 'admin' && (
+        {user.role !== 'admin' && !mine && (
           <Menu
             trigger={(props) => (
               <button type="button" className="sort" {...props}>
@@ -189,7 +190,7 @@ export function CatalogsPage({ user }: { user: SessionUser }) {
                   </td>
                 </tr>
               ))}
-              {sorted.length === 0 && <EmptyRow colSpan={7}>{scope !== 'todos' ? 'Nenhum catálogo nesse recorte' : podeCriar ? 'Nenhum catálogo ainda' : 'Nenhum catálogo é seu, compartilhado com você ou público'}</EmptyRow>}
+              {sorted.length === 0 && <EmptyRow colSpan={7}>{mine ? 'Você ainda não é dono de nenhum catálogo' : scope !== 'todos' ? 'Nenhum catálogo nesse recorte' : podeCriar ? 'Nenhum catálogo ainda' : 'Nenhum catálogo é seu, compartilhado com você ou público'}</EmptyRow>}
             </tbody>
           </table>
         </div>

@@ -4561,6 +4561,47 @@ export async function listVirtualMcpKeys(virtualMcpUuid: string): Promise<Virtua
   return (result.rows as Row[]).map(toVirtualMcpKeySummary);
 }
 
+/** Uma chave `psv_` com o servidor a que pertence — "Meu espaço → Chaves emitidas". */
+export type VirtualMcpKeyWithMcp = VirtualMcpKeySummary & {
+  virtualMcpSlug: string;
+  virtualMcpName: string;
+};
+
+/**
+ * As chaves que a conta emitiu, em todos os vMCPs: ativas primeiro, depois as
+ * mais novas. Inclui as revogadas, como `listVirtualMcpKeys`, e nunca o hash.
+ * Não filtra por acesso ao servidor — a chave é de quem a emitiu, e a
+ * decisão de mostrar é do app. Chave de vMCP apagado não aparece (`CASCADE`).
+ */
+export async function listVirtualMcpKeysByCreator(
+  userUuid: string,
+): Promise<VirtualMcpKeyWithMcp[]> {
+  if (!isUuid(userUuid)) return [];
+
+  const result = await db().execute(sql`
+    SELECT
+      k.id,
+      k.virtual_mcp_uuid,
+      k.name,
+      k.prefix,
+      k.created_by_user_uuid,
+      k.last_used_at,
+      k.revoked_at,
+      k.created_at,
+      m.slug AS virtual_mcp_slug,
+      m.name AS virtual_mcp_name
+    FROM virtual_mcp_keys k
+    JOIN virtual_mcps m ON m.uuid = k.virtual_mcp_uuid
+    WHERE k.created_by_user_uuid = ${userUuid}
+    ORDER BY (k.revoked_at IS NOT NULL) ASC, k.created_at DESC, k.id DESC
+  `);
+  return (result.rows as Row[]).map((row) => ({
+    ...toVirtualMcpKeySummary(row),
+    virtualMcpSlug: row.virtual_mcp_slug,
+    virtualMcpName: row.virtual_mcp_name,
+  }));
+}
+
 /**
  * Grava a chave emitida. O segredo em texto **não** passa por aqui: quem o
  * gera e o mostra uma única vez é o app, com `generateApiKey('psv')` de shared.

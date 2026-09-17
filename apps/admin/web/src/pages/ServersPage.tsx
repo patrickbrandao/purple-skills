@@ -238,7 +238,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
       {canManageUsers(user.role) && items !== null && items.length > 0 && (
         <p className="panel-hint mt-5">
           Qual destes responde em <code>{session.mcpPublicUrl || '<MCP_PUBLIC_URL>'}/mcp</code>, o MCP público da instalação, é
-          escolhido em <Link to="/configuracoes" className="link">Configurações → Instalação</Link>.
+          escolhido em <Link to="/configuracoes/mcp-padrao" className="link">Configurações → MCP padrão</Link>.
         </p>
       )}
 
