@@ -1202,6 +1202,20 @@
 .notif .ni:hover {
   background: var(--surface-2);
 }
+/* Aviso que age em vez de levar a uma tela: mesma linha, sem a cara de botão. */
+.notif button.ni {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+/* `--text`, não o roxo: `--accent-soft` fica abaixo de 4,5:1 no painel escuro. */
+.notif .ni .act {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-weight: 500;
+}
 .notif .ni .ic {
   width: 16px;
   height: 16px;
