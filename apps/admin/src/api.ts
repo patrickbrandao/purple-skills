@@ -3,6 +3,7 @@ import {
   AppError,
   badRequest,
   countUsers,
+  createFile,
   createSkill,
   deleteFile,
   deleteSkill,
@@ -1212,6 +1213,27 @@ api.put(
   }),
 );
 
+/**
+ * Cria o arquivo só se o caminho está livre — o "Novo arquivo" da guia
+ * Arquivos. Nunca sobrescreve: caminho ocupado (em qualquer caixa), prefixo
+ * que é arquivo, pasta com o mesmo nome e o SKILL.md são 409. `content` é
+ * opcional; sem ele, o arquivo nasce vazio.
+ */
+api.post(
+  '/api/skills/:slug/files/*path',
+  route(async (req, res) => {
+    // O corpo é conferido antes do acesso: um 400 não diz nada sobre a skill.
+    const raw = (req.body as { content?: unknown } | undefined)?.content;
+    const content = raw === undefined ? '' : raw;
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
+      return;
+    }
+    await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
+    res.status(201).json(await createFile(param(req, 'slug'), param(req, 'path'), content, SOURCE, actorFrom(req)));
+  }),
+);
+
 api.delete(
   '/api/skills/:slug/files/*path',
   route(async (req, res) => {
@@ -1278,10 +1300,17 @@ api.post(
     const prefix = normalizeRelativePath(String((req.body as { prefix?: string })?.prefix ?? '')) ?? '';
     const files = await setFiles(
       param(req, 'slug'),
-      uploaded.map((file) => ({
-        relativePath: prefix ? `${prefix}/${file.originalname}` : file.originalname,
-        content: file.buffer,
-      })),
+      uploaded.map((file) => {
+        const relativePath = prefix ? `${prefix}/${file.originalname}` : file.originalname;
+        return {
+          relativePath,
+          // Um SKILL.md avulso entra só com o corpo, como o do .zip: os
+          // metadados da skill já cadastrada mandam.
+          content: isSkillMd(normalizeRelativePath(relativePath) ?? '')
+            ? Buffer.from(stripFrontmatter(file.buffer.toString('utf8')), 'utf8')
+            : file.buffer,
+        };
+      }),
       SOURCE,
       { replace: false },
       actorFrom(req),

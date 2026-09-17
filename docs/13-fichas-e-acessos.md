@@ -1,7 +1,8 @@
 # Fichas de skill e catálogo, a colmeia e o registro de acessos
 
 **Status: implementado**, num PR (`feat/fichas-e-acessos`), sobre o `12`.
-Migration `018-acessos-por-skill.sql`.
+Migration `018-acessos-por-skill.sql`. Revisão de 16/09/2026: a edição da
+skill troca a guia Acessos pela guia **Arquivos** (decisões 17 a 20).
 
 Este documento registra o desenho fechado na entrevista de 14/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
@@ -43,11 +44,11 @@ cor do tipo.
 | 2 | Colmeia: quantos hexágonos | **Teto fixo de 19** (1 + 6 + 12, em espiral do centro) e um hexágono neutro **"+N"** com o que não coube |
 | 3 | Colmeia: o que entra | Catálogos primeiro, depois as skills com **vínculo direto**, por nome. Skill que chega só por catálogo não vira hexágono próprio: o catálogo é o hexágono dela |
 | 4 | Fichas | **Lista → visualizar → editar.** A visualização não tem nenhum controle que grave; a edição fica em `/editar`, com a mesma organização de guias |
-| 5 | Guias da skill | **Skill** (descrição na largura da guia; abaixo, a caixa Skill/SKILL.md com a árvore de arquivos à direita), **Propriedades** (metadados, "Publicada em", "Nos catálogos", "Acesso") e **Acessos** |
+| 5 | Guias da skill | **Skill** (descrição na largura da guia; abaixo, a caixa Skill/SKILL.md com a árvore de arquivos à direita), **Propriedades** (metadados, "Publicada em", "Nos catálogos", "Acesso") e **Acessos**. Em Editar, desde a decisão 17: Skill, **Arquivos** e Propriedades |
 | 6 | Guias do catálogo | **Catálogo** (a descrição), **Skills** (os membros), **Propriedades** (configuração, "Vinculado em", "Acesso") e **Acessos** |
 | 7 | O que sai da visualização | Publicar/tirar de servidor, transferir dono, marcar público, conceder/revogar e **Remover** vão todos para **Editar → Propriedades**; Remover fica numa **zona de perigo** no fim, não no cabeçalho |
 | 8 | Quem vê o botão Editar | **Quem edita a skill ou administra algum servidor** (tem `edit` em algum vMCP). Vincular exige só `view` na skill (`12` §3.4), e quem só administra o servidor precisa de um caminho pela página da skill. Em Editar, cada seção habilita conforme a permissão |
-| 9 | Onde se edita um arquivo | **No lugar da caixa Skill/SKILL.md**: clicar num arquivo da árvore troca a caixa por um editor com o caminho, "Abrir cru" e "Salvar arquivo"; o SKILL.md volta às duas guias. Upload, importar .zip e remover ficam na árvore |
+| 9 | Onde se edita um arquivo | ~~No lugar da caixa Skill/SKILL.md~~ — **substituída pela 18**. Era: clicar num arquivo da árvore trocava a caixa por um editor com o caminho, "Abrir cru" e "Salvar arquivo"; upload, importar .zip e remover ficavam na árvore |
 | 10 | Onde ficam os metadados em Editar | **Propriedades**, com um único **Salvar** no cabeçalho (e ⌘S) que grava descrição, SKILL.md, metadados e o estado "ligada". A guia Skill tem só a descrição e o SKILL.md |
 | 11 | "Público" em Editar | Só na seção **Acesso**, gravado na hora, como no `12` §5.1. A caixa duplicada do formulário antigo saiu: dois controles para o mesmo flag numa tela era um convite a confusão |
 | 12 | Lixeira na lista de skills | **Fica**, para quem pode apagar (o dono e o admin) |
@@ -55,13 +56,19 @@ cor do tipo.
 | 14 | Registro de acessos: retenção | **Nunca apagar**, como `mcp_sessions` (`10`, decisão 8): a tabela é o histórico |
 | 15 | Registro de acessos: quem vê | **Quem administra** a skill ou o catálogo (dono, `manage`, admin). A lista traz IPs, clientes e nomes de chave de servidores que a conta pode não administrar — o mesmo critério das concessões e das sessões de um vMCP |
 | 16 | Usuários | **O mesmo princípio** (pedido de 14/09/2026, depois da entrega): a lista só navega, "Nova conta" vira modal, a ficha é só leitura e Editar tem as mesmas guias — Conta, Chaves, Acessos, Atividade. Papel, estado, senha temporária e revogação de chave saem da lista e vão para Editar |
+| 17 | Guias da skill em Editar | **Skill, Arquivos e Propriedades** (pedido de 16/09/2026). **Acessos sai de Editar**: quem lê o registro é quem abre a ficha para consultá-la, não quem está editando. `/editar/acessos` leva a `/acessos`. Só a skill mudou: catálogo e conta continuam com Acessos em Editar |
+| 18 | Onde se edita um arquivo | **Na guia Arquivos** (substitui a 9): a árvore à esquerda, com largura arrastável e guardada no navegador, e o arquivo aberto no resto da largura, na altura da janela. A árvore cria **arquivo vazio** e **pasta** — na raiz (a linha do slug) ou numa pasta (as ações da linha, ou a barra, que age na pasta escolhida) —, envia arquivos (botão ou arrastando para a pasta), importa `.zip` e remove. Texto abre num editor com numeração e é gravado por "Salvar arquivo" (⌘S na guia); binário mostra a imagem ou os dados; o SKILL.md abre o corpo do formulário, com o frontmatter travado, e é gravado pelo Salvar do cabeçalho. A guia Skill mantém a árvore ao lado do SKILL.md, como na leitura; clicar num arquivo o abre em Arquivos |
+| 19 | Pasta nova | **Vive na página até receber o primeiro arquivo.** O banco só guarda arquivos — uma pasta existe porque há arquivo dentro — e o pacote não leva pasta vazia. A árvore a mostra com o selo "vazia"; se a página fechar antes, ela some. A pasta que perde o último arquivo continua à vista, vazia, até sair da página. Sem migration e sem arquivo-marcador (`.gitkeep`) no pacote |
+| 20 | Criar não sobrescreve | "Novo arquivo" é `POST /api/skills/:slug/files/*path` (`createFile`): caminho ocupado em qualquer caixa, prefixo que é arquivo, pasta com o mesmo nome e o SKILL.md são **409**, conferidos numa transação. As outras escritas continuam upsert e sobrescrevem de propósito: salvar (`PUT …/files/*path`) e enviar (`POST …/files`, multipart — que pede confirmação quando o nome já existe) |
 
 Fechadas por derivação:
 
 - **Guias em rotas.** `/skills/:slug`, `/skills/:slug/propriedades`,
-  `/skills/:slug/acessos`, e o mesmo sob `/editar`; no catálogo, mais
+  `/skills/:slug/acessos`, e o mesmo sob `/editar` — na skill, desde a
+  decisão 17, `/editar/arquivos` e `/editar/propriedades`; no catálogo, mais
   `/skills`. Uma guia tem endereço e sobrevive a um recarregamento, como as
-  abas do servidor.
+  abas do servidor. O arquivo aberto em Arquivos não entra no endereço: ele
+  é estado da página, como os rascunhos.
 - **O token global não entra no registro.** Ele não é uma conta: como o
   painel, é o operador lendo o próprio acervo. Uma chave `psk_` é uma pessoa,
   e entra com o e-mail dela.
@@ -100,21 +107,37 @@ está desligada.
 
 ### 3.2 Skill: editar (`/skills/:slug/editar`)
 
-O mesmo cabeçalho, com **Visualizar** e **Salvar** no lugar de Editar. As
-mesmas três guias:
+O mesmo cabeçalho, com **Visualizar** e **Salvar** no lugar de Editar. Três
+guias — Skill, Arquivos e Propriedades (decisão 17):
 
 - **Skill** — a descrição vira um campo; a caixa ganha, na guia SKILL.md, o
   frontmatter gerado (travado) sobre o corpo (livre); a guia Skill renderiza
-  o rascunho. A árvore ganha upload, importar `.zip` (com "substituir toda a
-  árvore") e remover; escolher um arquivo abre o editor dele no lugar da
-  caixa (decisão 9).
+  o rascunho. A árvore fica ao lado, como na leitura, e só navega: escolher
+  um arquivo o abre na guia Arquivos.
+- **Arquivos** — a árvore à esquerda e o arquivo aberto no resto (decisão
+  18). Na barra da árvore: novo arquivo, nova pasta e enviar, na pasta
+  escolhida (a do arquivo aberto, a última pasta clicada ou a raiz), e o
+  menu com importar `.zip`, "substituir a árvore por um .zip", recolher as
+  pastas e recarregar a árvore; ao pé, `.zip` e `.skill`. Cada pasta — e a
+  raiz — tem as mesmas três ações ao passar o mouse, e a pasta vazia, a de
+  tirá-la; cada arquivo, a de remover. O nome do que se cria é digitado na
+  própria árvore (Enter cria, Esc desiste, `a/b.md` cria a pasta junto), com
+  a conferência de nome e de ocupação antes de ir ao servidor. O editor de
+  texto numera as linhas, indenta com Tab e grava com "Salvar arquivo" ou
+  ⌘S; "Descartar" relê o que está gravado. Trocar de arquivo ou de guia não
+  perde rascunho — a árvore marca os pendentes —, e recarregar ou fechar a
+  aba com algo pendente pede confirmação ao navegador.
 - **Propriedades** — o formulário de metadados (slug, nome, tags, ícone) e a
   caixa "Skill ligada", gravados pelo Salvar; "Publicada em" com as caixas
   de porta por servidor (grava na hora, como antes); "Nos catálogos" (só
   leitura: a edição é no catálogo); "Acesso" completo (transferir, público,
   conceder, revogar — grava na hora); e, para o dono, a **zona de perigo**
   com Remover.
-- **Acessos** — a mesma tabela.
+
+O ⌘S grava o que está à frente: na guia Arquivos, o arquivo aberto; no
+resto — e com o SKILL.md aberto em Arquivos —, o formulário. Os comandos da
+paleta acompanham: salvar, novo arquivo, nova pasta, enviar, importar
+`.zip`, remover o arquivo aberto e "Arquivos da skill".
 
 Permissões (`12` §3.2): conteúdo, descrição e metadados são `edit`; slug e
 "ligada" são `manage`; apagar é do dono; as portas de cada servidor são
@@ -242,10 +265,20 @@ GET    /api/users/:uuid/keys          as chaves psk_ dela, com as revogadas admi
 DELETE /api/users/:uuid/keys/:id      revoga (key.revoke)                  admin
 GET    /api/users/:uuid/accesses      idem às de skill, filtrado pela conta admin
 GET    /api/audit?actor=<e-mail>      a guia Atividade (já existia)        admin
+
+POST   /api/skills/:slug/files/*path  { content? } cria sem sobrescrever  edit na skill
 ```
 
 `q` é `ILIKE` em e-mail, nome de chave `psk_`, nome de chave `psv_`, IP,
 cliente e id de sessão; `origin` e `kind` fora dos valores válidos são 400.
+
+O `POST` de arquivo (decisão 20) responde 201 com o `SkillFileMeta`;
+`content` é opcional (sem ele o arquivo nasce vazio) e, quando vem, tem de
+ser texto — o tipo é conferido antes do acesso, e um 400 não diz nada sobre
+a skill. Caminho inválido é 400; ocupado, 409 `conflict` com a grafia
+gravada na mensagem. Criar audita `create`. De carona, o envio avulso
+(`POST /api/skills/:slug/files`) passou a gravar só o corpo de um `SKILL.md`
+na raiz, como o `.zip` já fazia.
 
 ## 7. Riscos aceitos
 
@@ -261,6 +294,17 @@ cliente e id de sessão; `origin` e `kind` fora dos valores válidos são 400.
   página da skill sem abrir a edição do conteúdo.
 - **Colmeia sem ícone** diz menos que a fileira de ícones antiga — foi a
   escolha. O nome está no tooltip e o card continua abrindo o canvas.
+- **Pasta nova é da página** (decisão 19). Quem cria uma pasta e sai sem pôr
+  arquivo nela não a encontra na volta, e outro operador nunca a vê. A árvore
+  avisa com o selo "vazia" e o tooltip.
+- **Rascunho de arquivo é da página.** Ele sobrevive à troca de arquivo e de
+  guia, e o navegador pergunta antes de recarregar ou fechar; sair do editor
+  por um link do próprio painel descarta sem perguntar — o roteador do
+  painel não é um *data router* e não bloqueia a navegação. O mesmo já valia
+  para o formulário.
+- **Editor de texto simples.** Numeração, indentação e desfazer do
+  navegador, sem realce de sintaxe nem busca: um editor de código de verdade
+  pesaria no pacote do painel mais do que a guia justifica hoje.
 
 ## 8. Fora do escopo
 

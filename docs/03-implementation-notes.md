@@ -278,8 +278,10 @@ desde que existe. O que muda é que o botão "Editar" só aparece para quem pode
 
 A árvore e os ícones por extensão são os mesmos do site — `fileTree.ts` e
 `FileTypeIcon.tsx` são cópias idênticas nos dois apps, no mesmo espírito do
-`useTheme.ts`. O `FileTree.tsx` é que difere: no painel ele também escolhe o
-arquivo a editar e oferece o botão de remover.
+`useTheme.ts`. O `FileTree.tsx` é que difere: no painel ele também escolhe um
+arquivo — na guia Skill do editor, para abri-lo na guia Arquivos. Criar,
+enviar e remover são do `FileExplorer.tsx` dessa guia (ver
+[A guia Arquivos do editor de skill](#a-guia-arquivos-do-editor-de-skill)).
 
 ## Editor de skill no painel
 
@@ -295,12 +297,13 @@ pré-visualização renderizada ao lado, em tempo real.
   campos sem precisar baixar o arquivo.
 - O prompt é enviado por `stripFrontmatter` antes de sair do navegador e de
   novo no servidor: as duas pontas garantem o que a §3.5 das decisões exige.
-- O `SKILL.md` **aparece** na árvore da aba "Arquivos", porque escondê-lo
-  deixava a árvore mentindo sobre o pacote — mas clicar nele leva para a aba do
-  formulário, não para o editor cru. Ali a edição não passaria pelo formulário,
-  e gravar metadados por lá seria gravar o que a primeira leitura descarta. A
-  contagem da aba segue sendo só a dos anexos, e o botão de remover não existe
-  para ele.
+- O `SKILL.md` **aparece** na árvore, porque escondê-lo deixava a árvore
+  mentindo sobre o pacote — mas nunca abre como arquivo cru. Na guia Arquivos
+  (`13`, decisão 18), clicar nele abre o **corpo do formulário**, com o
+  frontmatter gerado travado acima, e quem grava é o Salvar do cabeçalho: num
+  editor cru a edição não passaria pelo formulário, e gravar metadados por lá
+  seria gravar o que a primeira leitura descarta. O botão de remover não
+  existe para ele, e a contagem da guia é a de `fileCount`, com ele.
 - `apps/admin/web/src/frontmatter.ts` e `slug.ts` espelham
   `packages/shared`: o pacote é Node (zip, streams, `Buffer`) e não entra no
   bundle do navegador. O servidor continua sendo quem decide.
@@ -633,6 +636,66 @@ implementação decidiu além dele:
   (migration `019`, índice `(user_uuid, created_at DESC)`); a guia
   Atividade é `GET /api/audit?actor=`. `ROLES` e `ROLE_HINT` foram para o
   `api.ts` do painel, porque três telas os usam.
+
+## A guia Arquivos do editor de skill
+
+Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md), decisões 17
+a 20. O que a implementação decidiu além dele:
+
+- **O estado mora na página, num hook.** `useSkillFiles` (painel) guarda o
+  arquivo aberto, a pasta escolhida, o que está recolhido, as pastas novas,
+  os rascunhos (`FileDoc`, com o conteúdo gravado ao lado do editado) e as
+  gravações em curso. A rota do editor não desmonta entre guias, então nada
+  disso se perde; trocar de skill na mesma rota zera tudo. As ações
+  assíncronas leem o estado por um `ref`, para não agir sobre a renderização
+  que as criou.
+- **Operação de arquivo não recarrega a skill.** Criar, salvar, remover e
+  enviar trocam só `skill.files` (`onFiles`); antes, cada uma chamava o
+  `reload`, que repovoava o formulário e jogava fora a descrição, o SKILL.md
+  e as propriedades ainda não salvos. Pelo mesmo motivo, "Publicada em" e
+  "Acesso" (Propriedades) passaram a trocar só a skill. Recarregam tudo, com
+  confirmação quando há algo pendente, só o `.zip` e o envio de um `SKILL.md`
+  na raiz — os dois trocam o corpo do prompt.
+- **`reload` não depende de `navigate`.** Com `BrowserRouter`, o `navigate`
+  do React Router muda de identidade a cada troca de caminho; como o
+  `reload` dependia dele, cada clique numa guia refazia o GET e repovoava o
+  formulário. O editor guarda o `navigate` num `ref`. As outras fichas têm o
+  mesmo padrão e ficaram como estavam.
+- **`fileTree.ts` e `FileTypeIcon.tsx` continuam idênticos aos do site.** O
+  que só o editor precisa — pastas novas na árvore, validação do nome,
+  colisões de envio, contagem de linhas — mora em `explorer.ts`, com testes em
+  `explorer.test.ts`. A validação usa a grafia das pastas que já existem:
+  `References/x.md` vai para `references/`, em vez de criar uma pasta irmã
+  que só difere na caixa (o banco compara o caminho inteiro sem diferenciar
+  caixa, não pasta a pasta).
+- **O arquivo aberto segue a grafia gravada.** Um envio com outra caixa
+  renomeia a linha (é o upsert); o editor troca a seleção para o nome novo e
+  relê o conteúdo. Um arquivo à vista sem conteúdo carregado é lido pela
+  própria guia (`ensure`).
+- **O editor é um `textarea`** com a numeração num `<pre>` ao lado, rolando
+  junto; sem quebra automática, para cada número ser uma linha. Tab, Shift+Tab
+  e a indentação do Enter escrevem por `document.execCommand('insertText')`,
+  que preserva o desfazer do navegador (com `setRangeText` de reserva). Esc e
+  depois Tab sai do campo. A roda sobre a numeração rola o texto.
+- **O campo de nome pede o foco num `setTimeout`.** A paleta (Radix), ao
+  fechar, devolve o foco a quem o tinha num `setTimeout` próprio; sem esperar
+  por ela, o campo aberto por "Novo arquivo" na paleta perdia o cursor. Pelo
+  mesmo motivo o campo não desiste no `blur`, e sim no clique fora (que cria o
+  que estiver válido) e no Esc.
+- **Criar é outra rota, não um cabeçalho.** `If-None-Match: *` no `PUT` seria
+  o idioma HTTP, mas a falha dele é 412, e as recusas aqui são de naturezas
+  diferentes (arquivo existente, prefixo que é arquivo, pasta) — o `POST` com
+  409 e mensagem diz mais. O `createFile` do banco serializa as criações por
+  skill com um advisory lock de transação, e não com `FOR UPDATE` na skill,
+  que travava em deadlock contra um `setFile` concorrente (ver o README do
+  banco).
+- **O `SKILL.md` avulso agora perde o frontmatter** no envio de arquivos
+  (`POST /api/skills/:slug/files`), como o `.zip` e o `PUT` já faziam — era a
+  única escrita de conteúdo fora da regra da §3.5 das decisões.
+- **Largura da árvore** em `localStorage`
+  (`purple-skills-admin:files-tree-width`), 200 a 560 px, nunca mais que
+  45 % da guia; a divisória aceita arrasto, setas (Shift para passos
+  maiores), Home/End e duplo clique para voltar a 300 px.
 
 ## Portas
 
