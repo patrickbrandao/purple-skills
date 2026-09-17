@@ -791,6 +791,10 @@ export const getFile = (slug: string, path: string) =>
 export const setFile = (slug: string, path: string, content: string) =>
   request<SkillFileMeta>(filePath(slug, path), { method: 'PUT', body: json({ content }) });
 
+/** Cria o arquivo só se o caminho estiver livre: um que já existe é 409, nunca sobrescrito. */
+export const createFile = (slug: string, path: string, content = '') =>
+  request<SkillFileMeta>(filePath(slug, path), { method: 'POST', body: json({ content }) });
+
 export const deleteFile = (slug: string, path: string) =>
   request<unknown>(filePath(slug, path), { method: 'DELETE' });
 

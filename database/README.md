@@ -555,7 +555,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 |-------|-------------|
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
 | Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail` (aceitam `visibility`, `viewer`, `virtualMcp`; a listagem também `scope` e `semantic`), `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
-| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`, `isActive` e `isPublic`; as duas últimas também `ownerUserUuid`), `deleteSkill`, `setFile`, `setFiles`, `deleteFile` |
+| Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`, `isActive` e `isPublic`; as duas últimas também `ownerUserUuid`), `deleteSkill`, `setFile` (upsert), `createFile` (só se o caminho está livre), `setFiles`, `deleteFile` — ver [Arquivos da skill](#arquivos-da-skill) |
 | Acesso | `setSkillGrant`, `removeSkillGrant`, `listSkillGrants`, `setCatalogGrant`, `removeCatalogGrant`, `listCatalogGrants`, `setVirtualMcpGrant`, `removeVirtualMcpGrant`, `listVirtualMcpGrants`, `lookupUsers` |
 | Site | `listOpenVirtualMcps`, `listPublicCatalogs`, `getPublicCatalog` |
 | Vínculo pelo lado da skill | `linkSkill` (aceita `{ position }`), `unlinkSkill` (e `mcps` em `createSkill`) |
@@ -588,6 +588,57 @@ await setFiles(slug, arquivos, 'mcp-admin', { replace: true }, ator); // actor �
 O ator é `AuditActor` de `@purple-skills/shared` (`{ userUuid, label }`).
 Omiti-lo grava a linha sem ator, como antes — nenhuma chamada existente quebra.
 Em `createSkill` ele também preenche `skills.created_by_user_uuid`.
+
+### Arquivos da skill
+
+O caminho passa por `normalizeRelativePath` de shared (barras, `./`, `..`,
+teto de 512 caracteres; o que não serve é 400 `Caminho inválido: <como
+veio>`) e é único **sem diferenciar caixa** (`003`). Mime, texto × binário e
+tamanho saem de uma regra só (`fileColumns` em `queries.ts`): mime pela
+extensão; texto quando o mime é textual e não há byte nulo; binário no resto.
+Conteúdo vazio vale: `''` num texto, `bytea` vazio num binário.
+
+| Função | Semântica | Auditoria |
+|--------|-----------|-----------|
+| `setFile(slug, caminho, conteúdo, source, actor?)` | **upsert**: sobrescreve o arquivo existente em qualquer caixa, e a caixa nova passa a ser a gravada | `create` ou `update`, com o conteúdo anterior |
+| `createFile(slug, caminho, conteúdo, source, actor?)` | **cria só se o caminho está livre**; ocupado é 409 e nada muda. Mesmos parâmetros e retorno (`SkillFileMeta`) de `setFile` | `create` com o caminho normalizado e `previousContent` nulo; recusa não audita |
+| `setFiles(slug, arquivos, source, { replace? }, actor?)` | upsert em lote; com `replace` (padrão) apaga o que ficou de fora, menos o `SKILL.md` | um `update` sem caminho |
+| `deleteFile(slug, caminho, source, actor?)` | apaga a linha daquele caminho; o `SKILL.md` é 400 e caminho ausente é 404 | `delete` com o conteúdo anterior |
+
+Skill desconhecida é 404 (`Skill não encontrada: <slug>`) nas quatro. Os 409
+de `createFile` têm `code: 'conflict'`, não diferenciam caixa e são
+conferidos nesta ordem:
+
+| Situação | Mensagem |
+|----------|----------|
+| o `SKILL.md` da raiz, em qualquer caixa — existe em toda skill, mesmo sem linha | `O SKILL.md já existe em toda skill` |
+| já há arquivo no caminho | `Já existe um arquivo em <caminho gravado>` |
+| um prefixo do caminho é arquivo (`docs` pedindo `docs/a.md`; o `SKILL.md` da raiz conta) | `<prefixo gravado> é um arquivo, não uma pasta` |
+| há arquivos abaixo do caminho (`docs/a.md` pedindo `docs`) | `Já existe uma pasta <pasta gravada>` |
+
+O caminho da mensagem é o **gravado**, com a caixa da linha que já existe. A
+comparação é `lower()` com `=` e `starts_with`, nunca `LIKE`: `_` e `%` num
+nome são literais. Conteúdo que não é texto nem `Buffer` é 400 (`O conteúdo
+do arquivo precisa ser texto ou bytes`). Um `skill.md` dentro de uma pasta é
+um arquivo comum.
+
+**Concorrência.** `createFile` roda numa transação: serializa as criações na
+mesma skill com um advisory lock de transação (chave
+`hashtextextended('purple-skills:files:<uuid da skill>', 0)`), trava a skill
+em `FOR KEY SHARE` (é o 404 de quem sumiu e segura um `deleteSkill`),
+confere e insere com `ON CONFLICT (skill_uuid, lower(relative_path)) DO
+NOTHING`. Sem linha devolvida, é o 409 do arquivo existente — a garantia
+contra quem grava sem a trava (`setFile`, `setFiles`). A trava **não** é
+`FOR UPDATE` na skill, de propósito: o INSERT desses escritores pede `FOR KEY
+SHARE` na checagem da FK e, com a skill indexada, o trigger
+`files_rag_stale_trg` (`020`) faz `UPDATE` nela. Com a skill em `FOR
+UPDATE`, um `setFile` do mesmo caminho novo entra em deadlock (40P01) com a
+criação.
+
+Limites conhecidos de `setFile`/`setFiles`, que seguem sem trava: não
+conferem arquivo × pasta (um `setFile('docs/a.md')` numa skill com o arquivo
+`docs` grava os dois), e dois deles na mesma skill indexada podem entrar em
+deadlock entre si (`setFiles([x, y])` × `setFile(y)`) desde a `020`.
 
 ### Leitura por vMCP e vínculo pelo lado da skill
 
@@ -983,7 +1034,7 @@ já o traz) e um papel que possa `CREATE EXTENSION`, como o `pg_trgm` do
 
 | Suíte | Cobre |
 |-------|-------|
-| `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa |
+| `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa; `createFile`: arquivo vazio (texto e binário) na raiz e em pasta, com o retorno igual à listagem; as quatro recusas com a mensagem exata, sem alterar conteúdo nem auditar (inclusive o `SKILL.md` sem linha); `_` e `%` literais; a auditoria `create`; os 404/400; criações concorrentes (o mesmo caminho em várias caixas e arquivo × pasta); e o INSERT alheio em andamento que vira 409 pelo `ON CONFLICT`, sem deadlock, com a skill indexada |
 | `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset e o ator na auditoria |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` e o runtime que ignora inativos |
 | `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar a idempotência do SQL) |

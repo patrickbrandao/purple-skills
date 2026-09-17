@@ -1533,7 +1533,10 @@ export async function deleteSkill(
 
 export type FileInput = { relativePath: string; content: Buffer | string };
 
-/** Cria ou sobrescreve um arquivo da skill. */
+/**
+ * Cria ou sobrescreve um arquivo da skill (upsert, em qualquer caixa). Para
+ * criar sem risco de sobrescrever, `createFile`.
+ */
 export async function setFile(
   slug: string,
   relativePath: string,
@@ -1561,12 +1564,144 @@ export async function setFile(
     });
   });
 
-  const mimeType = mimeTypeFor(path);
+  const { mimeType, sizeBytes, isText } = fileColumns(path, buffer);
+  return { relativePath: path, mimeType, sizeBytes, isText };
+}
+
+/**
+ * Cria um arquivo **só se o caminho está livre** — o "Novo arquivo" do
+ * painel. `setFile` é upsert: usado para criar, sobrescreveria em silêncio um
+ * arquivo que o operador não viu (outra aba, outro operador, o mcp-admin),
+ * inclusive com outra caixa.
+ *
+ * Mesmos parâmetros, retorno e erros de entrada de `setFile` (404 da skill,
+ * 400 do caminho), mais o 400 de um conteúdo que não é texto nem `Buffer`.
+ * Caminho ocupado é 409 (`conflict`), sem diferenciar caixa, nesta ordem:
+ *
+ * - o `SKILL.md` da raiz, que conta como existente mesmo sem linha;
+ * - um arquivo no mesmo caminho — a mensagem traz a grafia gravada;
+ * - um prefixo do caminho que é arquivo (`docs` pedindo `docs/a.md`), o
+ *   `SKILL.md` da raiz inclusive;
+ * - arquivos abaixo do caminho, que já é uma pasta (`docs/a.md` pedindo
+ *   `docs`) — a mensagem traz a grafia da pasta gravada.
+ *
+ * As comparações são `lower(...)` com `=` e `starts_with`, nunca `LIKE`: `_` e
+ * `%` num nome são literais. Criar audita `create` com o caminho normalizado,
+ * como o `setFile` de um arquivo novo; uma recusa não audita nada.
+ *
+ * **Atomicidade.** Uma transação serializa as criações na mesma skill
+ * (`lockSkillFilesTx`), confere e insere com `ON CONFLICT DO NOTHING` — a
+ * garantia final contra quem grava sem a trava (`setFile`, `setFiles`): sem
+ * linha devolvida, é o 409 do arquivo existente.
+ *
+ * A trava é um advisory lock, e não `SELECT … FROM skills … FOR UPDATE`, de
+ * propósito: quem grava sem ela também precisa da linha da skill — o INSERT
+ * pede `FOR KEY SHARE` na checagem da FK e, se a skill já foi indexada, o
+ * trigger `files_rag_stale_trg` (`020`) faz um `UPDATE` nela. Um `FOR UPDATE`
+ * aqui barra os dois (um `FOR NO KEY UPDATE`, o segundo): um `setFile` do
+ * mesmo caminho novo fica esperando esta transação enquanto ela espera o
+ * INSERT dele no índice único — deadlock (40P01), e o `setFile` vira 500. O
+ * `FOR KEY SHARE` que fica aqui não barra nenhum dos dois; ele é o 404 de
+ * quem sumiu e segura um `deleteSkill` até o fim da criação.
+ */
+export async function createFile(
+  slug: string,
+  relativePath: string,
+  content: Buffer | string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillFileMeta> {
+  const existing = await requireSkill(slug);
+  const path = normalizeRelativePath(relativePath);
+  if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
+  if (typeof content !== 'string' && !Buffer.isBuffer(content)) {
+    throw badRequest('O conteúdo do arquivo precisa ser texto ou bytes');
+  }
+  // `normalizeRelativePath` já trouxe qualquer caixa de `skill.md` para `SKILL.md`.
+  if (isSkillMd(path)) throw conflict('O SKILL.md já existe em toda skill');
+
+  const file = fileColumns(
+    path,
+    typeof content === 'string' ? Buffer.from(content, 'utf8') : content,
+  );
+  const depth = path.split('/').length;
+  const underSkillMd = depth > 1 && isSkillMd(path.slice(0, path.indexOf('/')));
+
+  await db().transaction(async (tx) => {
+    await lockSkillFilesTx(tx, existing.uuid);
+
+    const skill = await tx.execute(
+      sql`SELECT uuid FROM skills WHERE uuid = ${existing.uuid} FOR KEY SHARE`,
+    );
+    if ((skill.rows as Row[]).length === 0) throw notFound(`Skill não encontrada: ${slug}`);
+
+    // Uma consulta para as três ocupações; `conflito` é a ordem das mensagens
+    // (1 o mesmo caminho, 2 um prefixo que é arquivo, 3 algo abaixo dele) e,
+    // dentro de cada uma, vence o caminho mais curto.
+    const found = await tx.execute(sql`
+      WITH pedido AS (SELECT lower(${path}) AS caminho)
+      SELECT f.relative_path,
+             CASE
+               WHEN lower(f.relative_path) = p.caminho THEN 1
+               WHEN starts_with(p.caminho, lower(f.relative_path) || '/') THEN 2
+               ELSE 3
+             END AS conflito
+        FROM files f
+       CROSS JOIN pedido p
+       WHERE f.skill_uuid = ${existing.uuid}
+         AND (lower(f.relative_path) = p.caminho
+              OR starts_with(p.caminho, lower(f.relative_path) || '/')
+              OR starts_with(lower(f.relative_path), p.caminho || '/'))
+       ORDER BY conflito, char_length(f.relative_path), f.relative_path
+       LIMIT 1
+    `);
+    const row = (found.rows as Row[])[0];
+    const taken = row ? (row.relative_path as string) : null;
+    const kind = row ? Number(row.conflito) : 0;
+
+    if (kind === 1) throw conflict(`Já existe um arquivo em ${taken}`);
+    if (kind === 2) throw conflict(`${taken} é um arquivo, não uma pasta`);
+    if (underSkillMd) throw conflict(`${SKILL_MD} é um arquivo, não uma pasta`);
+    if (kind === 3) {
+      // `lower()` não cria nem tira `/`: os primeiros segmentos da linha são a pasta.
+      const folder = taken!.split('/').slice(0, depth).join('/');
+      throw conflict(`Já existe uma pasta ${folder}`);
+    }
+
+    const inserted = await tx.execute(sql`
+      ${insertFileSql(existing.uuid, path, file)}
+      ON CONFLICT (skill_uuid, lower(relative_path)) DO NOTHING
+      RETURNING id
+    `);
+    if ((inserted.rows as Row[]).length === 0) {
+      // Alguém sem a trava gravou o caminho depois da conferência. O ON
+      // CONFLICT esperou o COMMIT dele, e em READ COMMITTED esta leitura, que
+      // é outra instrução, já enxerga a linha.
+      const winner = await tx.execute(sql`
+        SELECT relative_path FROM files
+        WHERE skill_uuid = ${existing.uuid} AND lower(relative_path) = lower(${path})
+        LIMIT 1
+      `);
+      const current = (winner.rows as Row[])[0]?.relative_path as string | undefined;
+      throw conflict(`Já existe um arquivo em ${current ?? path}`);
+    }
+
+    await auditTx(tx, {
+      skillUuid: existing.uuid,
+      skillSlug: existing.slug,
+      filePath: path,
+      action: 'create',
+      source,
+      actor,
+      previousContent: null,
+    });
+  });
+
   return {
     relativePath: path,
-    mimeType,
-    sizeBytes: buffer.byteLength,
-    isText: isTextualMime(mimeType) && !buffer.includes(0),
+    mimeType: file.mimeType,
+    sizeBytes: file.sizeBytes,
+    isText: file.isText,
   };
 }
 
@@ -5862,19 +5997,62 @@ async function resolveSlug(requested: string | undefined, fallbackName: string):
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
-async function upsertFileTx(tx: Tx, skillUuid: string, path: string, buffer: Buffer) {
-  const mimeType = mimeTypeFor(path);
-  const textual = isTextualMime(mimeType) && !buffer.includes(0);
-  const text = textual ? buffer.toString('utf8') : null;
-  const binary = textual ? null : buffer;
+/** Como um arquivo vai para `files`: ver `fileColumns`. */
+type FileColumns = {
+  mimeType: string;
+  isText: boolean;
+  sizeBytes: number;
+  text: string | null;
+  binary: Buffer | null;
+};
 
+/**
+ * A regra única de gravação de arquivo: o mime pela extensão; texto quando o
+ * mime é textual e não há byte nulo, binário no resto (`files_one_content_chk`
+ * exige exatamente um dos dois); o tamanho em bytes. Conteúdo vazio vale nos
+ * dois casos — `''` num texto, `bytea` vazio num binário, nunca `NULL`.
+ * Servem-se dela o INSERT (`insertFileSql`) e o `SkillFileMeta` que as
+ * escritas devolvem.
+ */
+function fileColumns(path: string, buffer: Buffer): FileColumns {
+  const mimeType = mimeTypeFor(path);
+  const isText = isTextualMime(mimeType) && !buffer.includes(0);
+  return {
+    mimeType,
+    isText,
+    sizeBytes: buffer.byteLength,
+    text: isText ? buffer.toString('utf8') : null,
+    binary: isText ? null : buffer,
+  };
+}
+
+/** O INSERT de um arquivo, sem a cláusula de conflito — quem chama decide. */
+function insertFileSql(skillUuid: string, path: string, file: FileColumns): SQL {
+  return sql`
+    INSERT INTO files (skill_uuid, relative_path, text_content, binary_content, mime_type, size_bytes)
+    VALUES (${skillUuid}, ${path}, ${file.text}, ${file.binary}, ${file.mimeType}, ${file.sizeBytes})
+  `;
+}
+
+/**
+ * A trava das criações de arquivo numa skill (`createFile`): um advisory lock
+ * **de transação**, solto sozinho no COMMIT/ROLLBACK — nada vaza para a
+ * conexão devolvida ao pool. A chave é o hash de um texto com prefixo
+ * próprio; uma colisão (2⁻⁶⁴) só faria duas criações esperarem uma pela
+ * outra sem motivo, nunca gravaria errado.
+ */
+async function lockSkillFilesTx(tx: Tx, skillUuid: string): Promise<void> {
+  const key = `purple-skills:files:${skillUuid}`;
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
+
+async function upsertFileTx(tx: Tx, skillUuid: string, path: string, buffer: Buffer) {
   // O conflito é inferido pelo índice `files_skill_path_lower_uniq`
   // (migration 0003): gravar `Notas.md` sobre `notas.md` sobrescreve a linha
   // existente em vez de criar uma segunda. A caixa recebida vira a definitiva —
   // caso contrário a listagem continuaria mostrando o nome antigo.
   await tx.execute(sql`
-    INSERT INTO files (skill_uuid, relative_path, text_content, binary_content, mime_type, size_bytes)
-    VALUES (${skillUuid}, ${path}, ${text}, ${binary}, ${mimeType}, ${buffer.byteLength})
+    ${insertFileSql(skillUuid, path, fileColumns(path, buffer))}
     ON CONFLICT (skill_uuid, lower(relative_path)) DO UPDATE SET
       relative_path = EXCLUDED.relative_path,
       text_content = EXCLUDED.text_content,

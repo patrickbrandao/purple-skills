@@ -74,6 +74,7 @@ describe('papéis exigidos pelas rotas', () => {
     ['patch', '/api/skills/:slug'],
     ['delete', '/api/skills/:slug'],
     ['put', '/api/skills/:slug/files/*path'],
+    ['post', '/api/skills/:slug/files/*path'],
     ['delete', '/api/skills/:slug/files/*path'],
     ['post', '/api/skills/:slug/upload'],
     ['post', '/api/skills/:slug/files'],
@@ -117,25 +118,29 @@ describe('papéis exigidos pelas rotas', () => {
   });
 });
 
+/** Resposta mínima que os handlers usam: status e JSON. */
+function fakeResponse() {
+  return {
+    statusCode: 0,
+    body: undefined as unknown,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: unknown) {
+      this.body = payload;
+      return this;
+    },
+  };
+}
+
 describe('POST /api/skills com corpo de tipo errado', () => {
   it('recusa `skillMd` não-string com 400, sem chegar ao banco', async () => {
     // `stripFrontmatter` é a primeira coisa a tocar o valor: sem o guarda,
     // `(123).replace` estourava `TypeError` e virava 500.
     const pilha = handlers('post', '/api/skills');
     const handler = pilha[pilha.length - 1]!;
-
-    const res = {
-      statusCode: 0,
-      body: undefined as unknown,
-      status(code: number) {
-        this.statusCode = code;
-        return this;
-      },
-      json(payload: unknown) {
-        this.body = payload;
-        return this;
-      },
-    };
+    const res = fakeResponse();
 
     await handler({ body: { name: 'Teste', skillMd: 123 } } as never, res as never, (() => {}) as never);
     // O handler é síncrono até a resposta; o `route()` só encaminha rejeições.
@@ -143,5 +148,24 @@ describe('POST /api/skills com corpo de tipo errado', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ error: 'bad_request', message: 'O campo "skillMd" deve ser uma string' });
+  });
+});
+
+describe('POST /api/skills/:slug/files/*path (criar arquivo)', () => {
+  it.each([[123], [null], [{ texto: 'x' }]])('recusa `content` %j com 400, antes do acesso e do banco', async (content) => {
+    const pilha = handlers('post', '/api/skills/:slug/files/*path');
+    const handler = pilha[pilha.length - 1]!;
+    const res = fakeResponse();
+
+    // Sem `user`: se o handler passasse do guarda, `loadSkillSummary` estouraria.
+    await handler(
+      { params: { slug: 'x', path: ['notas.md'] }, body: { content } } as never,
+      res as never,
+      (() => {}) as never,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
   });
 });

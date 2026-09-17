@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { formatBytes, rawFileUrl, type SkillFileMeta } from '../api.js';
 import { buildTree, SKILL_MD, type TreeNode } from '../fileTree.js';
 import { FileTypeIcon, FolderIcon } from './FileTypeIcon.js';
-import { ChevronRight, Trash2 } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 
 /* ============================================================
    ÁRVORE DE ARQUIVOS DA SKILL
@@ -10,12 +10,14 @@ import { ChevronRight, Trash2 } from 'lucide-react';
    quando o .zip é descompactado em `~/.claude/skills/`. Dentro
    dela vem o SKILL.md e depois as subpastas e os anexos.
 
-   Serve às duas telas do painel:
+   Serve às duas fichas do painel:
 
    - sem `onPick`, cada arquivo é um link para o conteúdo cru,
      como na visualização;
-   - com `onPick`, cada arquivo é um botão que escolhe o arquivo
-     para editar, como na aba de arquivos do editor.
+   - com `onPick`, cada arquivo é um botão que escolhe o arquivo,
+     como na guia Skill do editor, que o abre na guia Arquivos.
+
+   Criar, enviar e remover são da guia Arquivos (`FileExplorer`).
    ============================================================ */
 
 type Props = {
@@ -23,10 +25,8 @@ type Props = {
   files: SkillFileMeta[];
   /** Escolhe um arquivo em vez de abri-lo; transforma as linhas em botões. */
   onPick?: (path: string) => void;
-  /** Caminho em edição, destacado na árvore. */
+  /** Caminho em destaque na árvore. */
   selected?: string | null;
-  /** Quando presente, cada anexo ganha o botão de remover (o SKILL.md nunca). */
-  onDelete?: (path: string) => void;
 };
 
 type RowProps = Props & {
@@ -34,7 +34,7 @@ type RowProps = Props & {
   onToggle: (path: string) => void;
 };
 
-function FileRow({ node, slug, onPick, selected, onDelete }: Props & { node: TreeNode }) {
+function FileRow({ node, slug, onPick, selected }: Props & { node: TreeNode }) {
   if (node.kind !== 'file') return null;
 
   const isSkillMd = node.name.toLowerCase() === SKILL_MD;
@@ -64,8 +64,6 @@ function FileRow({ node, slug, onPick, selected, onDelete }: Props & { node: Tre
         <button
           type="button"
           className={classes}
-          // Binário não abre no editor de texto; o SKILL.md leva para a aba dele.
-          disabled={!node.isText && !isSkillMd}
           onClick={() => onPick(node.path)}
           title={node.isText || isSkillMd ? title : `${title} — arquivo binário`}
         >
@@ -81,16 +79,6 @@ function FileRow({ node, slug, onPick, selected, onDelete }: Props & { node: Tre
         >
           {inner}
         </a>
-      )}
-      {onDelete && !isSkillMd && (
-        <button
-          type="button"
-          className="row-action del danger"
-          onClick={() => onDelete(node.path)}
-          title={`Remover ${node.path}`}
-        >
-          <Trash2 />
-        </button>
       )}
     </div>
   );
@@ -128,7 +116,7 @@ function Branch({ nodes, collapsed, onToggle, ...rest }: RowProps & { nodes: Tre
 }
 
 /** Explorador de arquivos da skill, com a pasta do slug na raiz. */
-export function FileTree({ slug, files, onPick, selected, onDelete }: Props) {
+export function FileTree({ slug, files, onPick, selected }: Props) {
   const tree = useMemo(() => buildTree(files), [files]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
@@ -163,7 +151,6 @@ export function FileTree({ slug, files, onPick, selected, onDelete }: Props) {
               files={files}
               onPick={onPick}
               selected={selected}
-              onDelete={onDelete}
               collapsed={collapsed}
               onToggle={toggle}
             />

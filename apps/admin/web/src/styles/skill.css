@@ -110,43 +110,6 @@
 .doc-body {
   padding: 20px 24px;
 }
-/* a guia de um arquivo aberto no editor: o caminho e o botão de fechar */
-.doc-tabs .doc-file {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  max-width: 320px;
-}
-.doc-tabs .doc-file .path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.doc-tabs .doc-file .close {
-  display: inline-grid;
-  place-items: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  color: var(--text-faint);
-}
-.doc-tabs .doc-file .close:hover {
-  background: var(--surface-3);
-  color: var(--text);
-}
-.doc-tabs .doc-file .close svg {
-  width: 11px;
-  height: 11px;
-}
-.doc-tabs .doc-actions {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding-inline: 6px;
-}
 /* a edição do SKILL.md: o frontmatter gerado (travado) sobre o corpo (livre) */
 .doc-edit {
   padding: 16px 20px 20px;
@@ -344,14 +307,483 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   background: var(--accent-tint);
   color: var(--accent-soft);
 }
-.ft-line .del {
-  opacity: 0;
-  flex: none;
-  transition: opacity 0.15s ease;
+
+/* ============================================================
+   EDITOR: A GUIA ARQUIVOS
+   A árvore à esquerda (largura arrastável) e o arquivo aberto
+   no resto. A guia ocupa a altura da janela, e a página perde o
+   teto de largura enquanto ela está aberta.
+   ============================================================ */
+/* a página vira coluna e a guia fica com toda a altura que sobra no painel */
+.page.workbench {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  min-height: 100%;
+  padding-bottom: 24px;
 }
-.ft-line:hover .del,
-.ft-line:focus-within .del {
-  opacity: 1;
+.files-ws {
+  --tree-w: 300px;
+  display: grid;
+  grid-template-columns: min(var(--tree-w), 45%) 1px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1 1 0;
+  min-height: 520px;
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-surface);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.files-ws.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.files-tree,
+.files-editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.files-editor {
+  background: var(--bg);
+}
+
+/* a divisória: um fio de 1px com 9px de área de pega */
+.files-resizer {
+  position: relative;
+  z-index: 2;
+  background: var(--surface-3);
+  cursor: col-resize;
+  touch-action: none;
+  transition: background 0.15s ease;
+}
+.files-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.files-resizer:hover,
+.files-ws.resizing .files-resizer {
+  background: var(--accent-soft);
+}
+.files-resizer:focus-visible {
+  outline: none;
+  background: var(--accent-soft);
+  box-shadow: var(--ring-accent);
+}
+
+/* ---- o explorador ---- */
+.fx {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fx-head,
+.fe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 42px;
+  min-width: 0;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--surface-3);
+}
+.fx-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.fx-count {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-faint);
+}
+.fx-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+.fx-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 6px 20px;
+}
+.fx-body.drop {
+  background: var(--accent-tint);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.fx-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  padding: 5px 6px 5px 14px;
+  border-top: 1px solid var(--surface-3);
+}
+.fx-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* Cada linha pinta o próprio fundo em --row-bg, e as ações por cima da
+   ponta direita usam o mesmo tom: cobrem o tamanho sem virar uma caixa. */
+.fx-line {
+  --row-bg: var(--bg-elev);
+  position: relative;
+}
+.fx-line:hover,
+.fx-line:focus-within,
+.fx-line.focus {
+  --row-bg: var(--surface-2);
+}
+.fx-line:hover > .ft-row,
+.fx-line:focus-within > .ft-row,
+.fx-line.focus > .ft-row {
+  background: var(--row-bg);
+  color: var(--text);
+}
+.fx-line:has(> .ft-row.active) {
+  --row-bg: color-mix(in srgb, var(--accent) 16%, var(--bg-elev));
+}
+.fx-line > .ft-row.active {
+  background: var(--row-bg);
+  color: var(--accent-soft);
+}
+.fx-line.drop {
+  --row-bg: color-mix(in srgb, var(--accent) 24%, var(--bg-elev));
+}
+.fx-line.drop > .ft-row {
+  background: var(--row-bg);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.fx-line > .fx-actions {
+  position: absolute;
+  inset: 0 0 0 auto;
+  display: none;
+  align-items: center;
+  padding: 0 2px 0 16px;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  background: linear-gradient(to right, transparent, var(--row-bg) 14px);
+}
+.fx-line:hover > .fx-actions,
+.fx-line:focus-within > .fx-actions {
+  display: inline-flex;
+}
+.fx-actions .row-action {
+  padding: 4px;
+}
+.fx-actions .row-action svg {
+  width: 14px;
+  height: 14px;
+}
+/* sem mouse não há "passar por cima": as ações ficam sempre à vista */
+@media (hover: none) {
+  .fx-line > .fx-actions {
+    position: static;
+    display: inline-flex;
+    padding: 0;
+    background: none;
+  }
+}
+.fx-dirty {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.fx-tag {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+/* o campo de nome, dentro da pasta onde a coisa nasce */
+.fx-new {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 4px 2px 7px;
+}
+.fx-input {
+  flex: 1;
+  min-width: 0;
+  height: 25px;
+  padding: 0 7px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: var(--ring-accent);
+}
+.fx-input::placeholder {
+  color: var(--text-faint);
+}
+.fx-new.invalid .fx-input {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-tint);
+}
+.fx-msg {
+  margin: 3px 6px 6px 41px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.fx-msg.error {
+  color: var(--danger);
+}
+
+/* ---- o arquivo aberto ---- */
+.fe {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fe-head {
+  background: var(--bg-elev);
+}
+.fe-head > .ft-icon {
+  flex: none;
+}
+.fe-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.fe-path .dir {
+  color: var(--text-faint);
+}
+.fe-info {
+  flex: 0 3 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.fe-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+}
+.fe-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fe-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex: none;
+  padding: 5px 14px;
+  border-top: 1px solid var(--surface-3);
+  background: var(--bg-elev);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.fe-foot > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fe-none {
+  align-items: center;
+  justify-content: center;
+}
+.fe-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px;
+}
+.fe-skel {
+  padding: 16px 20px 16px 72px;
+}
+.fe-binary {
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+}
+.fe-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-control);
+  /* xadrez atrás de imagem transparente */
+  background: repeating-conic-gradient(var(--surface-3) 0% 25%, var(--bg-elev) 0% 50%) 50% / 16px 16px;
+}
+.fe-skillmd .fe-frontmatter {
+  flex: none;
+  max-height: 40%;
+  margin: 0;
+  padding: 10px 16px 10px 14px;
+  overflow: auto;
+  border-bottom: 1px dashed var(--border-strong);
+  background: var(--bg-sunken);
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-muted);
+  white-space: pre;
+}
+.fe-frontmatter .t {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: normal;
+}
+.fe-frontmatter .t svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---- editor de texto com numeração ---- */
+.code-editor {
+  --ce-line: 20px;
+  --ce-pad: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+.ce-gutter {
+  min-width: 52px;
+  margin: 0;
+  /* folga embaixo: a numeração precisa rolar tanto quanto o texto com barra horizontal */
+  padding: var(--ce-pad) 10px calc(var(--ce-pad) + 48px) 14px;
+  overflow: hidden;
+  border-right: 1px solid var(--surface-3);
+  background: var(--bg-elev);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: var(--ce-line);
+  text-align: right;
+  color: var(--text-faint);
+  white-space: pre;
+  user-select: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.code-editor:focus-within .ce-gutter {
+  border-right-color: var(--accent-soft);
+  color: var(--text-muted);
+}
+.ce-area {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: var(--ce-pad) 18px;
+  overflow: auto;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: var(--ce-line);
+  white-space: pre;
+  tab-size: 2;
+}
+.ce-area::placeholder {
+  color: var(--text-faint);
+}
+.code-editor.readonly .ce-area {
+  color: var(--text-dim);
+}
+
+@media (max-width: 900px) {
+  .files-ws {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    flex: none;
+    min-height: 0;
+  }
+  .files-resizer {
+    display: none;
+  }
+  .files-tree {
+    max-height: 42vh;
+    border-bottom: 1px solid var(--surface-3);
+  }
+  .files-editor {
+    height: 70vh;
+    min-height: 420px;
+  }
+  /* o caminho fica com a primeira linha; as ações descem */
+  .fe-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    height: auto;
+    min-height: 42px;
+    padding-block: 6px;
+  }
+  .fe-path {
+    flex: 1 1 60%;
+  }
+  .fe-info {
+    display: none;
+  }
+}
+/* arrastar arquivos não existe na tela de toque */
+@media (hover: none) {
+  .fx-hint.drag {
+    display: none;
+  }
 }
 
 /* ---- editor: metadados + prompt lado a lado ---- */

@@ -1,53 +1,63 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, ExternalLink, Eye, FileText, History, Save, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import {
+  ArrowLeft,
+  ExternalLink,
+  Eye,
+  FileArchive,
+  FilePlus,
+  FileText,
+  FolderPlus,
+  FolderTree,
+  Save,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import {
   canEdit,
   canManage,
   canOwn,
-  deleteFile,
   deleteSkill,
-  getFile,
   getSkill,
-  getSkillAccesses,
-  rawFileUrl,
-  setFile as putFile,
-  skillDownloadUrl,
-  skillPackageUrl,
   updateSkill,
-  uploadFiles,
-  uploadZip,
   type Session,
   type SessionUser,
   type SkillDetail,
+  type SkillFileMeta,
 } from '../api.js';
 import { AccessPanel } from '../components/AccessPanel.js';
-import { AccessLog } from '../components/AccessLog.js';
 import { Button, McpChips, Panel, Skel, Tabs, noSite, useConfirm } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
+import { FilePickers, SkillFilesTab } from '../components/SkillFiles.js';
 import { Markdown } from '../components/Markdown.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { SkillMetaForm, type SkillMetaValues } from '../components/SkillMetaForm.js';
 import { SkillCatalogsPanel, SkillMcpsPanel } from '../components/SkillMcps.js';
 import { buildFrontmatter, parseTags, stripFrontmatter } from '../frontmatter.js';
+import { isSkillMdPath } from '../explorer.js';
+import { useSkillFiles } from '../useSkillFiles.js';
 import { useToast } from '../components/Toast.js';
-import { useRegisterCommands } from '../components/commands.js';
+import { useRegisterCommands, type Command } from '../components/commands.js';
 import { DescriptionBox } from './SkillViewPage.js';
 
-type Tab = 'skill' | 'propriedades' | 'acessos';
+type Tab = 'skill' | 'arquivos' | 'propriedades';
 type DocPane = 'render' | 'source';
 
 const VAZIO = '_Esta skill ainda não tem conteúdo em SKILL.md._';
 
 /**
- * A ficha da skill em edição (`docs/13-fichas-e-acessos.md`): a mesma
- * organização da leitura — Skill, Propriedades, Acessos — com os campos
- * livres onde a sessão pode. Um único Salvar (e ⌘S) grava descrição, prompt,
- * metadados e o estado; publicação, acesso e arquivos gravam na hora, como
- * antes. Conteúdo e metadados são `edit`; slug e estado são `manage`; apagar
- * é do dono (`docs/12-acesso-granular.md` §3.2). Quem só administra um
- * servidor entra aqui para publicar a skill nele: vê os campos travados e as
- * portas do seu servidor livres.
+ * A ficha da skill em edição (`docs/13-fichas-e-acessos.md`): Skill (a
+ * descrição e o SKILL.md), Arquivos (a árvore com o editor de cada arquivo) e
+ * Propriedades. O registro de acessos fica só na leitura — em Editar ele não
+ * ajuda, e `/editar/acessos` leva para lá.
+ *
+ * Um único Salvar (e ⌘S) grava descrição, SKILL.md, metadados e o estado;
+ * publicação, acesso e arquivos gravam na hora, cada um no seu lugar — na
+ * guia Arquivos, ⌘S grava o arquivo aberto. Conteúdo e metadados são `edit`;
+ * slug e estado são `manage`; apagar é do dono (`docs/12-acesso-granular.md`
+ * §3.2). Quem só administra um servidor entra aqui para publicar a skill nele:
+ * vê os campos travados e as portas do seu servidor livres.
  */
 export function SkillEditorPage({ session, user }: { session: Session; user: SessionUser }) {
   const { slug = '' } = useParams();
@@ -67,8 +77,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
   const tab: Tab = location.pathname.endsWith('/propriedades')
     ? 'propriedades'
-    : location.pathname.endsWith('/acessos')
-      ? 'acessos'
+    : location.pathname.endsWith('/arquivos')
+      ? 'arquivos'
       : 'skill';
 
   const hydrate = useCallback((detail: SkillDetail) => {
@@ -78,30 +88,70 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     setSkillMd(stripFrontmatter(detail.skillMd));
   }, []);
 
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se o
+  // `reload` dependesse dele, cada troca de guia buscaria a skill de novo e
+  // repovoaria o formulário, jogando fora o que ainda não foi salvo.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
   const reload = useCallback(async () => {
     try {
       hydrate(await getSkill(slug));
     } catch (err) {
       toast.error((err as Error).message);
-      navigate('/skills');
+      navigateRef.current('/skills');
     }
-  }, [slug, hydrate, toast, navigate]);
+  }, [slug, hydrate, toast]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
+  /**
+   * Operações de arquivo trocam só a lista: recarregar a skill inteira
+   * repovoaria o formulário e jogaria fora o que ainda não foi salvo.
+   */
+  const onFiles = useCallback((update: (files: SkillFileMeta[]) => SkillFileMeta[]) => {
+    setSkill((current) => {
+      if (!current) return current;
+      const files = update(current.files);
+      return files === current.files ? current : { ...current, files, fileCount: files.length };
+    });
+  }, []);
+
+  /**
+   * Publicar e compartilhar (Propriedades) também gravam na hora e não mudam
+   * campo nenhum do formulário: trocar só a skill preserva o que não foi salvo.
+   */
+  const onPanelChanged = useCallback((detail: SkillDetail) => setSkill(detail), []);
+
   const patchMeta = useCallback((patch: Partial<SkillMetaValues>) => setMeta((current) => ({ ...current, ...patch })), []);
 
-  const dirty =
+  // O SKILL.md muda com o corpo e com os campos que viram o frontmatter.
+  const skillMdDirty =
     skill !== null &&
-    (meta.name !== skill.name ||
+    (skillMd !== stripFrontmatter(skill.skillMd) ||
+      meta.name !== skill.name ||
       meta.slug !== skill.slug ||
       meta.description !== skill.description ||
-      meta.tags !== skill.tags.join(', ') ||
-      meta.icon.trim() !== (skill.icon ?? '') ||
-      isActive !== skill.isActive ||
-      skillMd !== stripFrontmatter(skill.skillMd));
+      meta.tags !== skill.tags.join(', '));
+
+  const dirty =
+    skill !== null && (skillMdDirty || meta.icon.trim() !== (skill.icon ?? '') || isActive !== skill.isActive);
+
+  const files = useSkillFiles({ skill, canWrite: podeEscrever, onFiles, onReloadAll: reload, formDirty: dirty });
+  const { save: saveFile, remove: removeFile, startCreate, pickUpload, pickZip, dirtyPaths } = files;
+
+  const frontmatter = useMemo(
+    () =>
+      buildFrontmatter({
+        slug: meta.slug || skill?.slug || '',
+        name: meta.name,
+        description: meta.description,
+        tags: parseTags(meta.tags),
+      }),
+    [meta.slug, meta.name, meta.description, meta.tags, skill?.slug],
+  );
 
   const save = useCallback(async () => {
     if (!skill) return;
@@ -129,22 +179,96 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }, [skill, skillMd, meta, isActive, hydrate, toast, navigate, location.pathname]);
 
-  useRegisterCommands(
-    skill && podeEscrever ? [{ id: 'skill-save', label: 'Salvar alterações', group: 'Recurso', icon: <Save />, shortcut: '⌘ S', disabled: dirty ? false : 'nada a salvar', run: save }] : [],
-    [skill?.slug, dirty, save, podeEscrever],
-  );
+  const editBase = `/skills/${skill?.slug ?? slug}/editar`;
+  const filesPath = `${editBase}/arquivos`;
+
+  /** O arquivo que ⌘S grava na guia Arquivos; o SKILL.md é do formulário. */
+  const openFile = tab === 'arquivos' && files.selected && !isSkillMdPath(files.selected) ? files.selected : null;
+  const openFileDirty = openFile !== null && dirtyPaths.has(openFile);
+
+  const toFiles = useCallback(() => {
+    if (!location.pathname.endsWith('/arquivos')) navigate(filesPath);
+  }, [location.pathname, navigate, filesPath]);
+
+  const commands: Command[] = [];
+  if (skill && podeEscrever) {
+    commands.push({
+      id: 'skill-save',
+      label: 'Salvar alterações',
+      group: 'Recurso',
+      icon: <Save />,
+      shortcut: openFile ? undefined : '⌘ S',
+      disabled: dirty ? false : 'nada a salvar',
+      run: save,
+    });
+    if (openFile) {
+      commands.push({
+        id: 'file-save',
+        label: `Salvar ${openFile}`,
+        group: 'Recurso',
+        icon: <Save />,
+        shortcut: '⌘ S',
+        disabled: openFileDirty ? false : 'nada a salvar',
+        run: () => saveFile(openFile),
+      });
+    }
+    commands.push(
+      { id: 'file-new', label: 'Novo arquivo', group: 'Recurso', icon: <FilePlus />, keywords: ['criar', 'arquivo', 'vazio'], run: () => { toFiles(); startCreate('file'); } },
+      { id: 'dir-new', label: 'Nova pasta', group: 'Recurso', icon: <FolderPlus />, keywords: ['criar', 'pasta', 'diretório'], run: () => { toFiles(); startCreate('dir'); } },
+      { id: 'files-upload', label: 'Enviar arquivos', group: 'Recurso', icon: <Upload />, keywords: ['upload', 'anexar'], run: () => { toFiles(); pickUpload(); } },
+      { id: 'files-zip', label: 'Importar .zip', group: 'Recurso', icon: <FileArchive />, keywords: ['zip', 'importar'], run: () => { toFiles(); pickZip(false); } },
+    );
+    if (openFile) {
+      commands.push({ id: 'file-delete', label: `Remover ${openFile}`, group: 'Perigo', icon: <Trash2 />, danger: true, run: () => removeFile(openFile) });
+    }
+  }
+  if (skill && tab !== 'arquivos') {
+    commands.push({ id: 'files-tab', label: 'Arquivos da skill', group: 'Ir para', icon: <FolderTree />, keywords: ['arvore', 'editar arquivo'], run: () => navigate(filesPath) });
+  }
+  useRegisterCommands(commands, [
+    skill?.slug,
+    podeEscrever,
+    dirty,
+    save,
+    openFile,
+    openFileDirty,
+    tab,
+    toFiles,
+    saveFile,
+    removeFile,
+    startCreate,
+    pickUpload,
+    pickZip,
+    filesPath,
+  ]);
 
   // ⌘S salva; o navegador não abre o "salvar página".
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        if (dirty && !saving && podeEscrever) void save();
+      if (event.key.toLowerCase() !== 's' || !(event.metaKey || event.ctrlKey)) return;
+      event.preventDefault();
+      if (!podeEscrever) return;
+      if (openFile) {
+        if (openFileDirty) void saveFile(openFile);
+      } else if (dirty && !saving) {
+        void save();
       }
     };
     document.addEventListener('keydown', down);
     return () => document.removeEventListener('keydown', down);
-  }, [dirty, saving, save, podeEscrever]);
+  }, [dirty, saving, save, podeEscrever, openFile, openFileDirty, saveFile]);
+
+  // Recarregar ou fechar a aba com algo pendente pede confirmação ao navegador.
+  const pending = dirty || dirtyPaths.size > 0;
+  useEffect(() => {
+    if (!pending) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [pending]);
 
   async function removeSkill() {
     if (!skill) return;
@@ -164,11 +288,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     }
   }
 
-  const loadAccesses = useCallback(
-    (query: Parameters<typeof getSkillAccesses>[1]) => getSkillAccesses(slug, query),
-    [slug],
-  );
-
   if (!skill) {
     return (
       <div className="page wide">
@@ -180,10 +299,9 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   }
 
   const base = `/skills/${skill.slug}`;
-  const editBase = `${base}/editar`;
 
   return (
-    <div className="page wide">
+    <div className={`page wide${tab === 'arquivos' ? ' workbench' : ''}`}>
       <div className="page-head">
         <div className="min-w-0">
           <Link to={base} className="back-link">
@@ -212,7 +330,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
             <Eye /> Visualizar
           </Link>
           {podeEscrever && (
-            <Button onClick={() => void save()} disabled={saving || !dirty}>
+            <Button onClick={() => void save()} disabled={saving || !dirty} title="Grava descrição, SKILL.md e propriedades">
               <Save /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
             </Button>
           )}
@@ -230,8 +348,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         value={tab}
         items={[
           { key: 'skill', label: 'Skill', icon: <FileText />, to: editBase },
+          { key: 'arquivos', label: 'Arquivos', icon: <FolderTree />, to: filesPath, count: skill.files.length },
           { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/propriedades` },
-          ...(podeAdministrar ? [{ key: 'acessos', label: 'Acessos', icon: <History />, to: `${editBase}/acessos` }] : []),
         ]}
       />
 
@@ -245,9 +363,32 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
               onDescription={(description) => patchMeta({ description })}
               skillMd={skillMd}
               onSkillMd={setSkillMd}
-              meta={meta}
+              frontmatter={frontmatter}
               canWrite={podeEscrever}
-              onReload={reload}
+              filesPath={filesPath}
+              onOpenFile={(path) => {
+                files.open(path);
+                navigate(filesPath);
+              }}
+            />
+          }
+        />
+        <Route
+          path="arquivos"
+          element={
+            <SkillFilesTab
+              ws={files}
+              slug={skill.slug}
+              canWrite={podeEscrever}
+              skillMd={{
+                body: skillMd,
+                onBody: setSkillMd,
+                frontmatter,
+                dirty: skillMdDirty,
+                formDirty: dirty,
+                saving,
+                onSave: () => void save(),
+              }}
             />
           }
         />
@@ -264,13 +405,17 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
               canWrite={podeEscrever}
               canManage={podeAdministrar}
               canDelete={podeApagar}
-              onChanged={hydrate}
+              onChanged={onPanelChanged}
               onRemove={removeSkill}
             />
           }
         />
-        {podeAdministrar && <Route path="acessos" element={<AccessLog load={loadAccesses} />} />}
+        {/* O registro de leituras mora na ficha de leitura; um link antigo para cá vai para lá. */}
+        <Route path="acessos" element={<Navigate to={`${base}/acessos`} replace />} />
+        <Route path="*" element={<Navigate to={editBase} replace />} />
       </Routes>
+
+      <FilePickers ws={files} />
     </div>
   );
 }
@@ -278,10 +423,9 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 // ------------------------------------------------------------ guia Skill ---
 
 /**
- * A descrição, o SKILL.md (renderizado ou cru, e aqui o cru é editável) e a
- * árvore de arquivos com upload e remoção. Escolher um arquivo da árvore
- * troca a caixa do prompt pelo editor daquele arquivo; o SKILL.md volta às
- * duas guias.
+ * A descrição e o SKILL.md (renderizado ou cru, e aqui o cru é editável), com
+ * a árvore ao lado como na leitura. Escolher um arquivo o abre na guia
+ * Arquivos, que é onde se cria, envia, importa e remove.
  */
 function SkillTab({
   skill,
@@ -289,105 +433,22 @@ function SkillTab({
   onDescription,
   skillMd,
   onSkillMd,
-  meta,
+  frontmatter,
   canWrite,
-  onReload,
+  filesPath,
+  onOpenFile,
 }: {
   skill: SkillDetail;
   description: string;
   onDescription: (value: string) => void;
   skillMd: string;
   onSkillMd: (value: string) => void;
-  meta: SkillMetaValues;
+  frontmatter: string;
   canWrite: boolean;
-  onReload: () => Promise<void>;
+  filesPath: string;
+  onOpenFile: (path: string) => void;
 }) {
-  const toast = useToast();
-  const confirm = useConfirm();
   const [pane, setPane] = useState<DocPane>('source');
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string | null>(null);
-  const [fileDirty, setFileDirty] = useState(false);
-  const [replaceTree, setReplaceTree] = useState(false);
-  const zipInput = useRef<HTMLInputElement>(null);
-  const filesInput = useRef<HTMLInputElement>(null);
-
-  const frontmatter = useMemo(
-    () => buildFrontmatter({ slug: meta.slug || skill.slug, name: meta.name, description, tags: parseTags(meta.tags) }),
-    [meta.slug, meta.name, meta.tags, description, skill.slug],
-  );
-
-  function pickFile(path: string) {
-    if (path.toLowerCase() === 'skill.md') {
-      closeFile();
-      return;
-    }
-    void openFile(path);
-  }
-
-  async function openFile(path: string) {
-    setSelectedFile(path);
-    setFileContent(null);
-    setFileDirty(false);
-    try {
-      const file = await getFile(skill.slug, path);
-      setFileContent(file.content);
-    } catch (err) {
-      toast.error((err as Error).message);
-      setSelectedFile(null);
-    }
-  }
-
-  function closeFile() {
-    setSelectedFile(null);
-    setFileContent(null);
-    setFileDirty(false);
-  }
-
-  async function saveFile() {
-    if (!selectedFile || fileContent === null) return;
-    try {
-      await putFile(skill.slug, selectedFile, fileContent);
-      setFileDirty(false);
-      toast.success(`${selectedFile} salvo.`);
-      await onReload();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
-
-  async function removeFile(path: string) {
-    const ok = await confirm({ title: `Remover o arquivo "${path}"?`, confirmLabel: 'Remover', danger: true });
-    if (!ok) return;
-    try {
-      await deleteFile(skill.slug, path);
-      if (selectedFile === path) closeFile();
-      toast.success(`${path} removido.`);
-      await onReload();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
-
-  async function handleZip(file: File, replace: boolean) {
-    try {
-      await uploadZip(skill.slug, file, replace);
-      toast.success(replace ? 'Árvore de arquivos substituída pelo .zip.' : 'Arquivos importados do .zip.');
-      await onReload();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
-
-  async function handleFiles(files: FileList) {
-    try {
-      await uploadFiles(skill.slug, files);
-      toast.success(`${files.length} arquivo(s) enviado(s).`);
-      await onReload();
-    } catch (err) {
-      toast.error((err as Error).message);
-    }
-  }
 
   return (
     <>
@@ -405,51 +466,15 @@ function SkillTab({
       <div className="skill-read">
         <div className="doc-box">
           <div className="doc-tabs" role="tablist">
-            <button type="button" role="tab" aria-selected={!selectedFile && pane === 'render'} className={!selectedFile && pane === 'render' ? 'active' : ''} onClick={() => { closeFile(); setPane('render'); }}>
+            <button type="button" role="tab" aria-selected={pane === 'render'} className={pane === 'render' ? 'active' : ''} onClick={() => setPane('render')}>
               Skill
             </button>
-            <button type="button" role="tab" aria-selected={!selectedFile && pane === 'source'} className={!selectedFile && pane === 'source' ? 'active' : ''} onClick={() => { closeFile(); setPane('source'); }}>
+            <button type="button" role="tab" aria-selected={pane === 'source'} className={pane === 'source' ? 'active' : ''} onClick={() => setPane('source')}>
               SKILL.md
             </button>
-            {selectedFile && (
-              <button type="button" role="tab" aria-selected className="active doc-file" title={selectedFile}>
-                <span className="path">{selectedFile}</span>
-                {fileDirty && <span title="Alterações não salvas">•</span>}
-                <span className="close" role="button" aria-label="Fechar arquivo" onClick={(event) => { event.stopPropagation(); closeFile(); }}>
-                  <X />
-                </span>
-              </button>
-            )}
-            {selectedFile && (
-              <span className="doc-actions">
-                <a href={rawFileUrl(skill.slug, selectedFile)} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">
-                  Abrir cru
-                </a>
-                {canWrite && (
-                  <Button size="sm" onClick={() => void saveFile()} disabled={fileContent === null || !fileDirty}>
-                    Salvar arquivo
-                  </Button>
-                )}
-              </span>
-            )}
           </div>
 
-          {selectedFile ? (
-            <div className="doc-edit">
-              {fileContent === null ? (
-                <Skel h={320} />
-              ) : (
-                <textarea
-                  value={fileContent}
-                  onChange={(event) => { setFileContent(event.target.value); setFileDirty(true); }}
-                  rows={24}
-                  spellCheck={false}
-                  disabled={!canWrite}
-                  className="field field-mono"
-                />
-              )}
-            </div>
-          ) : pane === 'render' ? (
+          {pane === 'render' ? (
             <div className="doc-body">
               <Markdown>{skillMd || VAZIO}</Markdown>
             </div>
@@ -475,63 +500,23 @@ function SkillTab({
         <Panel
           className="aside-sticky"
           title="Arquivos"
-          icon={<FileText />}
+          icon={<FolderTree />}
           actions={
-            canWrite ? (
-              <button type="button" onClick={() => filesInput.current?.click()} title="Enviar arquivos" className="row-action">
-                <Upload />
-              </button>
-            ) : undefined
+            <Link to={filesPath} className="link-action">
+              Abrir a guia
+            </Link>
           }
         >
-          <FileTree slug={skill.slug} files={skill.files} selected={selectedFile} onPick={pickFile} onDelete={canWrite ? removeFile : undefined} />
-          <p className="panel-hint mt-3">
-            Clique em um arquivo de texto para editá-lo no lugar do prompt; o <code>SKILL.md</code> volta às guias Skill e SKILL.md.
+          <FileTree
+            slug={skill.slug}
+            files={skill.files}
+            selected={pane === 'source' ? 'SKILL.md' : null}
+            onPick={(path) => (isSkillMdPath(path) ? setPane('source') : onOpenFile(path))}
+          />
+          <p className="panel-hint mt-3 mb-0">
+            Clique num arquivo para abri-lo na guia <Link to={filesPath} className="link">Arquivos</Link>, onde também se
+            criam arquivos e pastas, se enviam anexos e se importa um .zip.
           </p>
-
-          <div className="flex flex-col gap-3 border-t pt-4" style={{ borderColor: 'var(--surface-3)' }}>
-            <div className="flex flex-wrap gap-2">
-              <a href={skillDownloadUrl(skill.slug)} className="btn btn-ghost btn-sm" download>
-                <Download /> .zip
-              </a>
-              <a href={skillPackageUrl(skill.slug)} className="btn btn-ghost btn-sm" download>
-                <Download /> .skill
-              </a>
-            </div>
-            {canWrite && (
-              <>
-                <Button variant="ghost" size="sm" onClick={() => zipInput.current?.click()}>
-                  <Upload /> Importar .zip
-                </Button>
-                <label className="check items-start text-[11.5px]" style={{ color: 'var(--text-muted)' }}>
-                  <input type="checkbox" className="mt-0.5" checked={replaceTree} onChange={(event) => setReplaceTree(event.target.checked)} />
-                  <span>Substituir toda a árvore — arquivos ausentes no .zip são removidos (o SKILL.md é sempre preservado).</span>
-                </label>
-              </>
-            )}
-          </div>
-
-          <input
-            ref={zipInput}
-            type="file"
-            accept=".zip,application/zip"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void handleZip(file, replaceTree);
-              event.target.value = '';
-            }}
-          />
-          <input
-            ref={filesInput}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              if (event.target.files?.length) void handleFiles(event.target.files);
-              event.target.value = '';
-            }}
-          />
         </Panel>
       </div>
     </>

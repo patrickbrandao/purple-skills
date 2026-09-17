@@ -678,6 +678,13 @@ a.row-title:hover {
 .empty .btn {
   margin-top: 10px;
 }
+/* o ícone grande é o do estado vazio, não o do botão de ação */
+.empty .btn svg {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  color: inherit;
+}
 .list-empty {
   padding: 28px 0;
   text-align: center;
