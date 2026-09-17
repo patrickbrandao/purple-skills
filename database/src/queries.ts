@@ -1224,7 +1224,7 @@ export async function updateSkill(
           icon = ${icon === undefined ? existing.icon : icon},
           is_active = ${isActive ?? existing.isActive},
           is_public = ${isPublic ?? existing.isPublic},
-          owner_user_uuid = ${transfer ? (input.ownerUserUuid ?? null) : existing.ownerUserUuid},
+          owner_user_uuid = ${ownerColumn(transfer, input.ownerUserUuid)},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -1256,6 +1256,16 @@ export async function updateSkill(
   const detail = await getSkillDetail(newSlug, { visibility: 'all' });
   if (!detail) throw new Error('Skill atualizada mas não encontrada');
   return detail;
+}
+
+/**
+ * O valor de `owner_user_uuid` no UPDATE de `updateSkill` /
+ * `updateSkillWithContent`: o novo dono numa transferência; senão, a própria
+ * coluna. Regravar o dono lido **antes** da transação desfaria uma adoção
+ * (`adoptOrphans`) ou uma transferência concorrente.
+ */
+function ownerColumn(transfer: boolean, newOwner: string | null | undefined): SQL {
+  return transfer ? sql`${newOwner ?? null}` : sql`owner_user_uuid`;
 }
 
 /**
@@ -1309,7 +1319,7 @@ export async function updateSkillWithContent(
           icon = ${icon === undefined ? existing.icon : icon},
           is_active = ${isActive ?? existing.isActive},
           is_public = ${isPublic ?? existing.isPublic},
-          owner_user_uuid = ${transfer ? (input.ownerUserUuid ?? null) : existing.ownerUserUuid},
+          owner_user_uuid = ${ownerColumn(transfer, input.ownerUserUuid)},
           slug = ${newSlug},
           updated_at = now()
         WHERE uuid = ${existing.uuid}
@@ -4436,6 +4446,128 @@ export const removeVirtualMcpGrant = (
 
 export const listVirtualMcpGrants = (virtualMcpUuid: string): Promise<Grant[]> =>
   listGrants(GRANTS.mcp, virtualMcpUuid);
+
+/**
+ * O que `adoptOrphans` fez. `adopted` diz se a conta era **elegível** — a
+ * única conta admin ativa — e a varredura rodou; `skills` e `catalogs` dizem
+ * quantos objetos ela adotou **nesta** chamada. Uma segunda chamada devolve
+ * `adopted: true` com as contagens em zero.
+ */
+export type AdoptOrphansResult = { adopted: boolean; skills: number; catalogs: number };
+
+/** A chave do advisory lock que serializa as adoções (a forma é a de `lockSkillFilesTx`). */
+const ADOPT_ORPHANS_LOCK = 'purple-skills:adopt-orphans';
+
+const notAdopted = (): AdoptOrphansResult => ({ adopted: false, skills: 0, catalogs: 0 });
+
+/**
+ * O administrador solitário adota o que nasceu órfão. A sessão de bootstrap e
+ * o `MCP_ADMIN_TOKEN` criam skills e catálogos sem dono; quando a instalação
+ * tem **uma** conta admin ativa, esses objetos passam a ser dela. O painel
+ * chama depois do `/api/setup` e de cada login bem-sucedido, em melhor
+ * esforço.
+ *
+ * Só age se a conta existe, está ativa, é `admin` e nenhuma **outra** conta
+ * admin está ativa (admin desativado não conta). Fora disso — inclusive uuid
+ * torto — devolve `adopted: false` sem gravar nada e sem lançar.
+ *
+ * Adota skills e catálogos; **vMCPs ficam de fora** — o `public`/padrão nasce
+ * órfão de propósito (`docs/09`, decisão 6). Cada adoção é uma transferência:
+ * a concessão que a conta tinha no objeto é apagada (o dono é implícito) e a
+ * auditoria é a mesma (`update` na skill com o e-mail no label,
+ * `catalog.update` com `<slug> <email>`), uma linha por objeto, com o ator e
+ * a origem recebidos. Adotar não muda o objeto: `updated_at` fica, e só o
+ * dono mudando não marca `rag_stale` (os triggers do `020` olham nome,
+ * descrição, arquivo e tag).
+ *
+ * Tudo numa transação, atrás de um advisory lock de transação: duas chamadas
+ * simultâneas (login em duas abas) se enfileiram, e a segunda já não acha
+ * órfão nenhum — nada é auditado em dobro. A conta fica em `FOR SHARE` até o
+ * fim, o que segura um rebaixamento ou uma desativação concorrente. Uma conta
+ * promovida a admin **depois** da checagem não desfaz a adoção: ela valeu
+ * para o estado que a checagem leu. A permissão (quem pode disparar) é do app.
+ */
+export async function adoptOrphans(
+  userUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<AdoptOrphansResult> {
+  if (!isUuid(userUuid)) return notAdopted();
+
+  return db().transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ADOPT_ORPHANS_LOCK}, 0))`);
+
+    const found = await tx.execute(
+      sql`SELECT email, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
+    );
+    const user = (found.rows as Row[])[0];
+    if (!user || user.role !== 'admin' || !user.is_active) return notAdopted();
+
+    const others = await tx.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM users WHERE role = 'admin' AND is_active AND uuid <> ${userUuid}
+      ) AS found
+    `);
+    if ((others.rows as Row[])[0]?.found) return notAdopted();
+
+    const email = user.email as string;
+    const skills = await adoptOrphansTx(tx, GRANTS.skill, userUuid, email, source, actor);
+    const catalogs = await adoptOrphansTx(tx, GRANTS.catalog, userUuid, email, source, actor);
+    return { adopted: true, skills, catalogs };
+  });
+}
+
+/**
+ * Passa à conta todo objeto sem dono de um tipo, num comando só: o `UPDATE`
+ * devolve os adotados, e o `DELETE` da concessão e o `INSERT` da auditoria
+ * partem dessa lista — só o que **este** comando adotou é auditado. O
+ * `WHERE owner_user_uuid IS NULL` é reavaliado sobre a versão nova de uma
+ * linha que outra transação acabou de transferir: ela não é adotada. A
+ * auditoria segue a ordem do slug. Devolve quantos adotou. O tipo do `spec`
+ * deixa o vMCP de fora de propósito.
+ */
+async function adoptOrphansTx(
+  tx: Tx,
+  spec: typeof GRANTS.skill | typeof GRANTS.catalog,
+  userUuid: string,
+  email: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<number> {
+  const onSkill = spec.table === 'skill_grants';
+  const action: AuditAction = onSkill ? 'update' : 'catalog.update';
+  // Os mesmos campos de `grantAudit` e de uma transferência: na skill, o uuid
+  // e o slug dela com o e-mail no label; no catálogo, sem skill e com o slug
+  // antes do e-mail. Os casts existem porque, num `INSERT … SELECT`, o
+  // Postgres não infere o tipo do parâmetro pela coluna de destino.
+  const audited = onSkill
+    ? sql`a.uuid, a.slug, ${email}::text`
+    : sql`NULL::uuid, NULL::text, a.slug || ' ' || ${email}::text`;
+
+  const result = await tx.execute(sql`
+    WITH adopted AS (
+      UPDATE ${sql.raw(spec.objects)} SET owner_user_uuid = ${userUuid}
+      WHERE owner_user_uuid IS NULL
+      RETURNING uuid, slug
+    ),
+    dropped AS (
+      DELETE FROM ${sql.raw(spec.table)} g USING adopted a
+      WHERE g.${sql.raw(spec.column)} = a.uuid AND g.user_uuid = ${userUuid}
+    ),
+    logged AS (
+      INSERT INTO audit_log (
+        skill_uuid, skill_slug, target_label, file_path, action, source,
+        previous_content, actor_user_uuid, actor_label
+      )
+      SELECT ${audited}, NULL, ${action}::text, ${source}::text,
+             NULL, ${actor.userUuid ?? null}::uuid, ${actor.label}::text
+      FROM adopted a
+      ORDER BY a.slug
+    )
+    SELECT count(*)::int AS total FROM adopted
+  `);
+  return Number((result.rows as Row[])[0]?.total ?? 0);
+}
 
 /** Teto da busca de contas: é uma lista de sugestões, não uma listagem. */
 const USER_LOOKUP_MAX = 50;

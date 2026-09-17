@@ -118,7 +118,9 @@ vale para escopo. Três pontos que o modelo assume:
   (`skill_grants` etc.) — ver [Acesso granular](#acesso-granular);
 - **o ator pode não ser uma conta.** `audit_log.actor_user_uuid` é nulo para o
   `MCP_ADMIN_TOKEN` e para o bootstrap; quem sempre existe é `actor_label`.
-  O que eles criam nasce **órfão** (dono nulo), só do admin;
+  O que eles criam nasce **órfão** (dono nulo), só do admin — e as skills e
+  os catálogos órfãos passam ao admin solitário quando ele entra
+  (`adoptOrphans`, ver [Acesso granular](#acesso-granular));
 - **`leitor` não existe mais.** O `017` renomeou o papel para `membro` e
   migrou as linhas; a diferença para `editor` é só **criar**.
 
@@ -237,7 +239,46 @@ ativa** — 400 senão, inclusive uuid torto —, e a concessão que essa conta
 tinha no objeto é apagada na mesma transação (o dono é implícito); `null`
 deixa órfão. `createSkill` grava `owner_user_uuid = actor.userUuid` (além de
 `created_by`) e aceita `isPublic`; `createCatalog` aceita `isPublic`. A
-checagem de que o chamador é dono ou admin é do app.
+checagem de que o chamador é dono ou admin é do app. Sem `ownerUserUuid`,
+`updateSkill` e `updateSkillWithContent` não regravam o dono: a coluna fica
+como está no banco, e uma adoção ou transferência concorrente não é desfeita.
+
+**Adoção pelo admin solitário.** O que a sessão de bootstrap e o
+`MCP_ADMIN_TOKEN` criam nasce órfão; `adoptOrphans(userUuid, source, actor)`
+passa esses objetos à conta quando ela é **a única admin ativa**. O painel
+chama depois do `/api/setup` e de cada login bem-sucedido (senha e SSO), em
+melhor esforço:
+
+```ts
+const { adopted, skills, catalogs } = await adoptOrphans(user.uuid, 'web-admin', ator);
+```
+
+- Só age se a conta existe, está ativa, tem `role = 'admin'` e nenhuma
+  **outra** conta admin está ativa (admin desativado não conta). Fora disso —
+  inclusive uuid torto — devolve `{ adopted: false, skills: 0, catalogs: 0 }`,
+  sem gravar e sem lançar.
+- Adota **skills e catálogos** com `owner_user_uuid IS NULL`. **vMCPs ficam
+  de fora**: o `public`/padrão nasce órfão de propósito (`docs/09`,
+  decisão 6).
+- Cada adoção é uma transferência: a concessão que a conta tinha no objeto
+  adotado é apagada (o dono é implícito) e a auditoria tem o mesmo formato
+  (abaixo), uma linha por objeto, com o ator e a origem recebidos — skills
+  primeiro, cada tipo na ordem do slug. Concessões de outras contas ficam.
+- Adotar não muda o objeto: `updated_at` fica, e o dono não entra nos
+  triggers de pendência do `020` — `rag_stale` e `search_vector` também
+  ficam.
+- `AdoptOrphansResult.adopted` diz se a conta era **elegível** (a varredura
+  rodou); `skills`/`catalogs` são o que **esta** chamada adotou. A segunda
+  chamada devolve `{ adopted: true, skills: 0, catalogs: 0 }` e não audita
+  nada; um órfão criado depois é adotado na chamada seguinte.
+- Uma transação, atrás de um advisory lock de transação (chave
+  `hashtextextended('purple-skills:adopt-orphans', 0)`), com a conta em `FOR
+  SHARE` até o fim: logins simultâneos se enfileiram e só o primeiro acha os
+  órfãos; um rebaixamento ou uma desativação concorrente espera. Uma conta
+  promovida a admin depois da checagem não desfaz a adoção — ela valeu para
+  o estado lido. Nenhum índice novo: `skills_owner_user_uuid_idx` (`017`) e
+  `catalogs_owner_user_uuid_idx` (`016`) cobrem o `IS NULL`.
+- Quem pode disparar é regra do app; o banco confere só a elegibilidade.
 
 **`lookupUsers(q, limit = 10)`** é a busca "Compartilhar com…": contas
 **ativas** cujo nome ou e-mail contém `q` (`ILIKE`), por nome, `UserLookup[]`
@@ -259,7 +300,9 @@ decisão 5). Privado, desligado ou inexistente é `null`, sem distinção.
 `catalog.unshare` / `mcp.unshare` levam `<slug> <email>` — sem skill, como
 os demais eventos de contêiner. Transferir é `update` / `catalog.update` /
 `mcp.update` do objeto com o e-mail do novo dono no label (`email` na skill,
-`<slug> <email>` nos outros); deixar órfão não muda o label. Ligar o flag
+`<slug> <email>` nos outros); deixar órfão não muda o label. A adoção
+(`adoptOrphans`) grava exatamente isso: `update` com `skill_uuid`/`skill_slug`
+e o e-mail, ou `catalog.update` com `<slug> <email>`. Ligar o flag
 público é um `update` comum.
 
 **Efeito da `017` numa instalação existente** (`docs/12` §9): leitores
@@ -557,7 +600,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Conexão | `getDb`, `createDb`, `closeDb`, `databaseConfig`, `waitForDatabase`, `healthCheck`, tipo `Database` |
 | Leitura | `listSkills`, `listPublishedSkills`, `getSkillSummary`, `getSkillDetail` (aceitam `visibility`, `viewer`, `virtualMcp`; a listagem também `scope` e `semantic`), `listFiles`, `readFile`, `readTextFile`, `readAllFiles`, `listTags`, `listAudit`, `stats` |
 | Escrita | `createSkill`, `updateSkill`, `updateSkillWithContent` (as três aceitam `icon`, `isActive` e `isPublic`; as duas últimas também `ownerUserUuid`), `deleteSkill`, `setFile` (upsert), `createFile` (só se o caminho está livre), `setFiles`, `deleteFile` — ver [Arquivos da skill](#arquivos-da-skill) |
-| Acesso | `setSkillGrant`, `removeSkillGrant`, `listSkillGrants`, `setCatalogGrant`, `removeCatalogGrant`, `listCatalogGrants`, `setVirtualMcpGrant`, `removeVirtualMcpGrant`, `listVirtualMcpGrants`, `lookupUsers` |
+| Acesso | `setSkillGrant`, `removeSkillGrant`, `listSkillGrants`, `setCatalogGrant`, `removeCatalogGrant`, `listCatalogGrants`, `setVirtualMcpGrant`, `removeVirtualMcpGrant`, `listVirtualMcpGrants`, `lookupUsers`, `adoptOrphans` |
 | Site | `listOpenVirtualMcps`, `listPublicCatalogs`, `getPublicCatalog` |
 | Vínculo pelo lado da skill | `linkSkill` (aceita `{ position }`), `unlinkSkill` (e `mcps` em `createSkill`) |
 | Canvas | `setVirtualMcpCanvas` (`layout`, `positions`, `catalogPositions`); `layout`/`catalogs` em `VirtualMcpDetail`, `position`/`icon` em `VirtualMcpSkill`, `toolCount`/`promptCount`/`resourceCount`/`preview`/`previewCatalogs`/`onlineSessions`/`catalogCount` em `VirtualMcpSummary` |
@@ -575,7 +618,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
 | Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `RagVectorInput`, `RagCoverage` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `AdoptOrphansResult`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `RagVectorInput`, `RagCoverage` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
 | Migrations | `runMigrations`, `schemaDir` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -1035,7 +1078,7 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
     database/src/virtual-mcps.integration.test.ts database/src/settings.integration.test.ts \
     database/src/sessions.integration.test.ts database/src/catalogs.integration.test.ts \
     database/src/access.integration.test.ts database/src/accesses.integration.test.ts \
-    database/src/rag.integration.test.ts
+    database/src/rag.integration.test.ts database/src/orphans.integration.test.ts
 ```
 
 A suíte do RAG exige **pgvector** no servidor (a imagem `pgvector/pgvector`
@@ -1054,7 +1097,8 @@ já o traz) e um papel que possa `CREATE EXTENSION`, como o `pg_trgm` do
 | `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers`; `listPublicCatalogs`/`getPublicCatalog` com membros privados; as cascatas; e a re-execução do `017` que não devolve dono a ninguém |
 | `rag.integration.test.ts` | busca semântica (`020`): os 29 cenários de verificação do DDL — o backfill do hash numa base parada no `019` (sem tocar `updated_at`), a coluna gerada que o Postgres recusa, os triggers de pendência (skill, arquivo de texto, binário que não marca, UPDATE sem mudança, SKILL.md, tag, contador), o `CHECK` do hash e o texto com prefixo recusado, a deduplicação de textos iguais, o `CHECK` de dimensão e a FK composta, cobertura e pendências (com o texto órfão de fora), a fusão RRF, as cascatas de espaço, skill e arquivo e o texto em uso protegido, a reserva em lote e duas em paralelo, o HNSW acima de 2000 dimensões, a identidade do espaço com os dois prefixos (e os limites dos prefixos) e o mesmo texto em dois espaços; mais o **recorte de visibilidade real** nas duas pernas (o vMCP fechado que não vaza no site nem em outro servidor), a paginação e o `total` do conjunto fundido, a semeadura e o painel em `settings` com as duas ações novas de auditoria, e a re-execução da `020` |
 | `accesses.integration.test.ts` | acessos por skill (`018`): a leitura do site com as cópias e só o contador global; pelo MCP público por catálogo (os catálogos do caminho por nome, cada um somando, e a participação desativada saindo do caminho) e por vínculo direto (catálogos vazios, o contador do vínculo); pelo mcp-admin com o nome da chave `psk_` e o e-mail **e contador nenhum somado**; skill inexistente sem gravar nem lançar, opcionais tortos ou sumidos ignorados, e os 400; a listagem com cada filtro (skill, catálogo, vMCP, conta e chave `psk_` — duas contas, cada uma só vê a sua —, `origin`, `kind`), o `q` em cada coluna, a ordem, o clamp e os 400; as cópias sobrevivendo à remoção da skill, do catálogo, do vMCP (e da chave `psv_`) e da conta (e da chave `psk_`), sem poda; e a re-execução do `018` e do `019` juntos, com o conjunto exato de índices e o CHECK dos arrays |
+| `orphans.integration.test.ts` | adoção pelo admin solitário (`adoptOrphans`): a única admin ativa (com outra desativada) adota as skills órfãs do token global, do bootstrap e sem ator e o catálogo órfão, sem tocar o que tem dono nem os vMCPs (o `public` padrão continua órfão); `updated_at` de skills, catálogos e vMCPs, `rag_stale` e `search_vector` intocados; a concessão prévia da conta (promovida de editora) apagada só nos adotados, e as de outras contas e do vMCP mantidas; uma linha de auditoria por objeto no formato da transferência, com o ator e a origem recebidos (inclusive `bootstrap`); a segunda chamada sem adotar nem auditar; três chamadas simultâneas auditando uma vez só; e as recusas sem gravar — membro, editor, uuid torto ou inexistente, admin desativada (mesmo sendo a única), duas admins ativas, a outra reativada e a própria conta desativada |
 
-As nove recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
+As dez recriam o mesmo banco e o Vitest roda arquivos em paralelo: elas se
 serializam por um advisory lock (`pg_advisory_lock`) segurado durante todo o
 arquivo. Suíte de integração nova aqui dentro precisa usar o mesmo número.

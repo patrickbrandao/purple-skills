@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, History, Info, Pencil, SlidersHorizontal } from 'lucide-react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, History, Info, Library, Pencil, SlidersHorizontal, Users } from 'lucide-react';
 import {
   canEdit,
   canManage,
@@ -11,30 +11,32 @@ import {
   num,
   skillDownloadUrl,
   skillPackageUrl,
-  updateSkill,
   type Session,
   type SessionUser,
   type SkillDetail,
 } from '../api.js';
-import { AccessBadge, AccessPanel } from '../components/AccessPanel.js';
+import { AccessBadge, AccessTab } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
 import { Badge, McpChips, Panel, Skel, Tabs, noSite } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
 import { SkillIcon } from '../components/SkillIcon.js';
-import { SkillCatalogsPanel, SkillMcpsPanel } from '../components/SkillMcps.js';
+import { SkillCatalogsTab, SkillMcpsPanel } from '../components/SkillMcps.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
-type Tab = 'skill' | 'propriedades' | 'acessos';
+type Tab = 'skill' | 'catalogos' | 'propriedades' | 'acesso' | 'auditoria';
+
+const TABS: readonly Tab[] = ['catalogos', 'propriedades', 'acesso', 'auditoria'];
 
 /**
  * A ficha da skill, só leitura (`docs/13-fichas-e-acessos.md`): o título com
- * os contadores e os botões (ver no site, .zip, .skill, Editar) e três guias
- * — Skill (a descrição, o SKILL.md renderizado e cru, a árvore de arquivos),
- * Propriedades (metadados, onde está publicada, catálogos e acesso) e Acessos
- * (os últimos registros de leitura, para quem administra). Nada aqui grava:
- * toda alteração é em Editar.
+ * os contadores e os botões (ver no site, .zip, .skill, Editar) e as guias —
+ * Skill (a descrição, o SKILL.md renderizado e cru, a árvore de arquivos),
+ * Catálogos (de quais participa), Propriedades (metadados e onde está
+ * publicada), Acesso (dono, visibilidade e concessões) e Auditoria (os
+ * últimos registros de leitura, para quem administra). Nada aqui grava: toda
+ * alteração é em Editar.
  */
 export function SkillViewPage({ session, user }: { session: Session; user: SessionUser }) {
   const { slug = '' } = useParams();
@@ -51,11 +53,8 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const podeAdministrar = skill ? canManage(skill.access) : false;
   const podeEditar = podeEscrever || editsSomeMcp;
 
-  const tab: Tab = location.pathname.endsWith('/propriedades')
-    ? 'propriedades'
-    : location.pathname.endsWith('/acessos')
-      ? 'acessos'
-      : 'skill';
+  const tail = location.pathname.slice(`/skills/${slug}`.length).split('/')[1] ?? '';
+  const tab: Tab = TABS.find((item) => item === tail) ?? 'skill';
 
   const load = useCallback(async () => {
     try {
@@ -167,19 +166,34 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         value={tab}
         items={[
           { key: 'skill', label: 'Skill', icon: <FileText />, to: base },
+          { key: 'catalogos', label: 'Catálogos', icon: <Library />, to: `${base}/catalogos`, count: skill.catalogs.length },
           { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/propriedades` },
+          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${base}/acesso` },
           // IPs, clientes e nomes de chave: só quem administra a skill.
-          ...(podeAdministrar ? [{ key: 'acessos', label: 'Acessos', icon: <History />, to: `${base}/acessos` }] : []),
+          ...(podeAdministrar ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${base}/auditoria` }] : []),
         ]}
       />
 
       <Routes>
         <Route index element={<SkillTab skill={skill} />} />
+        <Route path="catalogos" element={<SkillCatalogsTab skill={skill} user={user} />} />
+        <Route path="propriedades" element={<PropertiesTab skill={skill} />} />
         <Route
-          path="propriedades"
-          element={<PropertiesTab skill={skill} user={user} onChanged={setSkill} />}
+          path="acesso"
+          element={
+            <AccessTab
+              kind="skill"
+              object={skill}
+              user={user}
+              mode="read"
+              publicHint="Não a publica em servidor nenhum: onde ela aparece continua sendo o vínculo."
+            />
+          }
         />
-        {podeAdministrar && <Route path="acessos" element={<AccessLog load={loadAccesses} />} />}
+        {podeAdministrar && <Route path="auditoria" element={<AccessLog load={loadAccesses} />} />}
+        {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
+        <Route path="acessos" element={<Navigate to={`${base}/auditoria`} replace />} />
+        <Route path="*" element={<Navigate to={base} replace />} />
       </Routes>
     </div>
   );
@@ -236,77 +250,66 @@ export function DescriptionBox({
   );
 }
 
-/** Metadados, publicação, catálogos e acesso — tudo em leitura. */
-function PropertiesTab({ skill, user, onChanged }: { skill: SkillDetail; user: SessionUser; onChanged: (detail: SkillDetail) => void }) {
+/** Metadados e onde a skill está publicada — tudo em leitura. */
+function PropertiesTab({ skill }: { skill: SkillDetail }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
-      <div className="grid content-start gap-4">
-        <Panel title="Propriedades" icon={<SlidersHorizontal />}>
-          <dl className="kv props-kv">
-            <dt>Nome</dt>
-            <dd>{skill.name}</dd>
-            <dt>Slug</dt>
-            <dd className="mono">{skill.slug}</dd>
-            <dt>Ícone</dt>
-            <dd className="flex items-center gap-2">
-              <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
-              {/* Um emoji já está no ladrilho; só a URL de imagem vale a pena repetir em texto. */}
-              <span className="mono text-xs" style={{ color: 'var(--text-muted)' }}>
-                {skill.icon === null ? 'monograma pelas iniciais' : /^https?:/i.test(skill.icon) ? skill.icon : 'emoji'}
+    <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <Panel title="Propriedades" icon={<SlidersHorizontal />}>
+        <dl className="kv props-kv">
+          <dt>Nome</dt>
+          <dd>{skill.name}</dd>
+          <dt>Slug</dt>
+          <dd className="mono">{skill.slug}</dd>
+          <dt>Ícone</dt>
+          <dd className="flex items-center gap-2">
+            <SkillIcon icon={skill.icon} name={skill.name} slug={skill.slug} size="sm" />
+            {/* Um emoji já está no ladrilho; só a URL de imagem vale a pena repetir em texto. */}
+            <span className="mono text-xs" style={{ color: 'var(--text-muted)' }}>
+              {skill.icon === null ? 'monograma pelas iniciais' : /^https?:/i.test(skill.icon) ? skill.icon : 'emoji'}
+            </span>
+          </dd>
+          <dt>Tags</dt>
+          <dd>
+            {skill.tags.length > 0 ? (
+              <span className="flex flex-wrap gap-1.5">
+                {skill.tags.map((tag) => (
+                  <Badge key={tag} tone="outline">
+                    {tag}
+                  </Badge>
+                ))}
               </span>
-            </dd>
-            <dt>Tags</dt>
-            <dd>
-              {skill.tags.length > 0 ? (
-                <span className="flex flex-wrap gap-1.5">
-                  {skill.tags.map((tag) => (
-                    <Badge key={tag} tone="outline">
-                      {tag}
-                    </Badge>
-                  ))}
-                </span>
-              ) : (
-                <span style={{ color: 'var(--text-faint)' }}>nenhuma</span>
-              )}
-            </dd>
-            <dt>Estado</dt>
-            <dd>
-              {skill.isActive ? (
-                <Badge tone="ok">ligada</Badge>
-              ) : (
-                <Badge tone="danger" title="Não é entregue por servidor nenhum nem aparece no site">
-                  desligada
-                </Badge>
-              )}
-            </dd>
-            <dt>Arquivos</dt>
-            <dd>{num(skill.fileCount)}</dd>
-            <dt>Acessos</dt>
-            <dd>
-              {num(skill.viewCount)} leitura{skill.viewCount === 1 ? '' : 's'} · {num(skill.downloadCount)} download{skill.downloadCount === 1 ? '' : 's'} · pontuação {num(skill.score)}
-            </dd>
-            <dt>Criada em</dt>
-            <dd>{formatDateTime(skill.createdAt)}</dd>
-            <dt>Atualizada em</dt>
-            <dd>{formatDateTime(skill.updatedAt)}</dd>
-          </dl>
-        </Panel>
+            ) : (
+              <span style={{ color: 'var(--text-faint)' }}>nenhuma</span>
+            )}
+          </dd>
+          <dt>Estado</dt>
+          <dd>
+            {skill.isActive ? (
+              <Badge tone="ok">ligada</Badge>
+            ) : (
+              <Badge tone="danger" title="Não é entregue por servidor nenhum nem aparece no site">
+                desligada
+              </Badge>
+            )}
+          </dd>
+          <dt>Visibilidade</dt>
+          <dd>{skill.isPublic ? 'pública' : 'privada'} · dono: {skill.ownerEmail ?? 'nenhum (só administradores)'}</dd>
+          <dt>Catálogos</dt>
+          <dd>{num(skill.catalogs.length)}</dd>
+          <dt>Arquivos</dt>
+          <dd>{num(skill.fileCount)}</dd>
+          <dt>Acessos</dt>
+          <dd>
+            {num(skill.viewCount)} leitura{skill.viewCount === 1 ? '' : 's'} · {num(skill.downloadCount)} download{skill.downloadCount === 1 ? '' : 's'} · pontuação {num(skill.score)}
+          </dd>
+          <dt>Criada em</dt>
+          <dd>{formatDateTime(skill.createdAt)}</dd>
+          <dt>Atualizada em</dt>
+          <dd>{formatDateTime(skill.updatedAt)}</dd>
+        </dl>
+      </Panel>
 
-        <SkillMcpsPanel skill={skill} onChanged={onChanged} readOnly />
-      </div>
-
-      <div className="grid content-start gap-4">
-        <SkillCatalogsPanel skill={skill} />
-        <AccessPanel
-          kind="skill"
-          object={skill}
-          user={user}
-          onPatch={(body) => updateSkill(skill.slug, body)}
-          onChanged={onChanged}
-          publicHint="Não a publica em servidor nenhum: onde ela aparece continua sendo o vínculo."
-          readOnly
-        />
-      </div>
+      <SkillMcpsPanel skill={skill} />
     </div>
   );
 }

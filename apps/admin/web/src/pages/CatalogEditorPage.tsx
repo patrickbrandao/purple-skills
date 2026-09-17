@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Eye, History, Info, Library, Plus, Save, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Eye, History, Info, Library, Plus, Save, SlidersHorizontal, Trash2, Users } from 'lucide-react';
 import {
   addCatalogSkill,
   canEdit as canEditAccess,
@@ -18,19 +18,25 @@ import {
   type SessionUser,
 } from '../api.js';
 import { Button, EmptyRow, Field, Panel, Skel, Tabs, useConfirm } from '../components/ui.js';
-import { AccessPanel } from '../components/AccessPanel.js';
+import { AccessTab } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
-import { CatalogAlerts, CatalogBadges, CatalogSubline, LinkedMcpsPanel, MemberState } from './CatalogPage.js';
-
-type Tab = 'catalogo' | 'skills' | 'propriedades' | 'acessos';
+import {
+  CATALOG_PUBLIC_HINT,
+  CatalogAlerts,
+  CatalogBadges,
+  CatalogSubline,
+  LinkedMcpsPanel,
+  MemberState,
+  catalogTabOf,
+} from './CatalogPage.js';
 
 /**
  * A ficha do catálogo em edição (`docs/13-fichas-e-acessos.md`): a mesma
- * organização da leitura — Catálogo, Skills, Propriedades, Acessos — com os
- * campos livres onde a sessão pode. Descrição, nome, slug e estado são
+ * organização da leitura — Catálogo, Skills, Propriedades, Acesso, Auditoria
+ * — com os campos livres onde a sessão pode. Descrição, nome, slug e estado são
  * gravados pelo Salvar do cabeçalho (`manage`); os membros (`edit`), o
  * acesso e a remoção gravam na hora (`docs/12-acesso-granular.md` §3.2).
  */
@@ -54,13 +60,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
   const manages = detail ? canManage(detail.access) : false;
   const owns = detail ? canOwn(detail.access) : false;
 
-  const tab: Tab = location.pathname.endsWith('/skills')
-    ? 'skills'
-    : location.pathname.endsWith('/propriedades')
-      ? 'propriedades'
-      : location.pathname.endsWith('/acessos')
-        ? 'acessos'
-        : 'catalogo';
+  const tab = catalogTabOf(location.pathname, `/catalogos/${slug}/editar`);
 
   const hydrate = useCallback((fresh: CatalogDetail) => {
     setDetail(fresh);
@@ -256,7 +256,8 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
           { key: 'catalogo', label: 'Catálogo', icon: <Info />, to: editBase },
           { key: 'skills', label: 'Skills', icon: <Library />, to: `${editBase}/skills`, count: detail.skillCount },
           { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/propriedades` },
-          ...(manages ? [{ key: 'acessos', label: 'Acessos', icon: <History />, to: `${editBase}/acessos` }] : []),
+          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${editBase}/acesso` },
+          ...(manages ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${editBase}/auditoria` }] : []),
         ]}
       />
 
@@ -362,8 +363,8 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
         <Route
           path="propriedades"
           element={
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
-              <div className="grid content-start gap-4">
+            <div className="grid gap-4">
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 <Panel title="Propriedades" icon={<SlidersHorizontal />}>
                   <div className="grid gap-4">
                     <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -391,29 +392,36 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
                 <LinkedMcpsPanel catalog={detail} />
               </div>
 
-              <div className="grid content-start gap-4">
-                <AccessPanel
-                  kind="catalog"
-                  object={detail}
-                  user={user}
-                  onPatch={(body) => updateCatalog(detail.slug, body)}
-                  onChanged={applyMembers}
-                  publicHint="O site lista o catálogo com todos os membros ativos — inclusive skills que não são públicas."
-                  privateCount={detail.skills.filter((skill) => skill.isActive && skill.skillIsActive).length}
-                />
-                {owns && (
-                  <Panel title="Zona de perigo" icon={<Trash2 />}>
-                    <p className="panel-hint">Remover apaga o catálogo e os vínculos com servidores. As skills continuam existindo.</p>
-                    <Button variant="danger" onClick={() => void removeCatalog()}>
-                      <Trash2 /> Remover catálogo
-                    </Button>
-                  </Panel>
-                )}
-              </div>
+              {owns && (
+                <Panel title="Zona de perigo" icon={<Trash2 />}>
+                  <p className="panel-hint">Remover apaga o catálogo e os vínculos com servidores. As skills continuam existindo.</p>
+                  <Button variant="danger" onClick={() => void removeCatalog()}>
+                    <Trash2 /> Remover catálogo
+                  </Button>
+                </Panel>
+              )}
             </div>
           }
         />
-        {manages && <Route path="acessos" element={<AccessLog load={loadAccesses} showSkill />} />}
+        <Route
+          path="acesso"
+          element={
+            <AccessTab
+              kind="catalog"
+              object={detail}
+              user={user}
+              mode="live"
+              onPatch={(body) => updateCatalog(detail.slug, body)}
+              onChanged={applyMembers}
+              publicHint={CATALOG_PUBLIC_HINT}
+              privateCount={detail.skills.filter((skill) => skill.isActive && skill.skillIsActive).length}
+            />
+          }
+        />
+        {manages && <Route path="auditoria" element={<AccessLog load={loadAccesses} showSkill />} />}
+        {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
+        <Route path="acessos" element={<Navigate to={`${editBase}/auditoria`} replace />} />
+        <Route path="*" element={<Navigate to={editBase} replace />} />
       </Routes>
     </div>
   );

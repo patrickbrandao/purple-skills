@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, KeyRound, LayoutTemplate, Radio, Settings, Trash2 } from 'lucide-react';
+import { ArrowLeft, KeyRound, LayoutTemplate, Radio, Settings, Trash2, Users } from 'lucide-react';
 import {
   canEdit as canEditAccess,
   canManage,
@@ -19,7 +19,7 @@ import {
   type VirtualMcpKeySummary,
 } from '../api.js';
 import { Button, CopyButton, EmptyRow, Field, McpStateBadges, Panel, Skel, Tabs, useConfirm } from '../components/ui.js';
-import { AccessBadge, AccessPanel, accessSentence } from '../components/AccessPanel.js';
+import { AccessBadge, AccessTab, accessSentence } from '../components/AccessPanel.js';
 import { useToast } from '../components/Toast.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { SessionsTable } from '../components/SessionsTable.js';
@@ -27,7 +27,7 @@ import { ServerCanvas } from '../components/canvas/ServerCanvas.js';
 
 /**
  * Um servidor MCP virtual: o canvas (skills ligadas às portas), as sessões,
- * as chaves e a configuração. O que a sessão pode vem em `access`
+ * as chaves, o acesso (dono e concessões) e a configuração. O que a sessão pode vem em `access`
  * (`docs/12-acesso-granular.md` §3.2): `view` lê o canvas; `edit` mexe nos
  * vínculos; `manage` vê sessões e chaves e muda a configuração; o dono apaga.
  */
@@ -53,7 +53,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
   }, [load]);
 
   const tail = location.pathname.slice(`/mcps/${slug}`.length).replace(/^\//, '');
-  const tab = tail === 'sessoes' || tail === 'chaves' || tail === 'configuracoes' ? tail : 'canvas';
+  const tab = tail === 'sessoes' || tail === 'chaves' || tail === 'acesso' || tail === 'configuracoes' ? tail : 'canvas';
   const canEdit = detail ? canEditAccess(detail.access) : false;
   const manages = detail ? canManage(detail.access) : false;
   const base = session.mcpPublicUrl || 'https://<MCP_PUBLIC_URL>';
@@ -68,6 +68,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
                 { id: 'mcp-keys', label: 'Chaves deste servidor', group: 'Ir para' as const, icon: <KeyRound />, run: () => navigate(`/mcps/${detail.slug}/chaves`) },
               ]
             : []),
+          { id: 'mcp-access', label: 'Acesso a este servidor', group: 'Ir para', icon: <Users />, keywords: ['dono', 'compartilhar', 'concessão'], run: () => navigate(`/mcps/${detail.slug}/acesso`) },
           { id: 'mcp-settings', label: 'Configurações deste servidor', group: 'Ir para', icon: <Settings />, run: () => navigate(`/mcps/${detail.slug}/configuracoes`) },
         ]
       : [],
@@ -120,6 +121,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
                   { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `/mcps/${detail.slug}/chaves`, count: detail.activeKeyCount || undefined },
                 ]
               : []),
+            { key: 'acesso', label: 'Acesso', icon: <Users />, to: `/mcps/${detail.slug}/acesso` },
             { key: 'configuracoes', label: 'Configurações', icon: <Settings />, to: `/mcps/${detail.slug}/configuracoes` },
           ]}
         />
@@ -163,11 +165,29 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           />
         )}
         <Route
+          path="acesso"
+          element={
+            <div className="stage-body">
+              <div className="page wide">
+                <AccessTab
+                  kind="mcp"
+                  object={detail}
+                  user={user}
+                  mode="live"
+                  onPatch={(body) => updateMcp(detail.slug, body)}
+                  onChanged={setDetail}
+                  visibility={<OpenState mcp={detail} manages={manages} />}
+                />
+              </div>
+            </div>
+          }
+        />
+        <Route
           path="configuracoes"
           element={
             <div className="stage-body">
               <div className="page">
-                <SettingsPanel mcp={detail} user={user} onSaved={setDetail} />
+                <SettingsPanel mcp={detail} onSaved={setDetail} />
               </div>
             </div>
           }
@@ -335,8 +355,42 @@ function KeysPanel({ mcp, canEdit, base }: { mcp: VirtualMcpDetail; canEdit: boo
 
 // ---------------------------------------------------------- configuração ---
 
-/** Nome, slug, descrição, aberto e ligado são `manage`; apagar é do dono; o dono e as concessões ficam em "Acesso". */
-function SettingsPanel({ mcp, user, onSaved }: { mcp: VirtualMcpDetail; user: SessionUser; onSaved: (detail: VirtualMcpDetail) => void }) {
+/**
+ * O "público" de um servidor é o aberto (`docs/12` decisão 4), que mora na
+ * configuração: na guia Acesso ele só é dito.
+ */
+function OpenState({ mcp, manages }: { mcp: VirtualMcpDetail; manages: boolean }) {
+  return (
+    <>
+      <p className="mb-0">
+        {mcp.isOpen ? (
+          <>
+            <strong>Aberto</strong>: qualquer cliente conecta sem chave, e o site lista o servidor e as skills dele — toda
+            skill dentro fica pública por aqui.
+          </>
+        ) : (
+          <>
+            <strong>Fechado</strong>: o cliente precisa de uma chave <code>psv_</code> deste servidor; no painel, só o dono, os
+            administradores e as contas com concessão o veem.
+          </>
+        )}
+      </p>
+      {!mcp.isActive && <p className="hint">Desligado: tudo sob o endereço dele responde 404.</p>}
+      <p className="hint">
+        {manages ? (
+          <>
+            Abrir e fechar é em <Link to={`/mcps/${mcp.slug}/configuracoes`} className="link">Configurações</Link>.
+          </>
+        ) : (
+          'Só quem administra o servidor o abre ou fecha.'
+        )}
+      </p>
+    </>
+  );
+}
+
+/** Nome, slug, descrição, aberto e ligado são `manage`; apagar é do dono; o dono e as concessões ficam na guia Acesso. */
+function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (detail: VirtualMcpDetail) => void }) {
   const toast = useToast();
   const confirm = useConfirm();
   const navigate = useNavigate();
@@ -453,13 +507,6 @@ function SettingsPanel({ mcp, user, onSaved }: { mcp: VirtualMcpDetail; user: Se
       </Panel>
 
       <div className="grid content-start gap-4">
-        <AccessPanel
-          kind="mcp"
-          object={mcp}
-          user={user}
-          onPatch={(body) => updateMcp(mcp.slug, body)}
-          onChanged={onSaved}
-        />
         <Panel title="Sobre" icon={<Settings />}>
           <dl className="kv">
             <dt>Criado em</dt>
@@ -477,6 +524,13 @@ function SettingsPanel({ mcp, user, onSaved }: { mcp: VirtualMcpDetail; user: Se
             </dd>
             <dt>Padrão</dt>
             <dd>{mcp.isDefault ? 'sim — responde em /mcp' : 'não'}</dd>
+            <dt>Dono</dt>
+            <dd>
+              {mcp.ownerEmail ?? 'nenhum (só administradores)'} ·{' '}
+              <Link to={`/mcps/${mcp.slug}/acesso`} className="link">
+                acesso
+              </Link>
+            </dd>
           </dl>
         </Panel>
         {owns && (

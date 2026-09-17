@@ -3,6 +3,10 @@
 **Status: implementado**, num PR (`feat/fichas-e-acessos`), sobre o `12`.
 Migration `018-acessos-por-skill.sql`. Revisão de 16/09/2026: a edição da
 skill troca a guia Acessos pela guia **Arquivos** (decisões 17 a 20).
+Revisão de 17/09/2026: **Acesso** vira guia própria nas três fichas,
+**Acessos** passa a se chamar **Auditoria**, a skill ganha a guia
+**Catálogos** e o Salvar da edição da skill fica sempre ativo e grava tudo
+(decisões 21 a 24).
 
 Este documento registra o desenho fechado na entrevista de 14/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
@@ -60,13 +64,18 @@ cor do tipo.
 | 18 | Onde se edita um arquivo | **Na guia Arquivos** (substitui a 9): a árvore à esquerda, com largura arrastável e guardada no navegador, e o arquivo aberto no resto da largura, na altura da janela. A árvore cria **arquivo vazio** e **pasta** — na raiz (a linha do slug) ou numa pasta (as ações da linha, ou a barra, que age na pasta escolhida) —, envia arquivos (botão ou arrastando para a pasta), importa `.zip` e remove. Texto abre num editor com numeração e é gravado por "Salvar arquivo" (⌘S na guia); binário mostra a imagem ou os dados; o SKILL.md abre o corpo do formulário, com o frontmatter travado, e é gravado pelo Salvar do cabeçalho. A guia Skill mantém a árvore ao lado do SKILL.md, como na leitura; clicar num arquivo o abre em Arquivos |
 | 19 | Pasta nova | **Vive na página até receber o primeiro arquivo.** O banco só guarda arquivos — uma pasta existe porque há arquivo dentro — e o pacote não leva pasta vazia. A árvore a mostra com o selo "vazia"; se a página fechar antes, ela some. A pasta que perde o último arquivo continua à vista, vazia, até sair da página. Sem migration e sem arquivo-marcador (`.gitkeep`) no pacote |
 | 20 | Criar não sobrescreve | "Novo arquivo" é `POST /api/skills/:slug/files/*path` (`createFile`): caminho ocupado em qualquer caixa, prefixo que é arquivo, pasta com o mesmo nome e o SKILL.md são **409**, conferidos numa transação. As outras escritas continuam upsert e sobrescrevem de propósito: salvar (`PUT …/files/*path`) e enviar (`POST …/files`, multipart — que pede confirmação quando o nome já existe) |
+| 21 | Acesso | **Guia própria** (pedido de 17/09/2026) na skill, no catálogo e no servidor, na leitura e na edição — antes era uma caixa à direita de Propriedades (e de Configurações, no servidor). A tela tem, à esquerda, "Quem tem acesso" (o dono e as concessões, com "Compartilhar com") e, à direita, Dono (com transferir), Visibilidade e o que cada nível permite. No servidor, a visibilidade é o "aberto", que continua em Configurações. Rotas `/acesso` e `/editar/acesso`; no servidor, `/mcps/:slug/acesso` |
+| 22 | Auditoria | A guia **Acessos** (o registro de leituras) passa a se chamar **Auditoria**, em `/auditoria`; `/acessos` leva para lá (e, na skill, `/editar/acessos` e `/editar/auditoria` levam à leitura, como na 17). A ficha de conta continua com Acessos — lá a guia são as leituras **feitas** pela conta, ao lado de Atividade |
+| 23 | Catálogos da skill | **Guia própria** na leitura (os catálogos de que participa, com estado, servidores e dono) e, na edição, a mesma tabela como CRUD da participação: "Adicionar a um catálogo" (a paleta, só com os catálogos que a sessão **edita**), a caixa que liga e desliga a participação e "Tirar do catálogo". Catálogo que a sessão não edita fica em leitura. A permissão é a do catálogo (`edit`), como na ficha dele |
+| 24 | Salvar da edição da skill | **Sempre ativo, e grava tudo** (pedido de 17/09/2026: desmarcar um vínculo ou mudar o acesso não ativava o botão). Portas por servidor, participação nos catálogos, visibilidade, concessões e dono deixam de gravar na hora e viram **pendências**; o Salvar envia, nesta ordem, os arquivos alterados, o formulário (com a visibilidade junto), as portas, os catálogos, as concessões e, por último, a transferência (com confirmação). O que falhar continua pendente e o erro diz qual foi. Sem pendência, o Salvar relê a skill do servidor. Uma faixa acima das guias lista o que vai ser gravado, com Descartar; o botão mostra quantas são. Desmarcar todas as portas de um servidor tira a skill dele. Só a skill mudou: catálogo e servidor continuam gravando membros e acesso na hora |
 
 Fechadas por derivação:
 
-- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/propriedades`,
-  `/skills/:slug/acessos`, e o mesmo sob `/editar` — na skill, desde a
-  decisão 17, `/editar/arquivos` e `/editar/propriedades`; no catálogo, mais
-  `/skills`. Uma guia tem endereço e sobrevive a um recarregamento, como as
+- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/catalogos`,
+  `/skills/:slug/propriedades`, `/skills/:slug/acesso`,
+  `/skills/:slug/auditoria`, e o mesmo sob `/editar` — na skill, desde as
+  decisões 17 e 21 a 23, `/editar/arquivos`, `/editar/catalogos`,
+  `/editar/propriedades` e `/editar/acesso`; no catálogo, mais `/skills`. Uma guia tem endereço e sobrevive a um recarregamento, como as
   abas do servidor. O arquivo aberto em Arquivos não entra no endereço: ele
   é estado da página, como os rascunhos.
 - **O token global não entra no registro.** Ele não é uma conta: como o
@@ -98,17 +107,23 @@ está desligada.
   a caixa com as guias **Skill** (o markdown renderizado) e **SKILL.md** (o
   arquivo inteiro, frontmatter gerado e corpo, com "Copiar"), com a árvore
   de arquivos à direita — cada arquivo abre o conteúdo cru em outra guia.
+- **Catálogos** — os catálogos de que participa, com o estado (participa,
+  participação desativada, catálogo desligado, público), quantos servidores
+  cada um alcança e o dono (decisão 23).
 - **Propriedades** — "Propriedades" (nome, slug, ícone, tags, estado,
-  arquivos, contadores com a pontuação, datas), "Publicada em" (os servidores
-  em que está, com as portas em selos e "via catálogo X"), "Nos catálogos" e
-  "Acesso" (dono, seu acesso, visibilidade e, para quem administra, quem
-  mais tem acesso — tudo texto).
-- **Acessos** (só para quem administra) — a tabela da §5.
+  visibilidade e dono, catálogos, arquivos, contadores com a pontuação,
+  datas) e "Publicada em" (os servidores em que está, com as portas em selos
+  e "via catálogo X").
+- **Acesso** — a guia da decisão 21, só texto: o dono, as concessões (para
+  quem administra), a visibilidade e os níveis.
+- **Auditoria** (só para quem administra) — a tabela da §5.
 
 ### 3.2 Skill: editar (`/skills/:slug/editar`)
 
-O mesmo cabeçalho, com **Visualizar** e **Salvar** no lugar de Editar. Três
-guias — Skill, Arquivos e Propriedades (decisão 17):
+O mesmo cabeçalho, com **Visualizar** e **Salvar** no lugar de Editar. Cinco
+guias — Skill, Arquivos, Catálogos, Propriedades e Acesso (decisões 17, 21 e
+23). O Salvar está sempre ativo e grava tudo o que está pendente (decisão 24);
+a faixa acima das guias lista as pendências, com Descartar:
 
 - **Skill** — a descrição vira um campo; a caixa ganha, na guia SKILL.md, o
   frontmatter gerado (travado) sobre o corpo (livre); a guia Skill renderiza
@@ -127,15 +142,19 @@ guias — Skill, Arquivos e Propriedades (decisão 17):
   ⌘S; "Descartar" relê o que está gravado. Trocar de arquivo ou de guia não
   perde rascunho — a árvore marca os pendentes —, e recarregar ou fechar a
   aba com algo pendente pede confirmação ao navegador.
+- **Catálogos** — a tabela da leitura como CRUD da participação (decisão
+  23), em pendências.
 - **Propriedades** — o formulário de metadados (slug, nome, tags, ícone) e a
-  caixa "Skill ligada", gravados pelo Salvar; "Publicada em" com as caixas
-  de porta por servidor (grava na hora, como antes); "Nos catálogos" (só
-  leitura: a edição é no catálogo); "Acesso" completo (transferir, público,
-  conceder, revogar — grava na hora); e, para o dono, a **zona de perigo**
-  com Remover.
+  caixa "Skill ligada"; "Publicada em" com as caixas de porta por servidor
+  (desmarcar todas tira a skill do servidor; "Publicar" e a lixeira são
+  atalhos); tudo em pendências. Para o dono, a **zona de perigo** com
+  Remover, que continua imediata.
+- **Acesso** — a guia da decisão 21 completa (transferir, público,
+  conceder, mudar o nível, revogar), em pendências: cada linha alterada
+  ganha um selo ("nova", "nível muda", "revogada ao salvar") e desfazer.
 
 O ⌘S grava o que está à frente: na guia Arquivos, o arquivo aberto; no
-resto — e com o SKILL.md aberto em Arquivos —, o formulário. Os comandos da
+resto — e com o SKILL.md aberto em Arquivos —, o mesmo que o Salvar. Os comandos da
 paleta acompanham: salvar, novo arquivo, nova pasta, enviar, importar
 `.zip`, remover o arquivo aberto e "Arquivos da skill".
 
@@ -156,10 +175,12 @@ catálogo desligado e de skills desligadas ficam acima das guias.
   desligada) e a data; em Editar, "Adicionar skill" (a paleta), a caixa de
   participação e remover, gravando na hora (`edit`).
 - **Propriedades** — "Propriedades" (nome, slug, estado, membros,
-  servidores, contadores, datas; em Editar, o formulário, `manage`, gravado
-  pelo Salvar), "Vinculado em" (leitura nas duas fichas: o vínculo é no canvas
-  do servidor) e "Acesso"; em Editar, a zona de perigo para o dono.
-- **Acessos** (só para quem administra) — a tabela da §5 com a coluna da
+  servidores, visibilidade e dono, contadores, datas; em Editar, o
+  formulário, `manage`, gravado pelo Salvar) e "Vinculado em" (leitura nas
+  duas fichas: o vínculo é no canvas do servidor); em Editar, a zona de
+  perigo para o dono.
+- **Acesso** — a guia da decisão 21; em Editar, cada ação grava na hora.
+- **Auditoria** (só para quem administra) — a tabela da §5 com a coluna da
   skill.
 
 ### 3.4 Usuário: visualizar e editar (`/users/:uuid`, `…/editar`)
@@ -245,7 +266,8 @@ vai a mesma chave sintética com que a sessão é contabilizada.
 
 ### 5.3 A guia
 
-`AccessLog`, a mesma tabela nas quatro fichas: quando (relativo e absoluto),
+`AccessLog`, a mesma tabela nas quatro fichas (na skill e no catálogo, a
+guia Auditoria; na conta, Acessos): quando (relativo e absoluto),
 a skill (no catálogo), quem (a conta com a chave `psk_`, a chave `psv_`,
 "sem credencial" num servidor aberto, ou "anônimo" no site), origem (tipo e
 superfície), o servidor (com "via catálogo X"), o cliente (o `clientInfo` ou
