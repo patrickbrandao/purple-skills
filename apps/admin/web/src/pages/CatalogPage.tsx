@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Server, SlidersHorizontal } from 'lucide-react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Server, SlidersHorizontal, Users } from 'lucide-react';
 import {
   canEdit as canEditAccess,
   canManage,
@@ -8,28 +8,36 @@ import {
   getCatalog,
   getCatalogAccesses,
   num,
-  updateCatalog,
   type CatalogDetail,
   type CatalogSkill,
   type Session,
   type SessionUser,
 } from '../api.js';
 import { Badge, EmptyRow, McpStateBadges, Panel, Skel, Status, Tabs } from '../components/ui.js';
-import { AccessBadge, AccessPanel, accessSentence } from '../components/AccessPanel.js';
+import { AccessBadge, AccessTab, accessSentence } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { SURFACES } from '../components/SkillMcps.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
-type Tab = 'catalogo' | 'skills' | 'propriedades' | 'acessos';
+export type CatalogTab = 'catalogo' | 'skills' | 'propriedades' | 'acesso' | 'auditoria';
+
+const TABS: readonly CatalogTab[] = ['skills', 'propriedades', 'acesso', 'auditoria'];
+
+/** A guia pelo caminho, a partir da base da ficha (`/catalogos/:slug` ou `…/editar`). */
+export const catalogTabOf = (pathname: string, base: string): CatalogTab =>
+  TABS.find((item) => item === pathname.slice(base.length).split('/')[1]) ?? 'catalogo';
+
+/** O que "público" significa num catálogo, para a guia Acesso. */
+export const CATALOG_PUBLIC_HINT = 'O site lista o catálogo com todos os membros ativos — inclusive skills que não são públicas.';
 
 /**
  * A ficha do catálogo, só leitura (`docs/13-fichas-e-acessos.md`): o título
- * com os selos e os contadores, o botão Editar, e quatro guias — Catálogo (a
- * descrição), Skills (os membros), Propriedades (configuração, onde está
- * vinculado e acesso) e Acessos (as leituras de skills entregues por este
- * catálogo, para quem administra). Nada aqui grava: toda alteração é em
+ * com os selos e os contadores, o botão Editar, e as guias — Catálogo (a
+ * descrição), Skills (os membros), Propriedades (configuração e onde está
+ * vinculado), Acesso (dono, visibilidade e concessões) e Auditoria (as
+ * leituras de skills entregues por este catálogo, para quem administra). Nada aqui grava: toda alteração é em
  * Editar. O que a sessão pode vem em `access` (`docs/12-acesso-granular.md`
  * §3.2).
  */
@@ -40,13 +48,7 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
   const toast = useToast();
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
 
-  const tab: Tab = location.pathname.endsWith('/skills')
-    ? 'skills'
-    : location.pathname.endsWith('/propriedades')
-      ? 'propriedades'
-      : location.pathname.endsWith('/acessos')
-        ? 'acessos'
-        : 'catalogo';
+  const tab = catalogTabOf(location.pathname, `/catalogos/${slug}`);
 
   const load = useCallback(async () => {
     try {
@@ -125,15 +127,20 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
           { key: 'catalogo', label: 'Catálogo', icon: <Info />, to: base },
           { key: 'skills', label: 'Skills', icon: <Library />, to: `${base}/skills`, count: detail.skillCount },
           { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/propriedades` },
-          ...(manages ? [{ key: 'acessos', label: 'Acessos', icon: <History />, to: `${base}/acessos` }] : []),
+          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${base}/acesso` },
+          ...(manages ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${base}/auditoria` }] : []),
         ]}
       />
 
       <Routes>
         <Route index element={<CatalogDescription description={detail.description} />} />
         <Route path="skills" element={<MembersTable catalog={detail} />} />
-        <Route path="propriedades" element={<PropertiesTab catalog={detail} user={user} onChanged={setDetail} />} />
-        {manages && <Route path="acessos" element={<AccessLog load={loadAccesses} showSkill />} />}
+        <Route path="propriedades" element={<PropertiesTab catalog={detail} />} />
+        <Route path="acesso" element={<AccessTab kind="catalog" object={detail} user={user} mode="read" publicHint={CATALOG_PUBLIC_HINT} />} />
+        {manages && <Route path="auditoria" element={<AccessLog load={loadAccesses} showSkill />} />}
+        {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
+        <Route path="acessos" element={<Navigate to={`${base}/auditoria`} replace />} />
+        <Route path="*" element={<Navigate to={base} replace />} />
       </Routes>
     </div>
   );
@@ -321,57 +328,47 @@ export function LinkedMcpsPanel({ catalog }: { catalog: CatalogDetail }) {
   );
 }
 
-/** Configuração, vínculos e acesso — tudo em leitura. */
-function PropertiesTab({ catalog, user, onChanged }: { catalog: CatalogDetail; user: SessionUser; onChanged: (detail: CatalogDetail) => void }) {
+/** Configuração e vínculos — tudo em leitura. */
+function PropertiesTab({ catalog }: { catalog: CatalogDetail }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)]">
-      <div className="grid content-start gap-4">
-        <Panel title="Propriedades" icon={<SlidersHorizontal />}>
-          <dl className="kv props-kv">
-            <dt>Nome</dt>
-            <dd>{catalog.name}</dd>
-            <dt>Slug</dt>
-            <dd className="mono">{catalog.slug}</dd>
-            <dt>Estado</dt>
-            <dd>
-              {catalog.isActive ? (
-                <Badge tone="ok">ligado</Badge>
-              ) : (
-                <Badge tone="danger" title="Nenhum servidor recebe as skills dele">
-                  desligado
-                </Badge>
-              )}
-            </dd>
-            <dt>Membros</dt>
-            <dd>
-              {catalog.activeSkillCount} entregue{catalog.activeSkillCount === 1 ? '' : 's'} de {catalog.skillCount}
-            </dd>
-            <dt>Servidores</dt>
-            <dd>{catalog.mcpCount}</dd>
-            <dt>Acessos</dt>
-            <dd>
-              {num(catalog.viewCount)} leitura{catalog.viewCount === 1 ? '' : 's'} · {num(catalog.downloadCount)} download{catalog.downloadCount === 1 ? '' : 's'} — somados quando a skill chegou ao servidor por este catálogo
-            </dd>
-            <dt>Criado em</dt>
-            <dd>{formatDateTime(catalog.createdAt)}</dd>
-            <dt>Atualizado em</dt>
-            <dd>{formatDateTime(catalog.updatedAt)}</dd>
-          </dl>
-        </Panel>
-        <LinkedMcpsPanel catalog={catalog} />
-      </div>
-
-      <div className="grid content-start gap-4">
-        <AccessPanel
-          kind="catalog"
-          object={catalog}
-          user={user}
-          onPatch={(body) => updateCatalog(catalog.slug, body)}
-          onChanged={onChanged}
-          publicHint="O site lista o catálogo com todos os membros ativos — inclusive skills que não são públicas."
-          readOnly
-        />
-      </div>
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <Panel title="Propriedades" icon={<SlidersHorizontal />}>
+        <dl className="kv props-kv">
+          <dt>Nome</dt>
+          <dd>{catalog.name}</dd>
+          <dt>Slug</dt>
+          <dd className="mono">{catalog.slug}</dd>
+          <dt>Estado</dt>
+          <dd>
+            {catalog.isActive ? (
+              <Badge tone="ok">ligado</Badge>
+            ) : (
+              <Badge tone="danger" title="Nenhum servidor recebe as skills dele">
+                desligado
+              </Badge>
+            )}
+          </dd>
+          <dt>Membros</dt>
+          <dd>
+            {catalog.activeSkillCount} entregue{catalog.activeSkillCount === 1 ? '' : 's'} de {catalog.skillCount}
+          </dd>
+          <dt>Servidores</dt>
+          <dd>{catalog.mcpCount}</dd>
+          <dt>Visibilidade</dt>
+          <dd>
+            {catalog.isPublic ? 'público' : 'privado'} · dono: {catalog.ownerEmail ?? 'nenhum (só administradores)'}
+          </dd>
+          <dt>Acessos</dt>
+          <dd>
+            {num(catalog.viewCount)} leitura{catalog.viewCount === 1 ? '' : 's'} · {num(catalog.downloadCount)} download{catalog.downloadCount === 1 ? '' : 's'} — somados quando a skill chegou ao servidor por este catálogo
+          </dd>
+          <dt>Criado em</dt>
+          <dd>{formatDateTime(catalog.createdAt)}</dd>
+          <dt>Atualizado em</dt>
+          <dd>{formatDateTime(catalog.updatedAt)}</dd>
+        </dl>
+      </Panel>
+      <LinkedMcpsPanel catalog={catalog} />
     </div>
   );
 }

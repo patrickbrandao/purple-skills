@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  adoptOrphans,
   badRequest,
   conflict,
   createApiKey,
@@ -104,7 +105,35 @@ export async function bootstrapAdmin(input: {
     targetLabel: email,
   });
 
+  // O que a sessão de bootstrap criou passa a ser do primeiro admin.
+  await adoptOrphansFor(user, { userUuid: null, label: 'bootstrap' });
+
   return toPublicUser(user);
+}
+
+/**
+ * O administrador solitário adota as skills e os catálogos sem dono
+ * (`docs/05-accounts-and-roles.md` §2.3): o que a sessão de bootstrap ou o
+ * token global criaram nasce órfão, e passa a ser da conta quando ela é a
+ * única admin ativa — no `/api/setup` e a cada login. Quem confere a
+ * condição é o banco (`adoptOrphans`); aqui só se evita a ida ao banco para
+ * quem não é admin.
+ *
+ * Melhor esforço: uma falha vai para o log e não impede a entrada.
+ */
+export async function adoptOrphansFor(
+  user: { uuid: string; email: string; role: Role },
+  actor: AuditActor = { userUuid: user.uuid, label: user.email },
+): Promise<void> {
+  if (user.role !== 'admin') return;
+  try {
+    const { skills, catalogs } = await adoptOrphans(user.uuid, SOURCE, actor);
+    if (skills + catalogs > 0) {
+      console.log(`[admin] ${user.email} adotou ${skills} skill(s) e ${catalogs} catálogo(s) sem dono`);
+    }
+  } catch (err) {
+    console.error('[admin] falha ao adotar skills e catálogos sem dono:', err);
+  }
 }
 
 // ----------------------------------------------------------------- login ---
@@ -148,6 +177,7 @@ export async function loginWithPassword(input: {
   }
 
   await registerSuccessfulLogin(user.uuid);
+  await adoptOrphansFor(user);
   return { user };
 }
 
@@ -456,6 +486,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
   if (byOidc) {
     if (!byOidc.isActive) throw unauthorized('Conta desativada');
     await registerSuccessfulLogin(byOidc.uuid);
+    await adoptOrphansFor(byOidc);
     return byOidc;
   }
 
@@ -471,6 +502,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
       oidcSubject: claims.subject,
     });
     await registerSuccessfulLogin(linked.uuid);
+    await adoptOrphansFor(linked);
     return linked;
   }
 
@@ -495,6 +527,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
   });
 
   await registerSuccessfulLogin(created.uuid);
+  await adoptOrphansFor(created);
   return created;
 }
 

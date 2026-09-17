@@ -710,6 +710,48 @@ a 20. O que a implementação decidiu além dele:
   45 % da guia; a divisória aceita arrasto, setas (Shift para passos
   maiores), Home/End e duplo clique para voltar a 300 px.
 
+## Guias Acesso, Auditoria e Catálogos; o Salvar da skill
+
+Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md), decisões 21
+a 24, e a adoção dos órfãos em
+[`05-accounts-and-roles.md`](05-accounts-and-roles.md) §2.3. O que a
+implementação decidiu além deles:
+
+- **`AccessPanel` virou `AccessTab`**, com três modos em vez do `readOnly`:
+  `read` (a ficha de leitura), `live` (catálogo e servidor — cada ação grava
+  na hora, como antes) e `draft` (a edição da skill — cada ação só troca o
+  rascunho). O arquivo continua `AccessPanel.tsx`, com `AccessBadge`,
+  `accessSentence` e `UserPicker`. A busca do novo dono não exclui mais
+  quem tem concessão: transferir para essa conta vale, e a concessão some.
+- **Os rascunhos são dados puros** (`skillDrafts.ts`, com testes): cada um
+  descreve o estado **desejado**; `planChanges` compara com a skill gravada
+  e devolve as pendências na ordem de envio; `pruneDrafts` descarta o que
+  já não muda nada. Depois do Salvar a página relê a skill e poda: o que foi
+  gravado some sozinho, o que falhou continua — sem contabilidade de quais
+  chamadas deram certo. Os rascunhos guardam o uuid da skill; trocar de
+  skill na mesma rota os zera.
+- **A ordem do Salvar evita o slug velho**: os arquivos vão primeiro (o
+  editor de arquivos conhece o slug de antes), depois o formulário — que
+  pode trocar o slug —, e as demais chamadas usam o slug devolvido. A
+  visibilidade vai no mesmo `PATCH` do formulário quando ele também mudou.
+- **Sem pendência, o Salvar relê** a skill, em vez de reenviar o
+  formulário: todo `PATCH` toca `updated_at` e audita `update`, e um clique
+  sem mudança não deve fingir uma alteração.
+- **"Publicada em" mostra só os servidores que a sessão edita** (antes, os
+  que ela via — um servidor aberto aparecia com caixas que o servidor
+  recusaria). Vale também para o "Publicar em" da skill nova.
+- **A guia Catálogos lê `GET /api/catalogs`** para saber estado, dono,
+  servidores e se a sessão edita cada catálogo; "Adicionar" usa a página
+  `pick-catalog` da paleta, com os não editáveis no `exclude`.
+- **Adoção dos órfãos** (`adoptOrphans`, do dba): o painel chama no
+  `bootstrapAdmin` (ator `bootstrap`) e depois de cada
+  `registerSuccessfulLogin` — senha e os três caminhos do SSO — com a
+  própria conta como ator, só para `role = admin`, em `try/catch`. Quem
+  confere se a conta é a única admin ativa é o banco, numa transação com
+  advisory lock. De carona, o dba corrigiu `updateSkill` e
+  `updateSkillWithContent`, que regravavam o dono lido antes da transação e
+  podiam desfazer uma adoção ou transferência concorrente.
+
 ## Portas
 
 | Serviço | Porta |

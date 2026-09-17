@@ -451,7 +451,7 @@ download do pacote.
 Cada uma dessas leituras também deixa **um registro** (`skill_accesses`): quem
 leu — a chave `psv_` do servidor, a conta por trás de uma chave `psk_` do MCP
 administrativo, ou ninguém —, por qual servidor e catálogo, de que IP e com que
-cliente. O painel mostra os últimos na guia **Acessos** da skill e do
+cliente. O painel mostra os últimos na guia **Auditoria** da skill e do
 catálogo, para quem os administra
 ([`docs/13-fichas-e-acessos.md`](docs/13-fichas-e-acessos.md)). O registro
 nunca é apagado.

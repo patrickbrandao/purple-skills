@@ -114,6 +114,18 @@ máquina com papel `admin`, registrado no audit como ator `token-global`. Sem
 isso, criar o primeiro usuário derrubaria todo agente MCP já configurado — a
 instalação ficaria viva pela web e morta pelo MCP.
 
+**O administrador solitário adota o que nasceu órfão** (pedido de
+17/09/2026). A sessão de bootstrap e o `MCP_ADMIN_TOKEN` não são contas, e o
+que criam — skills e catálogos — fica sem dono. No `/setup` e a cada login
+(senha ou SSO) de uma conta `admin` que seja a **única admin ativa**, o painel
+chama `adoptOrphans` (`@purple-skills/db`): toda skill e todo catálogo sem
+dono passam a ser dela, cada um auditado como uma transferência (`update` /
+`catalog.update` com o e-mail no label; no setup, com o ator `bootstrap`).
+Com dois ou mais admins ativos nada acontece — não há como escolher o dono.
+vMCPs ficam de fora: o `public`/padrão nasce órfão de propósito (`09`,
+decisão 6). A adoção é melhor esforço: uma falha vai para o log e não impede
+a entrada.
+
 ### 2.4 OIDC
 
 Opcional, ligado por `OIDC_ISSUER`. Fluxo authorization code + PKCE via

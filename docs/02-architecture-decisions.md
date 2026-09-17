@@ -507,8 +507,13 @@ Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). Migration `018`.
 - **Lista → visualizar → editar.** A ficha de uma skill ou de um catálogo é
   só leitura; toda alteração — conteúdo, metadados, publicação, acesso,
   remover — mora em `/editar`, com a mesma organização de guias: Skill,
-  Propriedades e Acessos na skill; Catálogo, Skills, Propriedades e Acessos
-  no catálogo. Guias são rotas.
+  Catálogos, Propriedades, Acesso e Auditoria na skill (Editar troca
+  Auditoria por Arquivos); Catálogo, Skills, Propriedades, Acesso e
+  Auditoria no catálogo. O servidor tem a guia Acesso ao lado de
+  Configurações. Guias são rotas.
+- **O Salvar da edição da skill grava tudo** (desde 17/09/2026): portas,
+  catálogos, visibilidade, concessões e dono são pendências até ele, que
+  fica sempre ativo; catálogo e servidor continuam gravando na hora.
 - **Registro por leitura** em `skill_accesses`: cada `get_skill`,
   resource, prompt, SKILL.md avulso e pacote do MCP público, o detalhe, o
   SKILL.md e o pacote do site, e o `get_skill` do mcp-admin por chave `psk_`
@@ -516,7 +521,7 @@ Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). Migration `018`.
   servidor, os catálogos por onde a skill chegou, sessão, IP e cliente. Os
   contadores são somados na mesma escrita; nunca é podada; cópias de slug,
   nome, chave e e-mail sobrevivem à remoção do que nomeiam. A guia é de
-  quem administra o objeto (`manage`).
+  quem administra o objeto (`manage`) e se chama **Auditoria**.
 - **A colmeia** do card do servidor: um hexágono liso por skill direta
   (`rgb(59, 145, 145)`) e por catálogo (`rgb(112, 59, 145)`), até 19, e um
   "+N" com o resto.

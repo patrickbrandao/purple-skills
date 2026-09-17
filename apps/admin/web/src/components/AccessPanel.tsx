@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Crown, Globe, Lock, Search, ShieldCheck, Trash2, UserRound, Users } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Crown, Globe, Lock, Search, ShieldCheck, Trash2, Undo2, UserRound, Users } from 'lucide-react';
 import {
   ACCESS_HINT,
   ACCESS_LABEL,
@@ -16,10 +16,12 @@ import {
   type Accessible,
   type EffectiveAccess,
   type Grant,
+  type Role,
   type SessionUser,
   type UserLookup,
 } from '../api.js';
-import { Badge, Button, EmptyRow, Panel, useClickOutside, useConfirm, useDebounced } from './ui.js';
+import type { AccessDraft } from '../skillDrafts.js';
+import { Badge, Button, EmptyRow, Panel, cx, useClickOutside, useConfirm, useDebounced } from './ui.js';
 import { initials } from './SkillIcon.js';
 import { useToast } from './Toast.js';
 
@@ -180,7 +182,7 @@ export function UserPicker({
   );
 }
 
-// ------------------------------------------------------------- o painel ----
+// ------------------------------------------------------------- a guia ------
 
 type AccessObject = Accessible & {
   slug: string;
@@ -190,34 +192,81 @@ type AccessObject = Accessible & {
 };
 
 /**
- * A seção "Acesso" da página de uma skill, catálogo ou servidor
- * (`docs/12-acesso-granular.md` §5.1): o dono (com transferir), o flag
- * público e a tabela de concessões. Quem tem só `view` ou `edit` vê o dono
- * e o flag; a lista de contas é de quem tem `manage`.
+ * Como a guia grava: `read` não grava (a ficha de leitura); `live` grava cada
+ * ação na hora (catálogo e servidor); `draft` só descreve o que se quer, e o
+ * Salvar da página envia (a edição da skill — `docs/13` decisão 21).
  */
-export function AccessPanel<T extends AccessObject>({
+export type AccessMode<T> =
+  | { mode: 'read' }
+  | {
+      mode: 'live';
+      /** Aplica `isPublic` ou `ownerUserUuid` no objeto e devolve o estado novo. */
+      onPatch: (body: { isPublic?: boolean; ownerUserUuid?: string }) => Promise<T>;
+      onChanged: (updated: T) => void;
+    }
+  | { mode: 'draft'; draft: AccessDraft; onDraft: (next: AccessDraft) => void };
+
+type RowState = 'saved' | 'new' | 'changed' | 'revoked';
+
+type Row = {
+  userUuid: string;
+  email: string;
+  name: string;
+  role: Role;
+  level: AccessLevel;
+  saved: Grant | null;
+  state: RowState;
+};
+
+/** As concessões gravadas com o rascunho por cima: as novas no fim. */
+function rowsOf(grants: Grant[], draft: AccessDraft | null): Row[] {
+  const rows: Row[] = grants.map((grant) => {
+    const wanted = draft?.grants[grant.userUuid];
+    if (!wanted) return { ...grant, saved: grant, state: 'saved' };
+    if (wanted.level === null) return { ...grant, saved: grant, state: 'revoked' };
+    return { ...grant, level: wanted.level, saved: grant, state: wanted.level === grant.level ? 'saved' : 'changed' };
+  });
+  const savedUuids = new Set(grants.map((grant) => grant.userUuid));
+  for (const wanted of Object.values(draft?.grants ?? {})) {
+    if (savedUuids.has(wanted.userUuid) || wanted.level === null) continue;
+    rows.push({ ...wanted, level: wanted.level, saved: null, state: 'new' });
+  }
+  return rows;
+}
+
+const PENDING_LABEL: Record<Exclude<RowState, 'saved'>, string> = {
+  new: 'nova, ao salvar',
+  changed: 'nível muda ao salvar',
+  revoked: 'revogada ao salvar',
+};
+
+/**
+ * A guia "Acesso" de uma skill, catálogo ou servidor
+ * (`docs/12-acesso-granular.md` §5.1, numa tela própria desde a decisão 21 do
+ * `13`): à esquerda, quem tem acesso — o dono e as concessões, com o
+ * "Compartilhar com"; à direita, o dono (com transferir), a visibilidade e o
+ * que cada nível permite. Quem tem só `view` ou `edit` vê o dono e a
+ * visibilidade; a lista de contas é de quem tem `manage`.
+ */
+export function AccessTab<T extends AccessObject>({
   kind,
   object,
   user,
-  onPatch,
-  onChanged,
   publicHint,
   privateCount,
-  readOnly = false,
+  visibility,
+  ...how
 }: {
   kind: AccessKind;
   object: T;
   user: SessionUser;
-  /** Aplica `isPublic` ou `ownerUserUuid` no objeto e devolve o estado novo. */
-  onPatch: (body: { isPublic?: boolean; ownerUserUuid?: string }) => Promise<T>;
-  onChanged: (updated: T) => void;
   /** O que "público" significa neste tipo, para a caixa. */
   publicHint?: string;
   /** Quantas skills privadas ficariam públicas ao marcar (o aviso da decisão 15). */
   privateCount?: number;
-  /** A ficha de leitura: dono, flag e concessões como texto, sem transferir, marcar, conceder ou revogar. */
-  readOnly?: boolean;
-}) {
+  /** A seção Visibilidade inteira, no lugar da caixa "Público" (o servidor, que tem "aberto"). */
+  visibility?: ReactNode;
+} & AccessMode<T>) {
   const toast = useToast();
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
@@ -226,28 +275,69 @@ export function AccessPanel<T extends AccessObject>({
   const [level, setLevel] = useState<AccessLevel>('view');
   const [newOwner, setNewOwner] = useState<UserLookup | null>(null);
 
+  const draft = how.mode === 'draft' ? how.draft : null;
+  const writable = how.mode !== 'read';
   const manages = canManage(object.access);
-  // Só leitura: o que a sessão vê é o mesmo, mas nenhum controle aparece.
-  const owns = canOwn(object.access) && !readOnly;
-  const edits = manages && !readOnly;
+  const owns = canOwn(object.access) && writable;
+  const edits = manages && writable;
   const what = KIND_LABEL[kind];
   const isAdminView = user.role === 'admin';
 
-  async function setPublic(isPublic: boolean) {
+  const rows = rowsOf(object.grants, draft);
+  const isPublic = draft?.isPublic ?? object.isPublic;
+  const publicPending = draft?.isPublic !== undefined && draft.isPublic !== object.isPublic;
+  const pendingOwner = draft?.owner && draft.owner.uuid !== object.ownerUserUuid ? draft.owner : null;
+
+  const setDraft = (patch: Partial<AccessDraft>) => {
+    if (how.mode === 'draft') how.onDraft({ ...how.draft, ...patch });
+  };
+
+  /** Troca o rascunho de uma conta; voltar ao gravado apaga a entrada. */
+  const draftGrant = (row: Pick<Row, 'userUuid' | 'email' | 'name' | 'role'>, next: AccessLevel | null, saved: Grant | null) => {
+    if (!draft) return;
+    const { [row.userUuid]: _old, ...others } = draft.grants;
+    const unchanged = saved ? next === saved.level : next === null;
+    setDraft({
+      grants: unchanged
+        ? others
+        : { ...others, [row.userUuid]: { userUuid: row.userUuid, email: row.email, name: row.name, role: row.role, level: next } },
+    });
+  };
+
+  async function live<R>(action: () => Promise<R>): Promise<R | undefined> {
     setBusy(true);
     try {
-      onChanged(await onPatch({ isPublic }));
-      toast.success(isPublic ? `${object.name} agora é público.` : `${object.name} voltou a ser privado.`);
+      return await action();
     } catch (err) {
       toast.error((err as Error).message);
+      return undefined;
     } finally {
       setBusy(false);
     }
   }
 
+  async function setPublic(next: boolean) {
+    if (how.mode === 'draft') {
+      setDraft({ isPublic: next === object.isPublic ? undefined : next });
+      return;
+    }
+    if (how.mode !== 'live') return;
+    const updated = await live(() => how.onPatch({ isPublic: next }));
+    if (!updated) return;
+    how.onChanged(updated);
+    toast.success(next ? `${object.name} agora é público.` : `${object.name} voltou a ser privado.`);
+  }
+
   async function transfer(event: FormEvent) {
     event.preventDefault();
     if (!newOwner) return;
+    if (how.mode === 'draft') {
+      setDraft({ owner: newOwner.uuid === object.ownerUserUuid ? undefined : newOwner });
+      setNewOwner(null);
+      setTransferring(false);
+      return;
+    }
+    if (how.mode !== 'live') return;
     const ok = await confirm({
       title: `Transferir "${object.name}" para ${newOwner.name}?`,
       description: isAdminView
@@ -257,208 +347,167 @@ export function AccessPanel<T extends AccessObject>({
       danger: !isAdminView,
     });
     if (!ok) return;
-    setBusy(true);
-    try {
-      onChanged(await onPatch({ ownerUserUuid: newOwner.uuid }));
-      toast.success(`${object.name} agora é de ${newOwner.email}.`);
-      setNewOwner(null);
-      setTransferring(false);
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    const updated = await live(() => how.onPatch({ ownerUserUuid: newOwner.uuid }));
+    if (!updated) return;
+    how.onChanged(updated);
+    toast.success(`${object.name} agora é de ${newOwner.email}.`);
+    setNewOwner(null);
+    setTransferring(false);
   }
 
   async function grant(event: FormEvent) {
     event.preventDefault();
     if (!target) return;
-    setBusy(true);
-    try {
-      const saved = await share(kind, object.slug, target.email, level);
-      const grants = [...object.grants.filter((item) => item.userUuid !== saved.userUuid), saved];
-      onChanged({ ...object, grants });
-      toast.success(`${saved.email} agora pode ${ACCESS_LABEL[saved.level]}.`);
+    if (how.mode === 'draft') {
+      draftGrant({ ...target, userUuid: target.uuid }, level, object.grants.find((item) => item.userUuid === target.uuid) ?? null);
       setTarget(null);
       setLevel('view');
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
+      return;
     }
+    if (how.mode !== 'live') return;
+    const saved = await live(() => share(kind, object.slug, target.email, level));
+    if (!saved) return;
+    how.onChanged({ ...object, grants: [...object.grants.filter((item) => item.userUuid !== saved.userUuid), saved] });
+    toast.success(`${saved.email} agora pode ${ACCESS_LABEL[saved.level]}.`);
+    setTarget(null);
+    setLevel('view');
   }
 
-  async function changeLevel(item: Grant, next: AccessLevel) {
-    if (next === item.level) return;
-    setBusy(true);
-    try {
-      const saved = await share(kind, object.slug, item.email, next);
-      onChanged({ ...object, grants: object.grants.map((current) => (current.userUuid === saved.userUuid ? saved : current)) });
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
+  async function changeLevel(row: Row, next: AccessLevel) {
+    if (how.mode === 'draft') {
+      draftGrant(row, next, row.saved);
+      return;
     }
+    if (how.mode !== 'live' || next === row.level) return;
+    const saved = await live(() => share(kind, object.slug, row.email, next));
+    if (!saved) return;
+    how.onChanged({ ...object, grants: object.grants.map((current) => (current.userUuid === saved.userUuid ? saved : current)) });
   }
 
-  async function revoke(item: Grant) {
+  async function revoke(row: Row) {
+    if (how.mode === 'draft') {
+      draftGrant(row, null, row.saved);
+      return;
+    }
+    if (how.mode !== 'live') return;
     const ok = await confirm({
-      title: `Tirar o acesso de ${item.name}?`,
-      description: `${item.email} deixa de ${ACCESS_LABEL[item.level]} este ${what}. Vínculos que a conta já fez ficam.`,
+      title: `Tirar o acesso de ${row.name}?`,
+      description: `${row.email} deixa de ${ACCESS_LABEL[row.level]} este ${what}. Vínculos que a conta já fez ficam.`,
       confirmLabel: 'Revogar',
       danger: true,
     });
     if (!ok) return;
-    setBusy(true);
-    try {
-      await unshare(kind, object.slug, item.email);
-      onChanged({ ...object, grants: object.grants.filter((current) => current.userUuid !== item.userUuid) });
-      toast.success(`${item.email} perdeu o acesso.`);
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    const done = await live(() => unshare(kind, object.slug, row.email));
+    if (!done) return;
+    how.onChanged({ ...object, grants: object.grants.filter((current) => current.userUuid !== row.userUuid) });
+    toast.success(`${row.email} perdeu o acesso.`);
   }
 
-  const excluded = new Set<string>([
-    ...object.grants.map((item) => item.userUuid),
-    ...(object.ownerUserUuid ? [object.ownerUserUuid] : []),
-  ]);
+  /** Desfaz o rascunho de uma conta: volta ao gravado. */
+  const undo = (row: Row) => row.saved ? draftGrant(row, row.saved.level, row.saved) : draftGrant(row, null, null);
+
+  // A busca refaz a consulta quando o conjunto muda: ele só muda com as contas.
+  const excludedKey = [...rows.map((row) => row.userUuid), object.ownerUserUuid ?? '', pendingOwner?.uuid ?? ''].join(' ');
+  const excluded = useMemo(() => new Set(excludedKey.split(' ').filter(Boolean)), [excludedKey]);
+  // Transferir para quem tem concessão vale: a concessão some com a transferência.
+  const notOwners = useMemo(() => new Set(object.ownerUserUuid ? [object.ownerUserUuid] : []), [object.ownerUserUuid]);
+  const activeCount = rows.filter((row) => row.state !== 'revoked').length;
 
   return (
-    <Panel title="Acesso" icon={<Users />}>
-      <dl className="kv">
-        <dt>Dono</dt>
-        <dd className="flex flex-wrap items-center gap-2">
-          <span>
-            {object.ownerEmail ?? 'nenhum (só administradores)'}
-            {object.ownerUserUuid !== null && object.ownerUserUuid === user.uuid && ' — você'}
-          </span>
-          {owns && !transferring && (
-            <Button variant="quiet" size="sm" onClick={() => setTransferring(true)} disabled={busy}>
-              transferir
-            </Button>
-          )}
-        </dd>
-        {!canOwn(object.access) && (
-          <>
-            <dt>Seu acesso</dt>
-            <dd>{object.access ? ACCESS_LABEL[object.access] : '—'}</dd>
-          </>
-        )}
-        {readOnly && object.isPublic !== undefined && (
-          <>
-            <dt>Visibilidade</dt>
-            <dd>
-              {object.isPublic ? 'público: qualquer conta do painel e o site leem, sem concessão' : 'privado: só o dono, os administradores e as contas com concessão'}
-              {publicHint && object.isPublic && <span className="hint block">{publicHint}</span>}
-            </dd>
-          </>
-        )}
-      </dl>
-
-      {transferring && (
-        <form onSubmit={transfer} className="mt-3 grid gap-2">
-          <UserPicker value={newOwner} onChange={setNewOwner} autoFocus placeholder="Quem passa a ser o dono" />
-          <div className="flex items-center gap-2">
-            <Button type="submit" size="sm" disabled={busy || !newOwner}>
-              Transferir
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setTransferring(false);
-                setNewOwner(null);
-              }}
-            >
-              Cancelar
-            </Button>
-          </div>
-        </form>
-      )}
-
-      {object.isPublic !== undefined && !readOnly && (
-        <label className="check mt-3" title={publicHint}>
-          <input
-            type="checkbox"
-            checked={object.isPublic}
-            disabled={!manages || busy}
-            onChange={(event) => void setPublic(event.target.checked)}
-          />
-          <span>
-            Público: qualquer conta do painel e o site leem, sem concessão
-            {publicHint && <span className="hint block">{publicHint}</span>}
-          </span>
-        </label>
-      )}
-      {object.isPublic !== undefined && !object.isPublic && edits && (privateCount ?? 0) > 0 && (
-        <p className="hint mt-1">
-          Ao marcar, {privateCount === 1 ? '1 skill privada fica pública' : `${privateCount} skills privadas ficam públicas`} por
-          aqui.
+    <div className="access-tab grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,360px)]">
+      <Panel
+        title="Quem tem acesso"
+        icon={<Users />}
+        actions={manages ? <span className="row-sub !mb-0">{activeCount === 1 ? '1 concessão' : `${activeCount} concessões`}</span> : undefined}
+      >
+        <p className="panel-hint">
+          Além do dono, só as contas desta lista — e os administradores, que veem e mudam tudo.
+          {draft && edits && ' Conceder, mudar o nível e revogar ficam pendentes até o botão Salvar.'}
         </p>
-      )}
 
-      {manages && (
-        <>
-          {edits && (
-          <form onSubmit={grant} className="mt-4 grid gap-2">
+        {edits && (
+          <form onSubmit={grant} className="access-share">
             <span className="label">Compartilhar com</span>
-            <UserPicker value={target} onChange={setTarget} exclude={excluded} />
-            <div className="flex flex-wrap items-center gap-2">
-              <select className="field" style={{ maxWidth: 200 }} value={level} onChange={(event) => setLevel(event.target.value as AccessLevel)} aria-label="Nível">
+            <div className="access-share-row">
+              <div className="min-w-0 flex-1">
+                <UserPicker value={target} onChange={setTarget} exclude={excluded} />
+              </div>
+              <select className="field" style={{ maxWidth: 340 }} value={level} onChange={(event) => setLevel(event.target.value as AccessLevel)} aria-label="Nível">
                 {ACCESS_LEVELS.map((item) => (
                   <option key={item} value={item}>
                     {ACCESS_LABEL[item]} — {ACCESS_HINT[item]}
                   </option>
                 ))}
               </select>
-              <Button type="submit" size="sm" disabled={busy || !target}>
+              <Button type="submit" disabled={busy || !target}>
                 Conceder
               </Button>
             </div>
           </form>
-          )}
+        )}
 
-          {readOnly && <span className="label mt-4 block">Quem mais tem acesso</span>}
-          <div className="table-wrap mt-3">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Conta</th>
-                  <th>Nível</th>
-                  <th className="hidden md:table-cell">Concedido</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {object.grants.map((item) => (
-                  <tr key={item.userUuid}>
+        <div className="table-wrap mt-3">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Conta</th>
+                <th>Nível</th>
+                <th className="hidden md:table-cell">Concedido</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <span className="flex items-center gap-2">
+                    <Crown style={{ width: 14, height: 14, color: 'var(--accent-soft)' }} />
+                    <span className="min-w-0">
+                      <span className="row-title truncate">{object.ownerEmail ?? 'Sem dono'}</span>
+                      <span className="row-sub truncate">
+                        {object.ownerUserUuid === null
+                          ? 'só os administradores mandam aqui'
+                          : object.ownerUserUuid === user.uuid
+                            ? 'você'
+                            : 'o dono faz tudo, inclusive apagar e transferir'}
+                      </span>
+                    </span>
+                  </span>
+                </td>
+                <td>
+                  <Badge tone="accent">dono</Badge>
+                </td>
+                <td className="hidden md:table-cell" />
+                <td className="num">
+                  {pendingOwner && <Badge tone="warn">passa a {pendingOwner.email} ao salvar</Badge>}
+                </td>
+              </tr>
+              {manages &&
+                rows.map((row) => (
+                  <tr key={row.userUuid} className={cx(row.state !== 'saved' && 'is-pending', row.state === 'revoked' && 'is-removed')}>
                     <td>
                       <span className="flex items-center gap-2">
                         <UserRound style={{ width: 14, height: 14, color: 'var(--text-faint)' }} />
                         <span className="min-w-0">
-                          <span className="row-title truncate">{item.name}</span>
+                          <span className="row-title truncate">{row.name}</span>
                           <span className="row-sub truncate">
-                            {item.email} · {ROLE_LABEL[item.role]}
+                            {row.email} · {ROLE_LABEL[row.role]}
                           </span>
                         </span>
                       </span>
                     </td>
                     <td>
-                      {readOnly ? (
-                        <Badge tone="info" title={ACCESS_HINT[item.level]}>
-                          {ACCESS_LABEL[item.level]}
+                      {!edits || row.state === 'revoked' ? (
+                        <Badge tone="info" title={ACCESS_HINT[row.level]}>
+                          {ACCESS_LABEL[row.level]}
                         </Badge>
                       ) : (
                         <select
                           className="field"
-                          style={{ minWidth: 120 }}
-                          value={item.level}
+                          style={{ minWidth: 130 }}
+                          value={row.level}
                           disabled={busy}
-                          onChange={(event) => void changeLevel(item, event.target.value as AccessLevel)}
-                          aria-label={`Nível de ${item.email}`}
+                          onChange={(event) => void changeLevel(row, event.target.value as AccessLevel)}
+                          aria-label={`Nível de ${row.email}`}
                         >
                           {ACCESS_LEVELS.map((option) => (
                             <option key={option} value={option}>
@@ -469,32 +518,155 @@ export function AccessPanel<T extends AccessObject>({
                       )}
                     </td>
                     <td className="hidden md:table-cell">
-                      <span className="row-sub whitespace-nowrap">
-                        {formatDateTime(item.createdAt)}
-                        {item.grantedByEmail && ` por ${item.grantedByEmail}`}
-                      </span>
+                      {row.saved ? (
+                        <span className="row-sub whitespace-nowrap">
+                          {formatDateTime(row.saved.createdAt)}
+                          {row.saved.grantedByEmail && ` por ${row.saved.grantedByEmail}`}
+                        </span>
+                      ) : (
+                        <span className="row-sub">—</span>
+                      )}
                     </td>
                     <td className="num">
-                      {edits && (
-                        <button type="button" className="row-action danger" title="Revogar" disabled={busy} onClick={() => void revoke(item)}>
-                          <Trash2 />
-                        </button>
-                      )}
+                      <span className="flex items-center justify-end gap-2">
+                        {row.state !== 'saved' && <Badge tone="warn">{PENDING_LABEL[row.state]}</Badge>}
+                        {edits && row.state !== 'saved' && (
+                          <button type="button" className="row-action" title="Desfazer" onClick={() => undo(row)}>
+                            <Undo2 />
+                          </button>
+                        )}
+                        {edits && row.state !== 'revoked' && (
+                          <button type="button" className="row-action danger" title="Revogar" disabled={busy} onClick={() => void revoke(row)}>
+                            <Trash2 />
+                          </button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
-                {object.grants.length === 0 && <EmptyRow colSpan={4}>Ninguém além do dono e dos administradores</EmptyRow>}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
+              {manages && rows.length === 0 && <EmptyRow colSpan={4}>Nenhuma concessão: só o dono e os administradores</EmptyRow>}
+            </tbody>
+          </table>
+        </div>
 
-      {!manages && (
-        <p className="panel-hint mt-3 mb-0">
-          Quem mais tem acesso é visível só para quem administra este {what}.
-        </p>
-      )}
-    </Panel>
+        {!manages && (
+          <p className="panel-hint mt-3 mb-0">Quem mais tem acesso é visível só para quem administra este {what}.</p>
+        )}
+      </Panel>
+
+      <div className="grid content-start gap-4">
+        <Panel title="Dono" icon={<Crown />}>
+          <dl className="kv">
+            <dt>Dono</dt>
+            <dd>
+              {object.ownerEmail ?? 'nenhum (só administradores)'}
+              {object.ownerUserUuid !== null && object.ownerUserUuid === user.uuid && ' — você'}
+            </dd>
+            <dt>Seu acesso</dt>
+            <dd>{isAdminView ? 'administrador: tudo' : object.access ? ACCESS_LABEL[object.access] : '—'}</dd>
+          </dl>
+
+          {pendingOwner && (
+            <div className="alert warn mt-3">
+              <span className="min-w-0 flex-1">
+                Passa a ser de <strong>{pendingOwner.email}</strong> quando você salvar.
+                {!isAdminView && ' Você deixa de ser o dono.'}
+              </span>
+              <Button variant="quiet" size="sm" onClick={() => setDraft({ owner: undefined })}>
+                <Undo2 /> desfazer
+              </Button>
+            </div>
+          )}
+
+          {owns && !transferring && !pendingOwner && (
+            <Button variant="ghost" size="sm" className="mt-3" onClick={() => setTransferring(true)} disabled={busy}>
+              Transferir para outra conta
+            </Button>
+          )}
+          {transferring && (
+            <form onSubmit={transfer} className="mt-3 grid gap-2">
+              <UserPicker value={newOwner} onChange={setNewOwner} autoFocus placeholder="Quem passa a ser o dono" exclude={notOwners} />
+              <div className="flex items-center gap-2">
+                <Button type="submit" size="sm" disabled={busy || !newOwner}>
+                  Transferir
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setTransferring(false);
+                    setNewOwner(null);
+                  }}
+                >
+                  Cancelar
+                </Button>
+              </div>
+              {draft && <p className="hint !mt-0">A transferência vai junto com o Salvar, por último.</p>}
+            </form>
+          )}
+        </Panel>
+
+        <Panel title="Visibilidade" icon={<Globe />}>
+          {visibility ??
+            (object.isPublic !== undefined && (
+              <>
+                {edits ? (
+                  <label className="check items-start" title={publicHint}>
+                    <input type="checkbox" checked={Boolean(isPublic)} disabled={busy} onChange={(event) => void setPublic(event.target.checked)} />
+                    <span>
+                      Público: qualquer conta do painel e o site leem, sem concessão
+                      {publicHint && <span className="hint">{publicHint}</span>}
+                    </span>
+                  </label>
+                ) : (
+                  <p className="mb-0">
+                    {isPublic ? (
+                      <>
+                        <strong>Público</strong>: qualquer conta do painel e o site leem, sem concessão.
+                      </>
+                    ) : (
+                      <>
+                        <strong>Privado</strong>: só o dono, os administradores e as contas com concessão.
+                      </>
+                    )}
+                    {publicHint && isPublic && <span className="hint">{publicHint}</span>}
+                  </p>
+                )}
+                {publicPending && (
+                  <p className="mt-2 mb-0">
+                    <Badge tone="warn">{isPublic ? 'fica pública ao salvar' : 'volta a privada ao salvar'}</Badge>
+                  </p>
+                )}
+                {!isPublic && edits && (privateCount ?? 0) > 0 && (
+                  <p className="hint">
+                    Ao marcar, {privateCount === 1 ? '1 skill privada fica pública' : `${privateCount} skills privadas ficam públicas`} por aqui.
+                  </p>
+                )}
+                {writable && !manages && <p className="hint">Só quem administra este {what} muda a visibilidade.</p>}
+              </>
+            ))}
+        </Panel>
+
+        <Panel title="Níveis" icon={<ShieldCheck />}>
+          <dl className="kv">
+            {ACCESS_LEVELS.map((item) => (
+              <FragmentLevel key={item} level={item} />
+            ))}
+            <dt>{ACCESS_LABEL.owner}</dt>
+            <dd>Tudo, inclusive apagar e transferir. Os administradores são donos de tudo.</dd>
+          </dl>
+          <p className="panel-hint mt-3 mb-0">Os níveis são cumulativos: administrar inclui editar, e editar inclui visualizar.</p>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function FragmentLevel({ level }: { level: AccessLevel }) {
+  return (
+    <>
+      <dt>{ACCESS_LABEL[level]}</dt>
+      <dd>{ACCESS_HINT[level]}</dd>
+    </>
   );
 }

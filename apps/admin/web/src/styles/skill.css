@@ -60,6 +60,30 @@
   font-family: var(--font-mono);
 }
 
+/* ---- a guia Acesso: o "Compartilhar com" numa linha só ---- */
+.access-share {
+  display: grid;
+  gap: 6px;
+}
+.access-share-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- o aviso de pendências acima das guias da edição ---- */
+.pending-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.pending-bar ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 /* ---- o prompt em duas guias ---- */
 .doc-box {
   border: 1px solid var(--surface-3);

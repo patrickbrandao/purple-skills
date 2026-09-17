@@ -167,6 +167,18 @@ pre {
   padding: 0 18px;
   font-size: 14px;
 }
+/* Quantas pendências o botão grava (o Salvar da edição da skill). */
+.btn .btn-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.22);
+}
 
 .icon-btn {
   display: inline-grid;
@@ -597,6 +609,17 @@ table.data th.num {
 }
 table.data tr.is-off {
   opacity: 0.55;
+}
+/* Rascunho que o Salvar da página ainda vai enviar (edição da skill). */
+table.data tr.is-pending td {
+  background: var(--warn-tint);
+}
+table.data tr.is-pending td:first-child {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+table.data tr.is-removed .row-title {
+  text-decoration: line-through;
+  color: var(--text-muted);
 }
 .row-title {
   display: block;
