@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { countUsers, getUserByUuid } from '@purple-skills/db';
+import { countUsers, getUserByUuid, updateUser } from '@purple-skills/db';
 import {
   type AuditActor,
   type Role,
@@ -112,7 +112,11 @@ function setSessionCookie(req: Request, res: Response, token: string): void {
     httpOnly: true,
     sameSite: 'lax',
     // `Secure` só quando a requisição veio por HTTPS (respeitando o proxy),
-    // senão o cookie seria descartado em um deploy HTTP interno.
+    // senão o cookie seria descartado em um deploy HTTP interno. `req.secure`
+    // sai do `X-Forwarded-Proto` quando o peer é confiável (ver
+    // `trustProxySetting`, em `@purple-skills/shared`): quem alcança a porta
+    // direto, já de dentro de uma faixa privada, escolhe esse cabeçalho. Atrás
+    // de HTTPS, `ADMIN_COOKIE_SECURE=true` tira o palpite da jogada.
     secure: config.cookieSecure ?? req.secure,
     maxAge: config.sessionTtlSeconds * 1000,
     path: '/',
@@ -154,6 +158,44 @@ export async function resolveUser(req: Request): Promise<AuthUser | null> {
     mustChangePassword: user.mustChangePassword,
     legacy: false,
   };
+}
+
+/**
+ * Encerra a sessão: apaga o cookie deste navegador **e** revoga o que já foi
+ * emitido para a conta.
+ *
+ * Apagar o cookie sozinho não revoga nada — o token é stateless e vale até
+ * `exp` (12 h por padrão), então uma cópia feita antes continuaria entrando
+ * depois do "Sair". A única alavanca do desenho é `token_version`
+ * (`docs/05-accounts-and-roles.md` §2.2) e ela é **por conta**: sair derruba
+ * todas as sessões da pessoa, como já acontece quando ela troca a própria
+ * senha. Revogar só este dispositivo exigiria identificador de sessão no
+ * cookie e estado no servidor — a tabela de sessões que a decisão 7 recusa.
+ *
+ * O `boolean` diz se houve o que revogar, para a resposta poder avisar que as
+ * outras sessões também caíram.
+ */
+export async function endSession(req: Request, res: Response): Promise<boolean> {
+  // A sessão é lida antes de apagar o cookie, mas o cookie vai embora mesmo
+  // que o banco esteja fora: sair do painel não pode depender dele.
+  const user = await resolveUser(req).catch((err) => {
+    console.error('[admin] falha ao ler a sessão no logout:', err);
+    return null;
+  });
+  clearSession(res);
+
+  // Sessão de bootstrap (`ADMIN_PASSWORD`) não tem conta: nada para versionar.
+  if (!user?.uuid) return false;
+
+  try {
+    await updateUser(user.uuid, { bumpTokenVersion: true });
+    return true;
+  } catch (err) {
+    // Melhor esforço, como a adoção de órfãos no login: o cookie já foi
+    // apagado e a pessoa precisa sair da tela; a falha fica no log do operador.
+    console.error('[admin] falha ao revogar as sessões no logout:', err);
+    return false;
+  }
 }
 
 const deny = (res: Response, status: number, code: string, message: string) => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { searchSkills, type SearchResult } from '../../api.js';
-import { useCatalogSummary } from '../../useCatalogSummary.js';
+import { useSkillsSummary } from '../../useSkillsSummary.js';
 import { useReveal } from '../../useReveal.js';
 import { SkillCard } from '../SkillCard.js';
 import { SearchIcon } from '../Icons.js';
@@ -14,9 +14,14 @@ const SORTS = [
   { value: 'name', label: 'Nome' },
 ] as const;
 
-export function Catalog() {
+/**
+ * As skills públicas: as marcadas como públicas e as que estão em um catálogo
+ * público ou em um servidor MCP aberto (a visibilidade `'open'` do banco,
+ * `docs/12-acesso-granular.md` §7). Busca, ordem, tags e paginação.
+ */
+export function PublicSkills() {
   const [params, setParams] = useSearchParams();
-  const summary = useCatalogSummary();
+  const summary = useSkillsSummary();
 
   const q = params.get('q') ?? '';
   const tag = params.get('tag') ?? '';
@@ -72,7 +77,7 @@ export function Catalog() {
 
   function goToPage(target: number) {
     update({ page: target > 1 ? String(target) : null });
-    document.getElementById('catalogo')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('skills')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   const totalPages = useMemo(
@@ -81,22 +86,19 @@ export function Catalog() {
   );
 
   return (
-    <section className="market" id="catalogo">
+    <section className="skills-sec" id="skills">
       <div className="wrap">
-        <div className="market-head-wrap reveal">
-          <div className="head">
-            <h2 className="display">
-              O catálogo. <span className="grad-text">Aberto para leitura.</span>
-            </h2>
-            <p>
-              Tudo que está aqui está publicado em um servidor MCP aberto: leia o SKILL.md
-              renderizado, abra os arquivos auxiliares ou baixe o pacote .zip. Seu agente faz o
-              mesmo pelo MCP, sem passar por esta página.
-            </p>
-          </div>
+        <div className="head reveal">
+          <h2 className="display">
+            Skills <span className="grad-text">públicas</span>
+          </h2>
+          <p>
+            As marcadas como públicas e as que estão em um catálogo público ou em um servidor MCP
+            aberto. Leia o SKILL.md, abra os arquivos auxiliares ou baixe o pacote .zip.
+          </p>
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center gap-3 reveal d1">
+        <div className="mt-5 flex flex-wrap items-center gap-3 reveal d1">
           <label className="search-bar min-w-0 flex-1" style={{ minWidth: '260px' }}>
             <SearchIcon />
             <span className="sr-only">Buscar skills</span>
@@ -105,7 +107,7 @@ export function Catalog() {
               className="field"
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Buscar por nome, descrição ou conteúdo do SKILL.md…"
+              placeholder="Buscar skills por nome, descrição ou conteúdo do SKILL.md…"
               aria-label="Buscar skills"
             />
           </label>
@@ -125,7 +127,7 @@ export function Catalog() {
         </div>
 
         {summary && summary.tags.length > 0 && (
-          <div className="mt-4 flex flex-wrap gap-2 reveal d2">
+          <div className="mt-3 flex flex-wrap gap-2 reveal d2">
             <button
               type="button"
               className={`tag${tag ? '' : ' active'}`}
@@ -147,13 +149,13 @@ export function Catalog() {
           </div>
         )}
 
-        <p className="mt-5 text-sm" style={{ color: 'var(--text-faint)' }}>
+        <p className="mt-4 text-sm" style={{ color: 'var(--text-faint)' }}>
           {loading
-            ? 'Consultando o catálogo…'
+            ? 'Buscando skills…'
             : result
-              ? `${result.total} skill${result.total === 1 ? '' : 's'}${q ? ` para “${q}”` : ''}${
-                  tag ? ` na tag ${tag}` : ''
-                }`
+              ? `${result.total} ${result.total === 1 ? 'skill pública' : 'skills públicas'}${
+                  q ? ` para “${q}”` : ''
+                }${tag ? ` na tag ${tag}` : ''}`
               : ''}
         </p>
 
@@ -173,15 +175,15 @@ export function Catalog() {
         {loading && !result && (
           <div className="skill-grid">
             {Array.from({ length: 6 }).map((_, index) => (
-              <div className="skel" style={{ height: '13rem' }} key={index} />
+              <div className="skel" style={{ height: '11rem' }} key={index} />
             ))}
           </div>
         )}
 
         {result && result.items.length === 0 && !loading && (
-          <div className="empty mt-6">
+          <div className="empty mt-4">
             <img className="wiz" src="/assets/images/icon-purple-left-156x224.png" alt="" />
-            <h3>Nenhuma skill encontrada.</h3>
+            <h3>Nenhuma skill pública encontrada.</h3>
             <p>Tente outros termos, ou limpe o filtro de tag.</p>
           </div>
         )}

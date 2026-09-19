@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Library } from 'lucide-react';
+import { Globe, Library } from 'lucide-react';
 import type { CatalogSummary, SkillSummary } from '../../api.js';
 import { Button, Modal } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
@@ -15,6 +15,50 @@ const PORT_HINT: Record<Port, string> = {
 export type Picked = { kind: 'skill'; skill: SkillSummary } | { kind: 'catalog'; catalog: CatalogSummary };
 
 /**
+ * Identidade do item escolhido, para o `key` que remonta o diálogo a cada
+ * abertura: sem remontar, as portas marcadas na vez anterior voltariam
+ * marcadas. O tipo entra na chave porque uma skill e um catálogo podem ter o
+ * mesmo slug.
+ */
+export const pickedKey = (picked: Picked | null): string =>
+  picked === null ? 'none' : `${picked.kind}:${picked.kind === 'skill' ? picked.skill.slug : picked.catalog.slug}`;
+
+/**
+ * O aviso de exposição, num servidor **aberto** (`docs/12-acesso-granular.md`
+ * decisão 15): vincular aqui é publicar. É **inline e sem confirmação** — a
+ * confirmação (`confirm_open`) foi revogada no PR2 do `09` e o `docs/08` §3.3
+ * marca isso; o aviso informa, não impede (`docs/12` §10).
+ *
+ * Uma skill já pública não ganha aviso: por ela, nada muda de política. No
+ * catálogo o aviso é qualitativo — o painel não recebe quantas das skills dele
+ * são privadas (falta `private_skill_count` no resumo do vMCP, pedido ao dba
+ * em `tasks/021`), e um número errado seria pior que nenhum.
+ */
+function OpenExposure({ picked }: { picked: Picked }) {
+  if (picked.kind === 'skill' && picked.skill.isPublic) return null;
+  return (
+    <p className="alert warn mt-4">
+      <Globe />
+      <span className="min-w-0">
+        Este servidor é <strong>aberto</strong>:{' '}
+        {picked.kind === 'skill' ? (
+          <>
+            esta skill é <strong>privada</strong> e, a partir deste vínculo, qualquer cliente a lê sem chave por aqui — e o site
+            passa a listá-la.
+          </>
+        ) : (
+          <>
+            as skills que o catálogo entrega — <strong>inclusive as privadas</strong> — passam a ser lidas sem chave por aqui, e o
+            site passa a listá-las.
+          </>
+        )}{' '}
+        No painel, quem vê o quê não muda.
+      </span>
+    </p>
+  );
+}
+
+/**
  * Ao acrescentar uma skill (ou um catálogo) ao servidor, a pessoa escolhe por
  * quais portas entra — Tools vem marcada, porque é a porta que o agente
  * descobre sozinho. Um nó só existe com ao menos uma aresta, então zero
@@ -23,16 +67,21 @@ export type Picked = { kind: 'skill'; skill: SkillSummary } | { kind: 'catalog';
 export function AddSkillDialog({
   picked,
   serverName,
+  serverIsOpen,
   busy,
   onConfirm,
   onClose,
 }: {
   picked: Picked | null;
   serverName: string;
+  /** Servidor aberto: o vínculo publica o que entra — ver `OpenExposure`. */
+  serverIsOpen: boolean;
   busy: boolean;
   onConfirm: (ports: Port[]) => void;
   onClose: () => void;
 }) {
+  // Estado da abertura: o ponto de uso remonta o diálogo por item (`pickedKey`),
+  // então este padrão vale para toda abertura, não só para a primeira.
   const [ports, setPorts] = useState<Port[]>(['tools']);
   const name = picked ? (picked.kind === 'skill' ? picked.skill.name : picked.catalog.name) : '';
 
@@ -71,6 +120,7 @@ export function AddSkillDialog({
               </span>
             </span>
           </div>
+          {serverIsOpen && <OpenExposure picked={picked} />}
           <div className="mt-4 grid gap-2">
             {PORTS.map((port) => (
               <label key={port} className="well flex cursor-pointer items-start gap-3">

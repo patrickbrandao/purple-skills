@@ -19,6 +19,9 @@ describe('isValidSkillIcon', () => {
     ['URL com espaço', 'https://exemplo.com/a b.png'],
     ['javascript:', 'javascript:alert(1)'],
     ['URL longa demais', `https://x.io/${'a'.repeat(600)}`],
+    // Duzentos emojis unidos por ZWJ: casam no regex e têm 599 caracteres, mais
+    // que o `skills_icon_length_chk` do banco aceita.
+    ['cadeia ZWJ longa demais', Array(200).fill('😀').join('\u200d')],
   ])('recusa %s', (_rotulo, icon) => {
     expect(isValidSkillIcon(icon)).toBe(false);
   });

@@ -1,14 +1,27 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import express from 'express';
-import { trustProxySetting } from '@purple-skills/shared';
+import {
+  GOOGLE_FONTS_FILES,
+  GOOGLE_FONTS_STYLE,
+  securityHeaders,
+  trustProxySetting,
+} from '@purple-skills/shared';
 import { config } from './config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** Assets da página: `dist-web/` ao lado de `dist/` (build) ou de `src/` (dev). */
 const webRoot = resolve(here, '..', 'dist-web');
+/**
+ * A página servida, lida uma vez no boot: dela sai o hash do `<script>` de tema
+ * que entra na CSP. Em desenvolvimento quem serve é o Vite, então ausente é
+ * normal.
+ */
+const indexHtml = existsSync(join(webRoot, 'index.html'))
+  ? readFileSync(join(webRoot, 'index.html'), 'utf8')
+  : undefined;
 
 const app = express();
 
@@ -17,8 +30,16 @@ app.set('trust proxy', trustProxySetting());
 app.use(compression());
 // Sem CORS e sem parser de corpo: a homepage não expõe API nenhuma.
 
+// Página estática, mas ainda assim um documento: sem CSP e sem defesa contra
+// enquadramento ela é embutível por qualquer domínio, e um XSS futuro não teria
+// nada limitando a exfiltração.
+const pageHeaders = securityHeaders({
+  html: indexHtml,
+  styleSources: [GOOGLE_FONTS_STYLE],
+  fontSources: [GOOGLE_FONTS_FILES],
+});
 app.use((_req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+  for (const [nome, valor] of Object.entries(pageHeaders)) res.setHeader(nome, valor);
   next();
 });
 

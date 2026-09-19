@@ -62,7 +62,19 @@ export function beginLogin(req: Request, res: Response): Promise<string> {
   })();
 }
 
-export type OidcIdentity = { issuer: string; subject: string; email: unknown; name?: unknown };
+export type OidcIdentity = {
+  issuer: string;
+  subject: string;
+  email: unknown;
+  /**
+   * `email_verified` como o provedor mandou: `true` ou `false` quando ele se
+   * pronuncia, `undefined` quando o claim não vem. Os três casos são
+   * diferentes para `resolveOidcUser` — ausência não é negação, e muito
+   * provedor corporativo simplesmente não emite o claim.
+   */
+  emailVerified?: boolean | undefined;
+  name?: unknown;
+};
 
 export async function completeLogin(req: Request, res: Response): Promise<OidcIdentity> {
   const flow = unseal((req.cookies as Record<string, string> | undefined)?.[OIDC_COOKIE]);
@@ -84,11 +96,15 @@ export async function completeLogin(req: Request, res: Response): Promise<OidcId
 
   let email = claims.email;
   let name = claims.name;
+  let emailVerified = readEmailVerified(claims.email_verified);
 
   // Nem todo provedor coloca e-mail no id_token; o userinfo é o plano B.
   if (!email) {
     const info = await client.fetchUserInfo(cfg, tokens.access_token, claims.sub);
     email = info.email;
+    // O endereço veio do userinfo, então a verificação também: um
+    // `email_verified` do id_token sem `email` não fala deste endereço.
+    emailVerified = readEmailVerified(info.email_verified);
     name ??= info.name;
   }
 
@@ -96,8 +112,20 @@ export async function completeLogin(req: Request, res: Response): Promise<OidcId
     issuer: cfg.serverMetadata().issuer,
     subject: claims.sub,
     email,
+    emailVerified,
     name,
   };
+}
+
+/**
+ * `email_verified` é booleano no OIDC, mas há provedor que manda a string
+ * `"true"`. Só esses dois formatos contam; qualquer outra coisa vale como
+ * claim ausente.
+ */
+function readEmailVerified(value: unknown): boolean | undefined {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return undefined;
 }
 
 function seal(flow: FlowState): string {

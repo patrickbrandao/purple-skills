@@ -13,7 +13,7 @@ vi.mock('./config.js', () => ({
   config: { siteBaseUrl: 'http://localhost:3000' },
 }));
 
-const { resolveCaller } = await import('./auth.js');
+const { callerAtual, comCaller, resolveCaller } = await import('./auth.js');
 
 /** Requisição mínima: `resolveCaller` lê o header Authorization e, para o registro de acessos, o IP e o agente. */
 const request = (authorization?: string) =>
@@ -112,5 +112,50 @@ describe('credencial do MCP administrativo', () => {
 
     expect(await resolveCaller(request(`Bearer ${key.token}`))).toBeNull();
     expect(db.getUserByUuid).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * O servidor de uma sessão MCP é criado uma única vez, no `initialize`. Quem
+ * autoriza cada tool tem de ser a credencial revalidada na requisição — senão
+ * rebaixar a conta no painel não tira o poder de quem já está conectado.
+ */
+describe('credencial da requisição em curso', () => {
+  const doInitialize = {
+    actor: { userUuid: 'uuid-do-dono', label: 'maria@exemplo.com' },
+    role: 'admin' as const,
+    identity: 'key:id-da-chave',
+    apiKeyId: 'id-da-chave',
+    ip: '203.0.113.7',
+    userAgent: 'agente-de-teste/1.0',
+  };
+
+  it('fora de uma requisição vale o caller do initialize', () => {
+    expect(callerAtual(doInitialize)).toBe(doInitialize);
+  });
+
+  it('a mesma chave rebaixada no meio da sessão passa a valer como membro', async () => {
+    // Mesma identidade (a chave não foi revogada), papel e IP novos.
+    const rebaixado = { ...doInitialize, role: 'membro' as const, ip: '198.51.100.9' };
+    let visto: typeof doInitialize | undefined;
+
+    await comCaller({ caller: rebaixado } as never, async () => {
+      visto = callerAtual(doInitialize);
+    });
+
+    expect(visto?.role).toBe('membro');
+    expect(visto?.ip).toBe('198.51.100.9');
+    // Terminada a requisição, nada fica pendurado no contexto.
+    expect(callerAtual(doInitialize)).toBe(doInitialize);
+  });
+
+  it('requisição sem credencial não contamina o contexto', async () => {
+    let visto: typeof doInitialize | undefined;
+
+    await comCaller({} as never, async () => {
+      visto = callerAtual(doInitialize);
+    });
+
+    expect(visto).toBe(doInitialize);
   });
 });

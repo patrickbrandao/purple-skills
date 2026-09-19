@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { fetchOpenMcps, type PublicVirtualMcp } from '../../api.js';
 import { CopyButton } from '../CopyButton.js';
 import { ExternalLinkIcon } from '../Icons.js';
+import { useReveal } from '../../useReveal.js';
 
 const McpIcon = () => <img src="/assets/images/icon-mcp-64.png" alt="" />;
 
@@ -9,7 +10,7 @@ const McpIcon = () => <img src="/assets/images/icon-mcp-64.png" alt="" />;
  * Os servidores MCP abertos desta instalação
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.2). Aberto é público: cada
  * um responde sem chave em `/virtual/<slug>/mcp`, e o padrão também em
- * `/mcp`. As skills do catálogo acima são a união do que está neles.
+ * `/mcp`. Toda skill que está em um deles aparece entre as skills públicas.
  */
 export function OpenMcps() {
   const [items, setItems] = useState<PublicVirtualMcp[] | null>(null);
@@ -24,18 +25,23 @@ export function OpenMcps() {
     };
   }, []);
 
+  // A seção inteira — título e cartões — só nasce depois da busca, quando o
+  // observador da página já passou. Sem reobservar, ela ocupa espaço e não
+  // aparece nunca, como a grade de catálogos.
+  useReveal([items]);
+
   if (!items || items.length === 0) return null;
 
   return (
     <section className="endpoints" id="servidores">
       <div className="wrap">
-        <div className="head center reveal">
+        <div className="head reveal">
           <h2 className="display">
-            Servidores MCP <span className="grad-text">abertos.</span>
+            Servidores MCP <span className="grad-text">abertos</span>
           </h2>
           <p>
-            Cada um publica um recorte do catálogo e responde sem chave. Aponte o agente para o que
-            interessa ao seu time; o padrão é o mesmo endereço do MCP público.
+            Cada um responde sem chave e entrega o próprio conjunto de skills. Aponte o agente para o
+            que interessa ao seu time; o padrão também responde no endereço do MCP público.
           </p>
         </div>
 

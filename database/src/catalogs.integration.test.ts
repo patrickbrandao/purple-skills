@@ -381,24 +381,33 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     expect(numeros.unlinkedSkills).toBe(1);
 
     // A skill enxerga o servidor pelo caminho do catálogo, com as portas dele.
-    const alfa = await getSkillSummary('alfa');
-    expect(alfa?.mcps).toEqual([
-      {
-        uuid: mcpUuid,
-        slug: 'servidor',
-        name: 'Servidor',
-        isOpen: true,
-        isActive: true,
-        isDefault: false,
-        asSkill: true,
-        asPrompt: false,
-        asResource: false,
-        direct: false,
-        catalogs: [{ uuid: dadosUuid, slug: 'dados', name: 'Time de Dados' }],
-      },
+    // Na leitura `'all'` o caminho é nomeado; **no site, não**: `dados` é
+    // privado, e nomeá-lo entregava o catálogo fechado ao anônimo (`tasks/002`).
+    // O vínculo continua contando para a exposição — o que muda é só o nome.
+    const alfaAdmin = await getSkillSummary('alfa', { visibility: 'all' });
+    const noServidorPorCatalogo = {
+      uuid: mcpUuid,
+      slug: 'servidor',
+      name: 'Servidor',
+      isOpen: true,
+      isActive: true,
+      isDefault: false,
+      asSkill: true,
+      asPrompt: false,
+      asResource: false,
+      direct: false,
+    };
+    expect(alfaAdmin?.mcps).toEqual([
+      { ...noServidorPorCatalogo, catalogs: [{ uuid: dadosUuid, slug: 'dados', name: 'Time de Dados' }] },
     ]);
+    const alfa = await getSkillSummary('alfa');
+    expect(alfa?.mcps).toEqual([{ ...noServidorPorCatalogo, catalogs: [] }]);
     // Fora da leitura `'all'`, os catálogos da skill não vêm.
     expect(alfa?.catalogs).toEqual([]);
+    // E o dono também não: no site as duas colunas vêm nulas (`tasks/002`).
+    // Aqui as skills são órfãs, então o que a leitura `'all'` traz é nulo do
+    // mesmo jeito — quem prova o outro lado é `access.integration.test.ts`.
+    expect([alfa?.ownerUserUuid, alfa?.ownerEmail]).toEqual([null, null]);
     expect((await getSkillSummary('alfa', { virtualMcp: skill }))?.catalogs).toEqual([]);
 
     // Vínculo direto só com Prompts: `alfa` some das ferramentas e aparece
@@ -560,11 +569,16 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     expect(await noServidor()).toEqual([]);
     expect(await noSite()).toEqual(['beta']);
     expect((await listPublishedSkills('prompt', mcpUuid)).map((s) => s.slug)).toEqual(['beta']);
-    expect((await getSkillSummary('beta'))?.mcps[0]).toMatchObject({
+    expect((await getSkillSummary('beta', { visibility: 'all' }))?.mcps[0]).toMatchObject({
       asSkill: false,
       asPrompt: true,
       asResource: true,
       catalogs: [{ slug: 'extras' }],
+    });
+    // `extras` também é privado: o site recebe as portas, não o nome do caminho.
+    expect((await getSkillSummary('beta'))?.mcps[0]).toMatchObject({
+      asPrompt: true,
+      catalogs: [],
     });
     expect((await getSkillSummary('alfa', { visibility: 'all' }))?.catalogs[0]?.isActive).toBe(false);
     // O vínculo e os membros continuam lá para quando religar.

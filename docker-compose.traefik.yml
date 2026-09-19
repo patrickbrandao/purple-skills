@@ -61,7 +61,21 @@ services:
       traefik.http.routers.purple-mcp-admin.tls.certresolver: le
       traefik.http.services.purple-mcp-admin.loadbalancer.server.port: '3003'
 
+  # O banco não ganha rota de Traefik: só perde a porta no host. É *override* de
+  # um serviço declarado em `database/docker-compose.yml`, não declaração — é por
+  # isso que o nome aparece aqui sem violar a regra do `AGENTS.md` ("não declare
+  # postgres, migrate ou seed em nenhum compose"). Não acrescente `image`,
+  # `build`, `environment` nem `volumes` a este bloco.
   postgres:
+    ports: !reset []
+
+  # Ferramenta de depuração sem autenticação, com rota até o mcp-admin por
+  # dentro da rede `internal`: num deploy atrás do proxy ela não publica porta
+  # no host, e de propósito não recebe rótulo de Traefik — não há URL pública
+  # para ela. O container continua de pé; para abrir a UI no servidor, faça um
+  # túnel SSH até o IP do container (`docker inspect purple-skills-mcp-inspector`
+  # mostra o IP na rede `internal`).
+  mcp-inspector:
     ports: !reset []
 
 networks:

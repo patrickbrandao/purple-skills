@@ -70,8 +70,10 @@ export class GoogleDriver implements EmbeddingDriver {
   }
 
   /**
-   * Embute a consulta. **Sem nova tentativa**: quem chama tem um prazo curto
-   * (`RAG_QUERY_TIMEOUT_MS`) e qualquer erro vira busca textual (§8.1).
+   * Embute a consulta. Vale a política de tentativas de `http.ts`, mas **dentro
+   * do prazo de quem chamou**: o `signal` corta o `fetch` e também a espera
+   * entre tentativas, então nada aqui passa de `RAG_QUERY_TIMEOUT_MS`. Qualquer
+   * erro vira busca textual (§8.1).
    */
   async embedQuery(
     model: EmbeddingModel,

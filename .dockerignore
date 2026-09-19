@@ -4,10 +4,18 @@ node_modules
 **/dist-web
 .git
 .github
+# Área de trabalho dos agentes: guarda worktrees, que são cópias inteiras do
+# repositório (~1 GB nesta máquina). Ignorada pelo Git por regra local, então
+# não aparece no `git status` — e ia inteira para o contexto dos 7 builds.
+.claude
 .env
 .env.*
-.env-builder
-.env-skills-langwizard
+# Recursivo de propósito: os Dockerfiles copiam diretório (`COPY apps/<app>
+# ./apps/<app>`), então um `.env` DENTRO de um app entraria na imagem — os dois
+# padrões acima só pegam a raiz. Mesmo critério da guarda do CI: qualquer nome
+# de arquivo que comece por `.env`, em qualquer nível (cobre `.env.local`,
+# `.env-builder` e `.env-skills-langwizard`, que antes vinham um por um).
+**/.env*
 !.env.example
 *.log
 coverage

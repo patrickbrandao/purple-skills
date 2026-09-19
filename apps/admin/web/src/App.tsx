@@ -4,6 +4,7 @@ import {
   BookOpenCheck,
   ExternalLink,
   KeyRound,
+  KeySquare,
   LayoutGrid,
   Library,
   ListChecks,
@@ -21,6 +22,7 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  SESSION_OPERATION_DEFAULTS,
   canCreate,
   canManageUsers,
   getSession,
@@ -29,7 +31,7 @@ import {
   type SessionUser,
 } from './api.js';
 import { ToastProvider } from './components/Toast.js';
-import { ConfirmProvider, Skel, isTypingTarget } from './components/ui.js';
+import { ConfirmProvider, Skel, armChord, isChordKey, isTypingTarget, useConfirm } from './components/ui.js';
 import { CommandProvider, useRegisterCommands } from './components/commands.js';
 import { CommandPalette } from './components/shell/CommandPalette.js';
 import { Layout } from './components/shell/Layout.js';
@@ -55,6 +57,7 @@ import {
   EnvironmentSettingsPage,
   RagSettingsPage,
 } from './pages/SettingsPage.js';
+import { AdminKeysPage } from './pages/AdminKeysPage.js';
 import { MyKeysPage } from './pages/MyKeysPage.js';
 import { AuditPage } from './pages/AuditPage.js';
 
@@ -71,17 +74,17 @@ const OFFLINE: Session = {
   passwordResetByEmail: false,
   siteName: 'Purple Skills',
   brand: { name: 'Purple Skills', iconUrl: '/assets/images/purple-hat-256.png' },
-  siteBaseUrl: '/',
-  mcpPublicUrl: '',
-  links: { docs: null, support: null, chat: null },
-  onlineWindowMs: 120_000,
-  version: '',
+  // Os campos de operação não chegam sem sessão: valem os mesmos padrões que o
+  // `getSession` usa para completar a resposta anônima.
+  ...SESSION_OPERATION_DEFAULTS,
 };
 
 export default function App() {
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  /** A última saída revogou a conta inteira: o login diz isso a quem voltou. */
+  const [revokedAll, setRevokedAll] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -102,7 +105,11 @@ export default function App() {
   const signOut = useCallback(
     async (then?: 'setup') => {
       setLoading(true);
-      await logout().catch(() => void 0);
+      // `revoked` diz que o `token_version` da conta subiu — logo, as sessões
+      // dela nos outros aparelhos caíram com esta. Volta `false` na sessão de
+      // bootstrap (não há conta) e quando o banco recusou: nada a anunciar.
+      const out = await logout().catch(() => null);
+      setRevokedAll(out?.revoked === true);
       navigate(then === 'setup' ? '/?setup=1' : '/');
       await refresh();
     },
@@ -137,7 +144,11 @@ export default function App() {
   if (!current.authenticated || !current.user) {
     return (
       <ToastProvider key="login">
-        <LoginPage session={current} onSuccess={refresh} />
+        <LoginPage
+          session={current}
+          onSuccess={refresh}
+          notice={revokedAll ? 'Sessão encerrada aqui e nos outros aparelhos desta conta.' : null}
+        />
       </ToastProvider>
     );
   }
@@ -178,10 +189,37 @@ function Shell({
 }) {
   const stage = Boolean(useMatch('/mcps/:slug/*'));
   const admin = canManageUsers(user.role);
+  const confirm = useConfirm();
+
+  /**
+   * Sair revoga a conta, não o aparelho: o `token_version` sobe e derruba todas
+   * as sessões dela (`docs/05-accounts-and-roles.md` §2.2). Quem clica precisa
+   * saber disso **antes** — depois a tela já é o login. A sessão de bootstrap
+   * não tem conta para revogar e sai direto, como quem vai criar o primeiro
+   * administrador.
+   */
+  const askLogout = useCallback<OnLogout>(
+    (then) => {
+      if (then === 'setup' || user.legacy) {
+        onLogout(then);
+        return;
+      }
+      void confirm({
+        title: 'Sair de todos os aparelhos?',
+        description:
+          'Sair encerra esta sessão e também as desta conta em outros navegadores e aparelhos — o mesmo efeito de trocar a própria senha.',
+        confirmLabel: 'Sair',
+        cancelLabel: 'Ficar',
+      }).then((ok) => {
+        if (ok) onLogout();
+      });
+    },
+    [confirm, onLogout, user.legacy],
+  );
 
   return (
-    <Layout session={session} user={user} onLogout={onLogout} stage={stage}>
-      <GlobalCommands session={session} user={user} onLogout={onLogout} />
+    <Layout session={session} user={user} onLogout={askLogout} stage={stage}>
+      <GlobalCommands session={session} user={user} onLogout={askLogout} />
       <Routes>
         <Route path="/" element={<Navigate to="/mcps" replace />} />
         <Route path="/mcps" element={<ServersPage session={session} user={user} />} />
@@ -215,6 +253,12 @@ function Shell({
           element={user.legacy ? <Navigate to="/mcps" replace /> : <AccountPage user={user} onChanged={onRefresh} />}
         />
         <Route
+          path="/account/chaves-adm"
+          element={user.legacy ? <Navigate to="/mcps" replace /> : <AdminKeysPage user={user} />}
+        />
+        {/* Ela lista também as `psv_` que a conta emitiu: a sessão de bootstrap entra. */}
+        <Route path="/account/chaves-emitidas" element={<MyKeysPage user={user} />} />
+        <Route
           path="/users"
           element={admin && !user.legacy ? <UsersPage me={user} /> : <Navigate to="/mcps" replace />}
         />
@@ -230,7 +274,7 @@ function Shell({
         <Route path="/meu-espaco" element={<Navigate to="/meu-espaco/skills" replace />} />
         <Route path="/meu-espaco/skills" element={<SkillsPage key="mine" user={user} mine />} />
         <Route path="/meu-espaco/catalogos" element={<CatalogsPage key="mine" user={user} mine />} />
-        <Route path="/meu-espaco/chaves" element={<MyKeysPage user={user} />} />
+        <Route path="/meu-espaco/chaves" element={<Navigate to="/account/chaves-emitidas" replace />} />
         {/* Uma tela por assunto da instalação; a raiz leva à primeira. */}
         <Route
           path="/configuracoes"
@@ -324,7 +368,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
       { id: 'go-skills', label: 'Skills', group: 'Ir para', icon: <BookOpenCheck />, shortcut: 'g k', run: () => navigate('/skills') },
       { id: 'go-my-skills', label: 'Minhas Skills', group: 'Ir para', icon: <BookOpenCheck />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/skills') },
       { id: 'go-my-catalogs', label: 'Meus catálogos', group: 'Ir para', icon: <Library />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/catalogos') },
-      { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeyRound />, keywords: ['meu espaço', 'api', 'psk', 'psv'], run: () => navigate('/meu-espaco/chaves') },
+      { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeySquare />, keywords: ['configurações', 'api', 'psk', 'psv'], run: () => navigate('/account/chaves-emitidas') },
       { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogos') },
       ...(admin
         ? [
@@ -340,7 +384,10 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
         : []),
       ...(user.legacy
         ? [{ id: 'setup-admin', label: 'Sair e criar o primeiro administrador', group: 'Conta' as const, icon: <UserPlus />, keywords: ['bootstrap', 'setup', 'conta', 'admin'], run: () => onLogout('setup') }]
-        : [{ id: 'go-account', label: 'Minha conta', group: 'Conta' as const, icon: <UserRound />, keywords: ['senha', 'chave', 'api'], run: () => navigate('/account') }]),
+        : [
+            { id: 'go-account', label: 'Minha conta', group: 'Conta' as const, icon: <UserRound />, keywords: ['senha'], run: () => navigate('/account') },
+            { id: 'go-admin-keys', label: 'Adm MCP Keys', group: 'Conta' as const, icon: <KeyRound />, keywords: ['chave', 'api', 'psk', 'token', 'emitir'], run: () => navigate('/account/chaves-adm') },
+          ]),
       { id: 'site', label: 'Ver o site do catálogo', group: 'Conta', icon: <ExternalLink />, run: () => {
           window.open(session.siteBaseUrl, '_blank', 'noreferrer');
         },
@@ -351,18 +398,17 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
     [user.role, user.legacy, theme, session.siteBaseUrl],
   );
 
-  // Atalhos "g + tecla", fora de campos de texto.
+  // Atalhos "g + tecla", fora de campos de texto. O acorde é estado
+  // compartilhado (`ui.tsx`) porque quem tem atalho de uma letra só — o palco,
+  // por exemplo — precisa saber que esta tecla já é a segunda de um acorde.
   useEffect(() => {
-    let armed = 0;
     const down = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
-      const now = Date.now();
       if (event.key === 'g') {
-        armed = now;
+        armChord();
         return;
       }
-      if (now - armed > 800) return;
-      armed = 0;
+      if (!isChordKey(event)) return;
       const routes: Record<string, string | undefined> = {
         s: '/mcps',
         k: '/skills',

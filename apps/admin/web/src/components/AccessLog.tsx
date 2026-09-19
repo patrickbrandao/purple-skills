@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Globe, KeyRound, Search, UserRound } from 'lucide-react';
 import {
@@ -57,24 +57,21 @@ export function AccessLog({
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchPage = useCallback(async () => {
-    try {
-      setPage(await load({ q: dq, origin, kind, limit: PAGE, offset }));
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }, [load, dq, origin, kind, offset]);
-
+  // Uma busca por interação: cada filtro volta à primeira página no mesmo
+  // render (o `setOffset(0)` está no próprio campo) e o cleanup descarta a
+  // resposta atrasada — senão a consulta antiga sobrescreve a nova e o rodapé
+  // acaba descrevendo outra faixa de linhas.
   useEffect(() => {
+    let active = true;
     setPage(null);
-    void fetchPage();
-  }, [fetchPage]);
-
-  // Mudar um filtro volta à primeira página.
-  useEffect(() => {
-    setOffset(0);
-  }, [dq, origin, kind]);
+    setError(null);
+    load({ q: dq, origin, kind, limit: PAGE, offset })
+      .then((data) => active && setPage(data))
+      .catch((err) => active && setError((err as Error).message));
+    return () => {
+      active = false;
+    };
+  }, [load, dq, origin, kind, offset]);
 
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : offset + 1;
@@ -90,11 +87,22 @@ export function AccessLog({
             className="field"
             type="search"
             value={q}
-            onChange={(event) => setQ(event.target.value)}
+            onChange={(event) => {
+              setQ(event.target.value);
+              setOffset(0);
+            }}
             placeholder="Usuário, chave de API, IP ou cliente…"
           />
         </label>
-        <select className="field" value={origin} onChange={(event) => setOrigin(event.target.value as SkillAccessOrigin | '')} aria-label="Origem">
+        <select
+          className="field"
+          value={origin}
+          onChange={(event) => {
+            setOrigin(event.target.value as SkillAccessOrigin | '');
+            setOffset(0);
+          }}
+          aria-label="Origem"
+        >
           <option value="">Todas as origens</option>
           {(Object.keys(ORIGIN_LABEL) as SkillAccessOrigin[]).map((item) => (
             <option key={item} value={item}>
@@ -102,7 +110,15 @@ export function AccessLog({
             </option>
           ))}
         </select>
-        <select className="field" value={kind} onChange={(event) => setKind(event.target.value as SkillAccessKind | '')} aria-label="Tipo">
+        <select
+          className="field"
+          value={kind}
+          onChange={(event) => {
+            setKind(event.target.value as SkillAccessKind | '');
+            setOffset(0);
+          }}
+          aria-label="Tipo"
+        >
           <option value="">Leituras e downloads</option>
           <option value="view">Só leituras</option>
           <option value="download">Só downloads</option>
@@ -110,7 +126,9 @@ export function AccessLog({
       </div>
 
       <div className="mb-3 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
-        <span className="mr-auto">{page ? `${from}–${to} de ${total} acesso${total === 1 ? '' : 's'}` : 'Carregando…'}</span>
+        <span className="mr-auto">
+          {page ? `${from}–${to} de ${total} acesso${total === 1 ? '' : 's'}` : error ? 'não foi possível carregar' : 'Carregando…'}
+        </span>
         <button type="button" className="icon-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))} title="Anterior">
           <ChevronLeft />
         </button>

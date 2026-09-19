@@ -1,6 +1,19 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Download, ExternalLink, FileText, History, Info, Library, Pencil, SlidersHorizontal, Users } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Download,
+  ExternalLink,
+  FileText,
+  FolderTree,
+  History,
+  Info,
+  Library,
+  Pencil,
+  SlidersHorizontal,
+  Users,
+} from 'lucide-react';
 import {
   canEdit,
   canManage,
@@ -14,25 +27,29 @@ import {
   type Session,
   type SessionUser,
   type SkillDetail,
+  type SkillFileMeta,
 } from '../api.js';
 import { AccessBadge, AccessTab } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
 import { Badge, McpChips, Panel, Skel, Tabs, noSite } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
+import { SkillFilesView } from '../components/SkillFiles.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { SkillCatalogsTab, SkillMcpsPanel } from '../components/SkillMcps.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
+import { openFileState, useOpenFileFromState, useSkillFiles } from '../useSkillFiles.js';
 
-type Tab = 'skill' | 'catalogos' | 'propriedades' | 'acesso' | 'auditoria';
+type Tab = 'skill' | 'arquivos' | 'catalogos' | 'propriedades' | 'acesso' | 'auditoria';
 
-const TABS: readonly Tab[] = ['catalogos', 'propriedades', 'acesso', 'auditoria'];
+const TABS: readonly Tab[] = ['arquivos', 'catalogos', 'propriedades', 'acesso', 'auditoria'];
 
 /**
  * A ficha da skill, só leitura (`docs/13-fichas-e-acessos.md`): o título com
  * os contadores e os botões (ver no site, .zip, .skill, Editar) e as guias —
  * Skill (a descrição, o SKILL.md renderizado e cru, a árvore de arquivos),
+ * Arquivos (a árvore e o arquivo escolhido, com as cores da linguagem),
  * Catálogos (de quais participa), Propriedades (metadados e onde está
  * publicada), Acesso (dono, visibilidade e concessões) e Auditoria (os
  * últimos registros de leitura, para quem administra). Nada aqui grava: toda
@@ -56,19 +73,38 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const tail = location.pathname.slice(`/skills/${slug}`.length).split('/')[1] ?? '';
   const tab: Tab = TABS.find((item) => item === tail) ?? 'skill';
 
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se o
+  // `load` dependesse dele, cada troca de guia buscaria a skill de novo e
+  // fecharia o arquivo aberto em Arquivos.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
   const load = useCallback(async () => {
     try {
       setSkill(await getSkill(slug));
     } catch (err) {
       toast.error((err as Error).message);
-      navigate('/skills');
+      navigateRef.current('/skills');
     }
-  }, [slug, toast, navigate]);
+  }, [slug, toast]);
 
   useEffect(() => {
     setSkill(null);
     void load();
   }, [load]);
+
+  /** "Recarregar a árvore" troca só a lista de arquivos. */
+  const onFiles = useCallback((update: (files: SkillFileMeta[]) => SkillFileMeta[]) => {
+    setSkill((current) => {
+      if (!current) return current;
+      const files = update(current.files);
+      return files === current.files ? current : { ...current, files, fileCount: files.length };
+    });
+  }, []);
+
+  // O estado da guia Arquivos mora na página: ir a outra guia e voltar mantém o arquivo aberto.
+  const files = useSkillFiles({ skill, canWrite: false, onFiles, onReloadAll: load, formDirty: false });
+  useOpenFileFromState(files, skill?.uuid);
 
   useEffect(() => {
     getMcps()
@@ -81,19 +117,26 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
     [slug],
   );
 
+  // Editar abre a mesma guia (a Auditoria não existe lá) e, em Arquivos, o mesmo arquivo.
+  const editPath = `/skills/${skill?.slug ?? slug}/editar${tab === 'skill' || tab === 'auditoria' ? '' : `/${tab}`}`;
+  const editState = tab === 'arquivos' ? openFileState(files) : undefined;
+
   useRegisterCommands(
     skill
       ? [
           ...(podeEditar
-            ? [{ id: 'skill-edit', label: `Editar "${skill.name}"`, group: 'Recurso' as const, icon: <Pencil />, shortcut: 'e', run: () => navigate(`/skills/${skill.slug}/editar`) }]
+            ? [{ id: 'skill-edit', label: `Editar "${skill.name}"`, group: 'Recurso' as const, icon: <Pencil />, shortcut: 'e', run: () => navigate(editPath, { state: editState }) }]
             : []),
           { id: 'skill-zip', label: 'Baixar .zip', group: 'Recurso', icon: <Download />, run: () => {
               window.open(skillDownloadUrl(skill.slug), '_self');
             },
           },
+          ...(tab !== 'arquivos'
+            ? [{ id: 'files-tab', label: 'Arquivos da skill', group: 'Ir para' as const, icon: <FolderTree />, keywords: ['arvore', 'ler arquivo', 'código'], run: () => navigate(`/skills/${skill.slug}/arquivos`) }]
+            : []),
         ]
       : [],
-    [skill?.slug, podeEditar],
+    [skill?.slug, podeEditar, editPath, editState?.openFile, tab],
   );
 
   if (!skill) {
@@ -109,7 +152,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const base = `/skills/${skill.slug}`;
 
   return (
-    <div className="page wide">
+    <div className={`page wide${tab === 'arquivos' ? ' workbench' : ''}`}>
       <div className="page-head">
         <div className="min-w-0">
           <Link to="/skills" className="back-link">
@@ -145,7 +188,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
             <Download /> .skill
           </a>
           {podeEditar && (
-            <Link to={`${base}/editar`} className="btn btn-primary">
+            <Link to={editPath} state={editState} className="btn btn-primary">
               <Pencil /> Editar
             </Link>
           )}
@@ -166,6 +209,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         value={tab}
         items={[
           { key: 'skill', label: 'Skill', icon: <FileText />, to: base },
+          { key: 'arquivos', label: 'Arquivos', icon: <FolderTree />, to: `${base}/arquivos`, count: skill.files.length },
           { key: 'catalogos', label: 'Catálogos', icon: <Library />, to: `${base}/catalogos`, count: skill.catalogs.length },
           { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/propriedades` },
           { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${base}/acesso` },
@@ -175,7 +219,20 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
       />
 
       <Routes>
-        <Route index element={<SkillTab skill={skill} />} />
+        <Route
+          index
+          element={
+            <SkillTab
+              skill={skill}
+              filesPath={`${base}/arquivos`}
+              onOpenFile={(path) => {
+                files.open(path);
+                navigate(`${base}/arquivos`);
+              }}
+            />
+          }
+        />
+        <Route path="arquivos" element={<SkillFilesView ws={files} skill={skill} />} />
         <Route path="catalogos" element={<SkillCatalogsTab skill={skill} user={user} />} />
         <Route path="propriedades" element={<PropertiesTab skill={skill} />} />
         <Route
@@ -199,8 +256,11 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   );
 }
 
-/** A descrição na largura da guia e, abaixo, o SKILL.md com a árvore ao lado. */
-function SkillTab({ skill }: { skill: SkillDetail }) {
+/**
+ * A descrição na largura da guia e, abaixo, o SKILL.md com a árvore ao lado.
+ * A árvore só navega: escolher um arquivo o abre na guia Arquivos.
+ */
+function SkillTab({ skill, filesPath, onOpenFile }: { skill: SkillDetail; filesPath: string; onOpenFile: (path: string) => void }) {
   return (
     <>
       <DescriptionBox description={skill.description} tags={skill.tags} />
@@ -210,10 +270,23 @@ function SkillTab({ skill }: { skill: SkillDetail }) {
           <SkillDoc slug={skill.slug} name={skill.name} description={skill.description} tags={skill.tags} skillMd={skill.skillMd} />
         </div>
 
-        <Panel className="aside-sticky" title="Arquivos" icon={<FileText />}>
-          <FileTree slug={skill.slug} files={skill.files} />
+        <Panel
+          className="aside-sticky"
+          title="Arquivos"
+          icon={<FolderTree />}
+          actions={
+            <Link to={filesPath} className="link-action">
+              Abrir a guia
+            </Link>
+          }
+        >
+          <FileTree slug={skill.slug} files={skill.files} onPick={onOpenFile} />
           <p className="panel-hint mt-3 mb-0">
-            É esta a pasta que aparece ao descompactar o pacote. Clicar em um arquivo abre o conteúdo cru em outra guia.
+            É esta a pasta que aparece ao descompactar o pacote. Clique num arquivo para lê-lo na guia{' '}
+            <Link to={filesPath} className="link">
+              Arquivos
+            </Link>
+            , com as cores da linguagem.
           </p>
         </Panel>
       </div>

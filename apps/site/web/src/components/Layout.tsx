@@ -1,17 +1,20 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useMeta } from '../useMeta.js';
+import { usePublicCatalogs } from '../usePublicCatalogs.js';
 import { useTheme } from '../useTheme.js';
 import { MoonIcon, SunIcon } from './Icons.js';
 
 const NAV = [
-  { hash: '#catalogo', label: 'Catálogo' },
+  { hash: '#skills', label: 'Skills' },
+  { hash: '#catalogos', label: 'Catálogos' },
   { hash: '#comecar', label: 'mcp.json' },
   { hash: '#enderecos', label: 'Endereços' },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
   const meta = useMeta();
+  const catalogs = usePublicCatalogs();
   const location = useLocation();
   const [theme, toggleTheme] = useTheme();
   const [scrolled, setScrolled] = useState(false);
@@ -50,6 +53,8 @@ export function Layout({ children }: { children: ReactNode }) {
   }, []);
 
   const name = meta?.name ?? 'Purple Skills';
+  // Sem catálogo público, a seção não existe: o atalho some junto.
+  const nav = NAV.filter((item) => item.hash !== '#catalogos' || (catalogs?.length ?? 0) > 0);
 
   return (
     <>
@@ -72,7 +77,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </Link>
 
           <div className="nav-links">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <a key={item.hash} href={anchor(item.hash)}>
                 {item.label}
               </a>
@@ -85,7 +90,7 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
             </button>
-            <a href={anchor('#catalogo')} className="btn btn-primary">
+            <a href={anchor('#skills')} className="btn btn-primary">
               Explorar skills
             </a>
           </div>
@@ -111,14 +116,18 @@ export function Layout({ children }: { children: ReactNode }) {
                 </span>
               </Link>
               <p>
-                As skills deste catálogo, prontas para os seus agentes. Configure o mcp.json uma vez
-                e todos eles passam a enxergar tudo o que está publicado aqui.
+                As skills e os catálogos que esta instalação tornou públicos, prontos para os seus
+                agentes. Configure o mcp.json uma vez e todos eles passam a enxergar o que está
+                publicado no servidor.
               </p>
             </div>
 
             <div className="foot-col">
-              <h5>Catálogo</h5>
-              <a href={anchor('#catalogo')}>Explorar skills</a>
+              <h5>Explorar</h5>
+              <a href={anchor('#skills')}>Skills públicas</a>
+              {(catalogs?.length ?? 0) > 0 && (
+                <a href={anchor('#catalogos')}>Catálogos públicos</a>
+              )}
               <a href={anchor('#comecar')}>Configurar o mcp.json</a>
               <a href={anchor('#enderecos')}>Endereços de acesso</a>
             </div>

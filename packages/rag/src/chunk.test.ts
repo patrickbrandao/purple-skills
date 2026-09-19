@@ -1,5 +1,5 @@
 /**
- * A divisão, o texto de metadados e o hash (§13.1 de `docs/14-rag.md`).
+ * A divisão, o texto de metadados e o hash (§4 e §4.1 de `docs/14-rag.md`).
  *
  * O ponto que os testes protegem é o determinismo: a mesma skill tem que dar
  * os mesmos textos, na mesma ordem, com os mesmos hashes. É o que faz uma
@@ -114,6 +114,48 @@ describe('a skill inteira', () => {
     const { occurrences, skipped } = chunkSkill(skill, MODELO_FALSO);
     expect(occurrences.some((o) => o.relativePath === 'logo.png')).toBe(false);
     expect(skipped.some((s) => s.relativePath === 'logo.png')).toBe(false);
+  });
+
+  it('imagem que por acaso é texto — o `.svg` — não vai ao provedor', () => {
+    const { occurrences, skipped } = chunkSkill(
+      {
+        ...skill,
+        files: [
+          arquivo('SKILL.md', '# Conventional Commits'),
+          arquivo('assets/logo.svg', '<svg><path d="M0 0 L9 9"/></svg>'),
+          // O banco não deveria dar isto como texto; se der, também não sai.
+          arquivo('firmware.bin', 'MZ'),
+        ],
+      },
+      MODELO_FALSO,
+    );
+
+    expect(occurrences.map((o) => o.relativePath)).toEqual(['', 'SKILL.md']);
+    expect(skipped).toEqual([
+      { relativePath: 'assets/logo.svg', reason: 'nao-e-texto', mimeType: 'image/svg+xml' },
+      { relativePath: 'firmware.bin', reason: 'nao-e-texto', mimeType: 'application/octet-stream' },
+    ]);
+  });
+
+  it('o critério é o mime do `shared`, não uma lista nova: código e configuração entram', () => {
+    const caminhos = [
+      '.env.example',
+      'LICENSE',
+      'config.yaml',
+      'dados.json',
+      'lib/Cliente.php',
+      'notas.md',
+      'schema.sql',
+    ];
+    const { occurrences, skipped } = chunkSkill(
+      { ...skill, files: caminhos.map((p) => arquivo(p, 'conteúdo')) },
+      MODELO_FALSO,
+    );
+
+    expect(occurrences.filter((o) => o.source === 'file').map((o) => o.relativePath)).toEqual(
+      caminhos,
+    );
+    expect(skipped).toEqual([]);
   });
 
   it('a ocorrência de meta não tem arquivo, e a de arquivo tem — como a 020 exige', () => {

@@ -144,6 +144,13 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
                       <span className="row-sub">
                         /virtual/{mcp.slug} · {estadoDo(mcp)}
                       </span>
+                      {/* Mesmo aviso da decisão 15 do `docs/12`: a skill nasce
+                          privada, e num servidor aberto o vínculo a publica. */}
+                      {link && mcp.isOpen && (
+                        <span className="hint" style={{ color: 'var(--warn)' }}>
+                          Servidor aberto: a skill nasce privada e, por aqui, qualquer cliente a lê sem chave — e o site a lista.
+                        </span>
+                      )}
                     </td>
                     <td>{link ? <FlagBoxes value={link} onChange={(flags) => setFlags(mcp.slug, flags)} /> : <span className="row-sub">—</span>}</td>
                   </tr>
@@ -265,6 +272,12 @@ export function SkillMcpsPanel({
                 const draft = drafts?.[mcp.uuid];
                 const state = linkState(direct, draft);
                 const flags = draft ?? direct ?? NO_FLAGS;
+                // O aviso da decisão 15 do `docs/12`: num servidor **aberto**, a
+                // skill privada que entra é lida sem chave e listada no site.
+                // Inline e sem confirmação — informa, não impede (`docs/08` §3.3).
+                // Aparece assim que uma porta é marcada, antes do Salvar, e fica
+                // enquanto o vínculo existir (direto ou por catálogo).
+                const expoe = mcp.isOpen && !skill.isPublic && state !== 'unlink' && (viaCatalog || !noPorts(flags));
                 return (
                   <tr key={mcp.uuid} className={cx(!mcp.isActive && 'is-off', state && 'is-pending', state === 'unlink' && 'is-removed')}>
                     <td>
@@ -286,6 +299,11 @@ export function SkillMcpsPanel({
                               </Link>
                             </span>
                           ))}
+                        </span>
+                      )}
+                      {expoe && (
+                        <span className="hint" style={{ color: 'var(--warn)' }}>
+                          Servidor aberto: esta skill é privada e, por aqui, qualquer cliente a lê sem chave — e o site a lista.
                         </span>
                       )}
                     </td>

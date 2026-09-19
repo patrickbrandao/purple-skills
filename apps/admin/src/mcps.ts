@@ -106,8 +106,10 @@ export async function create(
       name: String(body.name ?? '').trim(),
       slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined,
       description: typeof body.description === 'string' ? body.description : undefined,
-      // Nasce vazio, então abrir aqui ainda não expõe nada — a confirmação
-      // entra quando a primeira skill privada for vinculada.
+      // Nasce vazio, então abrir aqui ainda não expõe nada. Quando a primeira
+      // skill entrar não há confirmação a pedir: ela saiu no PR2 do `09`
+      // (decisão 9 e `§4.4`), e o que informa é o aviso inline do painel
+      // (`docs/12-acesso-granular.md`, decisão 15).
       isOpen: body.isOpen === true,
       // Quem cria é o dono. A sessão de bootstrap não tem UUID: o MCP nasce
       // órfão, administrável só por admin.

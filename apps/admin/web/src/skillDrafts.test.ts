@@ -34,6 +34,8 @@ const SKILL = {
   name: 'Minha',
   isPublic: false,
   ownerUserUuid: 'dono',
+  // O dono se compara pelo e-mail: é o que a busca de contas devolve (`tasks/025`).
+  ownerEmail: 'dono@x.dev',
   mcps: [mcp('m1'), mcp('m2', { direct: false, catalogs: [{ uuid: 'c1', slug: 'c1', name: 'C1' }] })],
   catalogs: [
     { uuid: 'c1', slug: 'c1', name: 'C1', isActive: true, memberActive: true },
@@ -97,9 +99,9 @@ describe('planChanges', () => {
           isPublic: true,
           owner: { uuid: 'nova', email: 'nova@x.dev', name: 'Nova', role: 'editor' },
           grants: {
-            ana: { userUuid: 'ana', email: 'ana@x.dev', name: 'ana', role: 'membro', level: null },
-            bia: { userUuid: 'bia', email: 'bia@x.dev', name: 'bia', role: 'membro', level: 'edit' },
-            caio: { userUuid: 'caio', email: 'caio@x.dev', name: 'caio', role: 'membro', level: 'manage' },
+            'ana@x.dev': { email: 'ana@x.dev', name: 'ana', role: 'membro', level: null },
+            'bia@x.dev': { email: 'bia@x.dev', name: 'bia', role: 'membro', level: 'edit' },
+            'caio@x.dev': { email: 'caio@x.dev', name: 'caio', role: 'membro', level: 'manage' },
           },
         },
       }),
@@ -109,11 +111,19 @@ describe('planChanges', () => {
   });
 
   it('o público igual ao gravado e o dono atual não são pendência', () => {
-    expect(types(drafts({ access: { isPublic: false, owner: { uuid: 'dono', email: 'd@x.dev', name: 'D', role: 'admin' }, grants: {} } }))).toEqual([]);
+    expect(types(drafts({ access: { isPublic: false, owner: { uuid: 'dono', email: 'dono@x.dev', name: 'D', role: 'admin' }, grants: {} } }))).toEqual([]);
+  });
+
+  it('mudar o nível de quem já tem concessão não é concessão nova', () => {
+    const [change] = planChanges(
+      SKILL,
+      drafts({ access: { grants: { 'bia@x.dev': { email: 'bia@x.dev', name: 'bia', role: 'membro', level: 'manage' } } } }),
+    );
+    expect(change).toMatchObject({ type: 'grant', email: 'bia@x.dev', level: 'manage', isNew: false });
   });
 
   it('revogar quem não tem concessão não é pendência', () => {
-    expect(types(drafts({ access: { grants: { zeca: { userUuid: 'zeca', email: 'z@x.dev', name: 'z', role: 'membro', level: null } } } }))).toEqual([]);
+    expect(types(drafts({ access: { grants: { 'zeca@x.dev': { email: 'zeca@x.dev', name: 'z', role: 'membro', level: null } } } }))).toEqual([]);
   });
 });
 
@@ -129,7 +139,7 @@ describe('pruneDrafts', () => {
         catalogs: { c1: { slug: 'c1', name: 'C1', member: true, active: true } },
         access: {
           isPublic: false,
-          grants: { ana: { userUuid: 'ana', email: 'ana@x.dev', name: 'ana', role: 'membro', level: 'view' } },
+          grants: { 'ana@x.dev': { email: 'ana@x.dev', name: 'ana', role: 'membro', level: 'view' } },
         },
       }),
     );

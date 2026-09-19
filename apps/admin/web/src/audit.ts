@@ -8,6 +8,9 @@ export const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   'user.create': 'criou conta',
   'user.role': 'mudou papel',
   'user.deactivate': 'desativou',
+  // A senha de **outra** conta, trocada pelo admin ou por um link de
+  // redefinição (`tasks/030`); a troca pelo próprio dono não entra na trilha.
+  'user.password': 'redefiniu senha',
   'key.create': 'emitiu chave',
   'key.revoke': 'revogou chave',
   'mcp.create': 'criou servidor',
@@ -38,6 +41,9 @@ export const ACTION_TONE: Record<AuditEntry['action'], 'ok' | 'accent' | 'danger
   'user.create': 'ok',
   'user.role': 'accent',
   'user.deactivate': 'danger',
+  // `danger`: trocar a senha de outra conta é assumi-la — derruba as sessões
+  // dela e fecha os links de redefinição vivos.
+  'user.password': 'danger',
   'key.create': 'ok',
   'key.revoke': 'danger',
   'mcp.create': 'ok',

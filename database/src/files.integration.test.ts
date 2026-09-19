@@ -482,4 +482,114 @@ describe.skipIf(!url)('arquivos: unicidade de caminho sem diferenciar caixa', ()
       expect(rows[0].n).toBe(0);
     });
   });
+
+  describe('setFiles: a remoção em lote deixa trilha e aceita confirmação', () => {
+    const SLUG = 'caso-011';
+    let uuid = '';
+
+    beforeAll(async () => {
+      const skill = await createSkill(
+        { name: 'Caso 011', slug: SLUG, skillMd: '# principal' },
+        SOURCE,
+      );
+      uuid = skill.uuid;
+    });
+
+    /** As linhas de auditoria da skill, da mais recente para a mais antiga. */
+    async function trilha(): Promise<{ action: string; file_path: string | null; previous_content: string | null }[]> {
+      const { rows } = await lock.query(
+        `SELECT action, file_path, previous_content FROM audit_log
+          WHERE skill_uuid = $1 ORDER BY created_at DESC, action, file_path`,
+        [uuid],
+      );
+      return rows;
+    }
+
+    async function caminhos(): Promise<string[]> {
+      return (await listFiles(uuid)).map((file) => file.relativePath);
+    }
+
+    it('audita um delete por caminho removido, com o conteúdo dos textuais', async () => {
+      await setFiles(
+        SLUG,
+        [
+          { relativePath: 'nota.md', content: 'texto da nota' },
+          { relativePath: 'logo.png', content: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]) },
+        ],
+        SOURCE,
+        { replace: false },
+      );
+      expect(await caminhos()).toEqual(['SKILL.md', 'logo.png', 'nota.md']);
+
+      // O lote seguinte não traz nenhum dos dois: os dois saem.
+      await setFiles(SLUG, [{ relativePath: 'outra.md', content: 'nova' }], SOURCE, {}, {
+        userUuid: null,
+        label: 'ana@exemplo.dev',
+      });
+      expect(await caminhos()).toEqual(['SKILL.md', 'outra.md']);
+
+      const linhas = await trilha();
+      const remocoes = linhas.filter((linha) => linha.action === 'delete');
+      expect(remocoes).toEqual([
+        // O binário entra na trilha sem conteúdo, como em `deleteFile`.
+        { action: 'delete', file_path: 'logo.png', previous_content: null },
+        { action: 'delete', file_path: 'nota.md', previous_content: 'texto da nota' },
+      ]);
+      // A linha da escrita em lote continua existindo, sem caminho.
+      expect(linhas.some((linha) => linha.action === 'update' && linha.file_path === null)).toBe(true);
+    });
+
+    it('confere expectedDeletions dentro da transação: número errado é 409 e nada sai', async () => {
+      await setFiles(SLUG, [{ relativePath: 'a.md', content: 'a' }, { relativePath: 'b.md', content: 'b' }], SOURCE, {
+        replace: false,
+      });
+      const antes = await caminhos();
+      expect(antes).toEqual(['SKILL.md', 'a.md', 'b.md', 'outra.md']);
+
+      // Confirmando uma remoção quando sairiam três: recusa e nada muda.
+      const erro = await outcome(
+        setFiles(SLUG, [{ relativePath: 'a.md', content: 'a2' }], SOURCE, { expectedDeletions: 1 }),
+      );
+      expect(erro).toMatchObject({ status: 409, code: 'conflict' });
+      expect(erro?.message).toContain('confirmou 1');
+      expect(await caminhos()).toEqual(antes);
+      // Nem a gravação de `a.md` valeu — a transação inteira voltou.
+      expect(await readTextFile(uuid, 'a.md')).toBe('a');
+
+      // O número certo passa, e a trilha ganha as três remoções.
+      const restam = await setFiles(
+        SLUG,
+        [{ relativePath: 'a.md', content: 'a2' }],
+        SOURCE,
+        { expectedDeletions: 2 },
+      );
+      expect(restam.map((file) => file.relativePath)).toEqual(['SKILL.md', 'a.md']);
+      expect((await trilha()).filter((linha) => linha.action === 'delete').map((l) => l.file_path)).toContain(
+        'b.md',
+      );
+
+      // `expectedDeletions` torto é 400, antes de abrir transação.
+      expect(
+        await outcome(setFiles(SLUG, [{ relativePath: 'a.md', content: 'a' }], SOURCE, { expectedDeletions: -1 })),
+      ).toMatchObject({ status: 400 });
+    });
+
+    it('duas escritas em lote na mesma skill indexada se enfileiram', async () => {
+      // As duas listas vêm em ordens opostas: sem a trava é disputa linha por
+      // linha, com o trigger `files_rag_stale_trg` da `020` no meio (ele faz
+      // `UPDATE` na skill a cada arquivo de texto). Com ela, a segunda espera.
+      await lock.query('UPDATE skills SET rag_stale = false WHERE uuid = $1', [uuid]);
+      const arquivos = Array.from({ length: 12 }, (_, i) => ({
+        relativePath: `lote-${i}.md`,
+        content: `v${i}`,
+      }));
+
+      const resultados = await Promise.all([
+        outcome(setFiles(SLUG, arquivos, SOURCE, { replace: false })),
+        outcome(setFiles(SLUG, [...arquivos].reverse(), SOURCE, { replace: false })),
+      ]);
+      expect(resultados).toEqual([null, null]);
+      expect(await caminhos()).toHaveLength(2 + arquivos.length);
+    });
+  });
 });

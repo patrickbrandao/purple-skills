@@ -961,23 +961,33 @@
 /* ============================================================
    ABAS DE PÁGINA
    ============================================================ */
+/* Numa tela estreita as guias rolam para o lado, em vez de alargar a página.
+   O fio de baixo é sombra: com `overflow`, uma borda cortaria o sublinhado
+   da guia ativa, que fica por cima dele. */
 .tabs {
   display: flex;
   gap: 2px;
-  border-bottom: 1px solid var(--surface-3);
+  box-shadow: inset 0 -1px 0 var(--surface-3);
   margin-bottom: 20px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 .tabs button,
 .tabs a {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 7px;
   height: 38px;
   padding: 0 12px;
   border: 0;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   background: transparent;
+  white-space: nowrap;
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;

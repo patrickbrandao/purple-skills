@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BookOpenCheck, ChevronDown, LayoutGrid, List, Plus, Search, Trash2, Upload } from 'lucide-react';
 import {
@@ -13,7 +13,7 @@ import {
   type SkillSummary,
 } from '../api.js';
 import { AccessBadge } from '../components/AccessPanel.js';
-import { Badge, EmptyRow, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
+import { Badge, Button, EmptyRow, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
@@ -21,6 +21,14 @@ import { useToast } from '../components/Toast.js';
 type Sort = 'recent' | 'score' | 'name';
 type Filter = 'todas' | 'sem-vinculo' | 'no-site' | 'desligadas';
 type Scope = 'todos' | AccessScope;
+
+/**
+ * O teto de uma consulta: `listSkills` do banco limita `limit` a 100, então a
+ * lista alcança o resto acrescentando página por página ("Carregar mais") — é
+ * o que mantém a busca, os filtros e os contadores desta tela, todos feitos no
+ * cliente, falando do acervo inteiro e não das cem primeiras.
+ */
+const PAGE = 100;
 
 const SORT_LABEL: Record<Sort, string> = { recent: 'Atualização', score: 'Mais acessadas', name: 'Nome' };
 const FILTER_LABEL: Record<Filter, string> = { todas: 'Todas', 'sem-vinculo': 'Sem vínculo', 'no-site': 'No site', desligadas: 'Desligadas' };
@@ -38,6 +46,11 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
   const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<SkillSummary[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  // Uma tentativa que falhou deixa o `offset` já no valor pedido: sem este
+  // contador, clicar "Carregar mais" de novo não refaria a consulta.
+  const [tentativa, setTentativa] = useState(0);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const dq = useDebounced(query, 300);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:skills-sort', 'recent');
@@ -45,25 +58,43 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
   const filter = (params.get('filtro') as Filter | null) ?? 'todas';
   const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
 
-  const load = useCallback(async () => {
-    try {
-      const data = await listSkills({
-        q: dq,
-        limit: 100,
-        sort: dq ? undefined : sort === 'name' ? undefined : sort,
-        scope: scope === 'todos' ? '' : scope,
-      });
-      setItems(data.items);
-      setTotal(data.total);
-    } catch (err) {
-      toast.error((err as Error).message);
-      setItems([]);
-    }
-  }, [dq, sort, scope, toast]);
-
+  // Uma busca por interação: o cleanup descarta a resposta atrasada, senão a
+  // consulta antiga chega por último e sobrescreve a nova. Busca, ordem e
+  // recorte voltam ao começo (`setOffset(0)` em cada gatilho); com `offset`
+  // maior que zero a página vem para o fim do que já está na tela.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let active = true;
+    setLoading(true);
+    listSkills({
+      q: dq,
+      limit: PAGE,
+      offset,
+      sort: dq ? undefined : sort === 'name' ? undefined : sort,
+      scope: scope === 'todos' ? '' : scope,
+    })
+      .then((data) => {
+        if (!active) return;
+        setItems((current) =>
+          offset === 0 || current === null
+            ? data.items
+            : // Uma skill criada entre duas páginas empurra as demais para a
+              // frente: sem descartar o que já veio, a mesma linha voltaria com
+              // chave repetida.
+              [...current, ...data.items.filter((item) => !current.some((loaded) => loaded.uuid === item.uuid))],
+        );
+        setTotal(data.total);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        setItems((current) => current ?? []);
+        setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [dq, sort, scope, offset, tentativa, toast]);
 
   useRegisterCommands(
     [
@@ -82,6 +113,11 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
     return list;
   }, [items, filter, sort]);
 
+  // Os contadores olham o que está carregado; o `total` vem do servidor.
+  // Enquanto faltar página, a frase diz de qual universo cada número fala —
+  // "250 skills, 80 no site" seria contraditório na mesma linha.
+  const loaded = items?.length ?? 0;
+  const truncated = items !== null && total > loaded;
   const unlinked = (items ?? []).filter((skill) => skill.mcps.length === 0).length;
   const onSite = (items ?? []).filter(noSite).length;
   const off = (items ?? []).filter((skill) => !skill.isActive).length;
@@ -116,7 +152,10 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
               className="field"
               style={{ minWidth: 240 }}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setOffset(0);
+              }}
               placeholder="Procurar skill"
             />
           </label>
@@ -137,7 +176,7 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
         <span className="stat">
           <BookOpenCheck />
           {items
-            ? `${num(total)} skill${total === 1 ? '' : 's'}, ${num(onSite)} no site, ${num(unlinked)} sem vínculo${off > 0 ? `, ${num(off)} desligada${off === 1 ? '' : 's'}` : ''}`
+            ? `${truncated ? `${num(loaded)} de ${num(total)} skills carregadas · nelas:` : `${num(total)} skill${total === 1 ? '' : 's'},`} ${num(onSite)} no site, ${num(unlinked)} sem vínculo${off > 0 ? `, ${num(off)} desligada${off === 1 ? '' : 's'}` : ''}`
             : 'Carregando…'}
         </span>
         <span className="sep" />
@@ -148,6 +187,9 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
             </button>
           )}
         >
+          {/* Este filtro é peneira no cliente: não refaz a consulta, e por isso
+              não volta ao começo — voltar jogaria fora justamente as páginas
+              que ele precisa olhar. */}
           {(Object.keys(FILTER_LABEL) as Filter[]).map((key) => (
             <MenuItem key={key} onSelect={() => setParams({ ...(key === 'todas' ? {} : { filtro: key }), ...(mine || scope === 'todos' ? {} : { acesso: scope }) })}>
               {FILTER_LABEL[key]}
@@ -163,7 +205,13 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
             )}
           >
             {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
-              <MenuItem key={key} onSelect={() => setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) })}>
+              <MenuItem
+                key={key}
+                onSelect={() => {
+                  setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) });
+                  setOffset(0);
+                }}
+              >
                 {SCOPE_LABEL[key]}
               </MenuItem>
             ))}
@@ -177,7 +225,13 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
           )}
         >
           {(Object.keys(SORT_LABEL) as Sort[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setSort(key)}>
+            <MenuItem
+              key={key}
+              onSelect={() => {
+                setSort(key);
+                setOffset(0);
+              }}
+            >
               {SORT_LABEL[key]}
             </MenuItem>
           ))}
@@ -305,6 +359,28 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {truncated && (
+        <div className="mt-5 flex flex-col items-center gap-2">
+          {/* A próxima página começa onde a lista termina, e não num múltiplo de
+              PAGE: assim a remoção otimista de `remove()` não faz o servidor
+              pular a skill que tomou o lugar da removida. */}
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setOffset(loaded);
+              setTentativa((current) => current + 1);
+            }}
+            disabled={loading}
+          >
+            {loading ? 'Carregando…' : `Carregar mais ${num(Math.min(PAGE, total - loaded))}`}
+          </Button>
+          <p className="panel-hint mb-0 text-center">
+            A busca, o filtro e a ordenação por nome olham as {num(loaded)} skills já carregadas — cada consulta traz no
+            máximo {PAGE}.
+          </p>
         </div>
       )}
     </div>

@@ -218,6 +218,34 @@ describe('stateless', () => {
     expect(store.calls.openMcpSession).toHaveBeenCalledTimes(2);
   });
 
+  it('com o mapa cheio, identidade nova não vira linha; a que já estava segue contando', async () => {
+    const store = fakeStore();
+    const clock = { now: 1_000_000 };
+    const log = vi.fn();
+    const t = tracker(store, { maxStatelessEntries: 2, log }, clock);
+
+    // O `user-agent` entra na chave sintética: variá-lo é criar identidade nova.
+    t.stateless(request({ agent: 'a' }));
+    t.stateless(request({ agent: 'b' }));
+    t.stateless(request({ agent: 'c' }));
+    await flushMicrotasks();
+
+    expect(store.calls.openMcpSession).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('teto de 2 identidades stateless'));
+
+    // A enxurrada não apaga da tela quem já estava sendo contado.
+    t.stateless(request({ agent: 'a' }));
+    await t.flush();
+    expect(store.calls.touchMcpSession).toHaveBeenCalledWith('row-1', { requests: 1 });
+
+    // Passada a janela, a varredura devolve o espaço.
+    clock.now += 200_000;
+    await t.sweep();
+    t.stateless(request({ agent: 'c' }));
+    await flushMicrotasks();
+    expect(store.calls.openMcpSession).toHaveBeenCalledTimes(3);
+  });
+
   it('depois de um restart, reusa a linha aberta que ainda está na janela', async () => {
     const store = fakeStore();
     store.calls.findOpenMcpSession.mockResolvedValueOnce('row-antiga');

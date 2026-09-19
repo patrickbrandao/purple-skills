@@ -19,25 +19,31 @@ superfícies:
 | Serviço | O que faz | Porta padrão |
 |---------|-----------|--------------|
 | **homepage** | Apresentação do projeto, estática — não fala com o banco | `3004` |
-| **site** | Catálogo do usuário: busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
+| **site** | Página pública do usuário: skills e catálogos públicos, busca, SKILL.md renderizado, download e o `mcp.json` | `3000` |
 | **admin** | Painel de administração: canvas dos servidores MCP, sessões, contas e papéis | `3001` |
 | **mcp-public** | Servidor MCP para agentes descobrirem e baixarem skills | `3002` |
 | **mcp-admin** | Servidor MCP para administrar o catálogo (CRUD completo) | `3003` |
 
 **homepage e site são páginas diferentes de propósito.** A homepage explica o
 que é o Purple Skills e leva ao GitHub; ela não conhece instalação nenhuma e
-pode ir para o ar sozinha. O site é a página de quem já tem um catálogo no ar:
-lista as skills publicadas, ensina a configurar o `mcp.json` e mostra os
-endereços de acesso.
+pode ir para o ar sozinha. O site é a página de quem já tem uma instalação no
+ar: lista as skills e os catálogos tornados públicos, ensina a configurar o
+`mcp.json` e mostra os endereços de acesso. O que é privado fica só no painel.
 
-O banco é **PostgreSQL 18** (imagem `pgvector/pgvector:pg18-trixie`). A busca do
-v1 usa **full-text search nativo** (`tsvector` + GIN); o `pgvector` já está
-disponível para busca vetorial numa versão futura.
+O banco é **PostgreSQL 18** (imagem `pgvector/pgvector:pg18-trixie`). A busca usa
+**full-text search nativo** (`tsvector` + GIN) e, com a
+[busca semântica](#busca-semântica-opcional) ligada, funde o resultado com a
+busca vetorial do `pgvector` por RRF — o campo `mode` da resposta diz qual das
+duas o cliente leu.
 
 ## Começando em 60 segundos
 
 ```bash
-cp .env.example .env      # ajuste ADMIN_PASSWORD e MCP_ADMIN_TOKEN
+cp .env.example .env      # troque TODOS os CHANGE_ME: POSTGRES_PASSWORD,
+                          # ADMIN_PASSWORD, ADMIN_SESSION_SECRET e MCP_ADMIN_TOKEN.
+                          # O de sessão assina o cookie do painel — quem o deixa
+                          # no placeholder entrega o painel a qualquer visitante.
+                          # Gere cada um com: openssl rand -hex 32
 docker compose run --rm migrate   # aplica database/schema/*.sql
 docker compose up -d
 docker compose run --rm seed      # opcional: skills de exemplo
@@ -58,20 +64,31 @@ compose da raiz — rode sempre a partir da raiz do repositório.
 As imagens ficam no Docker Hub, na conta
 [`tmsoftbrasil`](https://hub.docker.com/u/tmsoftbrasil), como
 `tmsoftbrasil/purple-skills-<nome>`: `homepage`, `site`, `admin`,
-`mcp-public`, `mcp-admin`, `indexer` e `db` (a do `migrate` e do `seed`) —
-sempre como `latest`, sem tag por versão. **A publicação não é automática:**
-nenhum workflow de CI tem credencial de registry. Depois de criar a tag da
-release, quem mantém builda e publica à mão, de uma máquina já autenticada
+`mcp-public`, `mcp-admin`, `indexer` e `db` (a do `migrate` e do `seed`) — cada
+uma com **duas tags**, `latest` e a da versão do `package.json`, e em
+**`linux/amd64` e `linux/arm64`**. **A publicação não é automática:** nenhum
+workflow de CI tem credencial de registry. Depois de criar a tag da release,
+quem mantém builda e publica à mão, de uma máquina já autenticada
 (`docker login`) na conta:
 
 ```bash
-./release-images.sh              # builda e publica as 7 imagens
-./release-images.sh site admin   # só as passadas por nome
+./release-images.sh                        # builda e publica as 7 imagens
+./release-images.sh site admin             # só as passadas por nome
+PLATFORMS=linux/amd64 ./release-images.sh  # uma arquitetura só, com pressa
 ```
+
+O script mostra versão, tags, plataformas e commit — e avisa se a árvore está
+suja — antes de pedir a única confirmação; a versão e o commit ficam gravados na
+própria imagem, em labels OCI (`docker image inspect`).
 
 O compose usa a tag de `TAG` no `.env` (padrão `latest`); se a imagem não
 existir no Hub, ele a gera a partir do código, como o `docker compose build`
-faz sempre.
+faz sempre. A tag de versão é o caminho de volta quando uma release quebra,
+porque `latest` é sobrescrita e não deixa cópia de nada:
+
+```bash
+TAG=1.0.0-beta.20 docker compose up -d
+```
 
 ### Atrás do Traefik
 
@@ -83,6 +100,11 @@ docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
 
 O override assume um Traefik já rodando na rede externa `traefik`, com o
 entrypoint `websecure` e o certresolver `le`.
+
+Ele também **despublica as portas** dos serviços (`ports: !reset []`): quem fala
+com os apps passa a ser só o Traefik, e é isso que impede um contêiner vizinho de
+chegar direto no app e declarar o `X-Forwarded-For` que quiser. Quem publica as
+portas (`BIND_ADDR`) e põe um proxy na frente deve nomeá-lo em `TRUST_PROXY`.
 
 ### Depurando os MCPs com o Inspector
 
@@ -100,9 +122,22 @@ dentro da rede `internal`.
 | mcp-admin | `http://mcp-admin:3003/mcp` | `Authorization: Bearer $MCP_ADMIN_TOKEN` (obrigatório) |
 
 O inspector sobe **sem autenticação própria** (`DANGEROUSLY_OMIT_AUTH`), o que
-só é aceitável porque a porta fica em `127.0.0.1`. Com `BIND_ADDR=0.0.0.0` ele
-vira um cliente MCP aberto na rede, com caminho até o `mcp-admin` — não deixe
-ligado fora da máquina de desenvolvimento.
+só é aceitável porque a porta fica em `127.0.0.1` — e ela **não acompanha o
+`BIND_ADDR` global**: publicar os outros serviços na rede não arrasta consigo uma
+ferramenta sem credencial que tem caminho até o `mcp-admin`. Para alcançar
+a UI de outra máquina, mude as duas metades juntas: `INSPECTOR_BIND_ADDR=0.0.0.0`
+**e** `INSPECTOR_OMIT_AUTH=false` com
+`INSPECTOR_API_TOKEN=$(openssl rand -hex 32)`. Atrás do Traefik o override não
+publica porta nenhuma dele nem lhe dá rota: para abrir a UI no servidor, use um
+túnel SSH até o IP do container na rede `internal`.
+
+O Postgres é a outra exceção ao `BIND_ADDR`: a porta dele é publicada em
+`POSTGRES_BIND_ADDR`, com padrão `127.0.0.1`, e fica no loopback mesmo com
+`BIND_ADDR=0.0.0.0`. Nenhum app usa essa porta — todos chegam ao banco por
+`postgres:5432` na rede `internal` —, ela existe para o `psql` de quem
+administra a máquina, e publicá-la na rede expõe um servidor sem limite de
+tentativa de login nem trava de conta. Precisa mesmo do banco de outra máquina?
+`POSTGRES_BIND_ADDR=0.0.0.0`, e não com a senha do `.env.example`.
 
 ## Desenvolvimento local
 
@@ -110,8 +145,7 @@ Requer Node.js 22+ (LTS) e um Postgres 18 acessível.
 
 ```bash
 npm install
-npm run build -w @purple-skills/shared
-npm run build -w @purple-skills/db
+npm run build:packages     # shared, rag e db — a lista vive só no package.json
 npm run migrate            # aplica database/schema/*.sql em DATABASE_URL
 npm run seed               # opcional
 
@@ -149,17 +183,23 @@ database/        camada de dados — domínio do agente dba
   docker-compose.yml   containers postgres, migrate e seed
 apps/
   homepage/      apresentação      — Express estático + React/Vite + Tailwind
-  site/          catálogo          — Express + React/Vite + Tailwind
+  site/          página pública    — Express + React/Vite + Tailwind
   admin/         painel admin      — Express + React/Vite + Tailwind
   mcp-public/    MCP público       — @modelcontextprotocol/sdk
   mcp-admin/     MCP administrativo
+  indexer/       indexador do RAG  — worker de embeddings, perfil rag
 packages/
-  shared/        slug, ranking, mime, zip, secrets, sessão
+  shared/        slug, rating, mime, zip, frontmatter, segredos, senha, chave de
+                 API, e-mail, papéis, sessão, ícone, cabeçalhos de segurança,
+                 rate limit
+  rag/           drivers de embedding, chunk, hash, busca semântica e o registro
+                 único de drivers, modelos e variáveis RAG_*
 ```
 
-Cada app gera sua **própria imagem Docker**. Os quatro que leem o catálogo
-falam **direto com o Postgres** — não há um serviço de API intermediário; a
-`homepage` não abre conexão com o banco.
+Cada app gera sua **própria imagem Docker** — são **6**, e `database/Dockerfile` é
+a sétima, a do `migrate`/`seed`. Os **cinco** que leem o catálogo (`site`,
+`admin`, `mcp-public`, `mcp-admin` e `indexer`) falam **direto com o Postgres**,
+sem serviço de API intermediário; a `homepage` não abre conexão com o banco.
 
 ### O banco fica em `database/`
 
@@ -229,8 +269,10 @@ nem reabrir a sessão; não há `listChanged`, o cliente re-lista quando quiser.
 
 O vínculo se faz pelos dois lados: na página da skill ("Publicada em") ou na
 do MCP virtual, e por `link_skill` / `set_virtual_mcp_skills` no mcp-admin.
-Publicar em um MCP virtual exige administrá-lo — o dono ou um admin. O
-desenho está em
+Publicar em um MCP virtual exige `edit` **nele** e `view` **na skill** — o
+dono, um admin ou quem recebeu `edit` no servidor. Quem edita um servidor
+publica nele qualquer skill que consiga ler, inclusive de outro dono; se o
+servidor for **aberto**, isso torna a skill pública. O desenho está em
 [`docs/09-mcp-padrao-e-skills-flutuantes.md`](docs/09-mcp-padrao-e-skills-flutuantes.md).
 
 Uma skill pode ser **desligada** na ficha dela: some de todo servidor e do
@@ -245,8 +287,11 @@ o grupo, que continua valendo quando o grupo muda. Uma skill pode estar em
 vários catálogos; um catálogo pode estar em vários servidores.
 
 - Cria quem é `editor` ou `admin`, em Catálogos no painel ou por
-  `create_catalog`. Quem cria é o dono; vincular a um servidor exige
-  administrar **o servidor e o catálogo** (dono ou admin dos dois).
+  `create_catalog`. Quem cria é o dono; vincular a um servidor exige `edit`
+  **no servidor** e `view` **no catálogo** — não administrar os dois. Como um
+  catálogo público é legível por qualquer conta, quem edita um servidor seu
+  pode puxar para dentro dele catálogo público de outro dono. Desvincular
+  exige só o `edit` do servidor: tirar da lista é mexer no servidor.
 - Se uma skill do catálogo também tem **vínculo direto** com o mesmo
   servidor, o vínculo direto vale sozinho — é o jeito de restringir uma
   skill num servidor sem tirá-la do grupo. Sem vínculo direto, as portas são
@@ -343,7 +388,7 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 | `edit_skill(slug, {name?, description?, tags?, new_slug?, is_active?, is_public?})` | Edita metadados — é por aqui que muda o frontmatter. Nome, descrição, ícone e tags exigem `edit`; slug, `is_active` e `is_public`, `manage` |
 | `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill: `edit` no MCP virtual e `view` na skill |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
-| `set_files_bulk(slug, zip_base64, replace?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado) |
+| `set_files_bulk(slug, zip_base64, replace?, confirm_deletions?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado). Se algo sairia, a chamada é **recusada** com a lista: repita com `confirm_deletions` igual ao **número exato** de arquivos a remover, ou com `replace: false` para só acrescentar e sobrescrever |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`; só o dono ou um admin) |
 | `share_skill(slug, email, level)` / `unshare_skill(slug, email)` / `transfer_skill(slug, email)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp` |
@@ -352,9 +397,9 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 | `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista inteira de skills do MCP virtual |
 | `list_virtual_mcp_keys(slug)` / `create_virtual_mcp_key(slug, name)` / `revoke_virtual_mcp_key(slug, key_id)` | Chaves `psv_` do MCP virtual |
 | `get_default_virtual_mcp()` / `set_default_virtual_mcp(slug \| null)` | Qual MCP virtual responde em `/mcp`; escolher é só admin |
-| `list_catalogs()` / `get_catalog(slug)` / `create_catalog(…)` / `update_catalog(…)` / `delete_catalog(slug, confirm)` | Catálogos — alcance por dono |
+| `list_catalogs()` / `get_catalog(slug)` / `create_catalog(…)` / `update_catalog(…)` / `delete_catalog(slug, confirm)` | Catálogos — alcance pelo acesso por objeto, como os MCPs virtuais |
 | `set_catalog_skills(slug, [{slug, isActive?}])` | Substitui a lista inteira de skills do catálogo; `isActive: false` mantém sem entregar |
-| `set_virtual_mcp_catalogs(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista de catálogos do MCP virtual; exige administrar o MCP e cada catálogo |
+| `set_virtual_mcp_catalogs(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista de catálogos do MCP virtual; exige `edit` no MCP e `view` em cada catálogo (os que saem da lista, só o `edit` do MCP) |
 
 ## Busca semântica (opcional)
 
@@ -404,18 +449,32 @@ O desenho está em [`docs/14-rag.md`](docs/14-rag.md).
 
 ## API REST pública
 
-A API do site é aberta (CORS `*`) e serve como alternativa ao MCP:
+A API do site é aberta (CORS `*` por padrão; feche com `SITE_CORS_ORIGIN`) e
+serve como alternativa ao MCP. Todas as rotas são `GET`, e todas mostram só o que
+está público — skill vinculada a MCP virtual aberto, skill marcada pública ou
+skill de catálogo público:
 
 ```
+GET  /api/meta                                  nome, tagline e endereços da instalação
 GET  /api/mcps                                  MCPs virtuais abertos, com endereço
-GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca (o que está em MCP virtual aberto)
+GET  /api/catalogs                              catálogos públicos
+GET  /api/catalogs/:slug                        detalhe + os membros ativos do catálogo
+GET  /api/skills?q=&tag=&sort=&limit=&offset=   lista/busca
                                                 a resposta traz `mode`: text ou hybrid
 GET  /api/skills/:slug                          detalhe + corpo do SKILL.md (conta acesso)
-GET  /api/skills/:slug/files/<caminho>          arquivo avulso
 GET  /api/tags                                  tags com contagem
+GET  /api/skills/:slug/files/<caminho>          arquivo avulso
+GET  /skills/:slug/files/<caminho>              o mesmo, sem o prefixo /api
 GET  /skills/:slug/download                     pacote .zip        (conta download)
+GET  /skills/:slug/download.skill               o mesmo ZIP, extensão do formato
+                                                aberto de Agent Skills
+GET  /api/skills/:slug/download                 aliases com /api dos dois
+GET  /api/skills/:slug/download.skill           downloads; contam igual
 GET  /healthz                                   saúde do serviço
 ```
+
+Fora de `/healthz` e de `/assets/`, tudo aqui entra no limite por IP de
+`SITE_RATE_LIMIT_MAX` (240 por minuto; `0` desliga).
 
 ## Metadados e o `SKILL.md`
 
@@ -501,9 +560,10 @@ por objeto ([`docs/12-acesso-granular.md`](docs/12-acesso-granular.md)):
 - **Login por SSO** (OIDC) é opcional. Ligue com `OIDC_ISSUER` +
   `OIDC_CLIENT_ID` + `OIDC_CLIENT_SECRET` e registre no provedor o
   `redirect_uri` `<ADMIN_PUBLIC_URL>/api/auth/oidc/callback`. **Defina
-  `OIDC_ALLOWED_DOMAINS`**: com a lista vazia, o auto-provisionamento fica
-  desligado de propósito — sem allowlist qualquer conta do provedor entraria
-  como `membro` e leria tudo o que é público.
+  `OIDC_ALLOWED_DOMAINS`**: com a lista vazia o SSO recusa **todo** login, até o
+  de quem já tem conta e já entrava por ele — é de propósito, porque sem
+  allowlist qualquer conta do provedor entraria como `membro` e leria tudo o que
+  é público. Enquanto ela não estiver preenchida, só o login local funciona.
 - **Redefinição de senha por e-mail** exige `SMTP_URL` + `SMTP_FROM`. Sem SMTP
   o painel continua completo: o administrador gera uma senha temporária, e a
   pessoa é obrigada a trocá-la no primeiro acesso.
@@ -528,7 +588,8 @@ O desenho completo, com as decisões e o que ficou de fora, está em
 
 ## Configuração
 
-Todas as variáveis estão documentadas em [`.env.example`](.env.example). Todo
+As variáveis estão documentadas em [`.env.example`](.env.example) — ele é a
+lista, e quem passa a ler uma variável nova a acrescenta lá no mesmo commit. Todo
 segredo aceita `<NOME>` ou `<NOME>_FILE`:
 
 | Variável | Obrigatória | Descrição |
@@ -538,13 +599,25 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_DOCS_URL`, `ADMIN_SUPPORT_URL`, `ADMIN_CHAT_URL` | não | Links externos da sidebar do painel; vazio some do menu (a documentação aponta para este README por padrão) |
 | `ADMIN_BRAND_NAME`, `ADMIN_BRAND_ICON_URL` | não | Marca do painel: nome e ícone da sidebar, do login e da aba. O nome cai em `SITE_NAME`; o ícone aceita URL http(s) ou caminho do painel, e valor inválido derruba o boot |
 | `MCP_SESSION_ONLINE_WINDOW_MS` | não | Janela em que um cliente do MCP público conta como online no painel (padrão 2 min); agrupa as requisições stateless de um mesmo cliente numa sessão |
-| `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente) |
+| `MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_IDENTITY` | não | Sessões MCP em memória: teto do processo (padrão 500) e teto por credencial. Deixe o segundo **vazio** — o padrão dele é um décimo do primeiro (mínimo 10), e um número fixo desfaz essa relação. Estourar o teto da credencial fecha a sessão mais parada dela, e o cliente reabre |
+| `SITE_RATE_LIMIT_MAX`, `MCP_RATE_LIMIT_MAX` | não | Requisições por minuto por IP no site (240) e no MCP público (600); `0` desliga, para quem já limita no proxy. Quem chega com chave `psv_` não gasta a cota do endereço |
+| `MCP_MAX_STATELESS_SESSIONS` | não | Identidades stateless contabilizadas ao mesmo tempo (padrão 5000); atingido o teto, a requisição é atendida sem virar linha em `mcp_sessions` |
+| `MCP_JSON_LIMIT`, `MCP_MAX_FILE_TEXT_BYTES` | não | Teto do corpo JSON dos MCPs (1mb no público, 48mb no admin, de propósito) e do texto que `get_skill_file` devolve dentro do resultado (4 MiB; acima dele a resposta é a URL de download) |
+| `SITE_CORS_ORIGIN` | não | Origens aceitas na API pública do site (padrão `*`); feche numa instalação que só deve ser lida de dentro |
+| `TRUST_PROXY` | não | Em quais proxies confiar no `X-Forwarded-*`. Vazio: um salto, e só quando quem abre a conexão é loopback ou faixa privada. Dois proxies internos em cadeia precisam declarar o valor |
+| `MCP_PUBLIC_SERVER_NAME`, `MCP_ADMIN_SERVER_NAME` | não | Nome de cada MCP no handshake (`purple-skills` e `purple-skills-admin`); são duas para os dois servidores não aparecerem com o mesmo nome no `mcp.json` de quem conecta |
+| `TAG`, `APP_VERSION` | não | Tag das imagens que o compose usa (padrão `latest`) e versão que os MCPs anunciam no handshake; preencha as duas com o mesmo valor |
+| `APP_MEM_LIMIT`, `HOMEPAGE_MEM_LIMIT` | não | Teto de memória dos containers de aplicação (1536m) e da homepage (256m). Subiu `ZIP_MAX_UNCOMPRESSED_BYTES`? Suba o primeiro na mesma conta |
+| `POSTGRES_MEM_LIMIT`, `DB_JOB_MEM_LIMIT` | não | Teto de memória do container do banco (2048m) e dos passos `migrate`/`seed` (512m), em `database/docker-compose.yml`. O do banco cobre as áreas compartilhadas, os 50 backends que o pool dos apps abre (`DB_POOL_MAX` × 5) e três autovacuum: subiu um desses, suba o teto — apertado demais, o OOM killer derruba o `postmaster` |
+| `POSTGRES_BIND_ADDR` | não | Endereço em que a porta do Postgres é publicada (padrão `127.0.0.1`). **Não acompanha o `BIND_ADDR`**: nenhum app usa essa porta — todos falam com o banco pela rede interna —, e publicá-la expõe um servidor sem limite de tentativa de login nem trava de conta |
+| `DB_POOL_MAX` | não | Conexões simultâneas no pool de cada app (padrão 10) |
+| `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente). Gere com `openssl rand -hex 32` |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `SITE_BASE_URL` | recomendada | Base da URL da página de uma skill pública, devolvida pelo MCP |
 | `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP público, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
-| `ADMIN_PUBLIC_URL` | recomendada (SSO) | Base do `redirect_uri` do OIDC e do link de redefinição de senha |
+| `ADMIN_PUBLIC_URL` | recomendada (SSO e SMTP) | Base do `redirect_uri` do OIDC e do link de redefinição de senha. Sem ela o link só é montado para pedido vindo de rede interna; numa instalação exposta, `POST /api/password-reset/request` responde 503 e a redefinição passa a ser feita por um administrador |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
-| `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; vazia desliga o auto-provisionamento |
+| `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; **vazia recusa todo login por SSO**, inclusive de contas que já existem e já estão vinculadas |
 | `SMTP_URL` / `_FILE`, `SMTP_FROM` | não | Ligam a redefinição de senha por e-mail |
 | `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS` | não | Trava da conta após tentativas erradas (padrão: 8 / 900s) |
 | `RAG_DRIVER`, `RAG_MODEL` | não | Ligam a [busca semântica](#busca-semântica-opcional): `google`, `openai`, `voyage` ou `off`. Lidas **só pelo admin**, que as semeia no banco no primeiro boot — depois quem manda é o painel. Sem `RAG_MODEL`, vale o padrão do driver |
@@ -553,7 +626,11 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `RAG_QUERY_TIMEOUT_MS`, `RAG_INDEX_INTERVAL_SECONDS` | não | Prazo do embedding da consulta (padrão 2000 ms) e intervalo do indexador (padrão 30 s) |
 
 Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
-cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Os
+cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Como o
+placeholder é público, as credenciais que autenticam alguém
+(`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `MCP_ADMIN_TOKEN`) são **recusadas no
+boot** enquanto estiverem com ele: o serviço não sobe, com a mensagem dizendo o
+comando que gera um valor bom. Os
 arquivos preenchidos (`.env`, `.env-builder`, `run-builder.sh`,
 `docker-compose-builder.yml`) são do ambiente de testes do mantenedor, ficam
 fora do Git e da imagem, e não fazem parte do projeto publicado. **Gere seus
@@ -572,7 +649,11 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
   base64 no `set_files_bulk` (`MCP_MAX_ZIP_BASE64`).
 - Sem versionamento de arquivos (apenas um log de auditoria, sem restore).
 - `audit_log` sem política de retenção.
-- Busca vetorial deixada para uma versão futura.
+- **Busca semântica sem índice vetorial.** A perna vetorial é varredura exata: o
+  HNSW do `pgvector` para em 2000 dimensões e o modelo do Google tem 3072. Ligar
+  a busca vale para o acervo inteiro (não há recorte de escopo), e não há como
+  apagar os vetores de um espaço nem limpar texto ou vetor órfão — ver a §12.5 de
+  [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md).
 - Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
   no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.
 - Um MCP virtual aberto é público: o site o lista, com suas skills, sem

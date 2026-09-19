@@ -3,7 +3,8 @@
    Tipografia, atmosfera, botões, cartões, campos e blocos de código.
    Herdado do desenho do LangWizard, revestido de roxo.
 
-   Idêntico em apps/site e apps/admin — ao mudar um, copie para o outro.
+   Idêntico em apps/site e apps/homepage — ao mudar um, copie para o outro.
+   O painel tem o seu próprio base.css (docs/10) e não entra nessa cópia.
    ============================================================ */
 
 html {

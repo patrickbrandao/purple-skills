@@ -1,14 +1,14 @@
 import type { Request, RequestHandler, Response, Router } from 'express';
-import { getSkillSummary, readAllFiles, readFile } from '@purple-skills/db';
+import { getSkillSummary, listFiles, readFile } from '@purple-skills/db';
 import {
   composeSkillMd,
   contentDisposition,
   isSkillMd,
   normalizeRelativePath,
   safeContentType,
-  writeZip,
 } from '@purple-skills/shared';
 import { accessContextOf, registrarAcesso } from './access.js';
+import { streamSkillZip } from './zip.js';
 
 /**
  * Downloads de um MCP virtual — o `.zip` da skill e os arquivos avulsos —
@@ -65,24 +65,13 @@ const servirZip = (ext: 'zip' | 'skill') =>
       return;
     }
 
-    const files = await readAllFiles(skill.uuid);
+    // A lista, não o conteúdo: cada arquivo é lido dentro do `streamSkillZip`,
+    // na vez de entrar no pacote (e os cabeçalhos saem lá, com o primeiro byte).
+    // Ler a skill inteira aqui punha até centenas de MB na memória por download.
+    const files = await listFiles(skill.uuid);
     registrarAcesso({ mcp: req.virtual!.mcp, access: accessContextOf(req) }, skill.uuid, 'download', 'download');
 
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${skill.slug}.${ext}"`);
-    res.setHeader('Cache-Control', 'no-store');
-
-    await writeZip(
-      files.map((file) => ({
-        relativePath: `${skill.slug}/${file.relativePath}`,
-        // O SKILL.md do pacote nasce dos metadados da skill: o que está
-        // gravado é só o corpo do prompt.
-        content: isSkillMd(file.relativePath)
-          ? composeSkillMd(skill, file.buffer.toString('utf8'))
-          : file.buffer,
-      })),
-      res,
-    );
+    await streamSkillZip(res, skill.slug, files, (path) => readFile(skill.uuid, path), skill, ext);
   });
 
 /** Arquivo avulso. Só o SKILL.md conta acesso, como no site. */

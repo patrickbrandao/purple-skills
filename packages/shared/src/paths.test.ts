@@ -64,6 +64,13 @@ describe('mimeTypeFor', () => {
     expect(mimeTypeFor('script.sh')).toBe('text/x-shellscript');
   });
 
+  it('trata como texto o código e a configuração que as skills costumam trazer', () => {
+    for (const path of ['lib/Cliente.php', 'app.kt', 'run.ps1', 'build.bat', 'tema.scss', 'saida.log', 'setup.cfg', '.env.example', 'mail.j2']) {
+      expect(isTextualMime(mimeTypeFor(path)), path).toBe(true);
+    }
+    expect(mimeTypeFor('lib/Cliente.php')).toBe('text/x-php');
+  });
+
   it('cai para text/plain sem extensão e octet-stream para desconhecidos', () => {
     expect(mimeTypeFor('LICENSE')).toBe('text/plain');
     expect(mimeTypeFor('firmware.bin')).toBe('application/octet-stream');

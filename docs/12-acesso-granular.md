@@ -7,8 +7,9 @@ Este documento registra *por que* cada peça é assim. O resumo do que está no
 ar está em [`02-architecture-decisions.md`](02-architecture-decisions.md)
 §12.3, os desvios em [`03-implementation-notes.md`](03-implementation-notes.md),
 e os trechos de [`05`](05-accounts-and-roles.md), [`08`](08-mcp-virtual.md),
-[`09`](09-mcp-padrao-e-skills-flutuantes.md) e [`11`](11-catalogos.md) que ele
-revoga levam a marca de revogação, como o `09` fez com o `08`.
+[`09`](09-mcp-padrao-e-skills-flutuantes.md), [`10`](10-admin-canvas-e-sessoes.md)
+e [`11`](11-catalogos.md) que ele revoga levam a marca de revogação, como o
+`09` fez com o `08`.
 
 ## 1. Por que
 
@@ -108,6 +109,12 @@ de `listSkills` e a contagem de tags não têm conserto depois. `@purple-skills/
 ganha uma opção de leitura `viewer: { role, userUuid }` ao lado de
 `visibility`; `'all'` fica reservada ao admin, ao token global e ao bootstrap,
 e o site continua com `'open'`, agora ampliada pelas duas linhas de "público".
+
+**Número agregado também é alcance.** `stats()` é a última leitura sem `viewer`, e
+o app a recorta até o banco recortar (`023`): admin recebe os totais da instalação,
+e as outras credenciais só `totalSkills`, `totalTags` e `openSkills` — o número que
+o site mostra a um anônimo. O que não dá para recortar fora do banco é **omitido**,
+nunca devolvido global.
 
 ### 3.2 Os níveis
 

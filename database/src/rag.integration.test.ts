@@ -1,6 +1,6 @@
 /**
- * Teste de integração do RAG (`schema/020-rag.sql`, `tmp/RAG-GOOGLE.md` §5 e
- * §8, futuro `docs/14`) — exige um PostgreSQL 18 real **com pgvector**.
+ * Teste de integração do RAG (`schema/020-rag.sql`, `docs/14-rag.md` §5 e
+ * §8) — exige um PostgreSQL 18 real **com pgvector**.
  *
  * Cobre os 29 cenários da §5.5, cada um marcado pelo número no nome do teste,
  * mais o que a §5.5 registra como *não verificado*: o recorte de visibilidade
@@ -26,6 +26,7 @@ import { runMigrations, schemaDir } from './migrate.js';
 import { AppError } from './errors.js';
 import {
   claimStaleSkills,
+  collectOrphanRagTexts,
   createSkill,
   createVirtualMcp,
   deleteFile,
@@ -38,6 +39,7 @@ import {
   listPendingRagTexts,
   listSkills,
   markAllSkillsStale,
+  markRagTextRefused,
   ragCoverage,
   ragSchemaReady,
   readSkillForRag,
@@ -208,7 +210,14 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
     ).rows[0]!.updated_at.toISOString();
 
     // Cenário 01, primeira metade: a `020` aplicada pelo runner, numa base com dados.
-    expect(await runMigrations(url!)).toEqual(['020-rag.sql', '021-chaves-por-emissor.sql']);
+    expect(await runMigrations(url!)).toEqual([
+      '020-rag.sql',
+      '021-chaves-por-emissor.sql',
+      '022-busca-por-substring.sql',
+      '023-links-de-reset-substituidos.sql',
+      '024-auditoria-de-troca-de-senha.sql',
+      '025-fila-de-textos-do-rag.sql',
+    ]);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
@@ -767,7 +776,8 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       expect(ultima.items).toHaveLength(1);
       expect(ultima.items[0]!.slug).not.toBe(primeira.items[0]!.slug);
 
-      // Paginar além do fim não zera o total (o motivo de a contagem ser à parte).
+      // Paginar além do fim não zera o total: a página não traz linha nenhuma,
+      // e é só nesse caso que a contagem volta a ser uma consulta à parte.
       const vazia = await listSkills({
         query: 'commits',
         visibility: 'open',
@@ -777,6 +787,19 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       });
       expect(vazia).toMatchObject({ total: 3 });
       expect(vazia.items).toEqual([]);
+
+      // Conjunto fundido vazio (termo que não casa e espaço sem vetor nenhum):
+      // o mesmo caminho da página vazia, e o total é 0, não `undefined`.
+      const vazio = await resolveRagSpace({ ...GOOGLE, model: 'gemini-embedding-4' });
+      const nada = await listSkills({
+        query: 'zzznaoexiste',
+        visibility: 'open',
+        semantic: { spaceUuid: vazio.uuid, vector: vetor({ 0: 1 }) },
+      });
+      expect(nada).toMatchObject({ total: 0, mode: 'hybrid' });
+      expect(nada.items).toEqual([]);
+      expect(nada.neighbors).toEqual([]);
+      await raw.query('DELETE FROM rag_spaces WHERE uuid = $1', [vazio.uuid]);
 
       // Sem termo não há o que fundir: a opção é ignorada e o modo é textual.
       const listagem = await listSkills({ visibility: 'open', semantic });
@@ -855,6 +878,106 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       const porTag = await listSkills({ query: 'commits', visibility: 'open', semantic, tag: 'git' });
       expect(porTag.items.map((s) => s.slug)).toEqual(['busca-vetor']);
       expect(porTag.total).toBe(1);
+    });
+
+    it('a perna textual entra inteira: o total e a paginação passam de 100', async () => {
+      // 120 skills com o mesmo termo — mais do que o teto de 100 que a perna
+      // textual tinha. Insert direto porque aqui só interessa o volume.
+      await raw.query(
+        `INSERT INTO skills (slug, name, description, is_public, is_active, view_count)
+         SELECT 'muitas-' || n, 'Rebase interativo ' || n, 'reescreve o histórico', true, true, n
+           FROM generate_series(1, 120) n`,
+      );
+      const semantic = { spaceUuid: espaco.uuid, vector: vetor({ 0: 1 }) };
+      const texto = await listSkills({ query: 'rebase', visibility: 'open', limit: 1 });
+      expect(texto.total).toBe(120);
+
+      // Nenhum vizinho casa em "rebase": o conjunto fundido é a perna textual
+      // **inteira** mais os vizinhos visíveis, e não 100 + `neighbors`.
+      const soVizinhos = await listSkills({ query: 'zzznaoexiste', visibility: 'open', semantic });
+      const hibrida = await listSkills({ query: 'rebase', visibility: 'open', semantic, limit: 1 });
+      expect(hibrida.total).toBe(texto.total + soVizinhos.total);
+      expect(hibrida.total).toBeGreaterThan(100);
+
+      // A página que o teto deixava vazia traz linha, e a última fecha no total.
+      const funda = await listSkills({
+        query: 'rebase',
+        visibility: 'open',
+        semantic,
+        limit: 10,
+        offset: 110,
+      });
+      expect(funda.items).toHaveLength(10);
+      expect(funda.total).toBe(hibrida.total);
+      const ultima = await listSkills({
+        query: 'rebase',
+        visibility: 'open',
+        semantic,
+        limit: 10,
+        offset: hibrida.total - 2,
+      });
+      expect(ultima.items).toHaveLength(2);
+
+      // Duas páginas cobrem o conjunto sem repetir nem pular ninguém.
+      const p1 = await listSkills({ query: 'rebase', visibility: 'open', semantic, limit: 100 });
+      const p2 = await listSkills({
+        query: 'rebase',
+        visibility: 'open',
+        semantic,
+        limit: 100,
+        offset: 100,
+      });
+      const slugs = new Set([...p1.items, ...p2.items].map((s) => s.slug));
+      expect(slugs.size).toBe(hibrida.total);
+
+      await raw.query(`DELETE FROM skills WHERE slug LIKE 'muitas-%'`);
+    });
+
+    it('o termo é literal: `%`, `_` e `\\` não são curinga no ILIKE das duas buscas', async () => {
+      // Três skills com os caracteres no texto e três de controle, que só
+      // apareceriam se o curinga valesse.
+      await raw.query(
+        `INSERT INTO skills (slug, name, description, is_public, is_active) VALUES
+           ('curinga-pct',  'Desconto de 50% à vista', 'teto do limite',      true, true),
+           ('curinga-sub',  'Guia de snake_case',      'nomes de coluna',     true, true),
+           ('curinga-barra','Escape de barra',         'grava a' || chr(92) || 'b', true, true),
+           ('controle-tudo','Pauta da reunião',        'nada de especial',    true, true),
+           ('controle-x',   'Guia de snakeXcase',      'nomes de coluna',     true, true),
+           ('controle-ab',  'Escape de nada',          'grava ab',            true, true)`,
+      );
+      const semantic = { spaceUuid: espaco.uuid, vector: vetor({ 0: 1 }) };
+      const busca = async (query: string) =>
+        (await listSkills({ query, visibility: 'open', limit: 200 })).items.map((s) => s.slug);
+
+      // `%` sozinho casava o acervo inteiro; agora casa o caractere `%`.
+      const acervo = await listSkills({ visibility: 'open', limit: 200 });
+      expect(acervo.total).toBeGreaterThan(6);
+      expect(await busca('%')).toEqual(['curinga-pct']);
+      expect(await busca('50%')).toEqual(['curinga-pct']);
+
+      // `_` é um caractere, não "qualquer um": `snakeXcase` fica fora.
+      expect(await busca('snake_case')).toEqual(['curinga-sub']);
+
+      // `\` é um caractere, não o escape: sem escapar, `%a\b%` procuraria
+      // "ab" e traria `controle-ab`.
+      expect(await busca('a\\b')).toEqual(['curinga-barra']);
+
+      // A perna textual da híbrida é a mesma: só os vizinhos entram além dela.
+      const soVizinhos = await listSkills({ query: 'zzznaoexiste', visibility: 'open', semantic });
+      const hibrida = await listSkills({ query: '50%', visibility: 'open', semantic, limit: 200 });
+      expect(hibrida.mode).toBe('hybrid');
+      expect(hibrida.total).toBe(1 + soVizinhos.total);
+      expect(hibrida.items.map((s) => s.slug)).toContain('curinga-pct');
+      expect(hibrida.items.map((s) => s.slug)).not.toContain('controle-tudo');
+
+      // Termo legítimo não muda: caixa, acento e palavra parcial seguem casando.
+      expect(await busca('DESCONTO')).toEqual(['curinga-pct']);
+      expect(await busca('reunião')).toEqual(['controle-tudo']);
+      expect(await busca('sconto de 50')).toEqual(['curinga-pct']);
+
+      await raw.query(
+        `DELETE FROM skills WHERE slug LIKE 'curinga-%' OR slug LIKE 'controle-%'`,
+      );
     });
   });
 
@@ -986,10 +1109,221 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
     });
   });
 
+  // ------------------------- a fila de textos: recusa, reserva e órfãos ----
+
+  describe('a fila de textos do indexador (025)', () => {
+    /** Um espaço só desta parte: a fila é por (espaço, texto). */
+    let espacoFila: RagSpace;
+    const textos = ['fila de texto 1', 'fila de texto 2', 'fila de texto 3'];
+    let skillUuid = '';
+
+    beforeAll(async () => {
+      espacoFila = await resolveRagSpace({ ...GOOGLE, model: 'gemini-embedding-fila' });
+      const skill = await createSkill(
+        { name: 'fila de textos', slug: 'fila-de-textos', skillMd: '# fila' },
+        SOURCE,
+        ACTOR,
+      );
+      skillUuid = skill.uuid;
+      const fileId = (
+        await raw.query<{ id: string }>(
+          `SELECT id FROM files WHERE skill_uuid = $1 AND relative_path = 'SKILL.md'`,
+          [skillUuid],
+        )
+      ).rows[0]!.id;
+      // Três partes do mesmo arquivo: três textos canônicos na fila, na ordem
+      // em que entraram.
+      await replaceSkillTexts(
+        skillUuid,
+        textos.map((content, part) => ({
+          source: 'file' as const,
+          content,
+          relativePath: 'SKILL.md',
+          part,
+          fileId,
+        })),
+      );
+    });
+
+    /** O estado gravado do par (espaço, texto), ou `null`. */
+    async function estado(conteudo: string): Promise<{
+      state: string;
+      until: Date | null;
+      reason: string | null;
+      updated_at: Date;
+    } | null> {
+      const { rows } = await raw.query<{
+        state: string;
+        until: Date | null;
+        reason: string | null;
+        updated_at: Date;
+      }>(
+        `SELECT state, until, reason, updated_at FROM rag_text_status
+          WHERE space_uuid = $1 AND text_sha256 = $2`,
+        [espacoFila.uuid, sha256(conteudo)],
+      );
+      return rows[0] ?? null;
+    }
+
+    /** A parte da fila deste espaço que é desta suíte, na ordem em que entrou. */
+    async function minhaFila(reserveMs?: number): Promise<string[]> {
+      const pendentes = await listPendingRagTexts(
+        espacoFila.uuid,
+        500,
+        reserveMs === undefined ? {} : { reserveMs },
+      );
+      return pendentes.map((t) => t.content).filter((c) => textos.includes(c));
+    }
+
+    it('a recusa do provedor é gravada e o texto sai da fila — no reinício também', async () => {
+      // O espaço é novo, então a fila dele traz todo texto do acervo; o filtro
+      // deixa só os três desta parte.
+      expect(await minhaFila()).toEqual(textos);
+
+      // O motivo é cortado em 500 caracteres: mensagem de provedor pode vir com
+      // o corpo inteiro da resposta dentro, e a linha de estado não é um log.
+      await markRagTextRefused(espacoFila.uuid, sha256(textos[1]!), 'x'.repeat(900));
+
+      expect(await minhaFila()).toEqual([textos[0], textos[2]]);
+      const gravado = (await estado(textos[1]!))!;
+      expect(gravado.state).toBe('recusado');
+      expect(gravado.until).toBeNull();
+      expect(gravado.reason).toHaveLength(500);
+
+      // A recusa é do par: outro modelo ainda pode aceitar o mesmo texto.
+      expect(await listPendingRagTexts(espaco.uuid, 100)).not.toHaveLength(0);
+      expect(
+        (await listPendingRagTexts(espaco.uuid, 100)).some((t) => t.content === textos[1]),
+      ).toBe(true);
+
+      // `ragCoverage` explica a cobertura que não fecha: o recusado está
+      // **dentro** de `pendingTexts`.
+      const cobertura = await ragCoverage(espacoFila.uuid);
+      expect(cobertura.refusedTexts).toBe(1);
+      expect(cobertura.pendingTexts).toBeGreaterThanOrEqual(cobertura.refusedTexts);
+
+      // Idempotente: a segunda recusa não reescreve motivo nem carimbo — a
+      // linha descreve a recusa que tirou o texto da fila.
+      await markRagTextRefused(espacoFila.uuid, sha256(textos[1]!), 'outro motivo');
+      expect(await estado(textos[1]!)).toEqual(gravado);
+
+      // Espaço ou texto que já não existe não grava nem lança: isto roda no
+      // tratamento de erro do indexador.
+      await markRagTextRefused('00000000-0000-7000-8000-000000000000', sha256(textos[0]!), 'x');
+      await markRagTextRefused(espacoFila.uuid, sha256('nunca existiu'), 'x');
+      expect(await estado(textos[0]!)).toBeNull();
+
+      // Erro de chamada continua sendo 400.
+      expect((await capture(markRagTextRefused('nao-e-uuid', sha256(textos[0]!), 'x'))).status).toBe(
+        400,
+      );
+      expect(
+        (await capture(markRagTextRefused(espacoFila.uuid, Buffer.alloc(8), 'x'))).status,
+      ).toBe(400);
+    });
+
+    it('a reserva gravada impede duas réplicas de pagar pelo mesmo texto', async () => {
+      const reservas = () =>
+        conta(
+          `SELECT count(*) AS n FROM rag_text_status
+            WHERE space_uuid = $1 AND state = 'reservado' AND until > now()`,
+          [espacoFila.uuid],
+        );
+
+      // Sem `reserveMs` a leitura não escreve nada: dois leitores veem a mesma
+      // lista, que é o comportamento de antes do `025`.
+      const [semA, semB] = await Promise.all([minhaFila(), minhaFila()]);
+      expect(semA).toEqual(semB);
+      expect(semA.length).toBeGreaterThan(0);
+      expect(await reservas()).toBe(0);
+
+      // Com prazo, as duas chamadas em paralelo **não se cruzam**: cada texto
+      // sai para uma só. Quem perde a corrida tenta uma segunda vez por dentro.
+      const [a, b] = await Promise.all([minhaFila(600_000), minhaFila(600_000)]);
+      const pagos = [...a, ...b];
+      expect(new Set(pagos).size).toBe(pagos.length);
+      expect(pagos.sort()).toEqual([...semA].sort());
+
+      // Reservado não volta à fila enquanto o prazo vale — nem para quem lê sem
+      // reservar.
+      expect(await reservas()).toBe(await conta(
+        `SELECT count(*) AS n FROM rag_text_status WHERE space_uuid = $1 AND state = 'reservado'`,
+        [espacoFila.uuid],
+      ));
+      expect(await minhaFila()).toEqual([]);
+
+      // Indexador morto não estaciona a fila: vencido o prazo, o texto volta.
+      await raw.query(
+        `UPDATE rag_text_status SET until = now() - interval '1 minute'
+          WHERE space_uuid = $1 AND state = 'reservado'`,
+        [espacoFila.uuid],
+      );
+      expect((await minhaFila()).sort()).toEqual([...semA].sort());
+
+      // Gravar o vetor encerra a reserva: quem exclui o texto da fila daí em
+      // diante é `rag_vectors`.
+      const retomados = await listPendingRagTexts(espacoFila.uuid, 500, { reserveMs: 600_000 });
+      expect(retomados.length).toBeGreaterThan(0);
+      await insertRagVectors(
+        espacoFila.uuid,
+        retomados.map((t) => ({ sha256: t.sha256, embedding: vetor({ 0: 1 }) })),
+      );
+      expect(await reservas()).toBe(0);
+      // A recusa não é tocada pela gravação.
+      expect((await estado(textos[1]!))!.state).toBe('recusado');
+      expect(await minhaFila()).toEqual([]);
+    });
+
+    it('insertRagVectors ignora o hash cujo texto sumiu, em vez de perder o lote', async () => {
+      const vivo = 'hash vivo na gravação';
+      await replaceSkillTexts(skillUuid, [{ source: 'meta', content: vivo }]);
+
+      const gravados = await insertRagVectors(espacoFila.uuid, [
+        { sha256: sha256(vivo), embedding: vetor({ 0: 1 }) },
+        // O texto deste hash foi coletado entre a leitura da fila e a volta do
+        // provedor: sem o `JOIN rag_texts`, a FK derrubaria o lote inteiro e o
+        // vetor bom (pago) iria com ele.
+        { sha256: sha256('texto que já foi coletado'), embedding: vetor({ 0: 1 }) },
+      ]);
+      expect(gravados).toBe(1);
+    });
+
+    it('collectOrphanRagTexts apaga o texto sem ocorrência e leva o vetor dele', async () => {
+      // O texto de `meta` da skill fica órfão quando a lista é reescrita.
+      const orfao = 'texto que vai virar órfão';
+      await replaceSkillTexts(skillUuid, [{ source: 'meta', content: orfao }]);
+      await insertRagVectors(espacoFila.uuid, [
+        { sha256: sha256(orfao), embedding: vetor({ 0: 1 }) },
+      ]);
+      const emUso = 'texto que continua em uso';
+      await replaceSkillTexts(skillUuid, [{ source: 'meta', content: emUso }]);
+
+      const antes = await conta('SELECT count(*) AS n FROM rag_texts');
+      const vetoresAntes = await conta('SELECT count(*) AS n FROM rag_vectors');
+      const apagados = await collectOrphanRagTexts(500);
+      expect(apagados).toBeGreaterThan(0);
+      expect(await conta('SELECT count(*) AS n FROM rag_texts')).toBe(antes - apagados);
+      // O vetor do órfão vai pela cascata de `rag_vectors.text_sha256`…
+      expect(await conta('SELECT count(*) AS n FROM rag_vectors')).toBeLessThan(vetoresAntes);
+      // …e o estado de fila dele, pela de `rag_text_status`.
+      expect(
+        await conta('SELECT count(*) AS n FROM rag_text_status WHERE text_sha256 = $1', [
+          sha256(orfao),
+        ]),
+      ).toBe(0);
+
+      // O texto em uso fica, e a segunda coleta não acha mais nada.
+      expect(
+        await conta('SELECT count(*) AS n FROM rag_texts WHERE sha256 = $1', [sha256(emUso)]),
+      ).toBe(1);
+      expect(await collectOrphanRagTexts(500)).toBe(0);
+    });
+  });
+
   // ------------------------------------ configuração, auditoria e schema ---
 
   describe('a configuração, a auditoria e o estado do schema', () => {
-    it('ragSchemaReady enxerga as quatro tabelas', async () => {
+    it('ragSchemaReady enxerga as cinco tabelas', async () => {
       expect(await ragSchemaReady()).toBe(true);
     });
 
@@ -1142,6 +1476,8 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       'rag_spaces_identity_uniq',
       'rag_spaces_pkey',
       'rag_spaces_uuid_dimensions_uniq',
+      'rag_text_status_pkey',
+      'rag_text_status_text_idx',
       'rag_texts_created_at_idx',
       'rag_texts_pkey',
       'rag_vectors_pkey',

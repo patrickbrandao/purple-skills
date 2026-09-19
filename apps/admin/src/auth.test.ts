@@ -6,6 +6,7 @@ const SECRET = 'segredo-de-teste-do-painel';
 const db = vi.hoisted(() => ({
   countUsers: vi.fn(),
   getUserByUuid: vi.fn(),
+  updateUser: vi.fn(),
 }));
 
 vi.mock('@purple-skills/db', () => db);
@@ -20,6 +21,7 @@ vi.mock('./config.js', () => ({
 const {
   LEGACY_ADMIN,
   checkBootstrapPassword,
+  endSession,
   issueLegacySession,
   requireAdmin,
   requirePasswordChanged,
@@ -125,6 +127,56 @@ describe('sessão legada da ADMIN_PASSWORD', () => {
   it('para de valer assim que existe a primeira conta', async () => {
     db.countUsers.mockResolvedValue(1);
     expect(await resolveUser(request(legacyToken()))).toBeNull();
+  });
+});
+
+describe('logout', () => {
+  /** Só o que `clearSession` usa da resposta. */
+  const response = () => ({ clearCookie: vi.fn() });
+
+  it('revoga a conta ao sair: o cookie apagado continuaria valendo até expirar', async () => {
+    db.getUserByUuid.mockResolvedValue(account);
+    db.updateUser.mockResolvedValue(account);
+    const res = response();
+    const token = signSession({ sub: account.uuid, role: 'editor', ver: 3, exp: future() }, SECRET);
+
+    expect(await endSession(request(token), res as never)).toBe(true);
+    expect(db.updateUser).toHaveBeenCalledWith('uuid-1', { bumpTokenVersion: true });
+    expect(res.clearCookie).toHaveBeenCalledWith('ps_admin', { path: '/' });
+  });
+
+  it('sem sessão, apaga o cookie e não toca no banco', async () => {
+    const res = response();
+
+    expect(await endSession(request(undefined), res as never)).toBe(false);
+    expect(db.updateUser).not.toHaveBeenCalled();
+    expect(res.clearCookie).toHaveBeenCalled();
+  });
+
+  it('sessão legada não tem conta para versionar', async () => {
+    db.countUsers.mockResolvedValue(0);
+    let token = '';
+    issueLegacySession({ secure: false } as never, {
+      cookie: (_name: string, value: string) => {
+        token = value;
+      },
+    } as never);
+
+    expect(await endSession(request(token), response() as never)).toBe(false);
+    expect(db.updateUser).not.toHaveBeenCalled();
+  });
+
+  it('banco fora não prende a pessoa na tela: sai sem revogar', async () => {
+    db.getUserByUuid.mockResolvedValue(account);
+    db.updateUser.mockRejectedValue(new Error('sem banco'));
+    const erro = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = response();
+    const token = signSession({ sub: account.uuid, role: 'editor', ver: 3, exp: future() }, SECRET);
+
+    expect(await endSession(request(token), res as never)).toBe(false);
+    expect(res.clearCookie).toHaveBeenCalled();
+    expect(erro).toHaveBeenCalled();
+    erro.mockRestore();
   });
 });
 

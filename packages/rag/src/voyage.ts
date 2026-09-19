@@ -73,8 +73,10 @@ export class VoyageDriver implements EmbeddingDriver {
   }
 
   /**
-   * Embute a consulta, com `input_type: 'query'`. **Sem nova tentativa**: quem
-   * chama tem um prazo curto e qualquer erro vira busca textual (§8.1).
+   * Embute a consulta, com `input_type: 'query'`. Vale a política de tentativas
+   * de `http.ts`, mas **dentro do prazo de quem chamou**: o `signal` corta o
+   * `fetch` e também a espera entre tentativas. Qualquer erro vira busca
+   * textual (§8.1).
    */
   async embedQuery(model: EmbeddingModel, text: string, signal?: AbortSignal): Promise<number[]> {
     const vetores = await this.enviar(model, [`${model.queryPrefix}${text}`], 'query', signal);

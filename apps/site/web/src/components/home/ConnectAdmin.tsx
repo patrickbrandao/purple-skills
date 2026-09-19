@@ -52,12 +52,12 @@ export function ConnectAdmin() {
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">
-            Administrar Skills via agente. Configure o seu <span className="grad-text">mcp.json</span>
+            Administre pelo agente: configure o <span className="grad-text">mcp.json</span>
           </h2>
           <p>
-            Cole o bloco abaixo no arquivo de configuração MCP do seu agente. O servidor
-            administrativo cria e edita skills e as publica nos servidores MCP, e exige o token no
-            cabeçalho <code className="mono">Authorization</code>.
+            O MCP administrativo enxerga também os itens privados: cria e edita skills e catálogos,
+            decide o que é público e publica nos servidores MCP. Exige o token no cabeçalho{' '}
+            <code className="mono">Authorization</code>.
           </p>
         </div>
 
@@ -66,8 +66,8 @@ export function ConnectAdmin() {
             <img
               src="/assets/images/claude-code-up-right-01_512.png"
               alt="Um agente de IA"
-              width={172}
-              height={172}
+              width={120}
+              height={120}
             />
             <figcaption>SEU AGENTE<br />PROVISIONADOR</figcaption>
           </figure>
@@ -82,7 +82,7 @@ export function ConnectAdmin() {
               <span className="tl" />
               <span className="tl" />
               <span className="tl" />
-              <span>mcp.json — create_skill · set_file · link_skill</span>
+              <span>mcp.json — create_skill · create_catalog · link_skill</span>
             </div>
             <div className="code-body">
               <JsonBlock text={json} />

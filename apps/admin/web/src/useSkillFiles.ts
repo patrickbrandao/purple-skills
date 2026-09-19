@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   createFile,
   deleteFile,
@@ -187,18 +188,6 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
 
   // ------------------------------------------------------------ navegação ---
 
-  const open = useCallback(
-    (path: string) => {
-      setSelected(path);
-      setSelectedDir(null);
-      setFresh(null);
-      if (isSkillMdPath(path)) return;
-      if (metaOf(path)?.isText === false) return;
-      if (!isDirtyDoc(latest.current.docs.get(path))) void load(path);
-    },
-    [load, metaOf],
-  );
-
   const close = useCallback(() => setSelected(null), []);
 
   const selectDir = useCallback((dir: string) => setSelectedDir(dir), []);
@@ -229,6 +218,20 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
   );
 
   const collapseAll = useCallback((dirs: readonly string[]) => setCollapsed(new Set(dirs)), []);
+
+  /** Abre o arquivo — e as pastas acima dele, para a árvore mostrá-lo. */
+  const open = useCallback(
+    (path: string) => {
+      setSelected(path);
+      setSelectedDir(null);
+      setFresh(null);
+      reveal(parentDir(path));
+      if (isSkillMdPath(path)) return;
+      if (metaOf(path)?.isText === false) return;
+      if (!isDirtyDoc(latest.current.docs.get(path))) void load(path);
+    },
+    [load, metaOf, reveal],
+  );
 
   // ----------------------------------------------------------------- criar ---
 
@@ -558,3 +561,25 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
 }
 
 export type SkillFiles = ReturnType<typeof useSkillFiles>;
+
+/**
+ * O arquivo que a outra ficha manda abrir: Editar e Visualizar, na guia
+ * Arquivos, levam o arquivo aberto no `state` do link.
+ */
+export type OpenFileState = { openFile: string };
+
+export const openFileState = (ws: SkillFiles): OpenFileState | undefined =>
+  ws.selected ? { openFile: ws.selected } : undefined;
+
+/** Abre o arquivo do `state` da navegação, uma vez por skill, assim que ela carrega. */
+export function useOpenFileFromState(ws: SkillFiles, uuid: string | undefined) {
+  const { state } = useLocation();
+  const { open } = ws;
+  const done = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = (state as Partial<OpenFileState> | null)?.openFile;
+    if (!uuid || typeof wanted !== 'string' || done.current === uuid) return;
+    done.current = uuid;
+    open(wanted);
+  }, [uuid, state, open]);
+}

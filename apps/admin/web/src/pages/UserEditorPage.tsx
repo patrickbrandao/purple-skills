@@ -249,7 +249,7 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
   );
 }
 
-/** As chaves `psk_` da conta, com revogar: só a própria pessoa emite, em Minha conta. */
+/** As chaves `psk_` da conta, com revogar: só a própria pessoa emite, em Adm MCP Keys. */
 function KeysEditor({ user }: { user: UserSummary }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -275,7 +275,7 @@ function KeysEditor({ user }: { user: UserSummary }) {
   return (
     <Panel title="Chaves do MCP administrativo" icon={<KeyRound />}>
       <p className="panel-hint">
-        Só a própria pessoa emite chaves, em Minha conta. Aqui um administrador revoga uma chave perdida ou de quem saiu;
+        Só a própria pessoa emite chaves, em Adm MCP Keys. Aqui um administrador revoga uma chave perdida ou de quem saiu;
         revogar grava na hora e entra na auditoria com o seu nome.
       </p>
       <KeysTable keys={keys} onRevoke={revoke} />

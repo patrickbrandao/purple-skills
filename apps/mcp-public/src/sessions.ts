@@ -8,7 +8,13 @@ import {
   openMcpSession as dbOpenMcpSession,
   touchMcpSession as dbTouchMcpSession,
 } from '@purple-skills/db';
-import type { McpSessionAuth, McpSessionEndReason, McpSessionMount, McpSessionTransport } from '@purple-skills/shared';
+import {
+  readIntEnv,
+  type McpSessionAuth,
+  type McpSessionEndReason,
+  type McpSessionMount,
+  type McpSessionTransport,
+} from '@purple-skills/shared';
 
 /**
  * Contabilidade de sessões do MCP público (`docs/10-admin-canvas-e-sessoes.md`).
@@ -30,6 +36,22 @@ import type { McpSessionAuth, McpSessionEndReason, McpSessionMount, McpSessionTr
  *   de "online" caem na mesma linha. Passada a janela, a próxima abre outra —
  *   e a varredura marca a antiga com o fim presumido.
  */
+
+/**
+ * Teto de identidades stateless contabilizadas ao mesmo tempo.
+ *
+ * O `user-agent` entra na chave sintética e é texto escolhido por quem chama:
+ * variá-lo a cada requisição cria uma identidade nova, e cada identidade nova
+ * é uma entrada no mapa **e** um `INSERT` em `mcp_sessions` — tabela sem poda
+ * automática. O limite de taxa por IP (`http.ts`) contém a origem única; este
+ * teto contém o resto, inclusive rajada distribuída e quem tem chave válida.
+ *
+ * Atingido, a requisição é atendida **sem** contabilidade: perder a estatística
+ * é prejuízo pequeno perto de encher o disco do banco. Só identidade **nova** é
+ * recusada — quem já está no mapa continua sendo contado, então uma enxurrada
+ * não apaga da tela os clientes de verdade.
+ */
+const MAX_STATELESS_ENTRIES = readIntEnv('MCP_MAX_STATELESS_SESSIONS', 5_000);
 
 export type SessionScope = {
   virtualMcpUuid: string;
@@ -78,6 +100,8 @@ export type SessionTrackerOptions = {
   touchIntervalMs?: number;
   /** Intervalo da varredura automática. Padrão: 60 s; `0` desliga (testes). */
   sweepMs?: number;
+  /** Teto de identidades stateless em memória. Padrão: `MAX_STATELESS_ENTRIES`. */
+  maxStatelessEntries?: number;
   store?: SessionStore;
   now?: () => number;
   log?: (message: string) => void;
@@ -141,11 +165,26 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
   const now = options.now ?? Date.now;
   const log = options.log ?? ((message: string) => console.warn(`[mcp-public] sessões: ${message}`));
   const touchIntervalMs = options.touchIntervalMs ?? 10_000;
+  const maxStatelessEntries = options.maxStatelessEntries ?? MAX_STATELESS_ENTRIES;
   const entries = new Map<string, Entry>();
+  /** Quantas entradas de `entries` são stateless — contadas, e não varridas, porque o mapa é do caminho quente. */
+  let statelessEntries = 0;
+  /** Último aviso de teto: sob enxurrada, o log não pode virar o próximo problema. */
+  let lastLimitWarn = 0;
 
   const warn = (what: string) => (err: unknown) => {
     log(`${what}: ${(err as Error)?.message ?? String(err)}`);
     return null;
+  };
+
+  /** Aviso do teto, no máximo um por janela de "online". */
+  const avisarTeto = (): void => {
+    if (now() - lastLimitWarn < options.onlineWindowMs) return;
+    lastLimitWarn = now();
+    log(
+      `teto de ${maxStatelessEntries} identidades stateless atingido: as requisições seguem atendidas, ` +
+        'sem contabilidade, até a varredura liberar espaço',
+    );
   };
 
   function baseInput(req: Request, scope: SessionScope, transport: McpSessionTransport, sessionId: string, client: ClientInfo | null) {
@@ -245,7 +284,16 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     // Passou da janela (ou é a primeira vez): a antiga fica para a varredura
     // presumir o fim; esta abre outra — reusando a linha aberta que um
     // restart do processo tenha deixado, se ela ainda está na janela.
-    if (existing) entries.delete(k);
+    if (existing) {
+      entries.delete(k);
+      statelessEntries -= 1;
+    }
+    // Identidade nova não entra com o mapa cheio: é o que impede um
+    // `user-agent` variável de virar uma linha permanente por requisição.
+    if (statelessEntries >= maxStatelessEntries) {
+      avisarTeto();
+      return;
+    }
     const client = clientInfoOf(req.body);
     const input = baseInput(req, scope, 'stateless', sessionId, client);
     const entry: Entry = {
@@ -265,6 +313,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
       clientDirty: false,
     };
     entries.set(k, entry);
+    statelessEntries += 1;
   }
 
   async function flush(): Promise<void> {
@@ -276,7 +325,10 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     // Entradas stateless paradas saem da memória; a linha delas é fechada
     // pela expiração abaixo, com o fim presumido.
     for (const [k, entry] of entries) {
-      if (entry.transport === 'stateless' && now() - entry.lastSeen > options.onlineWindowMs) entries.delete(k);
+      if (entry.transport === 'stateless' && now() - entry.lastSeen > options.onlineWindowMs) {
+        entries.delete(k);
+        statelessEntries -= 1;
+      }
     }
     await store
       .expireMcpSessions({ statelessWindowMs: options.onlineWindowMs, sessionTtlMs: options.sessionTtlMs })
@@ -292,6 +344,7 @@ export function createSessionTracker(options: SessionTrackerOptions): SessionTra
     await flush();
     const stateful = [...entries.values()].filter((entry) => entry.transport !== 'stateless');
     entries.clear();
+    statelessEntries = 0;
     const ids = (await Promise.all(stateful.map((entry) => entry.id))).filter((id): id is string => Boolean(id));
     if (ids.length > 0) await store.closeMcpSessions(ids, 'shutdown').catch(warn('não foi possível encerrar as sessões no desligamento'));
   }

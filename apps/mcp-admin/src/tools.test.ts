@@ -24,6 +24,7 @@ const db = vi.hoisted(() => ({
   removeSkillGrant: vi.fn(),
   setFile: vi.fn(),
   setFiles: vi.fn(),
+  listFiles: vi.fn(),
   deleteFile: vi.fn(),
   deleteSkill: vi.fn(),
   listSkills: vi.fn(),
@@ -142,6 +143,17 @@ beforeEach(() => {
   db.getUserByEmail.mockImplementation(async (email: string) =>
     email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
   );
+  // A árvore gravada, que o `set_files_bulk` consulta para saber o que um
+  // `replace` removeria. Só o SKILL.md: nada a remover, nada a confirmar.
+  db.listFiles.mockResolvedValue(detail.files);
+});
+
+/** Uma linha de `listFiles`, para montar a árvore já gravada nos testes. */
+const arquivo = (relativePath: string) => ({
+  relativePath,
+  mimeType: 'text/markdown',
+  sizeBytes: 3,
+  isText: true,
 });
 
 describe('create_skill', () => {
@@ -361,6 +373,44 @@ describe('set_file', () => {
       ADMIN_ACTOR,
     );
   });
+
+  /**
+   * O caminho não canônico escapava do `stripFrontmatter`: `isSkillMd` compara
+   * o texto exato, e `"./SKILL.md"` não bate — mas o banco canoniza na hora de
+   * gravar, e o frontmatter forjado ia para a linha do SKILL.md (`tasks/050`).
+   * Metadados são `manage`; `set_file` é `edit`.
+   */
+  it('normaliza o caminho antes de decidir: nenhuma grafia esconde o frontmatter', async () => {
+    db.setFile.mockResolvedValue({
+      relativePath: 'SKILL.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 8,
+      isText: true,
+    });
+
+    for (const path of ['./SKILL.md', 'skill.md', './skill.MD', '/SKILL.md']) {
+      await handlers.set_file({
+        slug: 'minha-skill',
+        path,
+        content: '---\nname: outra\n---\n# Corpo\n',
+      });
+    }
+
+    for (const chamada of db.setFile.mock.calls) {
+      expect(chamada[1]).toBe('SKILL.md');
+      expect(chamada[2]).toBe('# Corpo\n');
+    }
+    expect(db.setFile).toHaveBeenCalledTimes(4);
+  });
+
+  it('recusa o caminho que não normaliza, sem chegar ao banco', async () => {
+    for (const path of ['../fora.md', 'ref/../SKILL.md', '']) {
+      const result = await handlers.set_file({ slug: 'minha-skill', path, content: 'x' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/Caminho inválido/);
+    }
+    expect(db.setFile).not.toHaveBeenCalled();
+  });
 });
 
 describe('set_files_bulk', () => {
@@ -380,7 +430,9 @@ describe('set_files_bulk', () => {
       'ref/a.md',
     ]);
     expect(source).toBe('mcp-admin');
-    expect(options).toEqual({ replace: true });
+    // `expectedDeletions` refaz a conta dentro da transação (`tasks/011`): zero
+    // aqui, porque nada sairia — e zero é conferido como qualquer outro número.
+    expect(options).toEqual({ replace: true, expectedDeletions: 0 });
   });
 
   it('respeita replace=false para apenas adicionar/sobrescrever', async () => {
@@ -392,7 +444,9 @@ describe('set_files_bulk', () => {
       replace: false,
     });
 
-    expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: false });
+    expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: false, expectedDeletions: 0 });
+    // Sem remoção não há o que confirmar — nem por que ler a árvore gravada.
+    expect(db.listFiles).not.toHaveBeenCalled();
   });
 
   it('tira o frontmatter do SKILL.md que vem no zip', async () => {
@@ -413,6 +467,102 @@ describe('set_files_bulk', () => {
 
     expect(result.isError).toBe(true);
     expect(db.setFiles).not.toHaveBeenCalled();
+  });
+
+  // O envio parcial é o acidente típico do agente: sem confirmação, apagava o
+  // resto da árvore sem deixar como reconstruí-la.
+  it('recusa, com a lista e o número, o zip que removeria arquivos', async () => {
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+
+    const result = await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'SKILL.md': '# a' }),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('removeria 2 arquivo(s)');
+    expect(result.content[0].text).toContain('- ref/a.md');
+    expect(result.content[0].text).toContain('- ref/b.md');
+    expect(result.content[0].text).toContain('confirm_deletions: 2');
+    expect(result.content[0].text).toContain('replace: false');
+    expect(db.setFiles).not.toHaveBeenCalled();
+  });
+
+  it('remove quando confirm_deletions traz o número exato', async () => {
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+    db.setFiles.mockResolvedValue([arquivo('SKILL.md')]);
+
+    const result = await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'SKILL.md': '# a' }),
+      confirm_deletions: 2,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('2 arquivo(s) removido(s)');
+    // O número confirmado vai ao banco: é lá, com a árvore travada, que ele vale.
+    expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: true, expectedDeletions: 2 });
+  });
+
+  // Número errado é o caso do agente que confirmou sem olhar, e o da árvore que
+  // mudou entre a recusa e a segunda chamada: nos dois, não se apaga.
+  it('recusa de novo quando confirm_deletions não bate com o que sairia', async () => {
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+
+    const result = await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'SKILL.md': '# a' }),
+      confirm_deletions: 1,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('confirm_deletions: 1 não corresponde');
+    expect(result.content[0].text).toContain('removeria 2 arquivo(s)');
+    expect(db.setFiles).not.toHaveBeenCalled();
+  });
+
+  // O banco compara `lower(relative_path)` e nunca remove o SKILL.md; a prévia
+  // usa a mesma régua, senão pediria confirmação onde nada seria removido.
+  it('não conta o SKILL.md nem a diferença de caixa como remoção', async () => {
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('Ref/A.md')]);
+    db.setFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('Ref/A.md')]);
+
+    const result = await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'ref/a.md': '# b', 'outro.md': 'x' }),
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: true, expectedDeletions: 0 });
+  });
+
+  // A prévia e a escrita são idas ao banco distintas: entre elas a árvore pode
+  // mudar, e aí quem recusa é a transação. A mensagem dela chega inteira
+  // (`tasks/031`), e as tools acrescentam o que fazer em seguida.
+  it('explica o que fazer quando a transação recusa o número confirmado', async () => {
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md')]);
+    db.setFiles.mockRejectedValue(
+      new AppError(
+        'A árvore de arquivos mudou: a chamada confirmou 1 remoção(ões) e 2 arquivo(s) sairiam agora — releia a árvore e tente de novo',
+        409,
+        'conflict',
+      ),
+    );
+
+    const result = await guard(() =>
+      handlers.set_files_bulk({
+        slug: 'minha-skill',
+        zip_base64: makeZip({ 'SKILL.md': '# a' }),
+        confirm_deletions: 1,
+      }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('A árvore de arquivos mudou');
+    expect(result.content[0].text).toContain('get_skill');
+    expect(result.content[0].text).toContain('replace: false');
+    // Erro de negócio não vira referência de log: a mensagem é para o agente.
+    expect(result.content[0].text).not.toContain('Erro interno');
   });
 });
 
@@ -479,6 +629,21 @@ describe('get_skill', () => {
     expect(daMaria.access).toBe('view');
     expect(daMaria.grants).toBeUndefined();
   });
+
+  /**
+   * A página no site: a skill marcada pública está lá sem vMCP aberto nenhum
+   * (`docs/12` §7, que revoga a regra do `09` §4.1 — a antiga olhava só o
+   * vínculo aberto). Desligada não está, pública ou não.
+   */
+  it('dá a URL da página à skill pública sem vMCP aberto, e nenhuma à desligada', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, isPublic: true });
+    const publica = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
+    expect(publica.url).toBe('http://localhost:3000/skills/minha-skill');
+
+    db.getSkillDetail.mockResolvedValue({ ...detail, isPublic: true, isActive: false });
+    const desligada = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
+    expect(desligada.url).toBeUndefined();
+  });
 });
 
 describe('list_skills', () => {
@@ -535,6 +700,48 @@ describe('list_skills', () => {
   });
 });
 
+/**
+ * Os números da instalação inteira contam skills, arquivos e contas que a
+ * credencial não enxerga (`docs/12` §3.1): admin recebe tudo, os demais só o
+ * que dá para recortar fora do banco.
+ */
+describe('get_stats', () => {
+  const instalacao = {
+    totalSkills: 200,
+    openSkills: 7,
+    unlinkedSkills: 5,
+    totalFiles: 900,
+    totalViews: 30,
+    totalDownloads: 12,
+    totalTags: 40,
+    totalUsers: 11,
+    activeUsers: 9,
+  };
+
+  beforeEach(() => {
+    db.stats.mockResolvedValue(instalacao);
+    db.listSkills.mockResolvedValue({ items: [], total: 2, limit: 1, offset: 0 });
+    db.listTags.mockResolvedValue([{ name: 'git', count: 1 }]);
+  });
+
+  it('admin recebe a instalação inteira, sem recorte', async () => {
+    const payload = JSON.parse((await handlers.get_stats()).content[0].text);
+
+    expect(payload).toEqual(instalacao);
+    expect(db.listSkills).not.toHaveBeenCalled();
+  });
+
+  it('membro recebe o que enxerga: nada de contas, arquivos nem acervo alheio', async () => {
+    const payload = JSON.parse((await createHandlers(caller('membro')).get_stats()).content[0].text);
+
+    const viewer = { role: 'membro', userUuid: 'uuid-membro' };
+    expect(db.listSkills).toHaveBeenCalledWith(expect.objectContaining({ viewer }));
+    expect(db.listTags).toHaveBeenCalledWith({ viewer });
+    // `openSkills` é o que o site mostra a um anônimo — não revela nada.
+    expect(payload).toEqual({ totalSkills: 2, openSkills: 7, totalTags: 1 });
+  });
+});
+
 describe('acesso: share / unshare / transfer', () => {
   const dono = createHandlers(caller('editor'));
 
@@ -580,13 +787,22 @@ describe('guard', () => {
     expect(result.content[0].text).toBe('Skill não encontrada: x');
   });
 
-  it('não deixa erros inesperados derrubarem a ferramenta', async () => {
+  it('não derruba a ferramenta nem vaza o detalhe interno do erro inesperado', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
     const result = await guard(async () => {
-      throw new Error('conexão perdida');
+      throw new Error('duplicate key value violates unique constraint "files_skill_path_lower_uniq"');
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('conexão perdida');
+    // Mensagem de driver descreve o esquema: ela sai no log, não na resposta.
+    expect(result.content[0].text).not.toContain('files_skill_path_lower_uniq');
+    const ref = /ref ([0-9a-f]{8})/.exec(result.content[0].text)?.[1];
+    expect(ref).toBeDefined();
+    // A mesma referência nos dois lados é o que liga a reclamação ao detalhe.
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`ref ${ref}`), expect.any(Error));
+
+    log.mockRestore();
   });
 });
 

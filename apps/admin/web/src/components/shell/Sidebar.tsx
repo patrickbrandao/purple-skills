@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ExternalLink,
   KeyRound,
+  KeySquare,
   LayoutGrid,
   Library,
   ListChecks,
@@ -39,7 +40,8 @@ export const NARROW = '(max-width: 900px)';
 
 /**
  * A sidebar da referência: a marca, a navegação em dois blocos (o que se
- * administra, com o "Meu espaço" recortado na conta; os links externos) e, no rodapé, a conta com o seu menu. O
+ * administra, com o "Meu espaço" recortado na conta e as chaves em
+ * "Configurações"; os links externos) e, no rodapé, a conta com o seu menu. O
  * botão ao lado da marca recolhe a sidebar para a esquerda; abaixo de 900px
  * ela vira uma gaveta, e o mesmo botão a fecha.
  */
@@ -140,9 +142,6 @@ export function Sidebar({
               <NavLink to="/meu-espaco/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                 <Library /> Meus catálogos
               </NavLink>
-              <NavLink to="/meu-espaco/chaves" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-                <KeyRound /> Chaves emitidas
-              </NavLink>
             </div>
           )}
 
@@ -179,11 +178,20 @@ export function Sidebar({
                     {SETTINGS_ICON[section.path]} {section.label}
                   </NavLink>
                 ))}
+              {/* `end` em "Minha conta": sem ele o item acenderia junto com as telas de chave, que são `/account/…`. */}
               {!user.legacy && (
-                <NavLink to="/account" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
-                  <UserRound /> Minha conta
-                </NavLink>
+                <>
+                  <NavLink to="/account" end className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                    <UserRound /> Minha conta
+                  </NavLink>
+                  <NavLink to="/account/chaves-adm" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                    <KeyRound /> Adm MCP Keys
+                  </NavLink>
+                </>
               )}
+              <NavLink to="/account/chaves-emitidas" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                <KeySquare /> Chaves emitidas
+              </NavLink>
             </div>
           )}
 

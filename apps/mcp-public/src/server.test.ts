@@ -2,6 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
+/** O erro de negócio do `@purple-skills/db`, como o `guard` o reconhece. */
+const { AppError } = vi.hoisted(() => ({
+  AppError: class AppError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+      readonly code: string,
+    ) {
+      super(message);
+    }
+  },
+}));
+
 const db = vi.hoisted(() => ({
   // A busca semântica lê estas três; sem elas o módulo `rag.ts` nem carrega.
   ragSchemaReady: vi.fn(async () => false),
@@ -16,7 +29,7 @@ const db = vi.hoisted(() => ({
   readFile: vi.fn(),
 }));
 
-vi.mock('@purple-skills/db', () => db);
+vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
 const { createMcpServer } = await import('./server.js');
 
@@ -139,5 +152,76 @@ describe('identidade do servidor', () => {
       expect.arrayContaining(['search_skills', 'get_skill', 'get_skill_file', 'download_skill', 'list_tags']),
     );
     expect(client.getServerCapabilities()?.prompts).toEqual({});
+  });
+});
+
+/**
+ * O teto da consulta é corte, não recusa: quem descreve a tarefa com folga —
+ * que é o que esta ferramenta pede — continua recebendo resultado, e o schema
+ * anuncia o corte para o cliente não supor que a consulta inteira foi buscada.
+ */
+describe('o teto da consulta de search_skills', () => {
+  it('anuncia o corte na descrição do argumento', async () => {
+    const { tools } = await (await conectar()).listTools();
+    const busca = tools.find((tool) => tool.name === 'search_skills');
+
+    expect(JSON.stringify(busca?.inputSchema)).toContain('200 caracteres');
+  });
+
+  it('aceita consulta longa e busca só o trecho cortado, em vez de recusar a chamada', async () => {
+    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0, mode: 'text' });
+    const client = await conectar();
+
+    const resposta = await client.callTool({
+      name: 'search_skills',
+      arguments: { query: 'padronizar a mensagem de commit '.repeat(20) },
+    });
+
+    expect(resposta.isError).toBeFalsy();
+    expect((db.listSkills.mock.calls[0][0].query as string).length).toBeLessThanOrEqual(200);
+  });
+});
+
+/**
+ * O caminho completo, pelo transporte: é o `McpServer` do SDK que embrulha a
+ * exceção de um handler, e ele monta o `isError` com a `message` crua. Sem o
+ * `guard` do `tools.ts`, a mensagem do driver — com tabela, índice e constraint
+ * — chega ao cliente, que aqui é anônimo por padrão.
+ */
+describe('erro inesperado numa chamada', () => {
+  it('a ferramenta responde erro genérico com referência, e o detalhe fica no log', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    db.listTags.mockRejectedValue(new Error('relation "skill_tags" does not exist'));
+    const client = await conectar();
+
+    const resposta = await client.callTool({ name: 'list_tags', arguments: {} });
+    const corpo = JSON.stringify(resposta.content);
+
+    expect(resposta.isError).toBe(true);
+    expect(corpo).not.toContain('skill_tags');
+    expect(corpo).not.toContain('does not exist');
+    const ref = /ref ([0-9a-f]{8})/.exec(corpo)?.[1];
+    expect(ref).toBeDefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`ref ${ref}`), expect.any(Error));
+
+    log.mockRestore();
+  });
+
+  it('a superfície de resource devolve erro de protocolo genérico, não a mensagem do driver', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    db.getSkillDetail.mockRejectedValue(
+      new Error('duplicate key value violates unique constraint "skills_slug_lower_uniq"'),
+    );
+    const client = await conectar();
+
+    const erro = await client
+      .readResource({ uri: 'skill://minha-skill' })
+      .catch((err: Error) => err);
+
+    expect(erro).toBeInstanceOf(Error);
+    expect((erro as Error).message).not.toContain('skills_slug_lower_uniq');
+    expect((erro as Error).message).toMatch(/Erro interno do servidor \(ref [0-9a-f]{8}\)/);
+
+    log.mockRestore();
   });
 });

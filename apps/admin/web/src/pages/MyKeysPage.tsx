@@ -15,10 +15,11 @@ import { EmptyRow, Panel, Skel, useConfirm } from '../components/ui.js';
 import { useToast } from '../components/Toast.js';
 
 /**
- * Meu espaço → Chaves emitidas: tudo o que a conta emitiu, dos dois tipos.
- * As `psk_` (MCP administrativo) são dela; as `psv_` pertencem a um servidor
- * e aparecem aqui porque foi ela quem as emitiu — revogar uma delas ainda
- * exige `manage` no servidor, e o servidor diz não se a conta o perdeu.
+ * Configurações → Chaves emitidas: tudo o que a conta emitiu, dos dois tipos.
+ * As `psk_` (MCP administrativo) são dela — e quem as emite é a tela ao lado,
+ * Adm MCP Keys; as `psv_` pertencem a um servidor e aparecem aqui porque foi
+ * ela quem as emitiu — revogar uma delas ainda exige `manage` no servidor, e
+ * o servidor diz não se a conta o perdeu.
  */
 export function MyKeysPage({ user }: { user: SessionUser }) {
   const toast = useToast();
@@ -92,8 +93,8 @@ export function MyKeysPage({ user }: { user: SessionUser }) {
           icon={<KeyRound />}
           actions={
             !user.legacy && (
-              <Link to="/account" className="btn btn-ghost btn-sm">
-                Emitir em Minha conta
+              <Link to="/account/chaves-adm" className="btn btn-ghost btn-sm">
+                Emitir em Adm MCP Keys
               </Link>
             )
           }

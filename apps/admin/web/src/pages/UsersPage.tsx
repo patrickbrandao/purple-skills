@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, Search, UserPlus, Users } from 'lucide-react';
 import {
@@ -37,23 +37,31 @@ export function UsersPage({ me }: { me: SessionUser }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [users, setUsers] = useState<UserSummary[] | null>(null);
+  const [reload, setReload] = useState(0);
   const [query, setQuery] = useState('');
   const dq = useDebounced(query, 200);
   const filter = (params.get('filtro') as Filter | null) ?? 'todas';
   const creating = params.get('novo') === '1';
 
-  const load = useCallback(async () => {
-    try {
-      setUsers((await getUsers()).items);
-    } catch (err) {
-      toast.error((err as Error).message);
-      setUsers([]);
-    }
-  }, [toast]);
-
+  // O cleanup descarta a resposta atrasada: com duas buscas no ar — a da
+  // montagem e a recarga de "Nova conta" —, a antiga podia chegar por último e
+  // apagar da lista a conta recém-criada. Quem quer recarregar mexe em
+  // `reload`, e não chama a busca por fora.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let active = true;
+    getUsers()
+      .then((data) => {
+        if (active) setUsers(data.items);
+      })
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        setUsers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [reload, toast]);
 
   useRegisterCommands(
     [{ id: 'new-user', label: 'Nova conta', group: 'Criar', icon: <UserPlus />, keywords: ['usuário', 'convidar', 'conta'], run: () => setParams({ novo: '1' }) }],
@@ -191,7 +199,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
         open={creating}
         onClose={() => setParams({})}
         onCreated={(user) => {
-          void load();
+          setReload((current) => current + 1);
           navigate(`/users/${user.uuid}`);
         }}
       />

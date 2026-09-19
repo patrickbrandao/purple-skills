@@ -1,11 +1,17 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { closeDb, countUsers, getDb, waitForDatabase } from '@purple-skills/db';
-import { trustProxySetting } from '@purple-skills/shared';
+import {
+  GOOGLE_FONTS_FILES,
+  GOOGLE_FONTS_STYLE,
+  REFERRER_POLICY_PRIVATE,
+  securityHeaders,
+  trustProxySetting,
+} from '@purple-skills/shared';
 import { api } from './api.js';
 import { semearRag } from './rag.js';
 import { config, getAdminPassword, getSessionSecret, oidcEnabled, smtpEnabled } from './config.js';
@@ -13,6 +19,14 @@ import { onError } from './errors.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(here, '..', 'dist-web');
+/**
+ * A SPA servida, lida uma vez no boot: dela sai o hash do `<script>` que escolhe
+ * o tema antes da primeira pintura, para ele continuar rodando com a CSP ligada.
+ * Em desenvolvimento a página vem do Vite, então ausente é normal.
+ */
+const indexHtml = existsSync(join(webRoot, 'index.html'))
+  ? readFileSync(join(webRoot, 'index.html'), 'utf8')
+  : undefined;
 
 const app = express();
 
@@ -23,11 +37,18 @@ app.use(cookieParser());
 // `express.json` é montado dentro do roteador da API, depois da checagem de
 // sessão: ler 32 MB antes de saber quem está chamando é memória de graça.
 
-// Painel é sempre same-origin: nada de CORS aberto aqui.
+// Painel é sempre same-origin: nada de CORS aberto aqui. A CSP acompanha os
+// três cabeçalhos que já existiam — é o painel autenticado, onde um XSS faria o
+// estrago maior. As rotas de arquivo de skill sobrescrevem a CSP com a sua,
+// mais fechada.
+const pageHeaders = securityHeaders({
+  html: indexHtml,
+  referrerPolicy: REFERRER_POLICY_PRIVATE,
+  styleSources: [GOOGLE_FONTS_STYLE],
+  fontSources: [GOOGLE_FONTS_FILES],
+});
 app.use((_req, res, next) => {
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'same-origin');
+  for (const [nome, valor] of Object.entries(pageHeaders)) res.setHeader(nome, valor);
   next();
 });
 

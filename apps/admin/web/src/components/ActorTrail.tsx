@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatDateTime, formatRelative, getAudit, type AuditPage } from '../api.js';
@@ -18,19 +18,20 @@ export function ActorTrail({ actor }: { actor: string }) {
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setPage(await getAudit({ actor, limit: PAGE, offset }));
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }, [actor, offset]);
-
+  // Uma busca por interação: o cleanup descarta a resposta atrasada — senão a
+  // consulta antiga sobrescreve a nova e o rodapé acaba descrevendo outra faixa
+  // de linhas, ou a trilha da conta anterior, ao trocar de página ou de ficha.
   useEffect(() => {
+    let active = true;
     setPage(null);
-    void load();
-  }, [load]);
+    setError(null);
+    getAudit({ actor, limit: PAGE, offset })
+      .then((data) => active && setPage(data))
+      .catch((err) => active && setError((err as Error).message));
+    return () => {
+      active = false;
+    };
+  }, [actor, offset]);
 
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : offset + 1;

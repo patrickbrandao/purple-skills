@@ -36,7 +36,7 @@ quando o grupo muda. É o catálogo.
 | 4 | Precedência | O vínculo **direto** da skill com o vMCP **sobrescreve** qualquer catálogo: as portas dele valem sozinhas |
 | 5 | Vários catálogos | Sem vínculo direto, as portas são a **união** dos catálogos que chegam ao vMCP com a skill |
 | 6 | Dono | Como o vMCP: quem cria (editor+) é o dono; admin manda em todos; admin transfere |
-| 7 | Permissão do vínculo | Vincular ou desvincular catálogo↔vMCP exige administrar **os dois** — na prática, o dono comum ou um admin |
+| 7 | Permissão do vínculo | ~~Vincular ou desvincular catálogo↔vMCP exige administrar **os dois** — na prática, o dono comum ou um admin~~ — **revogada pela decisão 6 do [`12`](12-acesso-granular.md)**: vincular é `edit` no vMCP + `view` no catálogo; desvincular, só o `edit` do vMCP |
 | 8 | Participação | `catalog_skills.is_active`: desativar a skill no catálogo sem removê-la, **reversível** |
 | 9 | Catálogo ligado | `catalogs.is_active`: desligar o catálogo inteiro sem apagar membros nem vínculos, como o vMCP |
 | 10 | Skill desligada | **Global**, campo novo `skills.is_active`: some de todo vMCP (direto ou por catálogo) e do site; o painel continua vendo |
@@ -159,8 +159,14 @@ do servidor, com confirmação. A posição vai em `virtual_mcp_catalogs.pos_x`/
 
 "Adicionar catálogo" é um segundo botão fixo do palco e um segundo comando
 da paleta, com a mesma página "escolher" — filtrada aos catálogos que a
-sessão administra (decisão 7). O nó de um catálogo desligado, ou sem nenhum
+sessão **vê**. O nó de um catálogo desligado, ou sem nenhum
 membro ativo, aparece esmaecido com o motivo no rodapé.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md):** ~~filtrada aos
+> catálogos que a sessão administra (decisão 7)~~. A paleta é alimentada por
+> `GET /api/catalogs` sem recorte (`CommandPalette` → `getCatalogs()`), que
+> devolve o que a sessão enxerga — os seus, os concedidos e os **públicos**
+> —, porque vincular passou a exigir só `view` no catálogo (decisão 6).
 
 O número do nó exclui os membros com nó próprio de propósito: no palco, uma
 skill que é nó e também estaria "dentro" do catálogo seria contada duas
@@ -172,7 +178,7 @@ vezes, e o total do servidor deixaria de bater com o que se vê.
 
 | Rota | O que é |
 |------|---------|
-| `/catalogos` | Lista (todos para admin, os próprios para os demais): nome, dono, membros ativos/total, vMCPs, acessos, estado; "Novo catálogo" num modal com nome, slug e descrição |
+| `/catalogos` | Lista (~~todos para admin, os próprios para os demais~~ — **revogado pelo [`12`](12-acesso-granular.md) `§3.1`:** tudo para admin; para os demais, os seus, os concedidos **e os públicos**, com o filtro meus / compartilhados comigo / públicos): nome, dono, membros ativos/total, vMCPs, acessos, estado; "Novo catálogo" num modal com nome, slug e descrição |
 | `/catalogos/:slug/*` | A ficha só leitura (`13` §3.3): guias Catálogo (descrição), Skills (os membros com o estado), Propriedades (configuração, "Vinculado em" com os vMCPs e as portas, acesso) e Acessos |
 | `/catalogos/:slug/editar/*` | A ficha de edição, mesmas guias: a tabela de skills com a participação como caixa e "Remover", a busca "Adicionar skill" (paleta), a configuração (nome, slug, descrição, ligado), o acesso e a zona de perigo |
 
@@ -201,7 +207,13 @@ PUT    /api/mcps/:slug/canvas             ganha catalogPositions
 PATCH  /api/skills/:slug                  ganha isActive
 ```
 
-As rotas de vínculo passam por `loadManaged` do vMCP **e** do catálogo.
+> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisão 6 e
+> `§5.3`): ~~as rotas de vínculo passam por `loadManaged` do vMCP **e** do
+> catálogo~~. `loadManaged` não existe mais. Vincular é `load(user, mcpSlug,
+> 'edit')` no vMCP **e** `load(user, catalogSlug, 'view')` no catálogo
+> (`apps/admin/src/catalogs.ts`, `linkToMcp` e `setMcpCatalogs`); desvincular
+> exige só o `edit` do vMCP — tirar da lista é mexer no servidor, não no
+> catálogo.
 
 ### 6.3 mcp-admin
 

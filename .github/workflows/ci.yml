@@ -9,6 +9,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# O GITHUB_TOKEN entra com o mínimo: nenhum job daqui escreve no repositório —
+# os três só fazem checkout e rodam ferramenta local (typecheck, testes, gitleaks
+# e build sem push). O cache do npm, o cache `type=gha` do buildx e o resumo do
+# build não passam pelo GITHUB_TOKEN (usam o token de execução do runner), então
+# continuam funcionando com só leitura.
+#
+# Declarado aqui e não herdado do repositório de propósito: o padrão de
+# `Workflow permissions` pode ser `write` num fork ou noutra organização.
+# Se um dia entrar comentário em PR (`pull-requests: write`), push de imagem
+# (`packages: write`) ou proveniência assinada (`id-token: write`), declare a
+# permissão no job que precisa — não aqui.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Lint, typecheck e testes
@@ -42,19 +56,44 @@ jobs:
 
       # Guarda determinística, independente do formato do valor: nenhum arquivo
       # de ambiente pode estar versionado — só o .env.example com placeholders.
+      #
+      # Casa qualquer caminho cujo *nome de arquivo* comece por `.env`: cobre as
+      # formas com ponto (`.env.local`) e com hífen (`.env-builder`,
+      # `.env-skills-langwizard`), que os pathspecs `.env.*` deixavam passar.
+      # O `[^/]*$` fecha no último componente, para que um diretório começando
+      # com `.env` não derrube o CI pelos arquivos de dentro.
       - name: Nenhum .env versionado
         run: |
-          tracked=$(git ls-files -- '.env' '.env.*' '**/.env' '**/.env.*' \
-                    | grep -v '\.env\.example$' || true)
+          tracked=$(git ls-files | grep -E '(^|/)\.env[^/]*$' \
+                    | grep -Ev '(^|/)\.env\.example$' || true)
           if [ -n "$tracked" ]; then
             echo "::error::arquivo de ambiente versionado: $tracked"
             exit 1
           fi
 
+      # O pacote é extraído dentro do PATH: conferir os bytes antes de extrair.
+      # O hash sai do `checksums.txt` que o próprio gitleaks publica em cada
+      # release, não de um valor colado aqui — assim trocar GITLEAKS_VERSION
+      # acima já traz o hash certo, sem nada para alguém esquecer de atualizar.
+      # (O gitleaks não publica assinatura nem attestation dos tarballs; o
+      # arquivo de checksums do release é a verificação mais forte disponível.
+      # Ela pega download corrompido ou adulterado no caminho, e asset trocado
+      # no release; não pega o release inteiro refeito por quem tem a conta.)
+      #
+      # O download vai para o RUNNER_TEMP, não para o checkout que o gitleaks
+      # varre no passo seguinte.
       - name: Instalar gitleaks
         run: |
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          pacote="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$pacote" "$base/$pacote"
+          curl -sSfL -o checksums.txt "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          # Só a linha do pacote que foi baixado. Sem essa linha (versão que não
+          # existe, release sem o arquivo) o sha256sum não encontra checksum
+          # válido e o passo falha — que é o comportamento desejado.
+          awk -v pacote="$pacote" '$2 == pacote' checksums.txt | sha256sum -c -
+          sudo tar -xzf "$pacote" -C /usr/local/bin gitleaks
 
       # --redact: o log do CI é público; um achado não pode imprimir o segredo.
       - name: Varredura do histórico

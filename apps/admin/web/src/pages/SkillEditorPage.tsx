@@ -58,7 +58,7 @@ import {
   type PlannedChange,
   type SkillDrafts,
 } from '../skillDrafts.js';
-import { useSkillFiles } from '../useSkillFiles.js';
+import { openFileState, useOpenFileFromState, useSkillFiles } from '../useSkillFiles.js';
 import { useToast } from '../components/Toast.js';
 import { useRegisterCommands, type Command } from '../components/commands.js';
 import { DescriptionBox } from './SkillViewPage.js';
@@ -105,7 +105,10 @@ async function applyChange(slug: string, change: PlannedChange): Promise<void> {
       await unshare('skill', slug, change.email);
       return;
     case 'owner':
-      await updateSkill(slug, { ownerUserUuid: change.user.uuid });
+      // `ownerUserUuid` aceita o e-mail (`admin/src/access.ts`, `ownerFrom`), e
+      // é o e-mail que a busca de contas devolve — o `uuid` saiu dela
+      // (`tasks/025`). Pelo e-mail, o servidor ainda confere conta ativa.
+      await updateSkill(slug, { ownerUserUuid: change.user.email });
       return;
   }
 }
@@ -227,6 +230,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 
   const files = useSkillFiles({ skill, canWrite: podeEscrever, onFiles, onReloadAll: reload, formDirty });
   const { save: saveFile, remove: removeFile, startCreate, pickUpload, pickZip, dirtyPaths } = files;
+  useOpenFileFromState(files, skill?.uuid);
   // O SKILL.md aberto em Arquivos é o formulário, não um arquivo à parte.
   const dirtyFiles = useMemo(() => [...dirtyPaths].filter((path) => !isSkillMdPath(path)), [dirtyPaths]);
 
@@ -309,11 +313,15 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       const prompt = stripFrontmatter(now.skillMd);
       try {
         const updated = await updateSkill(current.slug, {
-          name: now.meta.name,
+          // Cada campo só vai quando mudou de fato. `updateSkill` grava só o
+          // que recebe: reenviar o valor lido no carregamento desfazia, sem
+          // erro nenhum, o nome, a descrição ou as tags de quem salvou no meio
+          // — a mesma razão que já valia para `icon`, `slug` e o SKILL.md.
+          name: now.meta.name !== current.name ? now.meta.name : undefined,
           slug: now.meta.slug !== current.slug ? now.meta.slug : undefined,
-          description: now.meta.description,
+          description: now.meta.description !== current.description ? now.meta.description : undefined,
           icon: now.meta.icon.trim() !== (current.icon ?? '') ? now.meta.icon.trim() || null : undefined,
-          tags: parseTags(now.meta.tags),
+          tags: now.meta.tags !== current.tags.join(', ') ? parseTags(now.meta.tags) : undefined,
           isActive: now.isActive !== current.isActive ? now.isActive : undefined,
           isPublic: publicChange?.type === 'public' ? publicChange.value : undefined,
           skillMd: prompt !== current.skillMd ? prompt : undefined,
@@ -527,7 +535,12 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
               <ExternalLink /> ver no site
             </a>
           )}
-          <Link to={base} className="btn btn-ghost">
+          {/* A leitura tem as mesmas guias: Visualizar fica na guia e, em Arquivos, no arquivo aberto. */}
+          <Link
+            to={tab === 'skill' ? base : `${base}/${tab}`}
+            state={tab === 'arquivos' ? openFileState(files) : undefined}
+            className="btn btn-ghost"
+          >
             <Eye /> Visualizar
           </Link>
           <Button

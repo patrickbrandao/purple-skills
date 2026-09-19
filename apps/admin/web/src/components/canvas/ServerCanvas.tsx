@@ -28,11 +28,11 @@ import {
 } from '../../api.js';
 import { usePalette, useRegisterCommands } from '../commands.js';
 import { useToast } from '../Toast.js';
-import { Button, isTypingTarget, useConfirm, usePolling } from '../ui.js';
+import { Button, isChordKey, isTypingTarget, useConfirm, usePolling } from '../ui.js';
 import { useTheme } from '../../useTheme.js';
 import { nodeTypes } from './nodes.js';
 import { edgeTypes } from './edges.js';
-import { AddSkillDialog, type Picked } from './AddSkillDialog.js';
+import { AddSkillDialog, pickedKey, type Picked } from './AddSkillDialog.js';
 import { NodeDrawer, type Selection } from './NodeDrawer.js';
 import { DEFAULT_INTERNET, DEFAULT_SERVER, GRID, autoLayout, freeSlot, placeNodes, snap } from './layout.js';
 import {
@@ -605,6 +605,9 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         return;
       }
       if (isTypingTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
+      // `g c` é "ir para Catálogos" e `g a` é "ir para Auditoria" (`App.tsx`): a
+      // segunda tecla de um acorde não é atalho de uma letra só.
+      if (isChordKey(event)) return;
       // `preventDefault`: a letra do atalho não pode cair no campo da paleta que ele abre.
       if (event.key === 'a' && canEdit) {
         event.preventDefault();
@@ -737,7 +740,17 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         onOpenSessions={onOpenSessions}
       />
 
-      <AddSkillDialog picked={adding} serverName={detail.name} busy={addBusy} onConfirm={(ports) => void confirmAdd(ports)} onClose={() => (addBusy ? null : setAdding(null))} />
+      {/* `key`: o diálogo fica montado no palco, então sem remontar ele reabre
+          com as portas marcadas da vez anterior — e o padrão dele é só Tools. */}
+      <AddSkillDialog
+        key={pickedKey(adding)}
+        picked={adding}
+        serverName={detail.name}
+        serverIsOpen={detail.isOpen}
+        busy={addBusy}
+        onConfirm={(ports) => void confirmAdd(ports)}
+        onClose={() => (addBusy ? null : setAdding(null))}
+      />
     </div>
   );
 }

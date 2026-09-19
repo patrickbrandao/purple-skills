@@ -6,7 +6,7 @@ import {
   listSkills,
   recordSkillAccess,
   listTags,
-  readAllFiles,
+  listFiles,
   readFile,
   getPublicCatalog,
   getSkillDetail,
@@ -22,6 +22,8 @@ import {
   normalizeRelativePath,
   safeContentType,
   stripFrontmatter,
+  type SkillDetail,
+  type SkillSummary,
 } from '@purple-skills/shared';
 import { config } from './config.js';
 import { buscaSemantica } from './rag.js';
@@ -42,6 +44,114 @@ function param(req: Request, name: string): string {
 function asInt(value: unknown, fallback: number): number {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * O teto da consulta de busca, em caracteres. É o mesmo do `normalizeQuery` do
+ * `@purple-skills/db`, que corta a perna textual; enquanto o `db` não exportar
+ * o número, ele vive aqui e em `apps/mcp-public/src/tools.ts`.
+ */
+const MAX_QUERY_CHARS = 200;
+
+/**
+ * A consulta como as **duas** pernas da busca vão lê-la.
+ *
+ * `listSkills` já cortava em 200 caracteres, mas o embedding era resolvido
+ * antes, com o texto cru: a perna vetorial embutia uma pergunta que a textual
+ * nunca leu, e quem escolhia o tamanho do que ia ao provedor — pago, e que no
+ * nível gratuito do Google é lido por revisores humanos — era o visitante
+ * anônimo. Normalizar aqui, uma vez, resolve as duas coisas.
+ *
+ * Conta caractere e não byte, pelo mesmo motivo de ser um número só: contar
+ * byte encurtaria a consulta a cada acento, e uma frase em português perderia
+ * palavras que a mesma frase em inglês manteria.
+ *
+ * E corta na fronteira de palavra: termo partido é pior que termo ausente —
+ * `websearch_to_tsquery` junta os termos com AND, então uma palavra que ninguém
+ * escreveu zera a perna textual, além de embutir no vetor um pedaço de palavra.
+ */
+function consultaDaBusca(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const texto = raw.trim();
+  if (texto === '') return null;
+  if (texto.length <= MAX_QUERY_CHARS) return texto;
+
+  // O caractere a mais revela se o limite cai dentro de uma palavra; `\S*$`
+  // tira a palavra partida e o `trimEnd`, o espaço que sobra.
+  const naFronteira = texto.slice(0, MAX_QUERY_CHARS + 1).replace(/\S*$/, '').trimEnd();
+  if (naFronteira !== '') return naFronteira;
+
+  // Consulta sem espaço nenhum (um blob colado): corta no limite, sem deixar
+  // sozinha a metade alta de um par surrogate — ela viraria U+FFFD no JSON do
+  // provedor.
+  const duro = texto.slice(0, MAX_QUERY_CHARS);
+  const ultimo = duro.charCodeAt(duro.length - 1);
+  return ultimo >= 0xd800 && ultimo <= 0xdbff ? duro.slice(0, -1) : duro;
+}
+
+/**
+ * O que uma skill entrega ao visitante **anônimo**.
+ *
+ * É lista de permissão, não de negação: campo novo em `SkillSummary` nasce
+ * fora do site até alguém decidir o contrário. Foi por espalhar o objeto do
+ * banco inteiro (`...detail`) que o e-mail do dono e a lista de concessões
+ * saíram para quem não tem login.
+ *
+ * Ficam de fora, campo por campo:
+ *
+ * - `ownerUserUuid`/`ownerEmail` — dado pessoal. O `docs/12` decisão 11 dá o
+ *   dono a quem tem `view`, e o §10 aceita e-mail exposto a **conta logada**
+ *   ("instalação de colaboradores"); o anônimo não é nenhum dos dois. O UUID
+ *   é ainda o `sub` do cookie do painel.
+ * - `grants` (no detalhe) — a ACL é de `manage`, dono e admin (decisão 11),
+ *   como o painel e o mcp-admin já fazem.
+ * - `isActive`/`isPublic`/`access` — estado interno. Nesta superfície são
+ *   constantes ou nulos (a visibilidade `'open'` já exige skill ligada e
+ *   legível), então não informam o site e revelam a política de cada skill.
+ * - `catalogs` da skill — vazio nesta visibilidade.
+ * - `direct`/`catalogs` de cada vMCP — dizem por qual catálogo a skill chega
+ *   ao servidor, e esse catálogo pode ser privado (basta estar ligado).
+ *
+ * O resto é o que a página usa. `icon` fica: é metadado público da skill, como
+ * nome e descrição, e o cartão pode passar a exibi-lo.
+ */
+function skillPublica(skill: SkillSummary) {
+  return {
+    uuid: skill.uuid,
+    slug: skill.slug,
+    name: skill.name,
+    description: skill.description,
+    icon: skill.icon,
+    mcps: skill.mcps.map((mcp) => ({
+      uuid: mcp.uuid,
+      slug: mcp.slug,
+      name: mcp.name,
+      isOpen: mcp.isOpen,
+      isActive: mcp.isActive,
+      isDefault: mcp.isDefault,
+      asSkill: mcp.asSkill,
+      asPrompt: mcp.asPrompt,
+      asResource: mcp.asResource,
+    })),
+    viewCount: skill.viewCount,
+    downloadCount: skill.downloadCount,
+    score: skill.score,
+    tags: skill.tags,
+    fileCount: skill.fileCount,
+    createdAt: skill.createdAt,
+    updatedAt: skill.updatedAt,
+  };
+}
+
+/**
+ * O detalhe pela mesma regra: o SKILL.md e a lista de arquivos, sem `grants`.
+ *
+ * `files` passa direto porque já nasce recortado no banco (`listFiles` traz
+ * quatro colunas), como os campos do catálogo público — o objeto largo, e o
+ * único que carrega gente, é a skill.
+ */
+function detalhePublico(detail: SkillDetail) {
+  return { ...skillPublica(detail), skillMd: detail.skillMd, files: detail.files };
 }
 
 function fail(res: Response, err: unknown) {
@@ -74,6 +184,19 @@ api.get(
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md`): o site diz qual é, se exige
  * chave e, quando não há nenhum em pé, por quê — em vez de anunciar um
  * endereço que responde 404. Resolvido a cada chamada, como no mcp-public.
+ *
+ * **Sem `description`.** `resolveDefaultVirtualMcp` não filtra visibilidade — e
+ * não deve: o padrão pode ser fechado e continua respondendo em `/mcp` com
+ * chave. Então o que sai daqui sai para o anônimo qualquer que seja o estado do
+ * servidor, e a descrição é texto livre, onde cabe nome de cliente, de projeto
+ * ou de time. Quando o padrão é **aberto** a descrição já sai em `/api/mcps`
+ * (`listOpenVirtualMcps`); quando é **fechado**, saía só por aqui, e a página
+ * não a usa em lugar nenhum.
+ *
+ * `slug` e `name` ficam: são o que o `GET /` do próprio mcp-public anuncia ao
+ * anônimo (`docs/09-mcp-padrao-e-skills-flutuantes.md` §3.2,
+ * `defaultMcp: { status, slug, name, auth }`), e sem o nome o cartão de
+ * endereços diria que "algum servidor" exige chave.
  */
 async function mcpPublico() {
   const resolved = await resolveDefaultVirtualMcp();
@@ -82,11 +205,10 @@ async function mcpPublico() {
       status: 'ok' as const,
       slug: resolved.mcp.slug,
       name: resolved.mcp.name,
-      description: resolved.mcp.description,
       requiresKey: !resolved.mcp.isOpen,
     };
   }
-  return { status: resolved.status, slug: resolved.slug, name: null, description: null, requiresKey: null };
+  return { status: resolved.status, slug: resolved.slug, name: null, requiresKey: null };
 }
 
 api.get(
@@ -142,7 +264,9 @@ api.get(
       res.status(404).json({ error: 'not_found', message: 'Catálogo não encontrado' });
       return;
     }
-    res.json(catalog);
+    // Os membros são `SkillSummary` do banco: passam pela mesma projeção da
+    // lista — um catálogo público multiplica o vazamento pelos membros dele.
+    res.json({ ...catalog, skills: catalog.skills.map(skillPublica) });
   }),
 );
 
@@ -155,7 +279,9 @@ api.get(
 api.get(
   '/api/skills',
   asyncRoute(async (req, res) => {
-    const query = typeof req.query.q === 'string' ? req.query.q : null;
+    // Uma normalização só, antes das duas pernas: o vetor e o texto precisam
+    // ler a mesma pergunta (ver `consultaDaBusca`).
+    const query = consultaDaBusca(req.query.q);
     // Falha ou prazo estourado devolvem `undefined`: a busca sai textual, e o
     // campo `mode` da resposta diz ao cliente o que ele leu.
     const { semantic } = await buscaSemantica.resolver(query);
@@ -173,8 +299,9 @@ api.get(
     if (result.mode === 'hybrid') console.log(logDaBusca(result.mode, result.neighbors));
 
     // `neighbors` é do servidor: as distâncias não vão para o cliente (§8.1).
-    const { neighbors: _distancias, ...resposta } = result;
-    res.json(resposta);
+    // Os itens saem projetados — a lista é a superfície mais fácil de varrer.
+    const { neighbors: _distancias, items, ...resposta } = result;
+    res.json({ ...resposta, items: items.map(skillPublica) });
   }),
 );
 
@@ -220,7 +347,7 @@ api.get(
 
     registrarAcesso(req, detail.uuid, 'view', 'page');
     res.json({
-      ...detail,
+      ...detalhePublico(detail),
       // Os metadados estão nos campos do próprio JSON; `skillMd` traz só o
       // corpo do prompt. O SKILL.md completo sai em /files/SKILL.md e no zip.
       skillMd: stripFrontmatter(detail.skillMd),
@@ -262,13 +389,18 @@ const serveFile = asyncRoute(async (req, res) => {
   }
 
   // Arquivos de skill são conteúdo de terceiros. Servi-los como `text/html` ou
-  // `image/svg+xml` na origem do catálogo permitiria rodar JS no domínio:
+  // `image/svg+xml` na origem do site permitiria rodar JS no domínio:
   // tipos executáveis descem como texto, e nada é renderizado inline.
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
   res.setHeader('Content-Length', String(buffer.byteLength));
-  res.setHeader('Cache-Control', 'public, max-age=60');
+  // `private`: um cache compartilhado no caminho continuaria servindo o arquivo
+  // por até um minuto depois de a skill ser despublicada, e o conteúdo pode ser
+  // de skill privada aberta por vMCP ou catálogo público. O ganho no navegador
+  // de quem já abriu a página fica de pé; o mcp-public serve o equivalente com
+  // `no-store`.
+  res.setHeader('Cache-Control', 'private, max-age=60');
   res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'attachment'));
   res.send(buffer);
 });
@@ -288,9 +420,12 @@ const serveZip = (ext: 'zip' | 'skill') =>
       return;
     }
 
-    const files = await readAllFiles(skill.uuid);
+    // A lista, não o conteúdo: cada arquivo é lido dentro do `streamSkillZip`,
+    // na vez de entrar no pacote. Ler a skill inteira aqui punha até centenas de
+    // MB na memória antes do primeiro byte, e o download é anônimo.
+    const files = await listFiles(skill.uuid);
     registrarAcesso(req, skill.uuid, 'download', 'download');
-    streamSkillZip(res, skill.slug, files, skill, ext);
+    await streamSkillZip(res, skill.slug, files, (path) => readFile(skill.uuid, path), skill, ext);
   });
 
 api.get('/skills/:slug/download', serveZip('zip'));

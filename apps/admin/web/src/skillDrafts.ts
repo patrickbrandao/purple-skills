@@ -17,15 +17,22 @@ export type LinkDraft = LinkFlags & { slug: string; name: string };
 /** A participação desejada num catálogo. */
 export type CatalogDraft = { slug: string; name: string; member: boolean; active: boolean };
 
-/** O nível desejado de uma conta; `null` revoga. */
-export type GrantDraft = { userUuid: string; email: string; name: string; role: Role; level: AccessLevel | null };
+/**
+ * O nível desejado de uma conta; `null` revoga.
+ *
+ * A conta é identificada pelo **e-mail**: é o que a busca de contas devolve
+ * (`tasks/025`, `UserLookup`) e o que as rotas de concessão usam na URL. O
+ * `uuid` não chega mais ao painel, e comparar um com o outro é o que fazia o
+ * rascunho tratar uma concessão existente como nova.
+ */
+export type GrantDraft = { email: string; name: string; role: Role; level: AccessLevel | null };
 
 export type AccessDraft = {
   /** `undefined` não mexe. */
   isPublic?: boolean;
   /** O novo dono; `undefined` não mexe. */
   owner?: UserLookup;
-  /** Por uuid da conta. */
+  /** Por e-mail da conta. */
   grants: Record<string, GrantDraft>;
 };
 
@@ -70,8 +77,8 @@ export type PlannedChange =
   | { type: 'catalog-add'; catalogUuid: string; slug: string; name: string; active: boolean }
   | { type: 'catalog-active'; catalogUuid: string; slug: string; name: string; active: boolean }
   | { type: 'catalog-remove'; catalogUuid: string; slug: string; name: string }
-  | { type: 'grant'; userUuid: string; email: string; level: AccessLevel; isNew: boolean }
-  | { type: 'revoke'; userUuid: string; email: string }
+  | { type: 'grant'; email: string; level: AccessLevel; isNew: boolean }
+  | { type: 'revoke'; email: string }
   | { type: 'owner'; user: UserLookup };
 
 function linkChange(skill: SkillDetail, mcpUuid: string, draft: LinkDraft): PlannedChange | null {
@@ -91,10 +98,10 @@ function catalogChange(skill: SkillDetail, catalogUuid: string, draft: CatalogDr
 }
 
 function grantChange(skill: SkillDetail, draft: GrantDraft): PlannedChange | null {
-  const current = skill.grants.find((item) => item.userUuid === draft.userUuid);
-  if (draft.level === null) return current ? { type: 'revoke', userUuid: draft.userUuid, email: draft.email } : null;
+  const current = skill.grants.find((item) => item.email === draft.email);
+  if (draft.level === null) return current ? { type: 'revoke', email: draft.email } : null;
   if (current?.level === draft.level) return null;
-  return { type: 'grant', userUuid: draft.userUuid, email: draft.email, level: draft.level, isNew: !current };
+  return { type: 'grant', email: draft.email, level: draft.level, isNew: !current };
 }
 
 /**
@@ -121,7 +128,10 @@ export function planChanges(skill: SkillDetail, drafts: SkillDrafts): PlannedCha
     const change = grantChange(skill, draft);
     if (change) changes.push(change);
   }
-  if (access.owner && access.owner.uuid !== skill.ownerUserUuid) {
+  // O dono se compara pelo e-mail: é o identificador que a busca de contas
+  // devolve (`tasks/025`). Comparar com `ownerUserUuid` dava sempre diferente,
+  // e escolher o dono atual gravava uma transferência dele para ele mesmo.
+  if (access.owner && access.owner.email !== skill.ownerEmail) {
     changes.push({ type: 'owner', user: access.owner });
   }
   return changes;
@@ -138,8 +148,8 @@ export function pruneDrafts(skill: SkillDetail, drafts: SkillDrafts): SkillDraft
     catalogs: keep(drafts.catalogs, (uuid, draft) => catalogChange(skill, uuid, draft) !== null),
     access: {
       isPublic: access.isPublic !== undefined && access.isPublic !== skill.isPublic ? access.isPublic : undefined,
-      owner: access.owner && access.owner.uuid !== skill.ownerUserUuid ? access.owner : undefined,
-      grants: keep(access.grants, (_uuid, draft) => grantChange(skill, draft) !== null),
+      owner: access.owner && access.owner.email !== skill.ownerEmail ? access.owner : undefined,
+      grants: keep(access.grants, (_email, draft) => grantChange(skill, draft) !== null),
     },
   };
 }

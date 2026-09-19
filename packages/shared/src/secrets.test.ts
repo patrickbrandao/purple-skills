@@ -2,7 +2,13 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { bearerToken, readSecret, requireSecret, safeEqual } from './secrets.js';
+import {
+  assertNotPlaceholder,
+  bearerToken,
+  readSecret,
+  requireSecret,
+  safeEqual,
+} from './secrets.js';
 
 describe('readSecret', () => {
   it('lê da env var direta', () => {
@@ -18,6 +24,25 @@ describe('readSecret', () => {
     expect(readSecret('X', env)).toBe('do-arquivo');
   });
 
+  it('apara linha em branco e espaço do arquivo', () => {
+    // O `\n` que sobrava não aparece em erro nenhum: ele só faz o `safeEqual`
+    // do `MCP_ADMIN_TOKEN` nunca casar com o token que o cliente manda.
+    const dir = mkdtempSync(join(tmpdir(), 'ps-secret-'));
+    const file = join(dir, 'secret');
+    writeFileSync(file, '  do-arquivo\n\n');
+
+    expect(readSecret('X', { X_FILE: file } as NodeJS.ProcessEnv)).toBe('do-arquivo');
+  });
+
+  it('arquivo só com espaço em branco é undefined, como a variável vazia', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ps-secret-'));
+    const file = join(dir, 'secret');
+    writeFileSync(file, '\n');
+
+    expect(readSecret('X', { X_FILE: file } as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(() => requireSecret('X', { X_FILE: file } as NodeJS.ProcessEnv)).toThrow(/ausente/);
+  });
+
   it('devolve undefined quando não há nada definido ou está vazio', () => {
     expect(readSecret('X', {} as NodeJS.ProcessEnv)).toBeUndefined();
     expect(readSecret('X', { X: '' } as NodeJS.ProcessEnv)).toBeUndefined();
@@ -29,6 +54,38 @@ describe('requireSecret', () => {
     expect(() => requireSecret('ADMIN_PASSWORD', {} as NodeJS.ProcessEnv)).toThrow(
       /ADMIN_PASSWORD/,
     );
+  });
+
+  it('recusa o placeholder do .env.example', () => {
+    const env = { MCP_ADMIN_TOKEN: 'CHANGE_ME' } as NodeJS.ProcessEnv;
+    expect(() => requireSecret('MCP_ADMIN_TOKEN', env)).toThrow(/placeholder/);
+  });
+});
+
+describe('assertNotPlaceholder', () => {
+  it('recusa os placeholders, com espaço em volta e em qualquer caixa', () => {
+    for (const valor of ['CHANGE_ME', ' change_me ', 'PLACEHOLDER', 'exemplo', 'xxxx']) {
+      expect(() => assertNotPlaceholder('ADMIN_SESSION_SECRET', valor)).toThrow(
+        /ADMIN_SESSION_SECRET/,
+      );
+    }
+  });
+
+  it('a mensagem diz como gerar um valor bom', () => {
+    expect(() => assertNotPlaceholder('ADMIN_SESSION_SECRET', 'CHANGE_ME')).toThrow(
+      /openssl rand -hex 32/,
+    );
+  });
+
+  it('devolve o valor quando serve, sem aparar nada', () => {
+    expect(assertNotPlaceholder('X', ' segredo ')).toBe(' segredo ');
+  });
+
+  it('o padrão é ancorado: placeholder no meio de uma URL não casa', () => {
+    // A `DATABASE_URL` de exemplo carrega CHANGE_ME como senha embutida; ela
+    // não é um placeholder inteiro e não pode derrubar ninguém.
+    const url = 'postgres://postgres:CHANGE_ME@localhost:5432/purple_skills';
+    expect(assertNotPlaceholder('DATABASE_URL', url)).toBe(url);
   });
 });
 

@@ -138,6 +138,28 @@ async function skillOwner(slug: string): Promise<string | null> {
   return rows[0]?.owner_user_uuid ?? null;
 }
 
+/**
+ * Espera o UPDATE de uma skill parar na trava da linha. É assim que o teste de
+ * concorrência envelhece a foto que a chamada já leu, sem `sleep` fixo: a outra
+ * sessão segura a linha, e só depois de a escrita estar de fato esperando é que
+ * o COMMIT acontece.
+ */
+async function esperaUpdateDeSkillTravado(timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await raw.query(
+      `SELECT 1 FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND pid <> pg_backend_pid()
+          AND wait_event_type = 'Lock' AND wait_event = 'transactionid'
+          AND query LIKE '%UPDATE skills SET%'`,
+    );
+    if (rows.length > 0) return;
+    if (Date.now() > deadline) throw new Error('o UPDATE da skill não chegou a esperar a trava');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 const TOOLS = { asSkill: true, asPrompt: false, asResource: false };
 
 describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada conta vê', () => {
@@ -170,6 +192,10 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       '019-acessos-por-conta.sql',
       '020-rag.sql',
       '021-chaves-por-emissor.sql',
+      '022-busca-por-substring.sql',
+      '023-links-de-reset-substituidos.sql',
+      '024-auditoria-de-troca-de-senha.sql',
+      '025-fila-de-textos-do-rag.sql',
     ]);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.
@@ -665,6 +691,11 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     expect((await lookupUsers('exemplo', 2)).map((u) => u.name)).toEqual(['Ana', 'Bruno']);
     expect((await lookupUsers('exemplo', 0)).length).toBe(1);
     expect(await lookupUsers('ninguem')).toEqual([]);
+    // O termo é **literal**: `%%` casava toda conta ativa e `_` qualquer
+    // caractere (o mínimo de dois caracteres deixa `%` sozinho de fora).
+    expect(await lookupUsers('%%')).toEqual([]);
+    expect(await lookupUsers('bruno_exemplo')).toEqual([]);
+    expect(await lookupUsers('bruno@exemplo')).toHaveLength(1);
     expect((await capture(lookupUsers(123 as never))).status).toBe(400);
   });
 
@@ -772,5 +803,118 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     );
     // 2 CHECKs + 6 índices (pkey e reverso em cada uma das três) + 1, sem duplicata.
     expect(objetos[0]?.n).toBe(9);
+  });
+
+  it('o UPDATE da skill leva só o que veio: escrita concorrente não é desfeita', async () => {
+    // As duas escritas leem a skill **antes** de abrir a transação. Aqui a foto
+    // é envelhecida de propósito: outra sessão renomeia e publica a skill
+    // enquanto o UPDATE espera a trava da linha. Quem grava depois não pode
+    // devolver `is_public`, o nome e o slug ao que eram — era esse o bug.
+    await createSkill(
+      { name: 'Corrida', slug: 'corrida', description: 'antes', skillMd: '# antes' },
+      SOURCE,
+    );
+
+    const outra = new pg.Client({ connectionString: url });
+    await outra.connect();
+    try {
+      await outra.query('BEGIN');
+      await outra.query(
+        `UPDATE skills SET is_public = true, name = 'Renomeada', slug = 'corrida-2'
+          WHERE slug = 'corrida'`,
+      );
+
+      const pendente = updateSkill('corrida', { description: 'depois' }, SOURCE, ana);
+      await esperaUpdateDeSkillTravado();
+      await outra.query('COMMIT');
+
+      // O slug devolvido é o **gravado**: a releitura do fim acha a skill.
+      expect(await pendente).toMatchObject({
+        slug: 'corrida-2',
+        name: 'Renomeada',
+        description: 'depois',
+        isPublic: true,
+      });
+    } finally {
+      await outra.end();
+    }
+
+    // `updateSkillWithContent` faz o mesmo: o SKILL.md e as tags entram e o
+    // desligamento concorrente fica de pé.
+    const terceira = new pg.Client({ connectionString: url });
+    await terceira.connect();
+    try {
+      await terceira.query('BEGIN');
+      await terceira.query(`UPDATE skills SET is_active = false WHERE slug = 'corrida-2'`);
+
+      const pendente = updateSkillWithContent(
+        'corrida-2',
+        { skillMd: '# depois', tags: ['corrida'] },
+        SOURCE,
+        ana,
+      );
+      await esperaUpdateDeSkillTravado();
+      await terceira.query('COMMIT');
+
+      expect(await pendente).toMatchObject({
+        isActive: false,
+        skillMd: '# depois',
+        tags: ['corrida'],
+      });
+    } finally {
+      await terceira.end();
+    }
+  }, 20_000);
+
+  it('duas skills com as mesmas tags inéditas, salvas juntas: ninguém perde tag nem morre', async () => {
+    // `tasks/038`. A auditoria supôs tag perdida (um `ON CONFLICT DO NOTHING`
+    // que não esperaria a transação vizinha); o que existia era o oposto — o
+    // INSERT **espera**, e dois salvamentos com as mesmas tags novas em ordens
+    // diferentes travavam em cruz: deadlock (40P01), que a rota devolve como
+    // 500. `replaceTagsTx` ordena a lista para todo mundo travar na mesma
+    // ordem; sem isso, este laço morria em ~15% dos pares.
+    for (let i = 0; i < 8; i++) {
+      const tags = [`t038-${i}-aa`, `t038-${i}-bb`, `t038-${i}-cc`, `t038-${i}-dd`];
+      const [a, b] = await Promise.all([
+        createSkill(
+          { name: `Tag 038 ${i} A`, slug: `tag-038-${i}-a`, skillMd: '# a', tags },
+          SOURCE,
+        ),
+        createSkill(
+          {
+            name: `Tag 038 ${i} B`,
+            slug: `tag-038-${i}-b`,
+            skillMd: '# b',
+            tags: [...tags].reverse(),
+          },
+          SOURCE,
+        ),
+      ]);
+
+      for (const criada of [a, b]) {
+        const detalhe = await getSkillDetail(criada.slug, { visibility: 'all' });
+        expect(detalhe?.tags).toEqual(tags);
+      }
+    }
+  }, 30_000);
+
+  it('slug pedido explicitamente precisa ser válido, como no vMCP e no catálogo', async () => {
+    // `tasks/049`. Antes, `slug: "Com Espaço"` respondia 201 com `com-espaco`:
+    // um endereço que o cliente não pediu e que ele não consegue reenviar na
+    // edição, porque a própria validação dele recusa o que mandou.
+    const torto = await capture(
+      createSkill({ name: 'Torta', slug: 'Com Espaço', skillMd: '# x' }, SOURCE, ana),
+    );
+    expect(torto).toMatchObject({ status: 400, message: 'Slug inválido: "Com Espaço"' });
+
+    // Sem slug, o nome continua sendo slugificado — é o caminho do painel.
+    const gerada = await createSkill({ name: 'Nome Com Espaço', skillMd: '# x' }, SOURCE, ana);
+    expect(gerada.slug).toBe('nome-com-espaco');
+
+    // Renomear para um slug torto também é 400, e a skill fica como estava.
+    expect((await capture(updateSkill(gerada.slug, { slug: 'Não!' }, SOURCE, ana))).status).toBe(400);
+    expect((await getSkillDetail('nome-com-espaco', { visibility: 'all' }))?.slug).toBe(
+      'nome-com-espaco',
+    );
   });
 });

@@ -120,8 +120,10 @@ export function ServersPage({ session, user }: { session: Session; user: Session
       <div className="meta-line">
         <span className="stat">
           <LayoutGrid />
+          {/* `openSkills` nulo é "não veio" (a busca dos números é tolerada a
+              falha): a frase some, em vez de anunciar "0 Skills publicadas". */}
           {items
-            ? `${num(items.length)} Servidor${items.length === 1 ? '' : 'es'}, ${num(openSkills ?? 0)} Skills publicadas${online > 0 ? `, ${num(online)} online` : ''}`
+            ? `${num(items.length)} Servidor${items.length === 1 ? '' : 'es'}${openSkills === null ? '' : `, ${num(openSkills)} Skills publicadas`}${online > 0 ? `, ${num(online)} online` : ''}`
             : 'Carregando…'}
         </span>
         <span className="sep" />

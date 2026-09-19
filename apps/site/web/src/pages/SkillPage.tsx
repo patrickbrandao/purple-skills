@@ -16,6 +16,7 @@ import {
   DownloadIcon,
   EyeIcon,
   FileIcon,
+  GlobeIcon,
   PlugIcon,
   TagIcon,
 } from '../components/Icons.js';
@@ -54,9 +55,13 @@ export function SkillPage() {
           <div className="empty" style={{ maxWidth: '30rem', margin: '40px auto' }}>
             <img className="wiz" src="/assets/images/icon-purple-right-279x400.png" alt="" />
             <h3>Skill não encontrada</h3>
-            <p>{error}</p>
-            <Link to="/#catalogo" className="btn btn-primary" style={{ marginTop: '22px' }}>
-              <ArrowLeftIcon /> Voltar ao catálogo
+            <p>
+              {error === 'Skill não encontrada'
+                ? 'Ela pode não existir, ser privada ou estar desligada — só as públicas aparecem aqui.'
+                : error}
+            </p>
+            <Link to="/#skills" className="btn btn-primary" style={{ marginTop: '18px' }}>
+              <ArrowLeftIcon /> Voltar às skills
             </Link>
           </div>
         </div>
@@ -83,18 +88,24 @@ export function SkillPage() {
   return (
     <section className="skill-page">
       <div className="wrap">
-        <Link to="/#catalogo" className="back-link">
-          <ArrowLeftIcon /> Catálogo
+        <Link to="/#skills" className="back-link">
+          <ArrowLeftIcon /> Skills
         </Link>
 
         <header className="skill-head">
+          <span
+            className="public-pill"
+            title="Está aqui por ter sido marcada como pública, ou por estar em um catálogo público ou em um servidor MCP aberto."
+          >
+            <GlobeIcon /> Skill pública
+          </span>
           <h1 className="display">{skill.name}</h1>
           {skill.description && <p className="lead">{skill.description}</p>}
 
           {skill.tags.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {skill.tags.map((tag) => (
-                <Link key={tag} to={`/?tag=${encodeURIComponent(tag)}#catalogo`} className="tag">
+                <Link key={tag} to={`/?tag=${encodeURIComponent(tag)}#skills`} className="tag">
                   <TagIcon className="h-3 w-3" />
                   {tag}
                 </Link>
@@ -115,7 +126,7 @@ export function SkillPage() {
             <span>atualizada em {formatDate(skill.updatedAt)}</span>
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-3">
+          <div className="mt-4 flex flex-wrap gap-3">
             <a href={downloadUrl(skill.slug)} className="btn btn-primary">
               <DownloadIcon /> Baixar pacote .zip
             </a>

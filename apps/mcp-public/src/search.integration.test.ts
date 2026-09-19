@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
-import { subirServidorFalso, type ServidorFalso } from '@purple-skills/rag';
+import { GEMINI_EMBEDDING_2, subirServidorFalso, type ServidorFalso } from '@purple-skills/rag';
 
 const url = process.env.TEST_DATABASE_URL;
 const descreve = url ? describe : describe.skip;
@@ -172,6 +172,32 @@ descreve('a busca híbrida do mcp-public', () => {
     const bruto = (await handlers.search_skills({ query: 'commit' })).content[0]!.text;
     expect(bruto).not.toContain('distance');
     expect(bruto).not.toContain('neighbors');
+  }, 60_000);
+
+  /**
+   * O corte da consulta (`consultaDaBusca`, em `tools.ts`) vale **antes** das
+   * duas pernas: o provedor recebe o recorte, e não o que o cliente mandou.
+   * Aqui isso é conferido no corpo que chegou ao servidor falso — é a única
+   * prova de que a consulta inteira não sai daqui.
+   */
+  it('a consulta longa chega ao provedor já cortada', async () => {
+    const antes = servidor.requisicoes.length;
+    const longa = `mensagens de commit ${'padronizar a mensagem '.repeat(40)}`;
+
+    expect((await buscar(longa)).mode).toBe('hybrid');
+
+    const enviados = servidor.requisicoes
+      .slice(antes)
+      .map(
+        (req) =>
+          (req.corpo as { content?: { parts?: { text?: string }[] } }).content?.parts?.[0]?.text ?? '',
+      )
+      .filter((texto) => texto.startsWith(GEMINI_EMBEDDING_2.queryPrefix));
+
+    expect(enviados).toHaveLength(1);
+    const consulta = enviados[0]!.slice(GEMINI_EMBEDDING_2.queryPrefix.length);
+    expect(consulta.length).toBeLessThanOrEqual(200);
+    expect(longa.startsWith(consulta)).toBe(true);
   }, 60_000);
 
   /**

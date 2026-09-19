@@ -55,12 +55,11 @@ export function Connect() {
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">
-            Skills no agente.<br />Configure o seu <span className="grad-text">mcp.json</span>
+            Skills no agente: configure o <span className="grad-text">mcp.json</span>
           </h2>
           <p>
-            Cole o bloco abaixo no arquivo de configuração MCP do seu agente. O servidor público é
-            só de leitura e serve para consumir o catálogo: o agente busca skills e lê o SKILL.md
-            sozinho.
+            Cole o bloco abaixo na configuração MCP do seu agente. O MCP público é só de leitura: o
+            agente busca as skills publicadas nele e lê o SKILL.md sozinho.
             {requiresKey &&
               ' Este servidor exige uma chave: troque o placeholder pela chave psv_ que o administrador emitiu para você.'}
           </p>
@@ -71,8 +70,8 @@ export function Connect() {
             <img
               src="/assets/images/bot-right-walk-01_512.png"
               alt="Um agente de IA"
-              width={172}
-              height={172}
+              width={120}
+              height={120}
             />
             <figcaption>SEU AGENTE</figcaption>
           </figure>
@@ -101,8 +100,8 @@ export function Connect() {
 
         <div className="connect-surfaces reveal d3">
           <p>
-            Cada servidor publica suas skills por até três portas, escolhidas skill a skill por
-            quem o administra — a página de cada skill diz quais:
+            Cada servidor publica suas skills por até três portas, escolhidas por quem o administra —
+            a página de cada skill diz quais:
           </p>
           <ul>
             <li>
@@ -110,20 +109,18 @@ export function Connect() {
               <code>search_skills</code> e a lê com <code>get_skill</code>.
             </li>
             <li>
-              <span className="s-tag">prompt</span> — a skill aparece na lista de prompts do servidor
-              com o próprio slug. Na maioria dos clientes, é um comando que você invoca direto, e o
-              conteúdo entra no contexto sem o agente ter de decidir buscá-lo.
+              <span className="s-tag">prompt</span> — a skill vira um prompt com o próprio slug: na
+              maioria dos clientes, um comando que você invoca direto, sem o agente ter de buscá-la.
             </li>
             <li>
-              <span className="s-tag">resource</span> — a skill ganha um endereço estável,{' '}
-              <code>skill://&lt;slug&gt;</code>, que o cliente lê e referencia como qualquer outro
-              documento anexado à conversa.
+              <span className="s-tag">resource</span> — a skill ganha o endereço{' '}
+              <code>skill://&lt;slug&gt;</code>, que o cliente anexa à conversa como um documento.
             </li>
           </ul>
           <p>
-            As portas são independentes: uma skill publicada só como prompt não aparece em{' '}
-            <code>search_skills</code>, mas continua aqui no site, com download. Os demais servidores
-            abertos desta instalação estão listados logo abaixo, cada um com o próprio endereço.
+            As portas são independentes: uma skill só como prompt não aparece em{' '}
+            <code>search_skills</code>, mas continua aqui, com download. Os outros servidores abertos
+            estão logo abaixo, cada um com o próprio endereço.
           </p>
         </div>
       </div>

@@ -189,8 +189,11 @@ no vínculo, sem porta no MCP, como estava.
 - **mcp-admin.** `get_default_virtual_mcp()` (qualquer credencial) e
   `set_default_virtual_mcp(slug | null)` (só admin), no lugar das três tools de
   chave `psp_`. `list_virtual_mcps` e `get_virtual_mcp` mostram `isDefault`.
-- **Site.** `/api/meta` ganha `mcp: { status, slug, name, description,
-  requiresKey }`, resolvido a cada chamada. O cartão "MCP público" diz
+- **Site.** `/api/meta` ganha `mcp: { status, slug, name, requiresKey }`,
+  resolvido a cada chamada — ~~com `description`~~, que **saiu no `050`**:
+  `resolveDefaultVirtualMcp` não filtra visibilidade, então tudo o que sai por essa
+  rota sai para o anônimo, e slug e nome são os campos que o `GET /` do mcp-public
+  já publica (§3.2) — a descrição não é. O cartão "MCP público" diz
   "leitura · sem token" ou "leitura · chave psv_", e explica o 404 quando não
   há padrão em pé; o `mcp.json` da seção de conexão inclui o header
   `Authorization` quando o padrão exige chave.

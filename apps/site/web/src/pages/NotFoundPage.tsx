@@ -16,7 +16,7 @@ export function NotFoundPage() {
           <h3>O mago não encontrou esta página.</h3>
           <p>O feitiço pode ter expirado — ou o endereço veio torto.</p>
           <Link to="/" className="btn btn-primary" style={{ marginTop: '22px' }}>
-            <ArrowLeftIcon /> Voltar ao catálogo
+            <ArrowLeftIcon /> Voltar ao início
           </Link>
         </div>
       </div>

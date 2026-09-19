@@ -3,16 +3,17 @@ import { useEffect } from 'react';
 /**
  * Revela os elementos `.reveal` conforme entram na viewport.
  *
- * Reobserva a cada mudança de `deps` para alcançar cartões renderizados
- * depois da primeira passagem (a grade do catálogo, por exemplo).
+ * Alcança também os que nascem depois da primeira passagem — a grade de
+ * skills, os cartões de catálogo, a seção inteira dos servidores abertos —,
+ * por um observador de mutações: sem ele, uma parte que só existe quando a
+ * busca responde ocupa espaço na página e nunca aparece. `deps` continua
+ * reobservando quando o React reescreve a `className` de um elemento já
+ * revelado (a paginação, por exemplo).
  */
 export function useReveal(deps: unknown[] = []) {
   useEffect(() => {
-    const targets = document.querySelectorAll<HTMLElement>('.reveal:not(.in)');
-    if (targets.length === 0) return;
-
     if (!('IntersectionObserver' in window)) {
-      targets.forEach((el) => el.classList.add('in'));
+      document.querySelectorAll<HTMLElement>('.reveal').forEach((el) => el.classList.add('in'));
       return;
     }
 
@@ -28,8 +29,26 @@ export function useReveal(deps: unknown[] = []) {
       { threshold: 0.12, rootMargin: '0px 0px -6% 0px' },
     );
 
-    targets.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
+    const observeAll = (root: HTMLElement) => {
+      if (root.matches('.reveal:not(.in)')) observer.observe(root);
+      root.querySelectorAll<HTMLElement>('.reveal:not(.in)').forEach((el) => observer.observe(el));
+    };
+
+    observeAll(document.body);
+
+    const mutations = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLElement) observeAll(node);
+        }
+      }
+    });
+    mutations.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      mutations.disconnect();
+      observer.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 }

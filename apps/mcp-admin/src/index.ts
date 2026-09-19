@@ -1,6 +1,6 @@
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
 import { readTextEnv } from '@purple-skills/shared';
-import { requireBearer } from './auth.js';
+import { comCaller, requireBearer } from './auth.js';
 import { adminToken, config } from './config.js';
 import { createHttpApp, type McpApp } from './http.js';
 import { createMcpServer } from './server.js';
@@ -12,6 +12,8 @@ async function main() {
   const app = createHttpApp({
     createServer: (req) => createMcpServer(req.caller),
     auth: requireBearer,
+    // A credencial que vale é a da requisição, não a do `initialize`.
+    withRequest: comCaller,
     identityOf: (req) => req.caller?.identity,
     // `set_files_bulk` manda ~32 MB de base64; o resto é o envelope JSON-RPC.
     jsonLimit: readTextEnv('MCP_JSON_LIMIT', '48mb'),
