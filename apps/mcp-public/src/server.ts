@@ -8,7 +8,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { config } from './config.js';
-import { createHandlers, createSurfaces, type VirtualScope } from './tools.js';
+import { createHandlers, createSurfaces, guard, guardSurface, type VirtualScope } from './tools.js';
 
 const FLUXO = `Fluxo recomendado:
 1. search_skills("descreva a tarefa") para descobrir skills relevantes — a busca
@@ -82,16 +82,24 @@ export function createMcpServer(scope: VirtualScope): McpServer {
         'linguagem natural, em qualquer idioma; termos entre aspas e exclusão com hífen ' +
         'continuam valendo. Retorna os slugs a usar em get_skill.',
       inputSchema: {
+        // Sem `.max()`: passar do teto não é erro, é corte (`consultaDaBusca`,
+        // em tools.ts). Recusar a chamada deixaria sem resposta justamente quem
+        // descreveu a tarefa com folga — o que esta ferramenta pede — e o corte
+        // já protege o provedor. O teto vai na descrição para o cliente saber.
         query: z
           .string()
-          .describe('A tarefa em linguagem natural, ou termos. Vazio lista as mais acessadas.')
+          .describe(
+            'A tarefa em linguagem natural, ou termos. Vazio lista as mais acessadas. ' +
+              'Acima de 200 caracteres a consulta é cortada na última palavra inteira: ' +
+              'descreva a tarefa, não cole o arquivo.',
+          )
           .optional(),
         tag: z.string().describe('Filtra por uma tag exata.').optional(),
         limit: z.number().int().min(1).max(50).describe('Máximo de resultados (padrão 10).').optional(),
         offset: z.number().int().min(0).describe('Deslocamento para paginação.').optional(),
       },
     },
-    (args) => handlers.search_skills(args),
+    (args) => guard(() => handlers.search_skills(args)),
   );
 
   server.registerTool(
@@ -103,7 +111,7 @@ export function createMcpServer(scope: VirtualScope): McpServer {
         'Contabiliza um acesso para a skill.',
       inputSchema: { slug: z.string().describe('Slug da skill, obtido em search_skills.') },
     },
-    (args) => handlers.get_skill(args),
+    (args) => guard(() => handlers.get_skill(args)),
   );
 
   server.registerTool(
@@ -117,7 +125,7 @@ export function createMcpServer(scope: VirtualScope): McpServer {
         path: z.string().describe('Caminho relativo do arquivo dentro da skill.'),
       },
     },
-    (args) => handlers.get_skill_file(args),
+    (args) => guard(() => handlers.get_skill_file(args)),
   );
 
   server.registerTool(
@@ -128,7 +136,7 @@ export function createMcpServer(scope: VirtualScope): McpServer {
         'Retorna a URL de download do pacote .zip da skill, com todos os seus arquivos.',
       inputSchema: { slug: z.string().describe('Slug da skill.') },
     },
-    (args) => handlers.download_skill(args),
+    (args) => guard(() => handlers.download_skill(args)),
   );
 
   server.registerTool(
@@ -138,7 +146,7 @@ export function createMcpServer(scope: VirtualScope): McpServer {
       description: 'Lista as tags disponíveis neste servidor, com a quantidade de skills em cada uma.',
       inputSchema: {},
     },
-    () => handlers.list_tags(),
+    () => guard(() => handlers.list_tags()),
   );
 
   return server;
@@ -168,13 +176,21 @@ function registrarSuperficies(server: McpServer, surfaces: ReturnType<typeof cre
   // vinculada: a fábrica é síncrona e não consulta o banco.
   server.server.registerCapabilities({ prompts: {}, resources: {} });
 
-  server.server.setRequestHandler(ListPromptsRequestSchema, () => surfaces.listPrompts());
-  server.server.setRequestHandler(GetPromptRequestSchema, (request) =>
-    surfaces.getPrompt(request.params.name),
+  // Embrulhadas como as tools, pelo mesmo motivo: o SDK monta o erro do JSON-RPC
+  // com a `message` da exceção, então uma falha do banco iria crua ao cliente.
+  // `listResourceTemplates` fica de fora porque devolve literal — não consulta
+  // nada e não tem como falhar.
+  server.server.setRequestHandler(ListPromptsRequestSchema, () =>
+    guardSurface(() => surfaces.listPrompts()),
   );
-  server.server.setRequestHandler(ListResourcesRequestSchema, () => surfaces.listResources());
+  server.server.setRequestHandler(GetPromptRequestSchema, (request) =>
+    guardSurface(() => surfaces.getPrompt(request.params.name)),
+  );
+  server.server.setRequestHandler(ListResourcesRequestSchema, () =>
+    guardSurface(() => surfaces.listResources()),
+  );
   server.server.setRequestHandler(ReadResourceRequestSchema, (request) =>
-    surfaces.readResource(request.params.uri),
+    guardSurface(() => surfaces.readResource(request.params.uri)),
   );
   server.server.setRequestHandler(ListResourceTemplatesRequestSchema, () =>
     surfaces.listResourceTemplates(),

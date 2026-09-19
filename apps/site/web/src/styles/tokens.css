@@ -10,8 +10,10 @@
    • Verde  (--jade)              : sucesso, skills públicas
    • Diagramas (--diag-*)         : fios e fluxos das ilustrações
 
-   Este arquivo é idêntico em apps/site e apps/admin — ao mudar um,
-   copie para o outro.
+   Este arquivo é idêntico em apps/site e apps/homepage — ao mudar um,
+   copie para o outro. O painel NÃO entra nessa cópia: desde o redesign
+   do console (docs/10) ele tem tokens próprios, em
+   apps/admin/web/src/styles/tokens.css.
    ============================================================ */
 
 @font-face {

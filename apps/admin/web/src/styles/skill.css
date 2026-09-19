@@ -770,6 +770,192 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   color: var(--text-dim);
 }
 
+/* o botão de alternar do cabeçalho (quebrar linhas), ligado */
+.fe-toggle[aria-pressed='true'] {
+  background: var(--accent-tint);
+  color: var(--accent-soft);
+}
+
+/* ---- leitor de arquivo: código colorido com numeração ----
+   A numeração é um contador no ::before de cada linha: não entra na
+   seleção e fica presa à esquerda quando o texto rola para o lado. A
+   faixa dela é o fundo do próprio leitor, que não rola junto — por isso
+   continua até o pé mesmo num arquivo curto. */
+.code-view {
+  --cv-line: 20px;
+  --cv-gutter: max(52px, calc(var(--cv-digits, 1) * 1ch + 26px));
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+  background:
+    linear-gradient(to right, var(--bg-elev) calc(var(--cv-gutter) - 1px), var(--surface-3) 0 var(--cv-gutter), transparent 0);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.code-view:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-soft);
+}
+.cv-pre {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 12px 0 24px;
+  font: inherit;
+  line-height: var(--cv-line);
+  color: var(--text);
+  tab-size: 4;
+}
+.code-view.wrap .cv-pre {
+  width: auto;
+}
+.cv-code {
+  display: block;
+  font: inherit;
+}
+/* flex, e não grid: num item de grid o sticky fica preso à própria célula */
+.cv-line {
+  display: flex;
+  counter-increment: cv-line;
+}
+.cv-line::before {
+  content: counter(cv-line);
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  width: var(--cv-gutter);
+  padding: 0 10px 0 0;
+  border-right: 1px solid var(--surface-3);
+  background: var(--bg-elev);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+.cv-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 18px 0 17px;
+  white-space: pre;
+}
+.code-view.wrap .cv-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cv-line:hover {
+  background: var(--surface-2);
+}
+.cv-line:hover::before {
+  color: var(--text-muted);
+}
+.cv-more {
+  position: sticky;
+  left: 0;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 20px calc(var(--cv-gutter) + 18px);
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* as cores: uma classe `sx-*` por escopo do highlight.js */
+.cv-code .sx-keyword,
+.cv-code .sx-selector-tag,
+.cv-code .sx-doctag,
+.cv-code .sx-template-tag {
+  color: var(--syn-keyword);
+}
+.cv-code .sx-string,
+.cv-code .sx-char,
+.cv-code .sx-code,
+.cv-code .sx-addition {
+  color: var(--syn-string);
+}
+/* o `${…}` de uma template string volta à cor do código */
+.cv-code .sx-subst {
+  color: var(--text);
+}
+.cv-code .sx-number,
+.cv-code .sx-literal,
+.cv-code .sx-symbol,
+.cv-code .sx-bullet {
+  color: var(--syn-number);
+}
+.cv-code .sx-comment,
+.cv-code .sx-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.cv-code .sx-title,
+.cv-code .sx-link {
+  color: var(--syn-function);
+}
+.cv-code .sx-title.class_,
+.cv-code .sx-type,
+.cv-code .sx-class {
+  color: var(--syn-type);
+}
+.cv-code .sx-built_in,
+.cv-code .sx-variable.language_,
+.cv-code .sx-selector-pseudo {
+  color: var(--syn-builtin);
+}
+.cv-code .sx-attr,
+.cv-code .sx-attribute,
+.cv-code .sx-property,
+.cv-code .sx-selector-attr,
+.cv-code .sx-selector-class,
+.cv-code .sx-selector-id {
+  color: var(--syn-attr);
+}
+.cv-code .sx-params {
+  color: var(--text);
+}
+.cv-code .sx-tag,
+.cv-code .sx-name,
+.cv-code .sx-deletion {
+  color: var(--syn-tag);
+}
+.cv-code .sx-variable,
+.cv-code .sx-template-variable {
+  color: var(--syn-variable);
+}
+.cv-code .sx-regexp {
+  color: var(--syn-regexp);
+}
+.cv-code .sx-meta {
+  color: var(--syn-meta);
+}
+.cv-code .sx-section {
+  color: var(--syn-heading);
+  font-weight: 600;
+}
+.cv-code .sx-emphasis {
+  font-style: italic;
+}
+.cv-code .sx-strong {
+  font-weight: 600;
+}
+.cv-code .sx-link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.cv-code .sx-punctuation,
+.cv-code .sx-operator {
+  color: var(--text-dim);
+}
+.cv-code .sx-addition {
+  background: var(--syn-add-bg);
+}
+.cv-code .sx-deletion {
+  background: var(--syn-del-bg);
+}
+
 @media (max-width: 900px) {
   .files-ws {
     grid-template-columns: minmax(0, 1fr);
@@ -801,6 +987,15 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   }
   .fe-info {
     display: none;
+  }
+  /* o fechar fica na linha do caminho; as ações descem juntas */
+  .fe-head > .row-action:last-child {
+    order: 1;
+  }
+  .fe-actions {
+    order: 2;
+    flex-wrap: wrap;
+    margin-left: 0;
   }
 }
 /* arrastar arquivos não existe na tela de toque */

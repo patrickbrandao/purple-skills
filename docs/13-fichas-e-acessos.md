@@ -54,7 +54,7 @@ cor do tipo.
 | 8 | Quem vê o botão Editar | **Quem edita a skill ou administra algum servidor** (tem `edit` em algum vMCP). Vincular exige só `view` na skill (`12` §3.4), e quem só administra o servidor precisa de um caminho pela página da skill. Em Editar, cada seção habilita conforme a permissão |
 | 9 | Onde se edita um arquivo | ~~No lugar da caixa Skill/SKILL.md~~ — **substituída pela 18**. Era: clicar num arquivo da árvore trocava a caixa por um editor com o caminho, "Abrir cru" e "Salvar arquivo"; upload, importar .zip e remover ficavam na árvore |
 | 10 | Onde ficam os metadados em Editar | **Propriedades**, com um único **Salvar** no cabeçalho (e ⌘S) que grava descrição, SKILL.md, metadados e o estado "ligada". A guia Skill tem só a descrição e o SKILL.md |
-| 11 | "Público" em Editar | Só na seção **Acesso**, gravado na hora, como no `12` §5.1. A caixa duplicada do formulário antigo saiu: dois controles para o mesmo flag numa tela era um convite a confusão |
+| 11 | "Público" em Editar | Só na seção **Acesso**. ~~Gravado na hora, como no `12` §5.1~~ — **substituída pela 24**: virou **pendência do Salvar** e vai junto do formulário (`isPublic` em `SkillEditorPage.tsx`). A caixa duplicada do formulário antigo saiu: dois controles para o mesmo flag numa tela era um convite a confusão |
 | 12 | Lixeira na lista de skills | **Fica**, para quem pode apagar (o dono e o admin) |
 | 13 | Registro de acessos: quem grava | **MCP público** (get_skill, resources/read, prompts/get, o SKILL.md avulso e o pacote), **site** (detalhe, SKILL.md e pacote) e **mcp-admin** (`get_skill` por chave `psk_`). O painel **não** grava: é o operador olhando o próprio acervo |
 | 14 | Registro de acessos: retenção | **Nunca apagar**, como `mcp_sessions` (`10`, decisão 8): a tabela é o histórico |
@@ -68,10 +68,12 @@ cor do tipo.
 | 22 | Auditoria | A guia **Acessos** (o registro de leituras) passa a se chamar **Auditoria**, em `/auditoria`; `/acessos` leva para lá (e, na skill, `/editar/acessos` e `/editar/auditoria` levam à leitura, como na 17). A ficha de conta continua com Acessos — lá a guia são as leituras **feitas** pela conta, ao lado de Atividade |
 | 23 | Catálogos da skill | **Guia própria** na leitura (os catálogos de que participa, com estado, servidores e dono) e, na edição, a mesma tabela como CRUD da participação: "Adicionar a um catálogo" (a paleta, só com os catálogos que a sessão **edita**), a caixa que liga e desliga a participação e "Tirar do catálogo". Catálogo que a sessão não edita fica em leitura. A permissão é a do catálogo (`edit`), como na ficha dele |
 | 24 | Salvar da edição da skill | **Sempre ativo, e grava tudo** (pedido de 17/09/2026: desmarcar um vínculo ou mudar o acesso não ativava o botão). Portas por servidor, participação nos catálogos, visibilidade, concessões e dono deixam de gravar na hora e viram **pendências**; o Salvar envia, nesta ordem, os arquivos alterados, o formulário (com a visibilidade junto), as portas, os catálogos, as concessões e, por último, a transferência (com confirmação). O que falhar continua pendente e o erro diz qual foi. Sem pendência, o Salvar relê a skill do servidor. Uma faixa acima das guias lista o que vai ser gravado, com Descartar; o botão mostra quantas são. Desmarcar todas as portas de um servidor tira a skill dele. Só a skill mudou: catálogo e servidor continuam gravando membros e acesso na hora |
+| 25 | Arquivos na leitura da skill | **Guia própria, logo depois de Skill** (pedido de 17/09/2026): a mesma árvore e o mesmo layout da guia de Editar (decisão 18), sem nada que grave — só recolher as pastas e recarregar a árvore. O arquivo escolhido abre num **leitor** com as cores da linguagem (o `lowlight` que o markdown já usa, com as classes `sx-*` e os tokens `--syn-*` nos dois temas), numeração que não entra na seleção, quebra de linhas ligável (guardada no navegador), Copiar, Abrir cru e Baixar. A linguagem sai do nome do arquivo e, sem nome que diga, do shebang; o que não se reconhece fica em texto puro. O SKILL.md aparece inteiro, como sai no pacote, com o frontmatter colorido como YAML. Mais de 10 mil linhas mostram as primeiras, com aviso; acima de 250 mil caracteres o trecho sai sem cores. Na guia Skill, clicar num arquivo da árvore o abre aqui (antes abria o cru em outra aba do navegador). Editar e Visualizar levam à mesma guia e, em Arquivos, ao mesmo arquivo. Em Editar, quem não grava o conteúdo vê o mesmo leitor no lugar do editor travado |
 
 Fechadas por derivação:
 
-- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/catalogos`,
+- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/arquivos` (decisão
+  25), `/skills/:slug/catalogos`,
   `/skills/:slug/propriedades`, `/skills/:slug/acesso`,
   `/skills/:slug/auditoria`, e o mesmo sob `/editar` — na skill, desde as
   decisões 17 e 21 a 23, `/editar/arquivos`, `/editar/catalogos`,
@@ -106,7 +108,9 @@ está desligada.
 - **Skill** — a caixa "Descrição" na largura da guia (com as tags) e, abaixo,
   a caixa com as guias **Skill** (o markdown renderizado) e **SKILL.md** (o
   arquivo inteiro, frontmatter gerado e corpo, com "Copiar"), com a árvore
-  de arquivos à direita — cada arquivo abre o conteúdo cru em outra guia.
+  de arquivos à direita — cada arquivo abre na guia Arquivos.
+- **Arquivos** — a árvore à esquerda e o arquivo escolhido à direita, no
+  leitor com as cores da linguagem (decisão 25). Sem ações que gravem.
 - **Catálogos** — os catálogos de que participa, com o estado (participa,
   participação desativada, catálogo desligado, público), quantos servidores
   cada um alcança e o dono (decisão 23).
@@ -203,7 +207,7 @@ temporária, SSO, bloqueada), e-mail, último acesso e datas; o botão
 - **Chaves** — as `psk_` da conta, inclusive as revogadas (histórico), com
   último uso e estado. Em Editar, **Revogar** por chave (confirmação,
   `key.revoke` na auditoria com o nome do admin). Ninguém emite pela ficha:
-  emitir é da própria pessoa, em Minha conta.
+  emitir é da própria pessoa, em Adm MCP Keys.
 - **Acessos** — as leituras de skill feitas pelas chaves `psk_` desta conta
   (a mesma tabela da §5.3, com a skill), pelo filtro `userUuid` da listagem.
 - **Atividade** — a trilha de auditoria filtrada pelo e-mail: o que a conta

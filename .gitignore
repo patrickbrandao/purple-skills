@@ -2,16 +2,19 @@ node_modules/
 dist/
 dist-web/
 # Só o .env.example é versionado; qualquer outro .env* fica de fora
-# (.env.local, .env.production… não estavam cobertos).
+# (.env.local, .env.production… não estavam cobertos). O `.env-*` cobre as
+# formas com hífen — .env-builder, .env-skills-langwizard e as que vierem —
+# em vez de listar cada arquivo do ambiente de testes uma a uma.
 .env
 .env.*
+.env-*
 !.env.example
-.env-builder
-.env-skills-langwizard
 *.log
 .DS_Store
 coverage/
 tasks/
+hub.sh
+build.sh
 sync.sh
 run-rebuild.sh
 run-builder.sh

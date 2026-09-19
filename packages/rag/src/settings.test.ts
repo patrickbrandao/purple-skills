@@ -14,6 +14,7 @@ import {
   readBaseUrlEnv,
   readDriverEnv,
   readIndexIntervalEnv,
+  readIndexTimeoutEnv,
   readModelEnv,
   readQueryTimeoutEnv,
   DRIVERS_FUTUROS,
@@ -39,6 +40,7 @@ describe('o registro de configurações', () => {
       'RAG_VOYAGE_BASE_URL',
       'RAG_QUERY_TIMEOUT_MS',
       'RAG_INDEX_INTERVAL_SECONDS',
+      'RAG_INDEX_TIMEOUT_MS',
     ]);
     expect(new Set(vars).size).toBe(vars.length);
   });
@@ -161,6 +163,30 @@ describe('a validação do ambiente', () => {
     expect(readIndexIntervalEnv({})).toBe(30);
     expect(readIndexIntervalEnv({ RAG_INDEX_INTERVAL_SECONDS: '5' })).toBe(5);
     expect(() => readIndexIntervalEnv({ RAG_INDEX_INTERVAL_SECONDS: '0' })).toThrow(/inválida/);
+
+    // O prazo da indexação: sem ele, um provedor que não responde segurava a
+    // rodada pelos prazos internos do undici vezes as tentativas.
+    expect(readIndexTimeoutEnv({})).toBe(120_000);
+    expect(readIndexTimeoutEnv({ RAG_INDEX_TIMEOUT_MS: '5000' })).toBe(5000);
+    // Prazo curto demais é erro de configuração, não um valor a aceitar em
+    // silêncio: ele transformaria lote grande em falha recorrente.
+    expect(() => readIndexTimeoutEnv({ RAG_INDEX_TIMEOUT_MS: '50' })).toThrow(/inválida/);
+  });
+
+  it('o `parse` do registro valida igual ao leitor, em vez de aceitar NaN', () => {
+    // `parse: (raw) => Number(raw)` devolvia NaN aqui, e o painel que ligasse
+    // nestas opções gravaria "NaN" sem ninguém reclamar.
+    for (const env of ['RAG_QUERY_TIMEOUT_MS', 'RAG_INDEX_INTERVAL_SECONDS', 'RAG_INDEX_TIMEOUT_MS']) {
+      expect(() => ragSetting(env).parse('2s')).toThrow(/inválida/);
+      expect(() => ragSetting(env).parse('-1')).toThrow(/inválida/);
+      expect(() => ragSetting(env).parse('1.5')).toThrow(/inválida/);
+    }
+
+    // E o valor bom sai como número, com o padrão saindo do próprio registro.
+    expect(ragSetting('RAG_QUERY_TIMEOUT_MS').parse(' 800 ')).toBe(800);
+    expect(ragSetting('RAG_INDEX_TIMEOUT_MS').fallback).toBe(120_000);
+    expect(readIndexTimeoutEnv({ RAG_INDEX_TIMEOUT_MS: '600000' })).toBe(600_000);
+    expect(() => ragSetting('RAG_INDEX_TIMEOUT_MS').parse('600001')).toThrow(/inválida/);
   });
 });
 

@@ -21,6 +21,11 @@
 # é fácil demais. Para alcançar os serviços de outra máquina (um servidor de
 # testes remoto, por exemplo), defina BIND_ADDR=0.0.0.0 no .env, cientes de que
 # aí eles ficam acessíveis para quem chegar na rede.
+#
+# O mcp-inspector é a exceção: ele sobe sem autenticação e, de dentro da rede
+# `internal`, alcança o mcp-admin. Por isso ele tem o seu próprio
+# INSPECTOR_BIND_ADDR, que fica no loopback mesmo quando o BIND_ADDR global é
+# 0.0.0.0 — o botão de "alcançar de fora" não arrasta a ferramenta sem senha.
 
 # `project_directory: .` faz os caminhos relativos do arquivo incluído (e o
 # `.env` lido pelo compose) resolverem a partir da raiz, e não de `database/`.
@@ -33,6 +38,11 @@ include:
 # em `environment`, ou o ajuste do operador é ignorado em silêncio.
 x-app-env: &app-env
   NODE_ENV: production
+  # Versão que os dois MCPs anunciam no handshake e que o painel mostra em
+  # Configurações. Vazia, os MCPs caem no valor compilado na imagem (hoje
+  # 1.0.0-beta.1, congelado) e o painel não mostra nada: preencha com a mesma
+  # versão de TAG, que é a resposta de "qual versão você está rodando?".
+  APP_VERSION: ${APP_VERSION:-}
   # Campos separados em vez de DATABASE_URL: a senha não passa por parse de URL,
   # então `/`, `?`, `#` e `%` funcionam sem percent-encoding. Os nomes e o
   # significado destas cinco chaves são o contrato do DBA — ver database/README.md.
@@ -41,6 +51,9 @@ x-app-env: &app-env
   PGUSER: ${POSTGRES_USER:-postgres}
   PGPASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
   PGDATABASE: ${POSTGRES_DB:-purple_skills}
+  # Conexões simultâneas no pool de CADA app (padrão 10). Não é ajuste do
+  # servidor: quem a lê é o @purple-skills/db — ver database/README.md.
+  DB_POOL_MAX: ${DB_POOL_MAX:-}
   SITE_BASE_URL: ${SITE_BASE_URL:-http://localhost:3000}
   SITE_NAME: ${SITE_NAME:-Purple Skills}
   # Em quais proxies confiar para X-Forwarded-*. Vazio = loopback + faixas privadas.
@@ -51,6 +64,12 @@ x-app-env: &app-env
   # Sessões MCP mantidas em memória.
   MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
   MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}
+  # Teto POR CREDENCIAL, ao lado do global. Fica vazio de propósito: o padrão é
+  # um décimo de MCP_MAX_SESSIONS (nunca menos de 10), e um número fixo aqui
+  # mataria a derivação — os dois deixariam de subir juntos.
+  MCP_MAX_SESSIONS_PER_IDENTITY: ${MCP_MAX_SESSIONS_PER_IDENTITY:-}
+  # Intervalo da varredura que expira sessão parada (padrão 60000 ms).
+  MCP_SESSION_SWEEP_MS: ${MCP_SESSION_SWEEP_MS:-}
   # Janela de "online" das sessões do MCP público: o painel conta com ela e o
   # mcp-public agrupa o stateless por ela (docs/10-admin-canvas-e-sessoes.md).
   MCP_SESSION_ONLINE_WINDOW_MS: ${MCP_SESSION_ONLINE_WINDOW_MS:-120000}
@@ -70,8 +89,36 @@ x-rag-providers: &rag-providers
   RAG_VOYAGE_API_KEY_FILE: ${RAG_VOYAGE_API_KEY_FILE:-}
   RAG_VOYAGE_BASE_URL: ${RAG_VOYAGE_BASE_URL:-}
 
+# Teto de memória por container, aplicado a site, admin, os dois MCPs e o
+# indexer. Sem ele, um consumo descontrolado num único serviço — vazamento,
+# defeito, ou um .zip forjado que escape das defesas de aplicação — consome a
+# memória do host e derruba TODOS os serviços, inclusive o Postgres. Com o teto,
+# quem morre é o container, e o `restart: unless-stopped` o levanta de novo.
+#
+# O valor não é chute. O pior import legítimo com os padrões mantém em memória,
+# ao mesmo tempo: o .zip recebido (ADMIN_MAX_UPLOAD_BYTES, 64 MB), os bytes
+# descomprimidos (ZIP_MAX_UNCOMPRESSED_BYTES, 256 MB) e a segunda cópia deles
+# como texto/Buffer nas linhas de `files` (outros ~256 MB) — na prática, um .zip
+# de 200 MB custou ~400 MB de RSS. Com o baseline do Node dá ~700 MB no pior
+# caso; 1,5 GB deixa folga para o atraso do GC e para um download montando .zip
+# ao mesmo tempo. Teto mais apertado que isso não protege nada: ele mata
+# importação legítima com OOM silencioso, que é pior que o problema.
+#
+# Aumentou ZIP_MAX_UNCOMPRESSED_BYTES ou ADMIN_MAX_UPLOAD_BYTES no .env? Suba
+# APP_MEM_LIMIT na mesma conta (~2 × o teto descomprimido + 200 MB).
+#
+# `mem_limit`/`memswap_limit` são os campos que o `docker compose up` aplica de
+# fato — é o mesmo par já usado pelo mcp-inspector. `deploy.resources.limits`
+# NÃO serve aqui: fora do Swarm o `deploy` é ignorado em silêncio e o arquivo
+# segue "válido", só sem limite nenhum. Igualar o swap ao teto é de propósito:
+# sem isso o container escapa pela área de troca e arrasta o host com ele.
+#
+# Sem teto de CPU: um serviço que gira em falso degrada o host, não o derruba, e
+# um `cpus` apertado atrasaria import, download e indexação legítimos.
 x-app-common: &app-common
   restart: unless-stopped
+  mem_limit: ${APP_MEM_LIMIT:-1536m}
+  memswap_limit: ${APP_MEM_LIMIT:-1536m}
   depends_on:
     postgres:
       condition: service_healthy
@@ -84,6 +131,11 @@ services:
     container_name: purple-skills-homepage
     hostname: homepage.intranet.br
     restart: unless-stopped
+    # Fora do `app-common`, o teto também é próprio: a homepage não recebe
+    # upload, não descomprime nada e não fala com o banco, então 256 MB sobram
+    # para o Node servir arquivo estático.
+    mem_limit: ${HOMEPAGE_MEM_LIMIT:-256m}
+    memswap_limit: ${HOMEPAGE_MEM_LIMIT:-256m}
     networks: [internal]
     image: tmsoftbrasil/purple-skills-homepage:${TAG:-latest}
     build:
@@ -108,6 +160,12 @@ services:
       <<: [*app-env, *rag-providers]
       PORT: 3000
       SITE_TAGLINE: ${SITE_TAGLINE:-}
+      # Origens aceitas na API pública (padrão `*`): uma origem, ou lista
+      # separada por vírgula, para a instalação que só deve ser lida de dentro.
+      SITE_CORS_ORIGIN: ${SITE_CORS_ORIGIN:-}
+      # Requisições por minuto por IP (padrão 240; `0` desliga, para quem já
+      # limita no proxy). /healthz e /assets/ ficam fora da conta.
+      SITE_RATE_LIMIT_MAX: ${SITE_RATE_LIMIT_MAX:-}
       # Endereços mostrados na seção "Endereços de acesso" do catálogo.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}
       MCP_ADMIN_URL: ${MCP_ADMIN_URL:-}
@@ -202,6 +260,25 @@ services:
       # driver que o banco escolheu, ou com `off`, a busca responde
       # `mode: text` como sempre.
       RAG_QUERY_TIMEOUT_MS: ${RAG_QUERY_TIMEOUT_MS:-}
+      # Nome que o cliente MCP vê no handshake (padrão `purple-skills`). A
+      # variável do .env é por SERVIÇO de propósito: o mcp-admin tem a sua, e um
+      # valor só para os dois deixaria dois servidores com o mesmo nome no
+      # mcp.json de quem conecta.
+      MCP_SERVER_NAME: ${MCP_PUBLIC_SERVER_NAME:-}
+      # Teto do corpo JSON. Não cabe no x-app-env: o padrão daqui é 1mb
+      # (argumento de ferramenta pública são alguns bytes) e o do admin é 48mb,
+      # e o bloco comum é compartilhado com quem nem lê a variável.
+      MCP_JSON_LIMIT: ${MCP_JSON_LIMIT:-}
+      # Requisições por minuto por IP (padrão 600; `0` desliga). Alto porque o
+      # cliente aqui é agente, que trabalha em rajada; quem chega com chave
+      # psv_ não gasta a cota do endereço.
+      MCP_RATE_LIMIT_MAX: ${MCP_RATE_LIMIT_MAX:-}
+      # Identidades stateless contabilizadas ao mesmo tempo (padrão 5000).
+      # Cheio, a requisição é atendida sem virar linha em mcp_sessions.
+      MCP_MAX_STATELESS_SESSIONS: ${MCP_MAX_STATELESS_SESSIONS:-}
+      # Teto do texto devolvido DENTRO do resultado de get_skill_file (padrão
+      # 4 MiB); acima dele a resposta passa a ser a URL de download.
+      MCP_MAX_FILE_TEXT_BYTES: ${MCP_MAX_FILE_TEXT_BYTES:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
 
@@ -220,6 +297,12 @@ services:
       MCP_ADMIN_TOKEN: ${MCP_ADMIN_TOKEN:-}
       MCP_ADMIN_TOKEN_FILE: ${MCP_ADMIN_TOKEN_FILE:-}
       MCP_MAX_ZIP_BASE64: ${MCP_MAX_ZIP_BASE64:-}
+      # Os pares do mcp-public, com os padrões próprios deste serviço:
+      # `purple-skills-admin` no nome e 48mb no corpo JSON (o set_files_bulk
+      # manda o .zip em base64). É por isso que nenhum dos dois cabe no
+      # x-app-env — lá um valor só apagaria a diferença.
+      MCP_SERVER_NAME: ${MCP_ADMIN_SERVER_NAME:-}
+      MCP_JSON_LIMIT: ${MCP_JSON_LIMIT:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
 
@@ -235,7 +318,7 @@ services:
   # skills e não embute nada.
   indexer:
     <<: *app-common
-    profiles: [rag]
+    #profiles: [rag]
     image: tmsoftbrasil/purple-skills-indexer:${TAG:-latest}
     build:
       context: .
@@ -244,23 +327,33 @@ services:
       # As chaves só existem aqui e nos dois que consultam; o painel nunca as vê.
       <<: [*app-env, *rag-providers]
       RAG_INDEX_INTERVAL_SECONDS: ${RAG_INDEX_INTERVAL_SECONDS:-}
+      RAG_INDEX_TIMEOUT_MS: ${RAG_INDEX_TIMEOUT_MS:-}
 
   # Inspector oficial do MCP — ferramenta de depuração, parte oficial da
   # stack: sobe junto no `up -d` do dia a dia, como os demais serviços.
   #
-  # Abra http://localhost:3010 e aponte para os servidores pelo NOME do serviço
-  # na rede `internal`. Quem abre a conexão é o backend do inspector, de dentro
-  # do container — `localhost` ali é o próprio inspector, não o seu host:
+  # Abra http://localhost:6274 (a porta de INSPECTOR_PORT) e aponte para os
+  # servidores pelo NOME do serviço na rede `internal`. Quem abre a conexão é o
+  # backend do inspector, de dentro do container — `localhost` ali é o próprio
+  # inspector, não o seu host:
   #
   #   http://mcp-public:3002/mcp    (o MCP virtual padrão; /sse para o transporte antigo)
   #   http://mcp-admin:3003/mcp     + header `Authorization: Bearer $MCP_ADMIN_TOKEN`
   #
-  # A tag `latest` é a v2 (2.5.0 hoje). O proxy separado da 6277 e a
-  # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 3010.
+  # A versão fixada abaixo é a v2 (2.7.0). O proxy separado da 6277 e a
+  # `SERVER_PORT` do v1 não existem mais: UI e backend vivem juntos na 6274, que
+  # é a porta da própria imagem (CLIENT_PORT, EXPOSE e healthcheck dela).
   mcp-inspector:
-    image: ghcr.io/modelcontextprotocol/inspector:${INSPECTOR_TAG:-latest}
-    # Equivalente ao `docker pull` que o script fazia a cada execução.
-    pull_policy: always
+    # Versão concreta, e não `latest`: esta é a ÚNICA imagem da stack que o
+    # projeto não constrói, ela roda sem autenticação (DANGEROUSLY_OMIT_AUTH,
+    # abaixo) e alcança o mcp-admin pela rede `internal`. Com `latest` ela
+    # trocava de conteúdo sem ninguém ver. Subir de versão é editar aqui (ou
+    # INSPECTOR_TAG no .env), de propósito.
+    image: ghcr.io/modelcontextprotocol/inspector:${INSPECTOR_TAG:-2.7.0}
+    # `missing` (o padrão do compose): baixa quando falta e só. O `always` de
+    # antes repetia o `docker pull` do script original e, somado a `latest`,
+    # rebaixava a imagem da internet a cada `up`.
+    pull_policy: missing
     restart: unless-stopped
     hostname: mcp-inspector.intranet.br
     container_name: purple-skills-mcp-inspector
@@ -273,29 +366,43 @@ services:
     environment:
       # `HOST`, `CLIENT_PORT` e `MCP_AUTO_OPEN_ENABLED` já vêm assim na imagem;
       # ficam explícitos porque a allow-list de origens e a CSP do sandbox são
-      # derivadas da CLIENT_PORT — ela precisa ser fixa, remapeie só no host.
+      # derivadas da CLIENT_PORT — ela precisa ser fixa (é também a porta do
+      # EXPOSE e do healthcheck da imagem), então remapeie só no host, com
+      # INSPECTOR_PORT.
       HOST: 0.0.0.0
-      CLIENT_PORT: '3010'
+      CLIENT_PORT: '6274'
       MCP_AUTO_OPEN_ENABLED: 'false'
       # Origem do NAVEGADOR (a URL que você abre), não o endereço dos MCPs. A
       # lista SUBSTITUI a padrão e cada item precisa do esquema; por isso ela
       # acompanha a INSPECTOR_PORT. Atrás de um proxy, acrescente a origem dele.
-      ALLOWED_ORIGINS:
-      # ${INSPECTOR_ALLOWED_ORIGINS:-http://localhost:${INSPECTOR_PORT:-3010},http://127.0.0.1:${INSPECTOR_PORT:-3010}}
-      # Inspector sem autenticação: aceitável porque a porta fica no loopback.
-      # Com BIND_ADDR=0.0.0.0 isto vira um cliente MCP aberto para a rede, com
-      # acesso ao mcp-admin — só suba assim em máquina de teste isolada.
-      DANGEROUSLY_OMIT_AUTH: 'true'
+      # A chave PRECISA de valor: sem ele o compose a resolve do ambiente do
+      # host e, ausente ali, ela não chega ao container — era o que fazia de
+      # INSPECTOR_ALLOWED_ORIGINS uma variável morta.
+      ALLOWED_ORIGINS: ${INSPECTOR_ALLOWED_ORIGINS:-http://localhost:${INSPECTOR_PORT:-6274},http://127.0.0.1:${INSPECTOR_PORT:-6274}}
+      # Inspector sem autenticação: aceitável porque a porta fica no loopback
+      # (ver `ports` abaixo), e não mais por confiança no BIND_ADDR global.
+      # Quem precisa da UI acessível de outra máquina muda as duas coisas
+      # juntas — o bind e isto aqui: INSPECTOR_OMIT_AUTH=false liga a
+      # autenticação do próprio inspector.
+      DANGEROUSLY_OMIT_AUTH: '${INSPECTOR_OMIT_AUTH:-true}'
+      # Token da API do inspector, exigido quando a autenticação está ligada
+      # (nome da v2; na v1 era MCP_PROXY_AUTH_TOKEN, ainda aceito como
+      # obsoleto). Ignorado enquanto DANGEROUSLY_OMIT_AUTH for 'true'.
+      MCP_INSPECTOR_API_TOKEN: ${INSPECTOR_API_TOKEN:-}
       # Sem chaveiro do SO dentro do container, o inspector cai para memória e
       # avisa em vermelho no log. Escolher explicitamente cala o aviso: o token
       # do mcp-admin digitado na UI vive só enquanto o container viver (o
       # catálogo de servidores, em /home/node/.mcp-inspector, some no recreate).
       MCP_INSPECTOR_SECRET_STORE: ${INSPECTOR_SECRET_STORE:-memory}
     ports:
-      - '${BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-3010}:3010'
+      # Endereço próprio, de propósito: o BIND_ADDR global publica o site, o
+      # painel e o Postgres de uma vez, e arrastava com eles o único serviço sem
+      # autenticação. Aqui o padrão é o loopback, e sair dele é decisão
+      # deliberada (e acompanhada de INSPECTOR_OMIT_AUTH=false).
+      - '${INSPECTOR_BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-6274}:6274'
       # A aba "MCP Apps" serve um sandbox em 6275/6278. Publique se for usá-la.
-      # - '${BIND_ADDR:-127.0.0.1}:6275:6275'
-      # - '${BIND_ADDR:-127.0.0.1}:6278:6278'
+      # - '${INSPECTOR_BIND_ADDR:-127.0.0.1}:6275:6275'
+      # - '${INSPECTOR_BIND_ADDR:-127.0.0.1}:6278:6278'
 
 networks:
   internal:

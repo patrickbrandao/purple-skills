@@ -4,7 +4,10 @@
 # Stripe…). Os segredos deste projeto não têm formato reconhecível:
 # ADMIN_PASSWORD é uma senha qualquer e MCP_ADMIN_TOKEN é texto livre — um
 # `git add -f .env` passaria batido só com as regras padrão. As regras abaixo
-# cobrem exatamente as variáveis que dão controle do catálogo.
+# cobrem as variáveis que dão controle do catálogo, o segredo do SSO, as chaves
+# do provedor de embeddings (a da Voyage não tem prefixo reconhecível) e as URLs
+# com credencial embutida. A lista tem de acompanhar o `.env.example`: variável
+# de segredo nova lá pede entrada aqui.
 
 [extend]
 useDefault = true
@@ -14,10 +17,13 @@ useDefault = true
 # arquivo: um segredo de verdade colado no .env.example continua sendo
 # apontado.
 #
-# - `${VAR}` / `:-` / `:?msg`: interpolação do compose. As duas últimas formas
-#   entram aqui porque o valor casado começa depois do `:` de dentro do
-#   `${POSTGRES_PASSWORD:?defina …}`.
-# - `CHANGE_ME` e afins: placeholders do .env.example.
+# - `${VAR}`: interpolação do compose. As formas `:-` e `:?msg` não entram aqui
+#   por valor — são dispensadas pela *linha*, no allowlist seguinte.
+# - `CHANGE_ME` e afins: placeholders do .env.example. Ancorados no fim de
+#   propósito, para casar o valor **inteiro**: sem o `$`, uma senha de verdade
+#   como `Exemplo2024!` seria silenciada só por começar com "exemplo". É a mesma
+#   lista, com a mesma âncora, do `PLACEHOLDERS` de `packages/shared/src/secrets.ts`
+#   — o que a varredura dispensa por não ser segredo é o que o boot recusa.
 # - `postgres`: senha padrão do Postgres em exemplo de DSN local.
 # - `undefined`: um teste que passa a variável ausente para uma função — a
 #   regra não filtra por entropia, então `MCP_PUBLIC_KEY: undefined` num
@@ -28,10 +34,20 @@ description = "Placeholders, interpolação do compose e DSN local de exemplo"
 regexTarget = "secret"
 regexes = [
   '''^\$\{''',
-  '''^[?-]''',
-  '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+|undefined)''',
+  '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+|undefined)$''',
   '''^postgres$''',
 ]
+
+# Interpolação do compose com valor padrão ou mensagem de erro: a regra casa o
+# nome da variável de *dentro* das chaves, e o valor capturado é o resto —
+# `-}` em `${SMTP_URL:-}` ou `?defina` em `${POSTGRES_PASSWORD:?defina …}`.
+# Dispensar pela linha é mais estreito do que dispensar todo valor que comece
+# por `-` ou `?`: uma senha de verdade que comece com esses caracteres continua
+# sendo apontada.
+[[allowlists]]
+description = "Interpolação do compose: ${VAR:-} e ${VAR:?mensagem}"
+regexTarget = "line"
+regexes = ['''\$\{[A-Za-z0-9_]+:[?-]''']
 
 # --------------------------------------------------------------------------
 # O commit inicial publicou o .env.example com valores preenchidos em vez de
@@ -65,7 +81,7 @@ paths = ['''^apps/admin/web/src/components/shell/Layout\.tsx$''']
 [[rules]]
 id = "purple-skills-env-secret"
 description = "Segredo do Purple Skills com valor preenchido (.env commitado?)"
-regex = '''(?i)\b(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|MCP_ADMIN_TOKEN|MCP_PUBLIC_KEY|POSTGRES_PASSWORD)\s*[:=]\s*["']?([^\s"'#]+)'''
+regex = '''(?i)\b(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|MCP_ADMIN_TOKEN|MCP_PUBLIC_KEY|POSTGRES_PASSWORD|OIDC_CLIENT_SECRET)\s*[:=]\s*["']?([^\s"'#]+)'''
 secretGroup = 2
 keywords = [
   "admin_password",
@@ -73,11 +89,31 @@ keywords = [
   "mcp_admin_token",
   "mcp_public_key",
   "postgres_password",
+  "oidc_client_secret",
 ]
 
+# As chaves do RAG ficam numa regra separada, com piso de tamanho, porque os
+# testes atribuem valores curtos de fixture (`RAG_GOOGLE_API_KEY: 'k'`) que a
+# regra acima apontaria como segredo. Nenhuma chave de provedor é tão curta:
+# 16 caracteres bastam para separar fixture de chave. Exceção por caminho de
+# teste não serve — o que se quer pegar é justamente a chave colada num teste.
 [[rules]]
-id = "purple-skills-database-url"
-description = "DATABASE_URL com senha preenchida"
-regex = '''(?i)postgres(?:ql)?://[^\s:/@"']+:([^\s@"']+)@'''
+id = "purple-skills-rag-api-key"
+description = "Chave de API do provedor de embeddings com valor preenchido"
+regex = '''(?i)\b(RAG_(?:GOOGLE|OPENAI|VOYAGE)_API_KEY)\s*[:=]\s*["']?([^\s"'#]{16,})'''
+secretGroup = 2
+keywords = [
+  "rag_google_api_key",
+  "rag_openai_api_key",
+  "rag_voyage_api_key",
+]
+
+# Credencial embutida na URL. Cobre `DATABASE_URL` e `SMTP_URL`: exigir
+# `usuário:senha@` é mais estreito do que casar o valor de `SMTP_URL=`, que
+# apontaria um `smtp://localhost:1025` sem credencial nenhuma.
+[[rules]]
+id = "purple-skills-credential-url"
+description = "URL com credencial embutida (DATABASE_URL, SMTP_URL)"
+regex = '''(?i)(?:postgres(?:ql)?|smtps?)://[^\s:/@"']+:([^\s@"']+)@'''
 secretGroup = 1
-keywords = ["postgres://", "postgresql://"]
+keywords = ["postgres://", "postgresql://", "smtp://", "smtps://"]

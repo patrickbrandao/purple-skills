@@ -1,13 +1,18 @@
 /**
- * A divisão de uma skill em textos canônicos (`docs/14-rag.md` §5.3).
+ * A divisão de uma skill em textos canônicos (`docs/14-rag.md` §4 e §4.1).
  *
  * Uma skill vira:
  *
  *   * **um texto de metadados** com nome, descrição e tags — a linha de tags
  *     sai quando não há tag, e as tags vão em ordem alfabética para o texto
  *     não mudar quando a ordem de inserção muda;
- *   * **um texto por arquivo** de texto que caiba no teto, ou **uma parte por
- *     pedaço** quando não couber.
+ *   * **um texto por arquivo de texto da skill** que caiba no teto, ou **uma
+ *     parte por pedaço** quando não couber.
+ *
+ * **Só texto de skill sai daqui**, e é o que sai da instalação: o binário nem
+ * chega (fica em `binary_content`, e a query do RAG só devolve quem tem
+ * `text_content`), e a imagem que por acaso é texto — `.svg` — é pulada. Ver
+ * `ehTextoDeSkill`.
  *
  * Tudo é determinístico: a mesma skill sempre dá os mesmos textos, na mesma
  * ordem, com os mesmos hashes. É o que faz uma reindexação sem mudança de
@@ -17,6 +22,7 @@
  * deixaria o texto diferente a cada skill, e duas skills com o mesmo arquivo
  * deixariam de compartilhar o vetor. O nome já está no texto de metadados.
  */
+import { isTextualMime, mimeTypeFor } from '@purple-skills/shared';
 import type { EmbeddingModel } from './driver.js';
 
 /** Onde um texto canônico aparece. Espelha `rag_skill_texts` da `020`. */
@@ -54,9 +60,11 @@ export type ChunkOptions = {
 /** Um arquivo que não foi dividido, e por quê. */
 export type SkippedFile = {
   relativePath: string;
-  reason: 'grande-demais' | 'vazio';
+  reason: 'grande-demais' | 'vazio' | 'nao-e-texto';
   /** Tamanho em bytes UTF-8, quando o motivo é tamanho. */
   bytes?: number;
+  /** O mime pelo caminho, quando o motivo é o tipo. */
+  mimeType?: string;
 };
 
 export type ChunkResult = {
@@ -66,6 +74,25 @@ export type ChunkResult = {
 
 /** Teto de bytes por arquivo. Acima disso o arquivo é pulado, com o motivo no log. */
 export const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
+
+/**
+ * O que vale mandar ao provedor: texto de skill.
+ *
+ * O critério é o **mesmo** que decidiu gravar o arquivo em `text_content` —
+ * `mimeTypeFor` + `isTextualMime` do `shared`, a regra única de
+ * `fileColumns` —, menos as imagens. Nenhuma lista nova de extensões: a tabela
+ * de mime vive uma vez só, e ampliá-la para o leitor do painel não pode passar
+ * a mandar tipo novo para fora sem ninguém decidir.
+ *
+ * A exceção das imagens é o `.svg`: ele é textual **para guardar e exibir** (o
+ * leitor e o editor do painel abrem o XML), e não é documentação. Embuti-lo
+ * paga ao provedor por coordenadas de desenho, devolve um vetor que só
+ * acrescenta ruído à busca e, pior, manda para fora um arquivo que quem anexou
+ * não escreveu para ser lido.
+ */
+function ehTextoDeSkill(mimeType: string): boolean {
+  return isTextualMime(mimeType) && !mimeType.startsWith('image/');
+}
 
 /**
  * O texto de metadados: nome, descrição e tags, uma por linha.
@@ -92,7 +119,7 @@ export function metaText(skill: {
 /**
  * Divide um texto em partes de até `maxChars`.
  *
- * A ordem de preferência para o corte é a da §5.3: primeiro nos títulos
+ * A ordem de preferência para o corte é a da §4.1: primeiro nos títulos
  * Markdown, depois nas linhas em branco, por último no teto. Cortar num título
  * mantém a seção inteira num pedaço só, que é o que dá sentido ao vetor; o
  * corte cego no teto é o último recurso, para um arquivo sem estrutura nenhuma.
@@ -186,6 +213,14 @@ export function chunkSkill(
 
   for (const arquivo of arquivos) {
     const conteudo = arquivo.textContent ?? '';
+
+    // Antes de qualquer outra coisa: o que não é texto de skill não sai da
+    // instalação, nem para ser medido.
+    const mimeType = mimeTypeFor(arquivo.relativePath);
+    if (!ehTextoDeSkill(mimeType)) {
+      skipped.push({ relativePath: arquivo.relativePath, reason: 'nao-e-texto', mimeType });
+      continue;
+    }
 
     if (conteudo.trim() === '') {
       skipped.push({ relativePath: arquivo.relativePath, reason: 'vazio' });

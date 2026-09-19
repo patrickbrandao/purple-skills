@@ -13,7 +13,7 @@ Cursor, Gemini CLI, …). O arquivo `CLAUDE.md` aponta para cá.
 | Painel administrativo | `apps/admin/` | agente do admin |
 | MCP público | `apps/mcp-public/` | agente do mcp-public |
 | MCP administrativo | `apps/mcp-admin/` | agente do mcp-admin |
-| Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos cinco apps |
+| Utilitários comuns | `packages/shared/` | quem precisar, com cuidado — é usado pelos **seis** apps, pelo `rag` e pelo `database` |
 | Busca semântica | `packages/rag/` | agente do rag |
 | Indexador do RAG | `apps/indexer/` | agente do indexador |
 
@@ -33,6 +33,11 @@ O que todo agente **fora** de `database/` deve seguir:
   diretamente — use `getDb()`.
 - **Não** declare serviços `postgres`, `migrate` ou `seed` em nenhum compose:
   eles são definidos em `database/docker-compose.yml` e incluídos pela raiz.
+  *Override* não é declaração: ajustar um serviço que já existe — como o
+  `postgres: ports: !reset []` do `docker-compose.traefik.yml`, que despublica a
+  porta do banco atrás do proxy — é permitido, e o nome do serviço tem de
+  aparecer para isso. O que a regra proíbe é `image`, `build`, `command`,
+  `volumes` ou `environment` de banco fora de `database/`.
 - **Não** rode `drizzle-kit generate`/`push`. `database/src/schema.ts` é
   tipagem; a fonte de verdade são os arquivos `database/schema/nnn-nome.sql`.
 - Precisa de uma coluna, índice ou query que não existe? É trabalho do dba —
@@ -71,13 +76,27 @@ O desenho está em [`docs/14-rag.md`](docs/14-rag.md).
 estática: não importa `@purple-skills/db`, não chama API nenhuma e não mostra
 skill cadastrada — o que estiver lá tem que valer para qualquer instalação.
 
-`apps/site/` é a página **do usuário** de uma instalação: lista as skills
-publicadas, ensina a configurar o `mcp.json` e mostra os endereços de acesso
-(MCP público, MCP administrativo e painel). Ela não explica o que é o projeto.
+`apps/site/` é a página **do usuário** de uma instalação: lista as skills e
+os catálogos tornados públicos, ensina a configurar o `mcp.json` e mostra os
+endereços de acesso (MCP público, MCP administrativo e painel). Ela não explica
+o que é o projeto. No site, "skill" e "catálogo" são coisas diferentes — a lista
+de skills não é "o catálogo" (ver `docs/03-implementation-notes.md`, "Site:
+skills e catálogos públicos").
 
-Ao mexer no visual, lembre que `tokens.css`, `base.css` e `chrome.css` são
-cópias idênticas entre os apps — ver
-[`docs/04-design-system.md`](docs/04-design-system.md).
+Ao mexer no visual, saiba **quem copia de quem**, porque copiar para o app
+errado apaga uma interface inteira:
+
+- `tokens.css`, `base.css` e `chrome.css` são cópias byte a byte **entre a
+  homepage e o site**, e só entre esses dois.
+- `markdown.css` é cópia byte a byte **entre o site e o painel**.
+- O painel **não** entra na cópia dos três primeiros: desde o
+  [`10`](docs/10-admin-canvas-e-sessoes.md) ele é um console com paleta e
+  primitivos próprios em `apps/admin/web/src/styles/` (e não tem `chrome.css`).
+  Sobrescrever esses arquivos com os do site destrói o console — e "funciona",
+  só fica errado.
+
+Mudou um arquivo copiado? Copie para o par no mesmo commit; os comandos e a
+lista completa estão em [`docs/04-design-system.md`](docs/04-design-system.md).
 
 ## Convenções gerais
 
@@ -89,3 +108,16 @@ cópias idênticas entre os apps — ver
 - Decisões de arquitetura em [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md);
   desvios e detalhes de implementação em [`docs/03-implementation-notes.md`](docs/03-implementation-notes.md);
   design em [`docs/04-design-system.md`](docs/04-design-system.md).
+- **Não rode `prettier` (nem `npx prettier --write`) em arquivo deste
+  repositório.** Não existe `.prettierrc`, então o que sai da ferramenta é o
+  padrão dela, não o estilo do projeto: uma passada num arquivo de `database/`
+  reformatou 842 linhas e precisou ser desfeita à mão. Formate igual ao que está
+  em volta, no arquivo que você está editando.
+- **Regra revogada não se apaga, se marca.** O projeto guarda o histórico de
+  decisão de propósito: risque o texto antigo com `~~…~~` e ponha ao lado uma
+  citação **Revogado neste ponto por `NN`**, com o link do documento que revogou,
+  ou transforme-o num parágrafo "**Era**, até …". Documento com trecho revogado
+  leva também a marca no topo, e
+  o documento que revoga enumera no cabeçalho os que ele revoga — é o que
+  `08`, `09`, `10`, `11` e `12` fazem. Vale para `docs/**` e para os relatórios
+  de `tasks/`.

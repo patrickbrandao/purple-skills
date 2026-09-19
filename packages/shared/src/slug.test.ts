@@ -38,6 +38,35 @@ describe('uniqueSlug', () => {
     );
   });
 
+  it('encurta a base para o sufixo caber no teto: o gerado passa em isValidSlug', () => {
+    // O sufixo vinha depois do corte do `slugify` e escapava dele: 96 + '-2'
+    // dava 98 caracteres, e o próprio `isValidSlug` recusava o que o sistema
+    // acabara de gerar.
+    const base = 'a'.repeat(96);
+    const slug = uniqueSlug('a'.repeat(200), [base]);
+
+    expect(slug).toBe(`${'a'.repeat(94)}-2`);
+    expect(slug.length).toBe(96);
+    expect(isValidSlug(slug)).toBe(true);
+  });
+
+  it('segue numerando sobre a base encurtada', () => {
+    const base = 'a'.repeat(96);
+    const slug = uniqueSlug('a'.repeat(200), [base, `${'a'.repeat(94)}-2`]);
+
+    expect(slug).toBe(`${'a'.repeat(94)}-3`);
+    expect(isValidSlug(slug)).toBe(true);
+  });
+
+  it('não deixa hífen dobrado quando o corte cai sobre um', () => {
+    const base = `${'a'.repeat(93)}-bb`;
+    const slug = uniqueSlug(base, [base]);
+
+    expect(slug).toBe(`${'a'.repeat(93)}-2`);
+    expect(slug).not.toContain('--');
+    expect(isValidSlug(slug)).toBe(true);
+  });
+
   it('usa prefixo padrão quando o nome não gera slug', () => {
     expect(uniqueSlug('🚀', [])).toBe('skill');
     expect(uniqueSlug('🚀', ['skill'])).toBe('skill-2');

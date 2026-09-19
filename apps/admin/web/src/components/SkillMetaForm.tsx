@@ -1,6 +1,7 @@
 import { Field } from './ui.js';
 import { SkillIcon } from './SkillIcon.js';
 import { buildFrontmatter, parseTags } from '../frontmatter.js';
+import { slugEmDigitacao, slugify } from '../slug.js';
 
 export type SkillMetaValues = {
   name: string;
@@ -38,11 +39,26 @@ export function SkillMetaForm({
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <Field label="Slug — nome oficial da skill" hint="Identifica a skill no name: do SKILL.md, na URL e nas ferramentas MCP. Só minúsculas, números e hífen.">
+        <Field
+          label="Slug — nome oficial da skill"
+          hint="Identifica a skill no name: do SKILL.md, na URL e nas ferramentas MCP. Só minúsculas, números e hífen, até 96 caracteres — o campo ajusta o que você digita."
+        >
           <input
             className="field field-mono"
             value={values.slug}
-            onChange={(event) => onChange({ slug: event.target.value })}
+            // O campo slugifica enquanto se digita: o servidor **recusa** slug
+            // explícito inválido com 400 (`tasks/049`), e antes a pessoa só
+            // descobria isso no Salvar, com o texto que ela escreveu recusado.
+            onChange={(event) => onChange({ slug: slugEmDigitacao(event.target.value) })}
+            onBlur={(event) => {
+              // O `slugify` inteiro só aqui: durante a digitação o hífen do fim
+              // tem de sobreviver. E só quando muda algo — na criação, um
+              // `onChange` de slug é o que marca o campo como editado à mão e
+              // para de segui-lo do nome, então um blur sem edição não pode
+              // parecer edição.
+              const limpo = slugify(event.target.value);
+              if (limpo !== values.slug) onChange({ slug: limpo });
+            }}
             placeholder={slugPlaceholder}
             required={slugRequired}
             disabled={disabled}

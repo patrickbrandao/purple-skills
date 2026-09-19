@@ -17,7 +17,7 @@ export const config = {
   host: readTextEnv('HOST', '0.0.0.0'),
   siteBaseUrl: readTextEnv('SITE_BASE_URL', 'http://localhost:3000').replace(/\/+$/, ''),
   siteName: readTextEnv('SITE_NAME', 'Purple Skills'),
-  siteTagline: readTextEnv('SITE_TAGLINE', 'Catálogo aberto de skills para agentes de IA'),
+  siteTagline: readTextEnv('SITE_TAGLINE', 'Skills abertas para agentes de IA'),
   // URLs mostradas na seção "Endereços de acesso". Vazias = o endereço não é
   // divulgado nesta instalação, e o cartão correspondente some da página.
   //

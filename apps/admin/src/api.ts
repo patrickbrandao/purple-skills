@@ -34,8 +34,9 @@ import {
 } from '@purple-skills/shared';
 import {
   actorFrom,
+  type AuthUser,
   checkBootstrapPassword,
-  clearSession,
+  endSession,
   issueLegacySession,
   issueSession,
   requireAdmin,
@@ -69,7 +70,7 @@ import {
   revokeKey,
   updateAccount,
 } from './accounts.js';
-import { config, oidcEnabled, panelBaseUrl, smtpEnabled } from './config.js';
+import { config, oidcEnabled, resetLinkBaseUrl, smtpEnabled } from './config.js';
 import { createRateLimiter } from './ratelimit.js';
 import { limitRequestBytes, rejectOversizedBatch, upload } from './uploads.js';
 import { streamSkillZip } from './zip.js';
@@ -88,6 +89,20 @@ const loginLimiter = createRateLimiter({
 function param(req: Request, name: string): string {
   const value = (req.params as Record<string, unknown>)[name];
   return Array.isArray(value) ? value.join('/') : String(value ?? '');
+}
+
+/**
+ * Um inteiro da query string, com padrão. Gêmeo do `asInt` de
+ * `apps/site/src/api.ts`, e pela mesma razão: `Number(req.query.offset ?? 0)`
+ * cru devolve `NaN` quando o valor não é numérico ou vem repetido
+ * (`?offset=1&offset=2` chega como array), e um `NaN` no `OFFSET` é erro do
+ * driver — 500 onde o certo é seguir com o padrão. A tolerância é a dos
+ * helpers do banco (`clamp` e `pageOffset`): lixo e fração valem o padrão ou o
+ * inteiro, nunca uma exceção. O **teto** continua sendo do banco.
+ */
+function asInt(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function fail(res: Response, err: unknown) {
@@ -111,7 +126,11 @@ const route =
     handler(req, res).catch((err) => fail(res, err));
   };
 
-/** `true` quando a tentativa passou pela janela por IP. */
+/**
+ * `true` quando a tentativa passou pela janela por IP. A chave só vale o que
+ * `req.ip` valer: o padrão do `trustProxySetting` aceita um salto de peer
+ * interno, então quem chega pelo proxy reverso não escolhe mais o próprio balde.
+ */
 function throttled(req: Request, res: Response): boolean {
   if (loginLimiter.hit(req.ip ?? 'sem-ip')) return false;
 
@@ -185,48 +204,69 @@ api.use('/api', (req, res, next) => {
 
 // --------------------------------------------------------------- sessão ----
 
+/**
+ * O corpo de `GET /api/session`, numa função pura para o teste poder cobrar o
+ * recorte sem banco.
+ *
+ * A rota fica **antes** do `requireAuth`: a tela de login precisa saber se há
+ * setup pendente, se o SSO está ligado e qual é a marca. Por isso o que só as
+ * telas de dentro mostram — endereços da instalação, janela de online, driver
+ * do RAG e versão — sai apenas **com sessão**: era a única trava de papel do
+ * painel que ficava só no cliente (a tela "Ambiente" não faz chamada própria),
+ * e um visitante anônimo lia a versão exata do software e os endereços
+ * configurados com um `curl`.
+ */
+export function sessionPayload(user: AuthUser | null, totalUsers: number) {
+  return {
+    authenticated: user !== null,
+    user: user
+      ? {
+          uuid: user.uuid,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          mustChangePassword: user.mustChangePassword,
+          legacy: user.legacy,
+        }
+      : null,
+    // Com a tabela vazia o painel oferece a criação do primeiro admin; a
+    // senha única continua entrando até alguém passar pelo setup (§4.1).
+    needsSetup: totalUsers === 0,
+    legacyLogin: totalUsers === 0,
+    oidc: oidcEnabled() ? { enabled: true, name: config.oidcProviderName } : { enabled: false },
+    passwordResetByEmail: smtpEnabled(),
+    siteName: config.siteName,
+    brand: { name: config.brandName, iconUrl: config.brandIconUrl },
+    // Daqui para baixo, só com sessão.
+    ...(user
+      ? {
+          siteBaseUrl: config.siteBaseUrl,
+          mcpPublicUrl: config.mcpPublicUrl,
+          links: {
+            docs: config.docsUrl || null,
+            support: config.supportUrl || null,
+            chat: config.chatUrl || null,
+          },
+          onlineWindowMs: config.onlineWindowMs,
+          // O que o `.env` deste container define para a busca semântica. Quem
+          // decide é o banco (§4.1); isto é só o que o operador escreveu.
+          rag: {
+            driver: (process.env.RAG_DRIVER ?? '').trim() || null,
+            model: (process.env.RAG_MODEL ?? '').trim() || null,
+          },
+          version: config.version,
+        }
+      : {}),
+  };
+}
+
 api.get(
   '/api/session',
   route(async (req, res) => {
     const user = await resolveUser(req);
     const total = await countUsers();
 
-    res.json({
-      authenticated: user !== null,
-      user: user
-        ? {
-            uuid: user.uuid,
-            email: user.email,
-            name: user.name,
-            role: user.role,
-            mustChangePassword: user.mustChangePassword,
-            legacy: user.legacy,
-          }
-        : null,
-      // Com a tabela vazia o painel oferece a criação do primeiro admin; a
-      // senha única continua entrando até alguém passar pelo setup (§4.1).
-      needsSetup: total === 0,
-      legacyLogin: total === 0,
-      oidc: oidcEnabled() ? { enabled: true, name: config.oidcProviderName } : { enabled: false },
-      passwordResetByEmail: smtpEnabled(),
-      siteName: config.siteName,
-      brand: { name: config.brandName, iconUrl: config.brandIconUrl },
-      siteBaseUrl: config.siteBaseUrl,
-      mcpPublicUrl: config.mcpPublicUrl,
-      links: {
-        docs: config.docsUrl || null,
-        support: config.supportUrl || null,
-        chat: config.chatUrl || null,
-      },
-      onlineWindowMs: config.onlineWindowMs,
-      // O que o `.env` deste container define para a busca semântica. Quem
-      // decide é o banco (§4.1); isto é só o que o operador escreveu.
-      rag: {
-        driver: (process.env.RAG_DRIVER ?? '').trim() || null,
-        model: (process.env.RAG_MODEL ?? '').trim() || null,
-      },
-      version: config.version,
-    });
+    res.json(sessionPayload(user, total));
   }),
 );
 
@@ -312,10 +352,20 @@ api.post(
   }),
 );
 
-api.post('/api/logout', (_req, res) => {
-  clearSession(res);
-  res.json({ authenticated: false });
-});
+/**
+ * Sair **revoga**: `endSession` incrementa o `token_version` da conta, senão o
+ * cookie apagado aqui continuaria valendo em qualquer cópia até `exp` (12 h).
+ * O preço é assumido — cai também a sessão dos outros dispositivos da pessoa,
+ * como na troca da própria senha (`docs/05-accounts-and-roles.md` §2.2). O
+ * `revoked` diz ao painel se foi isso que aconteceu.
+ */
+api.post(
+  '/api/logout',
+  route(async (req, res) => {
+    const revoked = await endSession(req, res);
+    res.json({ authenticated: false, revoked });
+  }),
+);
 
 // ----------------------------------------------------------------- OIDC ----
 
@@ -375,7 +425,24 @@ api.post(
       return;
     }
 
-    const base = panelBaseUrl(req.protocol, req.get('host') ?? `localhost:${config.port}`);
+    // O link sai por e-mail para a caixa de OUTRA pessoa e quem pede é qualquer
+    // visitante: a base não pode ser deduzida do `Host`, que o próprio pedido
+    // escolhe (ver `resetLinkBaseUrl`).
+    const base = resetLinkBaseUrl(req.protocol, req.get('host'), req.ip);
+    if (!base) {
+      console.warn(
+        '[admin] pedido de redefinição de senha recusado: defina ADMIN_PUBLIC_URL. ' +
+          'Sem ela o link só é montado para pedidos vindos de rede interna.',
+      );
+      res.status(503).json({
+        error: 'public_url_required',
+        message:
+          'Este painel ainda não conhece o próprio endereço público: peça a um ' +
+          'administrador para redefinir sua senha',
+      });
+      return;
+    }
+
     await requestPasswordReset((req.body as { email?: unknown })?.email, (token) =>
       `${base}/?reset=${encodeURIComponent(token)}`,
     );
@@ -508,13 +575,17 @@ api.post(
   '/api/users/:uuid/reset-password',
   requireAdmin,
   route(async (req, res) => {
-    res.json(await resetAccountPassword(param(req, 'uuid')));
+    // O ator vai junto: a redefinição é auditada com quem a fez (`tasks/030`).
+    res.json(await resetAccountPassword(req.user!, param(req, 'uuid')));
   }),
 );
 
 // A busca de contas para compartilhar (`docs/12-acesso-granular.md` decisão
-// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel. Fica
-// antes de `/api/users/:uuid`, senão o Express a engole como um uuid.
+// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel — o `uuid`
+// da conta **não** sai daqui, porque ele é o `sub` do cookie de sessão e esta
+// rota é aberta a qualquer membro; quem recorta o payload é o `withoutUuid` do
+// `access.ts`, e quem transfere dono manda o e-mail. Fica antes de
+// `/api/users/:uuid`, senão o Express a engole como um uuid.
 api.get(
   '/api/users/lookup',
   route(async (req, res) => {
@@ -843,10 +914,39 @@ api.post(
 
 // ------------------------------------------------------------- dashboard ---
 
+/**
+ * Os números do painel, recortados pelo que a sessão enxerga (`docs/12` §3.1).
+ *
+ * `stats()` conta a instalação inteira — skills que a sessão não vê, os
+ * arquivos delas e as contas — e não aceita `viewer`: contagem agregada mora
+ * no SQL e é camada do dba. Até ela recortar, quem não é admin recebe só o que
+ * dá para recortar com as funções que já recebem `viewer` (o total de skills e
+ * as tags de skill visível), mais `openSkills`, que é exatamente o que o site
+ * mostra a um visitante anônimo e por isso não revela nada.
+ *
+ * Os outros saem do corpo em vez de sair globais: `unlinkedSkills`,
+ * `totalFiles`, `totalViews` e `totalDownloads` dimensionam o acervo privado,
+ * e as contagens de contas são dado da instalação, como `/api/audit`. Número
+ * ausente desaparece da tela; número global responderia "quantas skills
+ * privadas existem aqui". Aproximar `unlinkedSkills` fora do banco seria pior
+ * que omitir: a lista `mcps` de uma leitura com `viewer` só traz os servidores
+ * que a conta vê, então uma skill publicada num servidor alheio pareceria
+ * flutuante.
+ */
 api.get(
   '/api/stats',
-  route(async (_req, res) => {
-    res.json(await stats());
+  route(async (req, res) => {
+    const viewer = viewerOf(req.user!);
+    if (viewer.role === 'admin') {
+      res.json(await stats());
+      return;
+    }
+    const [instalacao, skills, tags] = await Promise.all([
+      stats(),
+      listSkills({ viewer, limit: 1 }),
+      listTags({ viewer }),
+    ]);
+    res.json({ totalSkills: skills.total, openSkills: instalacao.openSkills, totalTags: tags.length });
   }),
 );
 
@@ -909,8 +1009,8 @@ api.get(
       await listSkills({
         query: typeof req.query.q === 'string' ? req.query.q : null,
         tag: typeof req.query.tag === 'string' ? req.query.tag : null,
-        limit: Number(req.query.limit ?? 50),
-        offset: Number(req.query.offset ?? 0),
+        limit: asInt(req.query.limit, 50),
+        offset: asInt(req.query.offset, 0),
         sort: (req.query.sort as never) ?? undefined,
         viewer: viewerOf(req.user!),
         ...(isAccessScope(req.query.scope) ? { scope: req.query.scope } : {}),

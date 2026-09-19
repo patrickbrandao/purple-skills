@@ -1,6 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { composeSkillMd } from '@purple-skills/shared';
 
+/** O erro de negócio do `@purple-skills/db`, como o `guard` o reconhece. */
+const { AppError } = vi.hoisted(() => ({
+  AppError: class AppError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+      readonly code: string,
+    ) {
+      super(message);
+    }
+  },
+}));
+
 const db = vi.hoisted(() => ({
   // A busca semântica lê estas três; sem elas o módulo `rag.ts` nem carrega.
   ragSchemaReady: vi.fn(async () => false),
@@ -15,9 +28,9 @@ const db = vi.hoisted(() => ({
   readFile: vi.fn(),
 }));
 
-vi.mock('@purple-skills/db', () => db);
+vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
-const { createHandlers, createSurfaces } = await import('./tools.js');
+const { createHandlers, createSurfaces, guard, guardSurface } = await import('./tools.js');
 
 /** O vínculo com o vMCP padrão, aberto: é o que põe a skill no site. */
 const noPublic = {
@@ -156,6 +169,44 @@ describe('search_skills', () => {
     await handlers.search_skills({});
     expect(db.getRagSettings).not.toHaveBeenCalled();
   });
+
+  /**
+   * O corte da consulta, antes das duas pernas: `listSkills` sempre cortou em
+   * 200 caracteres, mas o embedding era resolvido com o texto cru — a perna
+   * vetorial embutia uma pergunta que a textual nunca leu, e quem escolhia o
+   * tamanho do que ia ao provedor era o cliente.
+   */
+  it('corta a consulta longa na última palavra inteira, e as duas pernas leem o mesmo texto', async () => {
+    db.listSkills.mockResolvedValue({ items: [summary], total: 1, limit: 10, offset: 0, mode: 'text' });
+    const { buscaSemantica } = await import('./rag.js');
+    const espiao = vi.spyOn(buscaSemantica, 'resolver');
+
+    const longa = 'padronizar a mensagem de commit em português '.repeat(10);
+    await handlers.search_skills({ query: longa });
+
+    const cortada = db.listSkills.mock.calls[0][0].query as string;
+    expect(cortada.length).toBeLessThanOrEqual(200);
+    expect(cortada.length).toBeGreaterThan(180);
+    // Prefixo da consulta, sem palavra partida e sem espaço sobrando no fim.
+    expect(longa.startsWith(cortada)).toBe(true);
+    expect(cortada).toMatch(/\S$/);
+    expect(longa.slice(cortada.length, cortada.length + 1)).toMatch(/\s/);
+    // E é esse texto — não o cru — que iria ao provedor.
+    expect(espiao).toHaveBeenCalledWith(cortada);
+
+    espiao.mockRestore();
+  });
+
+  it('consulta de uma palavra só é cortada no limite, sem partir par surrogate', async () => {
+    db.listSkills.mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0, mode: 'text' });
+
+    // 199 caracteres, um emoji (dois) e o resto: nenhum espaço onde cortar.
+    const result = await handlers.search_skills({ query: `${'x'.repeat(199)}\u{1F44D}${'x'.repeat(400)}` });
+
+    expect(db.listSkills.mock.calls[0][0].query).toBe('x'.repeat(199));
+    // A mensagem ecoa o que foi procurado: é assim que o cliente vê o corte.
+    expect(result.content[0].text).toContain('x'.repeat(199));
+  });
 });
 
 describe('get_skill', () => {
@@ -229,6 +280,26 @@ describe('get_skill_file', () => {
     expect(result.content[0].text).toContain(
       'https://mcp.exemplo.dev/skills/minha-skill/files/img/logo.png',
     );
+  });
+
+  it('manda baixar pela URL o texto que passa do teto do resultado', async () => {
+    db.getSkillSummary.mockResolvedValue(summary);
+    const grande = 'a'.repeat(4 * 1024 * 1024 + 1);
+    db.readFile.mockResolvedValue({
+      relativePath: 'ref/gigante.md',
+      mimeType: 'text/markdown',
+      sizeBytes: grande.length,
+      isText: true,
+      buffer: Buffer.from(grande, 'utf8'),
+    });
+
+    const result = await handlers.get_skill_file({ slug: 'minha-skill', path: 'ref/gigante.md' });
+
+    expect(result.content[0].text).toContain(
+      'https://mcp.exemplo.dev/skills/minha-skill/files/ref/gigante.md',
+    );
+    // O conteúdo não vai junto: seriam mais duas cópias no processo.
+    expect(result.content[0].text).not.toContain('aaaa');
   });
 
   it('rejeita caminhos com travessia de diretório', async () => {
@@ -485,6 +556,27 @@ describe('escopo de outro MCP virtual', () => {
     expect(payload.results[1].url).toBeUndefined();
   });
 
+  /**
+   * A skill marcada pública está no site sem vMCP aberto nenhum (`docs/12` §7,
+   * que revoga a regra do `09` §4.1 — a antiga olhava só o vínculo aberto).
+   * Sem isto, o agente deixava de receber o link de uma página que abre.
+   */
+  it('dá a página do site à skill pública, mesmo só num vMCP fechado', async () => {
+    db.listSkills.mockResolvedValue({
+      items: [{ ...privada, isPublic: true }],
+      total: 1,
+      limit: 10,
+      offset: 0,
+    });
+    db.getSkillDetail.mockResolvedValue({ ...detail, ...privada, isPublic: true });
+
+    const payload = JSON.parse((await virtual.search_skills({})).content[0].text);
+    const ficha = await virtual.get_skill({ slug: 'minha-skill' });
+
+    expect(payload.results[0].url).toBe('http://localhost:3000/skills/minha-skill');
+    expect(ficha.content[0].text).toContain('página: http://localhost:3000/skills/minha-skill');
+  });
+
   it('download_skill e arquivo binário apontam para o prefixo do virtual, com a dica da chave', async () => {
     db.getSkillSummary.mockResolvedValue(privada);
     db.readFile.mockResolvedValue({
@@ -526,5 +618,58 @@ describe('escopo de outro MCP virtual', () => {
       virtualMcp: { uuid: 'mcp-2', surface: 'resource' },
     });
     expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-2', origin: 'mcp' }));
+  });
+});
+
+/**
+ * O embrulho das ferramentas e das superfícies. Sem ele a exceção sobe ao SDK,
+ * que monta o `isError` (e o erro do JSON-RPC) com a `message` crua — e aqui o
+ * cliente é anônimo por padrão.
+ */
+describe('guard', () => {
+  it('deixa passar inteira a mensagem de erro de negócio', async () => {
+    const result = await guard(async () => {
+      throw new AppError('Uuid de espaço inválido: x', 400, 'bad_request');
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Uuid de espaço inválido: x');
+  });
+
+  it('não derruba a ferramenta nem vaza o detalhe interno do erro inesperado', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await guard(async () => {
+      throw new Error('relation "skill_accesses" does not exist');
+    });
+
+    expect(result.isError).toBe(true);
+    // Mensagem de driver descreve o esquema: ela sai no log, não na resposta.
+    expect(result.content[0].text).not.toContain('skill_accesses');
+    const ref = /ref ([0-9a-f]{8})/.exec(result.content[0].text)?.[1];
+    expect(ref).toBeDefined();
+    // A mesma referência nos dois lados é o que liga a reclamação ao detalhe.
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`ref ${ref}`), expect.any(Error));
+
+    log.mockRestore();
+  });
+
+  it('nas superfícies, mantém a recusa de protocolo e embrulha só o imprevisto', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    db.getSkillDetail.mockResolvedValue(null);
+
+    // A recusa de `naoEncontrado` é escrita para o cliente: passa inteira.
+    await expect(guardSurface(() => surfaces.readResource('skill://nao-existe'))).rejects.toThrow(
+      /Resource não encontrado/,
+    );
+
+    const erro = await guardSurface(async () => {
+      throw new Error('duplicate key value violates unique constraint "tags_name_key"');
+    }).catch((err: Error) => err);
+
+    expect(erro.message).not.toContain('tags_name_key');
+    expect(erro.message).toMatch(/Erro interno do servidor \(ref [0-9a-f]{8}\)/);
+
+    log.mockRestore();
   });
 });

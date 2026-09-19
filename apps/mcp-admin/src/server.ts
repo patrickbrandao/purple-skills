@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { TOKEN_CALLER, type Caller } from './auth.js';
+import { TOKEN_CALLER, callerAtual, type Caller } from './auth.js';
 import { config } from './config.js';
 import { createCatalogHandlers } from './catalogs.js';
 import { createMcpHandlers } from './mcps.js';
@@ -20,7 +20,10 @@ Regras importantes:
   descartado. Para mudar metadados use create_skill/edit_skill.
 - O slug é o nome oficial da skill: é ele que vai no campo name: do frontmatter.
 - set_files_bulk com replace=true trata o zip como o estado desejado completo:
-  arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado).
+  arquivos ausentes no zip são removidos (o SKILL.md é sempre preservado). Essa
+  remoção é irreversível e não acontece sem confirmação: a chamada é recusada
+  com a lista do que sairia e o número a repetir em confirm_deletions. Num envio
+  parcial, use replace=false em vez de confirmar.
 - Uma skill é um elemento flutuante: existe no catálogo e só é exibida — no
   site e nos servidores MCP — onde está vinculada a um MCP virtual. Skill
   recém-criada nasce sem vínculo, a menos que create_skill receba mcps; depois,
@@ -68,14 +71,21 @@ Regras importantes:
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
  *
- * O `caller` chega da autenticação (token global ou chave `psk_`) e viaja com
- * os handlers: é ele que decide quais ferramentas podem ser executadas e quem
- * aparece no `audit_log`.
+ * O `caller` chega da autenticação (token global ou chave `psk_`) e é ele que
+ * decide quais ferramentas podem ser executadas e quem aparece no `audit_log`.
+ *
+ * Os handlers nascem **a cada chamada**, com a credencial revalidada na
+ * requisição em curso (`callerAtual`). Numa sessão este servidor é construído
+ * uma única vez, no `initialize`: fechar sobre o `caller` daquele instante
+ * congelaria papel, ator, IP e agente até a sessão cair — rebaixar a conta no
+ * painel não tiraria o poder de quem já estava conectado. Recriar é barato
+ * (só fecha sobre o caller, sem ida ao banco), e o `caller` do `initialize`
+ * continua valendo como padrão fora de uma requisição.
  */
 export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
-  const handlers = createHandlers(caller);
-  const mcps = createMcpHandlers(caller);
-  const catalogs = createCatalogHandlers(caller);
+  const handlers = () => createHandlers(callerAtual(caller));
+  const mcps = () => createMcpHandlers(callerAtual(caller));
+  const catalogs = () => createCatalogHandlers(callerAtual(caller));
 
   const server = new McpServer(
     { name: config.serverName, version: config.version },
@@ -106,7 +116,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         offset: z.number().int().min(0).optional(),
       },
     },
-    (args) => guard(() => handlers.list_skills(args)),
+    (args) => guard(() => handlers().list_skills(args)),
   );
 
   server.registerTool(
@@ -118,7 +128,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'gerado a partir dos metadados).',
       inputSchema: { slug: z.string().describe('Slug da skill.') },
     },
-    (args) => guard(() => handlers.get_skill(args)),
+    (args) => guard(() => handlers().get_skill(args)),
   );
 
   server.registerTool(
@@ -131,7 +141,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         path: z.string().describe('Caminho relativo, ex: "reference/exemplos.md".'),
       },
     },
-    (args) => guard(() => handlers.get_file(args)),
+    (args) => guard(() => handlers().get_file(args)),
   );
 
   server.registerTool(
@@ -154,7 +164,12 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         tags: z.array(z.string()).describe('Tags livres para navegação/filtro.').optional(),
         slug: z
           .string()
-          .describe('Nome oficial da skill (a-z, 0-9 e hífen). Gerado a partir do nome se omitido.')
+          .describe(
+            'Nome oficial da skill: minúsculas a-z, dígitos e hífen simples, sem hífen nas ' +
+              'pontas e no máximo 96 caracteres — "commits-convencionais". Valor fora disso é ' +
+              'recusado (o servidor não o corrige mais em silêncio), então mande o slug já ' +
+              'pronto. Omitido, é gerado a partir do nome.',
+          )
           .optional(),
         mcps: z
           .array(
@@ -175,7 +190,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .optional(),
       },
     },
-    (args) => guard(() => handlers.create_skill(args)),
+    (args) => guard(() => handlers().create_skill(args)),
   );
 
   server.registerTool(
@@ -196,7 +211,11 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         tags: z.array(z.string()).describe('Substitui a lista de tags inteira.').optional(),
         new_slug: z
           .string()
-          .describe('Novo nome oficial (muda a URL pública e o `name:` do frontmatter).')
+          .describe(
+            'Novo nome oficial (muda a URL pública e o `name:` do frontmatter). Mesmas regras do ' +
+              'slug na criação: minúsculas a-z, dígitos e hífen simples, sem hífen nas pontas, ' +
+              'até 96 caracteres; valor fora disso é recusado, não corrigido.',
+          )
           .optional(),
         is_active: z
           .boolean()
@@ -208,7 +227,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .optional(),
       },
     },
-    (args) => guard(() => handlers.edit_skill(args)),
+    (args) => guard(() => handlers().edit_skill(args)),
   );
 
   server.registerTool(
@@ -217,7 +236,8 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       title: 'Publicar skill em um MCP virtual',
       description:
         'Vincula a skill ao MCP virtual, escolhendo as três superfícies; um vínculo existente é ' +
-        'reescrito. Exige administrar o MCP (dono ou admin).',
+        'reescrito. Exige "edit" no MCP virtual e "view" na skill: quem edita um servidor publica ' +
+        'nele skill alheia que consiga ler, e num servidor aberto isso a torna pública.',
       inputSchema: {
         skill: z.string().describe('Slug da skill.'),
         mcp: z.string().describe('Slug do MCP virtual.'),
@@ -226,7 +246,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         asResource: z.boolean().describe('Como resource skill://<slug>.'),
       },
     },
-    (args) => guard(() => mcps.link_skill(args)),
+    (args) => guard(() => mcps().link_skill(args)),
   );
 
   server.registerTool(
@@ -240,7 +260,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         mcp: z.string().describe('Slug do MCP virtual.'),
       },
     },
-    (args) => guard(() => mcps.unlink_skill(args)),
+    (args) => guard(() => mcps().unlink_skill(args)),
   );
 
   server.registerTool(
@@ -256,7 +276,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         content: z.string().describe('Conteúdo textual completo do arquivo.'),
       },
     },
-    (args) => guard(() => handlers.set_file(args)),
+    (args) => guard(() => handlers().set_file(args)),
   );
 
   server.registerTool(
@@ -267,7 +287,9 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Importa um .zip (base64) com a árvore de arquivos da skill, preservando os caminhos. ' +
         'Por padrão o zip representa o estado desejado completo: arquivos ausentes nele são ' +
         'removidos da skill (o SKILL.md é sempre preservado). Passe replace=false para apenas ' +
-        'adicionar e sobrescrever, sem remover nada.',
+        'adicionar e sobrescrever, sem remover nada. Quando o zip de fato removeria arquivos, a ' +
+        'chamada é recusada com a lista do que sairia: repita com confirm_deletions=<número de ' +
+        'arquivos a remover> para confirmar, ou com replace=false para não remover nada.',
       inputSchema: {
         slug: z.string(),
         zip_base64: z.string().describe('Conteúdo do .zip codificado em base64.'),
@@ -275,9 +297,19 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .boolean()
           .describe('false mantém os arquivos omitidos no zip (padrão true).')
           .optional(),
+        confirm_deletions: z
+          .number()
+          .int()
+          .min(0)
+          .describe(
+            'Confirma a remoção irreversível dos arquivos ausentes no zip: precisa ser o número ' +
+              'exato deles, que a recusa da primeira chamada informa. Só é necessário quando há ' +
+              'remoção — não invente o valor.',
+          )
+          .optional(),
       },
     },
-    (args) => guard(() => handlers.set_files_bulk(args)),
+    (args) => guard(() => handlers().set_files_bulk(args)),
   );
 
   server.registerTool(
@@ -287,7 +319,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Remove um arquivo da skill. O SKILL.md não pode ser removido.',
       inputSchema: { slug: z.string(), path: z.string() },
     },
-    (args) => guard(() => handlers.delete_file(args)),
+    (args) => guard(() => handlers().delete_file(args)),
   );
 
   server.registerTool(
@@ -300,7 +332,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         confirm: z.boolean().describe('Precisa ser true para a remoção acontecer.'),
       },
     },
-    (args) => guard(() => handlers.delete_skill(args)),
+    (args) => guard(() => handlers().delete_skill(args)),
   );
 
   server.registerTool(
@@ -310,17 +342,19 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Lista todas as tags do catálogo com a contagem de skills.',
       inputSchema: {},
     },
-    () => guard(() => handlers.list_tags()),
+    () => guard(() => handlers().list_tags()),
   );
 
   server.registerTool(
     'get_stats',
     {
       title: 'Estatísticas',
-      description: 'Totais do catálogo: skills, arquivos, acessos, downloads e tags.',
+      description:
+        'Totais recortados pelo que a credencial enxerga: skills e tags que ela vê, mais as skills publicadas no site. ' +
+        'Só uma credencial admin recebe os números da instalação inteira (arquivos, visitas, downloads, flutuantes e contas).',
       inputSchema: {},
     },
-    () => guard(() => handlers.get_stats()),
+    () => guard(() => handlers().get_stats()),
   );
 
   // ------------------------------------------------------- MCPs virtuais ---
@@ -335,7 +369,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         scope: z.enum(['mine', 'shared', 'public']).describe('Só os meus, só os compartilhados comigo ou só os abertos.').optional(),
       },
     },
-    (args) => guard(() => mcps.list_virtual_mcps(args)),
+    (args) => guard(() => mcps().list_virtual_mcps(args)),
   );
 
   server.registerTool(
@@ -345,7 +379,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Configuração, skills vinculadas (com as superfícies e contadores do vínculo) e chaves ativas.',
       inputSchema: { slug: z.string().describe('Slug do MCP virtual.') },
     },
-    (args) => guard(() => mcps.get_virtual_mcp(args)),
+    (args) => guard(() => mcps().get_virtual_mcp(args)),
   );
 
   server.registerTool(
@@ -364,7 +398,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         is_open: z.boolean().describe('Sem chave (padrão false).').optional(),
       },
     },
-    (args) => guard(() => mcps.create_virtual_mcp(args)),
+    (args) => guard(() => mcps().create_virtual_mcp(args)),
   );
 
   server.registerTool(
@@ -382,7 +416,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         is_active: z.boolean().describe('false desliga: tudo sob /virtual/<slug> responde 404.').optional(),
       },
     },
-    (args) => guard(() => mcps.update_virtual_mcp(args)),
+    (args) => guard(() => mcps().update_virtual_mcp(args)),
   );
 
   server.registerTool(
@@ -395,7 +429,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         confirm: z.boolean().describe('Precisa ser true para a remoção acontecer.'),
       },
     },
-    (args) => guard(() => mcps.delete_virtual_mcp(args)),
+    (args) => guard(() => mcps().delete_virtual_mcp(args)),
   );
 
   server.registerTool(
@@ -419,7 +453,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .describe('Lista completa. Vazia esvazia o MCP.'),
       },
     },
-    (args) => guard(() => mcps.set_virtual_mcp_skills(args)),
+    (args) => guard(() => mcps().set_virtual_mcp_skills(args)),
   );
 
   server.registerTool(
@@ -429,7 +463,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Chaves psv_ do MCP virtual, inclusive revogadas. Nunca mostra o segredo.',
       inputSchema: { slug: z.string() },
     },
-    (args) => guard(() => mcps.list_virtual_mcp_keys(args)),
+    (args) => guard(() => mcps().list_virtual_mcp_keys(args)),
   );
 
   server.registerTool(
@@ -442,7 +476,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         name: z.string().describe('Nome da chave (ex.: "CI do projeto X").'),
       },
     },
-    (args) => guard(() => mcps.create_virtual_mcp_key(args)),
+    (args) => guard(() => mcps().create_virtual_mcp_key(args)),
   );
 
   server.registerTool(
@@ -452,7 +486,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Revoga uma chave pelo id (de list_virtual_mcp_keys). Quem a usa perde o acesso na hora.',
       inputSchema: { slug: z.string(), key_id: z.string() },
     },
-    (args) => guard(() => mcps.revoke_virtual_mcp_key(args)),
+    (args) => guard(() => mcps().revoke_virtual_mcp_key(args)),
   );
 
   // ----------------------------------------------------------- catálogos ---
@@ -467,7 +501,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         scope: z.enum(['mine', 'shared', 'public']).describe('Só os meus, só os compartilhados comigo ou só os públicos.').optional(),
       },
     },
-    (args) => guard(() => catalogs.list_catalogs(args)),
+    (args) => guard(() => catalogs().list_catalogs(args)),
   );
 
   server.registerTool(
@@ -477,7 +511,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Configuração, skills (com a participação e se a skill está ligada) e os MCPs virtuais em que o catálogo está.',
       inputSchema: { slug: z.string().describe('Slug do catálogo.') },
     },
-    (args) => guard(() => catalogs.get_catalog(args)),
+    (args) => guard(() => catalogs().get_catalog(args)),
   );
 
   server.registerTool(
@@ -495,7 +529,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .optional(),
       },
     },
-    (args) => guard(() => catalogs.create_catalog(args)),
+    (args) => guard(() => catalogs().create_catalog(args)),
   );
 
   server.registerTool(
@@ -513,7 +547,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         is_public: z.boolean().optional(),
       },
     },
-    (args) => guard(() => catalogs.update_catalog(args)),
+    (args) => guard(() => catalogs().update_catalog(args)),
   );
 
   server.registerTool(
@@ -526,7 +560,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         confirm: z.boolean().describe('Precisa ser true para a remoção acontecer.'),
       },
     },
-    (args) => guard(() => catalogs.delete_catalog(args)),
+    (args) => guard(() => catalogs().delete_catalog(args)),
   );
 
   server.registerTool(
@@ -548,7 +582,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .describe('Lista completa. Vazia esvazia o catálogo.'),
       },
     },
-    (args) => guard(() => catalogs.set_catalog_skills(args)),
+    (args) => guard(() => catalogs().set_catalog_skills(args)),
   );
 
   server.registerTool(
@@ -572,7 +606,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
           .describe('Lista completa. Vazia tira todos os catálogos do MCP.'),
       },
     },
-    (args) => guard(() => catalogs.set_virtual_mcp_catalogs(args)),
+    (args) => guard(() => catalogs().set_virtual_mcp_catalogs(args)),
   );
 
   // ------------------------------------------------------------- acesso ---
@@ -602,7 +636,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Não se concede ao dono nem a um admin — já têm tudo.',
       inputSchema: accessInput,
     },
-    (args) => guard(() => handlers.share_skill(args)),
+    (args) => guard(() => handlers().share_skill(args)),
   );
 
   server.registerTool(
@@ -612,7 +646,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Remove a concessão de uma conta a uma skill. Exige "manage". Vínculos já feitos por ela ficam.',
       inputSchema: unshareInput,
     },
-    (args) => guard(() => handlers.unshare_skill(args)),
+    (args) => guard(() => handlers().unshare_skill(args)),
   );
 
   server.registerTool(
@@ -622,7 +656,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Muda o dono da skill. Só o dono atual ou um admin; quem transfere deixa de ser dono.',
       inputSchema: transferInput,
     },
-    (args) => guard(() => handlers.transfer_skill(args)),
+    (args) => guard(() => handlers().transfer_skill(args)),
   );
 
   server.registerTool(
@@ -633,7 +667,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Concede (ou muda) o nível de acesso de uma conta a um catálogo. Exige "manage". "view" inclui ler os membros.',
       inputSchema: accessInput,
     },
-    (args) => guard(() => catalogs.share_catalog(args)),
+    (args) => guard(() => catalogs().share_catalog(args)),
   );
 
   server.registerTool(
@@ -643,7 +677,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Remove a concessão de uma conta a um catálogo. Exige "manage".',
       inputSchema: unshareInput,
     },
-    (args) => guard(() => catalogs.unshare_catalog(args)),
+    (args) => guard(() => catalogs().unshare_catalog(args)),
   );
 
   server.registerTool(
@@ -653,7 +687,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Muda o dono do catálogo. Só o dono atual ou um admin.',
       inputSchema: transferInput,
     },
-    (args) => guard(() => catalogs.transfer_catalog(args)),
+    (args) => guard(() => catalogs().transfer_catalog(args)),
   );
 
   server.registerTool(
@@ -664,7 +698,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Concede (ou muda) o nível de acesso de uma conta a um MCP virtual. Exige "manage". "view" inclui ler as skills dentro.',
       inputSchema: accessInput,
     },
-    (args) => guard(() => mcps.share_mcp(args)),
+    (args) => guard(() => mcps().share_mcp(args)),
   );
 
   server.registerTool(
@@ -674,7 +708,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Remove a concessão de uma conta a um MCP virtual. Exige "manage".',
       inputSchema: unshareInput,
     },
-    (args) => guard(() => mcps.unshare_mcp(args)),
+    (args) => guard(() => mcps().unshare_mcp(args)),
   );
 
   server.registerTool(
@@ -684,7 +718,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Muda o dono do MCP virtual. Só o dono atual ou um admin.',
       inputSchema: transferInput,
     },
-    (args) => guard(() => mcps.transfer_mcp(args)),
+    (args) => guard(() => mcps().transfer_mcp(args)),
   );
 
   // ------------------------------------------------------- MCP padrão ---
@@ -697,7 +731,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Qual MCP virtual responde em /mcp — o MCP público desta instalação — ou por que nenhum responde.',
       inputSchema: {},
     },
-    () => guard(() => mcps.get_default_virtual_mcp()),
+    () => guard(() => mcps().get_default_virtual_mcp()),
   );
 
   server.registerTool(
@@ -711,7 +745,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         slug: z.string().nullable().describe('Slug do MCP virtual, ou null para nenhum.'),
       },
     },
-    (args) => guard(() => mcps.set_default_virtual_mcp(args)),
+    (args) => guard(() => mcps().set_default_virtual_mcp(args)),
   );
 
   return server;

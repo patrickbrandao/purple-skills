@@ -285,10 +285,17 @@ function FileItem({ node, ctx }: { node: FileNode; ctx: Ctx }) {
   const size = node.sizeBytes === null ? '' : ` — ${formatBytes(node.sizeBytes)}`;
   const kind = skillMd ? ' — o prompt da skill' : node.isText ? '' : ' — binário';
 
+  // O arquivo aberto por fora da árvore (a guia Skill, a outra ficha) aparece nela.
+  const row = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (active) row.current?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
+
   return (
     <li>
       <div className="ft-line fx-line" data-dir={parentDir(node.path)}>
         <button
+          ref={row}
           type="button"
           className={cx('ft-row', skillMd && 'primary', active && 'active')}
           aria-current={active ? 'true' : undefined}

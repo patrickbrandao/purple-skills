@@ -382,6 +382,19 @@ export function createMcpHandlers(caller: Caller) {
 
     // ------------------------------------------------------- MCP padrão ---
 
+    /**
+     * Qual vMCP responde em `/mcp`, para **qualquer** credencial: sem
+     * `denySettings()` e sem `viewer`, de propósito.
+     *
+     * É a decisão registrada: `docs/09-mcp-padrao-e-skills-flutuantes.md` §3.6
+     * diz "`get_default_virtual_mcp()` (qualquer credencial) e
+     * `set_default_virtual_mcp(slug | null)` (só admin)". E não é vazamento:
+     * quem configura um cliente precisa do endereço e de saber se ele exige
+     * chave, e o `GET /` do próprio mcp-public anuncia `{ status, slug, name,
+     * auth }` ao **anônimo**, com o padrão aberto ou fechado (§3.2 e a linha 8
+     * da tabela do §2 — o padrão não tem tratamento especial). A descrição do
+     * vMCP, que é texto livre, não sai aqui — ver `defaultView`.
+     */
     async get_default_virtual_mcp(): Promise<ToolResult> {
       return asJson(defaultView(await resolveDefaultVirtualMcp()));
     },
@@ -416,7 +429,12 @@ export function createMcpHandlers(caller: Caller) {
   };
 }
 
-/** O que `get_default_virtual_mcp` devolve: qual vMCP responde em /mcp, ou por que nenhum. */
+/**
+ * O que `get_default_virtual_mcp` devolve: qual vMCP responde em /mcp, ou por
+ * que nenhum. Os mesmos campos do `GET /` do mcp-public, mais os dois
+ * caminhos — e **sem** a descrição, que é texto livre e que esta tool entrega a
+ * qualquer credencial, inclusive quando o padrão é um vMCP fechado.
+ */
 function defaultView(resolved: DefaultMcpResolution) {
   if (resolved.status === 'ok') {
     return {

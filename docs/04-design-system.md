@@ -15,7 +15,7 @@ outras superfícies.
 > `skill.css`, `canvas.css`); só o `markdown.css` continua o mesmo do site,
 > apoiado em aliases (`--brand`, `--surface`, `--jade`…) declarados no
 > `tokens.css` do painel. A regra de cópia abaixo vale para **homepage e
-> site**; ao mudar o `markdown.css`, copie para os três.
+> site**; o `markdown.css` (que a homepage não tem) vale para **site e painel**.
 
 ## Onde ficam os arquivos
 
@@ -25,7 +25,9 @@ apps/site/web/src/styles/
   base.css       tipografia, botões, cartões, campos, blocos de código
   chrome.css     nav flutuante e rodapé
   markdown.css   renderização do SKILL.md
-  app.css        cabeçalho, mcp.json, endereços, catálogo, página da skill
+  app.css        ritmo compacto (títulos de seção menores que os do base.css),
+                 selo "público", cabeçalho, skills e catálogos públicos,
+                 mcp.json, endereços, páginas da skill e do catálogo
                  e a árvore de arquivos (com a paleta por tipo de arquivo)
 
 apps/homepage/web/src/styles/
@@ -44,16 +46,44 @@ apps/admin/web/src/styles/          (o console — ver docs/10; não é cópia d
   markdown.css   ← cópia idêntica à do site
 ```
 
-`tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **byte a byte
-iguais** entre os apps que os usam. Cada app tem seu próprio root do Vite e não
-há um pacote de UI compartilhado, então a duplicação é deliberada — o mesmo
-padrão que o projeto já usava para o `index.css`. **Ao mudar um, copie para os
-outros:**
+Quatro arquivos são **byte a byte iguais** — mas cada um tem o **seu par**, e
+nenhum deles é igual nos três apps:
+
+| Arquivo | Par idêntico | No painel |
+|---------|--------------|-----------|
+| `tokens.css` | site ↔ homepage | tem o seu, divergente |
+| `base.css` | site ↔ homepage | tem o seu, divergente |
+| `chrome.css` | site ↔ homepage | não existe |
+| `markdown.css` | site ↔ painel | é o mesmo do site |
+
+Cada app tem seu próprio root do Vite e não há um pacote de UI compartilhado,
+então a duplicação é deliberada — o mesmo padrão que o projeto já usava para o
+`index.css`. Extrair para um pacote de CSS compartilhado atenderia **um par de
+apps**, não os três, e entraria no `package.json` e no `Dockerfile` de cada um:
+não se paga. **Ao mudar um, copie para o par no mesmo commit:**
 
 ```bash
 cp apps/site/web/src/styles/markdown.css apps/admin/web/src/styles/
 cp apps/site/web/src/styles/{tokens,base,chrome}.css apps/homepage/web/src/styles/
 ```
+
+Note o sentido das setas: o site é a origem das duas cópias, **nunca o destino**,
+e o painel nunca é origem nem destino dos três primeiros. Para conferir se alguma
+cópia ficou pela metade — saída vazia quer dizer em dia:
+
+```bash
+for f in tokens base chrome; do
+  diff -q apps/site/web/src/styles/$f.css apps/homepage/web/src/styles/$f.css
+done
+diff -q apps/site/web/src/styles/markdown.css apps/admin/web/src/styles/markdown.css
+```
+
+O `npm test` já faz essa conferência — `apps/site/src/arquivosCopiados.test.ts`
+cobre os dez pares, reprova o par incompleto (arquivo renomeado ou apagado) e
+também o caso inverso: o `tokens.css`/`base.css` do painel ficar igual ao do site,
+ou aparecer um `chrome.css` no painel. Os comandos acima ficam como atalho manual,
+não como única rede. Mudou a lista de pares? Atualize este documento e o teste no
+mesmo commit.
 
 ## Cores
 
@@ -132,21 +162,31 @@ as três primeiras letras, então nenhum arquivo fica sem ícone.
 As cores desses ícones são a **única paleta que não mora no `tokens.css`**:
 elas ficam em `--ft-*`, declaradas no `.file-tree` dentro do `app.css`, com o
 bloco escuro logo abaixo. O motivo é que a homepage não tem essa tela e o
-`tokens.css` é copiado byte a byte para os três apps — carregar para lá uma
+`tokens.css` do site é copiado byte a byte para ela — carregar para lá uma
 paleta que ela nunca usa não se paga. O ícone recebe a classe `ft-<tipo>` e os
 traços herdam a cor por `currentColor`.
 
 O painel usa a mesma árvore, nas duas telas da skill: a de leitura e a aba
 "Arquivos" do editor. `fileTree.ts` e `FileTypeIcon.tsx` são **cópias
-idênticas** entre `apps/site` e `apps/admin`, e o bloco de CSS da árvore é o
-mesmo trecho do `app.css` colado no `admin.css` — ali com um pedaço a mais,
-para a linha que divide espaço com o botão de remover. Ao mexer num, mexa nos
-dois:
+idênticas** entre `apps/site` e `apps/admin` — ao mexer num, mexa nos dois:
 
 ```bash
 cp apps/site/web/src/fileTree.ts apps/admin/web/src/
 cp apps/site/web/src/components/FileTypeIcon.tsx apps/admin/web/src/components/
 ```
+
+O **CSS da árvore não é cópia.** O painel tem a sua versão em
+`apps/admin/web/src/styles/skill.css` (`.file-tree` e os `--ft-*`), reescrita
+para o console: escuro primeiro, com o claro espelhado em
+`:root[data-theme='light']`, tokens do painel (`--text-muted`, `--accent-soft`,
+`--surface-3`, `--radius-control`), recuo de 11px — mais o pedaço a mais, para a
+linha que divide espaço com o botão de remover. Acrescentou um tipo de arquivo
+aqui? Acrescente lá também, **à mão** — nunca por `cp`.
+
+> **Era**, até o [`10`](10-admin-canvas-e-sessoes.md): o painel tinha um
+> `admin.css` único e o bloco da árvore era o mesmo trecho do `app.css` colado
+> nele. O `admin.css` não existe mais — virou `base.css`, `shell.css`,
+> `skill.css` e `canvas.css`.
 
 `FileTree.tsx` é o único que diverge de propósito: no site cada arquivo é um
 link de download, no painel ele também escolhe o arquivo a editar e oferece o
@@ -155,25 +195,45 @@ botão de remover.
 ### A caixa do prompt
 
 `SkillDoc.tsx` é a caixa de duas guias da visualização — "Skill" renderizado e
-"SKILL.md" cru — e é **cópia idêntica** entre os dois apps, assim como o
-`frontmatter.ts` que monta o arquivo e o `Markdown.tsx` que o renderiza. O CSS
-(`.doc-box`, `.doc-tabs`, `.doc-source`) é o mesmo bloco no `app.css` e no
-`admin.css`:
+"SKILL.md" cru. `frontmatter.ts`, que monta o arquivo, e `Markdown.tsx`, que o
+renderiza, são **cópia idêntica** entre os dois apps:
 
 ```bash
 cp apps/site/web/src/frontmatter.ts apps/admin/web/src/
-cp apps/site/web/src/components/{SkillDoc,Markdown,FileTypeIcon}.tsx apps/admin/web/src/components/
+cp apps/site/web/src/components/{Markdown,FileTypeIcon}.tsx apps/admin/web/src/components/
 ```
+
+`SkillDoc.tsx` **saiu desse comando**: ele diverge numa linha, a dos ícones — o
+site importa `./Icons.js`, o painel importa `lucide-react`, e `Icons.tsx` não
+existe no painel. Copiar por cima **quebra o build do painel**. O CSS
+(`.doc-box`, `.doc-tabs`, `.doc-source`) também não é cópia: o do painel está no
+`skill.css`, com os tokens, os raios e os tamanhos do console.
+
+> **Era**, até o [`10`](10-admin-canvas-e-sessoes.md): `SkillDoc.tsx` era cópia
+> idêntica entre os dois apps e o bloco de CSS era o mesmo no `app.css` e no
+> `admin.css`.
 
 ### Camadas e o `Panel` grudento
 
-`base.css` traz `section { position: relative }` **fora de qualquer camada**, e
-estilo sem camada vence qualquer `@layer` — inclusive as utilities do Tailwind,
-que saem em `@layer utilities`. Como o `Panel` do painel é um `<section>`,
-`lg:sticky` nunca pegou nele: só o `top` valia, e a coluna nascia 96px abaixo
-da vizinha. Por isso a classe `.aside-sticky` do `admin.css`, e não as
-utilities. Vale a regra geral: **utility do Tailwind não vence seletor de
-elemento** nestes apps.
+> **Revogado em parte pelo [`10`](10-admin-canvas-e-sessoes.md):** o painel ganhou
+> `base.css` próprio, que **não** declara `section { position: relative }`. A
+> armadilha descrita abaixo sobrevive só no site e na homepage, e o `admin.css`
+> citado não existe mais.
+
+No site e na homepage, `base.css` traz `section { position: relative }` **fora de
+qualquer camada**, e estilo sem camada vence qualquer `@layer` — inclusive as
+utilities do Tailwind, que saem em `@layer utilities`. Vale a regra geral nesses
+dois apps: **utility do Tailwind não vence seletor de elemento**.
+
+No painel, a coluna grudenta continua sendo a classe `.aside-sticky`, hoje em
+`apps/admin/web/src/styles/skill.css` (dentro do `@media (min-width: 1024px)`, com
+`position: sticky`, `top` e `align-self`); é ela que `SkillViewPage` e
+`SkillEditorPage` usam, e não as utilities.
+
+> **Era**: como o `Panel` do painel é um `<section>` e o `base.css` de então era o
+> do site, `lg:sticky` nunca pegou nele — só o `top` valia, e a coluna nascia 96px
+> abaixo da vizinha. Foi esse o motivo original do `.aside-sticky`, então no
+> `admin.css`.
 
 ## Diagramas
 

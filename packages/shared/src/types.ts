@@ -61,7 +61,17 @@ export type SkillSummary = {
    * isso continua sendo vínculo.
    */
   isPublic: boolean;
-  /** Nulo quando o dono foi removido ou quando quem criou não era conta (bootstrap, token global). */
+  /**
+   * O dono da skill. Nulo quando ele foi removido ou quando quem criou não era
+   * conta (bootstrap, token global).
+   *
+   * O banco sempre os devolve, em qualquer visibilidade; o app os repassa a
+   * quem tem ao menos `view` (`docs/12` decisão 11) e **não** ao visitante
+   * anônimo — o site projeta a skill antes de responder
+   * (`apps/site/src/api.ts`, `skillPublica`). O §10 aceita e-mail exposto a
+   * conta logada, não a quem não tem login; e o `ownerUserUuid` é o `sub` do
+   * cookie de sessão do painel (`tasks/001`, `tasks/002`).
+   */
   ownerUserUuid: string | null;
   ownerEmail: string | null;
   /**
@@ -120,8 +130,21 @@ export type Grant = {
   createdAt: string;
 };
 
-/** Resultado da busca de contas para compartilhar (`GET /api/users/lookup`). */
-export type UserLookup = { uuid: string; email: string; name: string; role: Role };
+/**
+ * Resultado da busca de contas para compartilhar (`GET /api/users/lookup`).
+ *
+ * A conta é identificada pelo **e-mail**, o mesmo identificador que as rotas
+ * de concessão já usam na URL (`docs/12` §5.3). O `uuid` da conta **não sai**
+ * daqui: ele é o `sub` do cookie de sessão (`admin/src/auth.ts`), e a busca é
+ * aberta a qualquer conta logada (decisão 13) — entregá-lo daria a um membro o
+ * sujeito exato do crachá que ele quer forjar (`tasks/025`, `tasks/001`).
+ *
+ * O campo `uuid` sobrevive como **apelido do e-mail**, e só porque o painel
+ * ainda o lê (`admin/web/src/components/AccessPanel.tsx`): sai daqui, do
+ * `withoutUuid` do admin e da projeção de `lookupUsers` quando o painel passar
+ * a usar `email`.
+ */
+export type UserLookup = { email: string; name: string; role: Role; uuid: string };
 
 /** O filtro das listas do painel: meus, compartilhados comigo, públicos. */
 export type AccessScope = 'mine' | 'shared' | 'public';
@@ -161,6 +184,13 @@ export type AuditAction =
   | 'user.create'
   | 'user.role'
   | 'user.deactivate'
+  // Senha de uma conta trocada por quem não é ela: a redefinição pelo admin e o
+  // link de e-mail consumido (`docs/05-accounts-and-roles.md` §2.6).
+  // `target_label` é o e-mail da conta afetada e o ator diz por qual caminho
+  // foi — o e-mail de quem administra, ou `link-de-redefinicao`. A linha implica
+  // que **toda sessão daquela conta caiu** (`token_version`) e que o próximo
+  // acesso exige nova senha; ela nunca leva a senha, o hash nem o token.
+  | 'user.password'
   | 'key.create'
   | 'key.revoke'
   // Eventos de MCP virtual (`docs/08-mcp-virtual.md` §6). `target_label` é o

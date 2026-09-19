@@ -65,10 +65,13 @@ export function Notifications({
         next.push({ id: 'default-off', text: `O MCP padrão "${settings.defaultMcp.slug}" está desligado: /mcp responde 404.`, to: `/mcps/${settings.defaultMcp.slug}`, tone: 'warn' });
       }
     }
-    if (stats && stats.unlinkedSkills > 0) {
+    // `unlinkedSkills` só vem para admin (`/api/stats` recorta por viewer): para
+    // quem não é, o campo falta — e faltar não é zero, é aviso que não cabe dar.
+    const unlinked = stats?.unlinkedSkills;
+    if (unlinked !== undefined && unlinked > 0) {
       next.push({
         id: 'unlinked',
-        text: `${stats.unlinkedSkills} skill${stats.unlinkedSkills === 1 ? '' : 's'} sem vínculo: não aparece${stats.unlinkedSkills === 1 ? '' : 'm'} em servidor nenhum.`,
+        text: `${unlinked} skill${unlinked === 1 ? '' : 's'} sem vínculo: não aparece${unlinked === 1 ? '' : 'm'} em servidor nenhum.`,
         to: '/skills?filtro=sem-vinculo',
         tone: 'info',
       });

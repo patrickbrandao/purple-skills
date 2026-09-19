@@ -185,6 +185,46 @@ function parseModel(raw: string, driver?: RagDriverId): string {
 }
 
 /**
+ * A faixa de cada opção numérica, **uma vez só**.
+ *
+ * O `parse` do registro e o leitor do ambiente leem daqui. Antes o registro
+ * descrevia as duas opções de prazo com `parse: (raw) => Number(raw)`, que
+ * aceita `NaN` e negativo, enquanto os leitores aplicavam limites pelo
+ * `readIntEnv`: a mesma opção tinha duas regras no mesmo pacote, e a frouxa era
+ * justamente a do registro — que a §5.1 declara ser a descrição única.
+ */
+const FAIXAS = {
+  RAG_QUERY_TIMEOUT_MS: { min: 1, max: 120_000 },
+  RAG_INDEX_INTERVAL_SECONDS: { min: 1, max: 86_400 },
+  RAG_INDEX_TIMEOUT_MS: { min: 1_000, max: 600_000 },
+} as const;
+
+/** A opção numérica do registro, para o `parse` e o leitor não divergirem. */
+type OpcaoNumerica = keyof typeof FAIXAS;
+
+/**
+ * Valida um inteiro com os mesmos limites e a mesma mensagem do `readIntEnv`
+ * do `shared` — que é o que os leitores aplicam sobre o ambiente.
+ */
+function inteiroDaFaixa(env: OpcaoNumerica): (raw: string) => number {
+  const { min, max } = FAIXAS[env];
+  return (raw: string): number => {
+    const valor = Number(raw.trim());
+    if (!Number.isSafeInteger(valor) || valor < min || valor > max) {
+      throw new Error(
+        `${env} inválida: esperado um inteiro entre ${min} e ${max}, recebido "${raw}"`,
+      );
+    }
+    return valor;
+  };
+}
+
+/** Lê do ambiente uma opção numérica: o padrão e a faixa saem do registro. */
+function lerInteiroDoRegistro(env: OpcaoNumerica, processEnv: NodeJS.ProcessEnv): number {
+  return readIntEnv(env, Number(ragSetting(env).fallback), { ...FAIXAS[env], env: processEnv });
+}
+
+/**
  * A URL base é usada **como está**, sem acrescentar versão.
  *
  * O driver só concatena o caminho do método. Acrescentar a versão sozinho
@@ -252,7 +292,7 @@ export const RAG_SETTINGS: readonly RagSetting[] = [
     secret: false,
     editable: false,
     fallback: 2000,
-    parse: (raw) => Number(raw),
+    parse: inteiroDaFaixa('RAG_QUERY_TIMEOUT_MS'),
   },
   {
     key: null,
@@ -260,7 +300,21 @@ export const RAG_SETTINGS: readonly RagSetting[] = [
     secret: false,
     editable: false,
     fallback: 30,
-    parse: (raw) => Number(raw),
+    parse: inteiroDaFaixa('RAG_INDEX_INTERVAL_SECONDS'),
+  },
+  {
+    key: null,
+    env: 'RAG_INDEX_TIMEOUT_MS',
+    secret: false,
+    editable: false,
+    // Prazo de **uma** chamada de indexação, tentativas incluídas. Não existia
+    // prazo nenhum: um provedor que aceita a conexão e não responde segurava a
+    // rodada pelos prazos internos do undici multiplicados pelas tentativas, e
+    // o painel mostrava dado velho sem dizer que o ciclo estava pendurado. O
+    // padrão é folgado de propósito — prazo curto transforma lote grande em
+    // falha recorrente.
+    fallback: 120_000,
+    parse: inteiroDaFaixa('RAG_INDEX_TIMEOUT_MS'),
   },
 ];
 
@@ -313,12 +367,24 @@ export function readApiKeyEnv(
 
 /** Prazo do embedding da consulta, em milissegundos. */
 export function readQueryTimeoutEnv(env: NodeJS.ProcessEnv = process.env): number {
-  return readIntEnv('RAG_QUERY_TIMEOUT_MS', 2000, { min: 1, max: 120_000, env });
+  return lerInteiroDoRegistro('RAG_QUERY_TIMEOUT_MS', env);
 }
 
 /** Intervalo da varredura do indexador, em segundos. */
 export function readIndexIntervalEnv(env: NodeJS.ProcessEnv = process.env): number {
-  return readIntEnv('RAG_INDEX_INTERVAL_SECONDS', 30, { min: 1, max: 86_400, env });
+  return lerInteiroDoRegistro('RAG_INDEX_INTERVAL_SECONDS', env);
+}
+
+/**
+ * Prazo de uma chamada de indexação ao provedor, em milissegundos.
+ *
+ * É o orçamento de tempo de **um lote**, tentativas e recuos incluídos — o
+ * `signal` que o `http.ts` usa para não deixar a rodada pendurada num provedor
+ * que aceita a conexão e não responde. O lote cortado não se perde: a rodada
+ * seguinte retoma de onde parou, porque o que foi gravado ficou gravado.
+ */
+export function readIndexTimeoutEnv(env: NodeJS.ProcessEnv = process.env): number {
+  return lerInteiroDoRegistro('RAG_INDEX_TIMEOUT_MS', env);
 }
 
 /** O que a semeadura decidiu fazer com uma chave. */

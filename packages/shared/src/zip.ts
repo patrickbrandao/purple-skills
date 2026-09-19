@@ -80,6 +80,14 @@ export const DEFAULT_MAX_UNCOMPRESSED_BYTES = readIntEnv(
 /** Teto padrão de entradas por ZIP. */
 export const DEFAULT_MAX_ZIP_ENTRIES = readIntEnv('ZIP_MAX_ENTRIES', 512);
 
+/**
+ * Expansão máxima do DEFLATE: 1032 bytes de saída por byte de entrada. É o teto
+ * do formato, não uma heurística de razão de compressão — serve como cota
+ * superior confiável para o que uma entrada consegue inflar quando o cabeçalho
+ * não declara um tamanho utilizável.
+ */
+const MAX_EXPANSAO_DEFLATE = 1032;
+
 export type ExtractZipOptions = {
   /**
    * Quando o ZIP tem uma única pasta raiz (padrão de `zip -r skill.zip skill/`),
@@ -122,7 +130,9 @@ export class ZipFormatError extends ZipError {
  * gigabytes ("zip bomb") e derrubar o processo por falta de memória. O tamanho
  * declarado no cabeçalho é checado antes de descomprimir (evita materializar a
  * entrada), e o tamanho real é somado depois, porque um ZIP malformado pode
- * declarar qualquer coisa.
+ * declarar qualquer coisa. Quando o cabeçalho declara zero — o valor que
+ * desligava o teto do zlib dentro do `adm-zip` —, a entrada só é aberta se os
+ * bytes comprimidos não puderem inflar além do que resta do limite.
  */
 export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): ExtractedFile[] {
   const {
@@ -156,12 +166,32 @@ export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): Ext
   for (const entry of entries) {
     if (entry.isDirectory) continue;
 
+    // Os dois tamanhos vêm do diretório central do arquivo enviado: servem para
+    // recusar a entrada, nunca como medida do que foi extraído.
+    const declarado = entry.header?.size ?? 0;
+    const comprimido = entry.header?.compressedSize ?? 0;
+
     // Checagem barata antes de descomprimir a entrada.
-    if (total + (entry.header?.size ?? 0) > maxUncompressedBytes) throw tooBig();
+    if (total + declarado > maxUncompressedBytes) throw tooBig();
 
     const path = normalizeRelativePath(entry.entryName);
     if (!path) continue;
     if (isJunkPath(path)) continue;
+
+    // Tamanho declarado zerado é o caso em que o teto acima não protege nada:
+    // `adm-zip` só repassa `maxOutputLength` ao zlib quando o declarado é maior
+    // que zero, então com zero a descompressão fica sem limite e o total só
+    // seria conferido com a entrada inteira já em memória (um .zip de 250 KB
+    // declarando zero alocava centenas de MB apesar do limite de 1 KB).
+    // Sem o declarado, o único número que a descompressão não pode desmentir é
+    // o de bytes comprimidos — `adm-zip` entrega ao zlib no máximo essa fatia do
+    // buffer —, e o pior caso do DEFLATE limita a saída a 1032× a entrada.
+    // Arquivo vazio de verdade tem os dois tamanhos em zero e segue passando;
+    // o `zipfile` do Python grava o vazio como DEFLATE de 2 bytes, que também
+    // cabe nessa cota.
+    if (declarado <= 0 && comprimido * MAX_EXPANSAO_DEFLATE > maxUncompressedBytes - total) {
+      throw tooBig();
+    }
 
     let data: Buffer;
     try {

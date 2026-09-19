@@ -16,7 +16,16 @@ import { Button } from '../components/ui.js';
  */
 type Mode = 'login' | 'setup' | 'forgot' | 'reset';
 
-export function LoginPage({ session, onSuccess }: { session: Session; onSuccess: () => void }) {
+export function LoginPage({
+  session,
+  onSuccess,
+  notice: arrival,
+}: {
+  session: Session;
+  onSuccess: () => void;
+  /** Recado de quem acabou de chegar aqui — a saída que revogou a conta, por exemplo. */
+  notice?: string | null;
+}) {
   const params = new URLSearchParams(window.location.search);
   const resetToken = params.get('reset');
   const ssoError = params.get('sso_error');
@@ -30,7 +39,7 @@ export function LoginPage({ session, onSuccess }: { session: Session; onSuccess:
   const [password, setPassword] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [error, setError] = useState<string | null>(ssoError);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(arrival ?? null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {

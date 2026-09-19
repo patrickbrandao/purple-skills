@@ -83,6 +83,9 @@ export function accessSentence(access: EffectiveAccess): string {
 /**
  * Escolhe uma conta pelo nome ou e-mail (decisão 13): a busca é do servidor,
  * só contas ativas, a partir de dois caracteres.
+ *
+ * A conta escolhida é identificada pelo **e-mail** — o `uuid` saiu da busca
+ * (`tasks/025`) e `exclude` é um conjunto de e-mails.
  */
 export function UserPicker({
   value,
@@ -93,6 +96,7 @@ export function UserPicker({
 }: {
   value: UserLookup | null;
   onChange: (user: UserLookup | null) => void;
+  /** E-mails a esconder da lista: quem já tem concessão, o dono. */
   exclude?: Set<string>;
   placeholder?: string;
   autoFocus?: boolean;
@@ -111,7 +115,7 @@ export function UserPicker({
     }
     let active = true;
     lookupUsers(dq.trim())
-      .then((data) => active && setOptions(data.items.filter((item) => !exclude?.has(item.uuid))))
+      .then((data) => active && setOptions(data.items.filter((item) => !exclude?.has(item.email))))
       .catch(() => active && setOptions([]));
     return () => {
       active = false;
@@ -158,7 +162,7 @@ export function UserPicker({
         <div className="menu" style={{ position: 'absolute', left: 0, right: 0, top: '100%', marginTop: 4, zIndex: 20 }}>
           {options.map((item) => (
             <button
-              key={item.uuid}
+              key={item.email}
               type="button"
               className="mi"
               onClick={() => {
@@ -209,7 +213,7 @@ export type AccessMode<T> =
 type RowState = 'saved' | 'new' | 'changed' | 'revoked';
 
 type Row = {
-  userUuid: string;
+  /** A conta, pelo e-mail: é a chave do rascunho e o que as rotas recebem (`tasks/025`). */
   email: string;
   name: string;
   role: Role;
@@ -221,14 +225,14 @@ type Row = {
 /** As concessões gravadas com o rascunho por cima: as novas no fim. */
 function rowsOf(grants: Grant[], draft: AccessDraft | null): Row[] {
   const rows: Row[] = grants.map((grant) => {
-    const wanted = draft?.grants[grant.userUuid];
+    const wanted = draft?.grants[grant.email];
     if (!wanted) return { ...grant, saved: grant, state: 'saved' };
     if (wanted.level === null) return { ...grant, saved: grant, state: 'revoked' };
     return { ...grant, level: wanted.level, saved: grant, state: wanted.level === grant.level ? 'saved' : 'changed' };
   });
-  const savedUuids = new Set(grants.map((grant) => grant.userUuid));
+  const savedEmails = new Set(grants.map((grant) => grant.email));
   for (const wanted of Object.values(draft?.grants ?? {})) {
-    if (savedUuids.has(wanted.userUuid) || wanted.level === null) continue;
+    if (savedEmails.has(wanted.email) || wanted.level === null) continue;
     rows.push({ ...wanted, level: wanted.level, saved: null, state: 'new' });
   }
   return rows;
@@ -286,21 +290,21 @@ export function AccessTab<T extends AccessObject>({
   const rows = rowsOf(object.grants, draft);
   const isPublic = draft?.isPublic ?? object.isPublic;
   const publicPending = draft?.isPublic !== undefined && draft.isPublic !== object.isPublic;
-  const pendingOwner = draft?.owner && draft.owner.uuid !== object.ownerUserUuid ? draft.owner : null;
+  // O dono se compara pelo e-mail (`tasks/025`): o `uuid` não vem mais da
+  // busca de contas, e comparar os dois dava sempre "dono diferente".
+  const pendingOwner = draft?.owner && draft.owner.email !== object.ownerEmail ? draft.owner : null;
 
   const setDraft = (patch: Partial<AccessDraft>) => {
     if (how.mode === 'draft') how.onDraft({ ...how.draft, ...patch });
   };
 
   /** Troca o rascunho de uma conta; voltar ao gravado apaga a entrada. */
-  const draftGrant = (row: Pick<Row, 'userUuid' | 'email' | 'name' | 'role'>, next: AccessLevel | null, saved: Grant | null) => {
+  const draftGrant = (row: Pick<Row, 'email' | 'name' | 'role'>, next: AccessLevel | null, saved: Grant | null) => {
     if (!draft) return;
-    const { [row.userUuid]: _old, ...others } = draft.grants;
+    const { [row.email]: _old, ...others } = draft.grants;
     const unchanged = saved ? next === saved.level : next === null;
     setDraft({
-      grants: unchanged
-        ? others
-        : { ...others, [row.userUuid]: { userUuid: row.userUuid, email: row.email, name: row.name, role: row.role, level: next } },
+      grants: unchanged ? others : { ...others, [row.email]: { email: row.email, name: row.name, role: row.role, level: next } },
     });
   };
 
@@ -332,7 +336,7 @@ export function AccessTab<T extends AccessObject>({
     event.preventDefault();
     if (!newOwner) return;
     if (how.mode === 'draft') {
-      setDraft({ owner: newOwner.uuid === object.ownerUserUuid ? undefined : newOwner });
+      setDraft({ owner: newOwner.email === object.ownerEmail ? undefined : newOwner });
       setNewOwner(null);
       setTransferring(false);
       return;
@@ -347,7 +351,9 @@ export function AccessTab<T extends AccessObject>({
       danger: !isAdminView,
     });
     if (!ok) return;
-    const updated = await live(() => how.onPatch({ ownerUserUuid: newOwner.uuid }));
+    // `ownerUserUuid` aceita o e-mail da conta (`admin/src/access.ts`,
+    // `ownerFrom`); é por ele que a busca de contas identifica quem escolher.
+    const updated = await live(() => how.onPatch({ ownerUserUuid: newOwner.email }));
     if (!updated) return;
     how.onChanged(updated);
     toast.success(`${object.name} agora é de ${newOwner.email}.`);
@@ -359,7 +365,7 @@ export function AccessTab<T extends AccessObject>({
     event.preventDefault();
     if (!target) return;
     if (how.mode === 'draft') {
-      draftGrant({ ...target, userUuid: target.uuid }, level, object.grants.find((item) => item.userUuid === target.uuid) ?? null);
+      draftGrant(target, level, object.grants.find((item) => item.email === target.email) ?? null);
       setTarget(null);
       setLevel('view');
       return;
@@ -399,7 +405,7 @@ export function AccessTab<T extends AccessObject>({
     if (!ok) return;
     const done = await live(() => unshare(kind, object.slug, row.email));
     if (!done) return;
-    how.onChanged({ ...object, grants: object.grants.filter((current) => current.userUuid !== row.userUuid) });
+    how.onChanged({ ...object, grants: object.grants.filter((current) => current.email !== row.email) });
     toast.success(`${row.email} perdeu o acesso.`);
   }
 
@@ -407,10 +413,12 @@ export function AccessTab<T extends AccessObject>({
   const undo = (row: Row) => row.saved ? draftGrant(row, row.saved.level, row.saved) : draftGrant(row, null, null);
 
   // A busca refaz a consulta quando o conjunto muda: ele só muda com as contas.
-  const excludedKey = [...rows.map((row) => row.userUuid), object.ownerUserUuid ?? '', pendingOwner?.uuid ?? ''].join(' ');
+  // São e-mails, porque é assim que a busca identifica a conta (`tasks/025`) —
+  // com `uuid` de um lado e e-mail do outro, nada era escondido.
+  const excludedKey = [...rows.map((row) => row.email), object.ownerEmail ?? '', pendingOwner?.email ?? ''].join(' ');
   const excluded = useMemo(() => new Set(excludedKey.split(' ').filter(Boolean)), [excludedKey]);
   // Transferir para quem tem concessão vale: a concessão some com a transferência.
-  const notOwners = useMemo(() => new Set(object.ownerUserUuid ? [object.ownerUserUuid] : []), [object.ownerUserUuid]);
+  const notOwners = useMemo(() => new Set(object.ownerEmail ? [object.ownerEmail] : []), [object.ownerEmail]);
   const activeCount = rows.filter((row) => row.state !== 'revoked').length;
 
   return (
@@ -483,7 +491,7 @@ export function AccessTab<T extends AccessObject>({
               </tr>
               {manages &&
                 rows.map((row) => (
-                  <tr key={row.userUuid} className={cx(row.state !== 'saved' && 'is-pending', row.state === 'revoked' && 'is-removed')}>
+                  <tr key={row.email} className={cx(row.state !== 'saved' && 'is-pending', row.state === 'revoked' && 'is-removed')}>
                     <td>
                       <span className="flex items-center gap-2">
                         <UserRound style={{ width: 14, height: 14, color: 'var(--text-faint)' }} />

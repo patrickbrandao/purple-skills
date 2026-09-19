@@ -31,7 +31,7 @@ const { AVISO_NIVEL_GRATUITO, gravarRag, lerPainelRag, reindexarRag, semearRag }
 );
 
 const ATOR = { userUuid: null, label: 'ana@exemplo' };
-const COBERTURA = { texts: 10, withVector: 7, pendingTexts: 3, staleSkills: 1 };
+const COBERTURA = { texts: 10, withVector: 7, pendingTexts: 3, refusedTexts: 0, staleSkills: 1 };
 
 beforeEach(() => {
   vi.clearAllMocks();

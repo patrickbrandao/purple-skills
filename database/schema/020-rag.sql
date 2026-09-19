@@ -1,5 +1,5 @@
 -- Purple Skills — RAG, primeira implementação: busca semântica com o driver
--- google (`tmp/RAG-GOOGLE.md`, futuro `docs/14`).
+-- google (`docs/14-rag.md`).
 --
 -- Problema: a busca é full-text com configuração `simple` (`001`, `002`), que
 -- não faz stemming nem entende sinônimo, flexão ou idioma: "como versionar

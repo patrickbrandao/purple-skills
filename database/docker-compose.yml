@@ -11,6 +11,10 @@
 #   docker compose run --rm seed        # (opcional) skills de exemplo
 #   docker compose up -d postgres       # só o banco
 #
+# A porta do Postgres é publicada só no loopback e NÃO acompanha o BIND_ADDR
+# global da raiz: quem precisa do banco a partir de outra máquina define
+# POSTGRES_BIND_ADDR (o porquê está no comentário de `ports`, abaixo).
+#
 # Contrato de conexão e regras de uso: database/README.md.
 
 # Variáveis de conexão dos containers do próprio banco. Os apps recebem as
@@ -35,12 +39,70 @@ x-db-job: &db-job
     postgres:
       condition: service_healthy
   restart: 'no'
+  # Teto de memória dos dois passos. São Node de vida curta: leem um arquivo de
+  # `database/schema/` por vez (o maior tem 14 KB; a pasta inteira, 152 KB) e
+  # mandam o DDL para o servidor, que é quem gasta memória — o `CREATE INDEX` de
+  # uma migration consome o `maintenance_work_mem` do `postgres`, não daqui.
+  # Medido: ~40 MB de RSS só para o Node subir, e o catálogo do seed é texto
+  # embutido no código. 512 MB é ~6 × o necessário de propósito — sobra para um
+  # backfill futuro, e nenhum dos dois roda junto com o `up -d`. Sem `cpus`:
+  # migration atrasada é pior que migration que usa a CPU inteira por 2 segundos.
+  mem_limit: ${DB_JOB_MEM_LIMIT:-512m}
+  memswap_limit: ${DB_JOB_MEM_LIMIT:-512m}
   networks: [internal]
 
 services:
   postgres:
     image: pgvector/pgvector:pg18-trixie
     restart: unless-stopped
+    # Teto de memória do banco. Sem ele, um Postgres em espiral de consumo come a
+    # memória do host e leva os cinco apps com ele; com o teto, quem morre é o
+    # container, e o `restart: unless-stopped` o levanta.
+    #
+    # A diferença em relação aos apps é que aqui um teto APERTADO é pior que teto
+    # nenhum: o OOM killer que alcança um backend faz o postmaster tratar a morte
+    # como queda, derrubar todas as sessões e entrar em recuperação; alcançando o
+    # postmaster, o container reinicia. Nos dois casos o painel e os MCPs perdem a
+    # conexão no meio de uma escrita. Por isso o número cobre o pior caso do que o
+    # kernel NÃO consegue recuperar — memória anônima e compartilhada —, não a média.
+    #
+    # A imagem não recebe `command`: valem os padrões do PostgreSQL 18.6, e eles
+    # foram lidos dela (`pg_settings`), não supostos:
+    #
+    #   shared_buffers 128 MB + wal_buffers 4 MB + as áreas
+    #     compartilhadas dimensionadas por max_connections = 100    ~170 MB
+    #   os 50 backends que o pool dos apps abre (DB_POOL_MAX 10 ×
+    #     5 serviços). Medido neste schema, com as 24 tabelas
+    #     aplicadas e 50 sessões aquecidas: 227 MB, ~4 MB privados
+    #     por backend, ainda sem um dado gravado. Sob carga soma-se
+    #     o work_mem de cada nó de sort/hash/bitmap — 4 MB, mas
+    #     8 MB nos de hash (hash_mem_multiplier = 2) —, e as
+    #     consultas de busca daqui têm vários                       ~1,5 GB
+    #   3 autovacuum × maintenance_work_mem 64 MB
+    #     (autovacuum_work_mem = -1 cai nele)                        192 MB
+    #   ------------------------------------------------------------------
+    #   pico patológico: pool cheio em consulta pesada             ~1,9 GB
+    #
+    # 2 GB é esse pico com a folga do page cache do volume `pgdata`, que o cgroup
+    # contabiliza junto. Esse item não entra na conta porque é reclamável: sob
+    # pressão o kernel o descarta em vez de matar o processo — ele custa
+    # desempenho, não o postmaster. O que mata é a coluna acima.
+    #
+    # Subiu shared_buffers, work_mem, maintenance_work_mem, max_connections ou
+    # DB_POOL_MAX? Suba este teto na mesma conta. E note que /dev/shm fica nos
+    # 64 MB padrão do Docker: é lá que vivem os segmentos das consultas paralelas
+    # (dynamic_shared_memory_type = posix, max_parallel_workers_per_gather = 2).
+    # Um work_mem bem maior pede `shm_size` explícito aqui — que também conta
+    # contra este teto.
+    #
+    # `memswap_limit` igual ao teto desliga a área de troca, como nos apps: um
+    # Postgres que pagina shared_buffers fica inútil de todo modo, e banco travado
+    # é pior que banco reiniciado. Sem `cpus`, porque limitar a CPU do banco
+    # atrasaria migration e consulta legítima. O par tem de ser
+    # `mem_limit`/`memswap_limit` no serviço: `deploy.resources.limits` é ignorado
+    # em silêncio fora do Swarm, e deixaria o arquivo válido e sem limite.
+    mem_limit: ${POSTGRES_MEM_LIMIT:-2048m}
+    memswap_limit: ${POSTGRES_MEM_LIMIT:-2048m}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
@@ -50,7 +112,17 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
     ports:
-      - '${BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
+      # Endereço próprio, e não o BIND_ADDR global da raiz. Nenhum app precisa
+      # desta porta: todos chegam ao banco por `postgres:5432` na rede `internal`
+      # (o PGHOST de x-db-env e do x-app-env da raiz). Ela existe para o psql e o
+      # cliente gráfico de quem administra a máquina — e isso é loopback por
+      # definição. O BIND_ADDR=0.0.0.0 que a raiz documenta é o botão de alcançar
+      # o painel e o site de outra máquina; arrastar o Postgres com ele publicava
+      # na rede um servidor sem limite de tentativa de login, sem trava de conta e
+      # com a senha que o .env.example traz como CHANGE_ME. Sair do loopback é
+      # decisão explícita: POSTGRES_BIND_ADDR=0.0.0.0. (O override do Traefik já
+      # despublicava esta porta — agora o `up -d` sem proxy segue o mesmo padrão.)
+      - '${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-purple_skills}']
       interval: 5s

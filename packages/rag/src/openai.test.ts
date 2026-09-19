@@ -246,6 +246,26 @@ describe('o mapeamento dos erros', () => {
     expect(esperas).toEqual([3000, 3000]);
   });
 
+  it('um Retry-After absurdo é cortado pelo teto da espera', async () => {
+    // Quem manda no relógio não pode ser o provedor: sem teto, um
+    // `Retry-After: 600` pararia o indexador dez minutos por tentativa — e o
+    // caminho sem `Retry-After` já recuava no máximo 60 s.
+    const esperas: number[] = [];
+    const { chamadas, fetchImpl } = comFetch(() =>
+      erro(429, corpoErro('rate_limit_error', 'rate_limit_exceeded'), { 'retry-after': '600' }),
+    );
+    const driver = new OpenAIDriver({
+      apiKey: CHAVE,
+      fetchImpl,
+      maxRetries: 2,
+      sleep: async (ms) => void esperas.push(ms),
+    });
+
+    await expect(driver.embedQuery(MODELO, 'x')).rejects.toBeInstanceOf(RagRateLimitError);
+    expect(chamadas).toHaveLength(3);
+    expect(esperas).toEqual([60_000, 60_000]);
+  });
+
   it('insufficient_quota é falta de crédito, não limite de taxa: não insiste', async () => {
     // O status é 429, mas esperar não resolve — e o recuo queimaria o ciclo
     // inteiro tentando de novo o que nunca vai passar.

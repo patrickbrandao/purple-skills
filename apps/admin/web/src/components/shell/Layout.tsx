@@ -36,11 +36,14 @@ function crumbsFor(pathname: string): Crumb[] {
       return [{ label: 'Configurações' }, ...(section ? [{ label: section.label.toLowerCase() }] : [])];
     }
     case 'meu-espaco': {
-      const label = { skills: 'minhas skills', catalogos: 'meus catálogos', chaves: 'chaves emitidas' }[second ?? ''];
+      const label = { skills: 'minhas skills', catalogos: 'meus catálogos' }[second ?? ''];
       return [{ label: 'Meu espaço' }, ...(label ? [{ label }] : [])];
     }
-    case 'account':
-      return [{ label: 'Configurações' }, { label: 'minha conta' }];
+    // As telas de chave são `/account/…`: o submenu delas é o mesmo "Configurações".
+    case 'account': {
+      const label = { 'chaves-adm': 'adm mcp keys', 'chaves-emitidas': 'chaves emitidas' }[second ?? ''] ?? 'minha conta';
+      return [{ label: 'Configurações' }, { label }];
+    }
     default:
       return [];
   }

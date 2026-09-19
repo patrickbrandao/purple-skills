@@ -436,6 +436,14 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(await slugs({ q: 'ninguém' })).toEqual([]);
     expect((await listSkillAccesses({ q: '   ' })).total).toBe(tudo.total);
 
+    // O `q` é **literal**: `%` casava tudo e `_` casava qualquer caractere.
+    expect((await listSkillAccesses({ q: '%' })).total).toBe(0);
+    expect((await listSkillAccesses({ q: '_' })).total).toBe(0);
+    expect(await slugs({ q: '203.0_113' })).toEqual([]);
+    expect(await slugs({ q: '203.0.113' })).toEqual(['alfa:tool', 'alfa:tool', 'alfa:page']);
+    // O pior caso de LIKE deixa de casar o histórico inteiro.
+    expect((await listSkillAccesses({ q: '%_'.repeat(60) })).total).toBe(0);
+
     // Paginação: clamp do limite, offset como nas outras listas, total constante.
     const primeira = await listSkillAccesses({ limit: 0 });
     expect(primeira).toMatchObject({ limit: 1, offset: 0, total: tudo.total });
@@ -514,7 +522,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(await linhas()).toBe(antes);
   });
 
-  it('re-executar o 018 e o 019 sobre o resultado não faz nada', async () => {
+  it('re-executar o 018, o 019 e o 022 sobre o resultado não faz nada', async () => {
     const antes = await linhas();
     const indices = async () =>
       (await raw.query<{ indexname: string }>(
@@ -522,21 +530,33 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
       )).rows.map((r) => r.indexname);
     const ESPERADOS = [
       'skill_accesses_api_key_id_idx',
+      'skill_accesses_api_key_name_trgm_idx',
       'skill_accesses_catalog_uuids_idx',
+      'skill_accesses_client_name_trgm_idx',
       'skill_accesses_created_idx',
+      'skill_accesses_ip_trgm_idx',
       'skill_accesses_key_id_idx',
+      'skill_accesses_key_name_trgm_idx',
       'skill_accesses_pkey',
+      'skill_accesses_session_id_trgm_idx',
       'skill_accesses_skill_created_idx',
       'skill_accesses_user_created_idx',
+      'skill_accesses_user_email_trgm_idx',
       'skill_accesses_virtual_mcp_created_idx',
     ];
-    // O `019` trocou o índice simples de `user_uuid` pelo composto.
+    // O `019` trocou o índice simples de `user_uuid` pelo composto; os seis
+    // GIN de trigrama são do `022`, um por coluna do `q`.
     expect(await indices()).toEqual(ESPERADOS);
 
     // Apagar do histórico é o que força o runner a rodar os arquivos de novo
-    // — uma segunda chamada normal só os pularia. Os dois juntos: o `018`
-    // recria o índice simples e o `019` o derruba outra vez.
-    const NOVAS = ['018-acessos-por-skill.sql', '019-acessos-por-conta.sql'];
+    // — uma segunda chamada normal só os pularia. Os três juntos: o `018`
+    // recria o índice simples, o `019` o derruba outra vez e o `022` acha os
+    // seus doze índices já no lugar.
+    const NOVAS = [
+      '018-acessos-por-skill.sql',
+      '019-acessos-por-conta.sql',
+      '022-busca-por-substring.sql',
+    ];
     await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
     expect(await runMigrations(url!)).toEqual(NOVAS);
     expect(await linhas()).toBe(antes);

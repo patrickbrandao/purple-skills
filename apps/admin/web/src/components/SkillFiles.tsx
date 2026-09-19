@@ -1,19 +1,42 @@
-import { useEffect, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { AlertTriangle, Binary, Download, ExternalLink, FileCode2, FilePlus, FileQuestion, Lock, RotateCcw, Save, Trash2, X } from 'lucide-react';
-import { formatBytes, rawFileUrl, type SkillFileMeta } from '../api.js';
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import {
+  AlertTriangle,
+  Binary,
+  Download,
+  ExternalLink,
+  FileCode2,
+  FilePlus,
+  FileQuestion,
+  FileText,
+  Lock,
+  RotateCcw,
+  Save,
+  Trash2,
+  WrapText,
+  X,
+} from 'lucide-react';
+import { formatBytes, num, rawFileUrl, type SkillDetail, type SkillFileMeta } from '../api.js';
 import { baseName, isSkillMdPath, lineCount, parentDir } from '../explorer.js';
+import { composeSkillMd } from '../frontmatter.js';
+import { languageFor, languageLabel, readLineCount, toCodeLines } from '../highlight.js';
 import { isDirtyDoc, type FileDoc, type SkillFiles } from '../useSkillFiles.js';
 import { CodeEditor } from './CodeEditor.js';
+import { CodeView } from './CodeView.js';
 import { FileExplorer } from './FileExplorer.js';
 import { FileTypeIcon } from './FileTypeIcon.js';
-import { Button, EmptyState, Skel, useStored } from './ui.js';
+import { Button, CopyButton, EmptyState, Skel, useStored } from './ui.js';
 
 /* ============================================================
-   GUIA ARQUIVOS DO EDITOR DE SKILL
-   A árvore à esquerda e o arquivo aberto no resto da largura.
-   Arquivo de texto abre no editor e é gravado pelo "Salvar
-   arquivo" (ou ⌘S); o SKILL.md abre o corpo do formulário, que o
-   Salvar do cabeçalho grava; binário mostra o que dá para ver.
+   GUIA ARQUIVOS DA SKILL
+   A árvore à esquerda e o arquivo aberto no resto da largura,
+   nas duas fichas.
+
+   Em Editar (`SkillFilesTab`), arquivo de texto abre no editor e
+   é gravado pelo "Salvar arquivo" (ou ⌘S); o SKILL.md abre o corpo
+   do formulário, que o Salvar do cabeçalho grava. Na leitura
+   (`SkillFilesView`), a árvore perde as ações que gravam e o
+   arquivo abre no leitor, com as cores da linguagem. Nas duas,
+   binário mostra o que dá para ver.
    ============================================================ */
 
 const TREE_MIN = 200;
@@ -36,17 +59,11 @@ type SkillMdProps = {
   onSave: () => void;
 };
 
-export function SkillFilesTab({
-  ws,
-  slug,
-  canWrite,
-  skillMd,
-}: {
-  ws: SkillFiles;
-  slug: string;
-  canWrite: boolean;
-  skillMd: SkillMdProps;
-}) {
+/** Onde o leitor guarda a escolha de quebrar as linhas longas. */
+const WRAP_KEY = 'purple-skills-admin:files-wrap';
+
+/** A árvore à esquerda, com a largura arrastável e guardada no navegador, e o arquivo aberto no resto. */
+function FilesLayout({ tree, children }: { tree: ReactNode; children: ReactNode }) {
   const [storedWidth, setStoredWidth] = useStored('purple-skills-admin:files-tree-width', TREE_DEFAULT);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const width = dragWidth ?? clampWidth(storedWidth);
@@ -88,10 +105,10 @@ export function SkillFilesTab({
   }
 
   return (
-    // `file-tree` traz as cores por tipo de arquivo, que o cabeçalho do editor também usa.
+    // `file-tree` traz as cores por tipo de arquivo, que o cabeçalho do arquivo aberto também usa.
     <div className={`files-ws file-tree${dragWidth !== null ? ' resizing' : ''}`} style={{ '--tree-w': `${width}px` } as CSSProperties}>
       <aside className="files-tree" aria-label="Árvore de arquivos">
-        <FileExplorer ws={ws} slug={slug} canWrite={canWrite} skillMdDirty={skillMd.dirty} />
+        {tree}
       </aside>
       <div
         className="files-resizer"
@@ -108,10 +125,60 @@ export function SkillFilesTab({
         onDoubleClick={() => setStoredWidth(TREE_DEFAULT)}
       />
       <section className="files-editor" aria-label="Arquivo aberto">
-        <FilePane ws={ws} slug={slug} canWrite={canWrite} skillMd={skillMd} />
+        {children}
       </section>
     </div>
   );
+}
+
+export function SkillFilesTab({
+  ws,
+  slug,
+  canWrite,
+  skillMd,
+}: {
+  ws: SkillFiles;
+  slug: string;
+  canWrite: boolean;
+  skillMd: SkillMdProps;
+}) {
+  return (
+    <FilesLayout tree={<FileExplorer ws={ws} slug={slug} canWrite={canWrite} skillMdDirty={skillMd.dirty} />}>
+      <FilePane ws={ws} slug={slug} canWrite={canWrite} skillMd={skillMd} />
+    </FilesLayout>
+  );
+}
+
+/**
+ * A guia Arquivos da ficha de leitura: a mesma árvore, sem as ações que
+ * gravam, e o arquivo escolhido no leitor, com as cores da linguagem. O
+ * SKILL.md aparece inteiro, como sai no pacote.
+ */
+export function SkillFilesView({ ws, skill }: { ws: SkillFiles; skill: SkillDetail }) {
+  const { slug, name, description, tags, skillMd } = skill;
+  const source = useMemo(() => composeSkillMd({ slug, name, description, tags }, skillMd), [slug, name, description, tags, skillMd]);
+
+  return (
+    <FilesLayout tree={<FileExplorer ws={ws} slug={slug} canWrite={false} skillMdDirty={false} />}>
+      <ViewPane ws={ws} slug={slug} skillMd={source} />
+    </FilesLayout>
+  );
+}
+
+const findMeta = (ws: SkillFiles, path: string) =>
+  ws.files.find((file) => file.relativePath === path) ?? ws.files.find((file) => file.relativePath.toLowerCase() === path.toLowerCase());
+
+function ViewPane({ ws, slug, skillMd }: { ws: SkillFiles; slug: string; skillMd: string }) {
+  const path = ws.selected;
+  if (!path) return <NoFile ws={ws} canWrite={false} />;
+  if (isSkillMdPath(path)) {
+    return <ReadPane ws={ws} slug={slug} path={path} info="o prompt da skill, como sai no pacote" doc={{ status: 'ready', original: skillMd, content: skillMd }} />;
+  }
+
+  const meta = findMeta(ws, path);
+  if (!meta) return <GoneFile ws={ws} path={path} />;
+  if (!meta.isText) return <BinaryPane ws={ws} slug={slug} canWrite={false} meta={meta} />;
+  return <ReadPane ws={ws} slug={slug} path={meta.relativePath} info={describe(meta)} doc={ws.docs.get(meta.relativePath)} />;
 }
 
 function FilePane({ ws, slug, canWrite, skillMd }: { ws: SkillFiles; slug: string; canWrite: boolean; skillMd: SkillMdProps }) {
@@ -119,7 +186,7 @@ function FilePane({ ws, slug, canWrite, skillMd }: { ws: SkillFiles; slug: strin
   if (!path) return <NoFile ws={ws} canWrite={canWrite} />;
   if (isSkillMdPath(path)) return <SkillMdPane ws={ws} slug={slug} canWrite={canWrite} {...skillMd} />;
 
-  const meta = ws.files.find((file) => file.relativePath === path) ?? ws.files.find((file) => file.relativePath.toLowerCase() === path.toLowerCase());
+  const meta = findMeta(ws, path);
   if (!meta) return <GoneFile ws={ws} path={path} />;
   if (!meta.isText) return <BinaryPane ws={ws} slug={slug} canWrite={canWrite} meta={meta} />;
   return <TextPane ws={ws} slug={slug} canWrite={canWrite} meta={meta} doc={ws.docs.get(path)} />;
@@ -158,6 +225,8 @@ function PaneHead({
 }
 
 const describe = (meta: SkillFileMeta) => `${meta.mimeType} · ${formatBytes(meta.sizeBytes)}`;
+
+const linesLabel = (count: number) => `${num(count)} linha${count === 1 ? '' : 's'}`;
 
 function RawLink({ slug, path }: { slug: string; path: string }) {
   return (
@@ -230,21 +299,30 @@ function TextPane({
               <RotateCcw /> Tentar de novo
             </Button>
           </div>
-        ) : (
+        ) : canWrite ? (
           <CodeEditor
             key={path}
             value={doc.content}
             onChange={(value) => ws.edit(path, value)}
-            readOnly={!canWrite}
             autoFocus={ws.fresh === path}
             label={`Conteúdo de ${path}`}
-            placeholder={canWrite ? 'Arquivo vazio — comece a escrever.' : 'Arquivo vazio.'}
+            placeholder="Arquivo vazio — comece a escrever."
           />
+        ) : (
+          <ReadOnlyCode path={path} content={doc.content} empty="Arquivo vazio" />
         )}
       </div>
 
       <div className="fe-foot">
-        <span>{doc?.status === 'ready' ? `${lineCount(doc.content)} linha${lineCount(doc.content) === 1 ? '' : 's'}` : ' '}</span>
+        <span>
+          {doc?.status !== 'ready'
+            ? ' '
+            : canWrite
+              ? linesLabel(lineCount(doc.content))
+              : doc.content === ''
+                ? 'vazio'
+                : linesLabel(readLineCount(doc.content))}
+        </span>
         <span>{canWrite ? '⌘S salva · Tab indenta · Esc e depois Tab sai do editor' : 'Somente leitura'}</span>
       </div>
     </div>
@@ -281,19 +359,22 @@ function SkillMdPane({
           </span>
           {frontmatter}
         </pre>
-        <CodeEditor
-          value={body}
-          onChange={onBody}
-          readOnly={!canWrite}
-          // O arquivo materializado é frontmatter, uma linha em branco e o corpo.
-          firstLine={lineCount(frontmatter) + 1}
-          label="Corpo do SKILL.md"
-          placeholder={'# Título\n\n## Quando usar\n\nDescreva o gatilho da skill.'}
-        />
+        {canWrite ? (
+          <CodeEditor
+            value={body}
+            onChange={onBody}
+            // O arquivo materializado é frontmatter, uma linha em branco e o corpo.
+            firstLine={lineCount(frontmatter) + 1}
+            label="Corpo do SKILL.md"
+            placeholder={'# Título\n\n## Quando usar\n\nDescreva o gatilho da skill.'}
+          />
+        ) : (
+          <ReadOnlyCode path="SKILL.md" content={body} firstLine={lineCount(frontmatter) + 1} empty="SKILL.md sem corpo" />
+        )}
       </div>
 
       <div className="fe-foot">
-        <span>{`${lineCount(body)} linha${lineCount(body) === 1 ? '' : 's'} no corpo`}</span>
+        <span>{`${linesLabel(canWrite ? lineCount(body) : readLineCount(body))} no corpo`}</span>
         <span>{canWrite ? 'Gravado pelo Salvar do cabeçalho (⌘S), com a descrição e as propriedades' : 'Somente leitura'}</span>
       </div>
     </div>
@@ -336,6 +417,7 @@ function BinaryPane({ ws, slug, canWrite, meta }: { ws: SkillFiles; slug: string
 }
 
 function NoFile({ ws, canWrite }: { ws: SkillFiles; canWrite: boolean }) {
+  const skillMd = ws.files.find((file) => isSkillMdPath(file.relativePath))?.relativePath ?? 'SKILL.md';
   return (
     <div className="fe fe-none">
       <EmptyState
@@ -344,14 +426,18 @@ function NoFile({ ws, canWrite }: { ws: SkillFiles; canWrite: boolean }) {
         description={
           canWrite
             ? 'Escolha um arquivo na árvore para editá-lo, ou crie um — vazio, na raiz ou dentro de uma pasta.'
-            : 'Escolha um arquivo na árvore para ler o conteúdo.'
+            : 'Escolha um arquivo na árvore para ler o conteúdo, com as cores da linguagem.'
         }
         action={
           canWrite ? (
             <Button variant="ghost" size="sm" onClick={() => ws.startCreate('file')}>
               <FilePlus /> Novo arquivo
             </Button>
-          ) : undefined
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => ws.open(skillMd)}>
+              <FileText /> Abrir o SKILL.md
+            </Button>
+          )
         }
       />
     </div>
@@ -376,6 +462,124 @@ function GoneFile({ ws, path }: { ws: SkillFiles; path: string }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Um arquivo de texto no leitor: cabeçalho com quebrar linhas, copiar, abrir
+ * cru e baixar; o código colorido; e, no rodapé, as linhas e a linguagem.
+ */
+function ReadPane({
+  ws,
+  slug,
+  path,
+  info,
+  doc,
+}: {
+  ws: SkillFiles;
+  slug: string;
+  path: string;
+  info: string;
+  doc: FileDoc | undefined;
+}) {
+  const [wrap, setWrap] = useStored(WRAP_KEY, true);
+
+  // Um arquivo à vista sem conteúdo carregado (aberto por fora da árvore) é lido aqui.
+  const { ensure } = ws;
+  useEffect(() => {
+    if (!doc) ensure(path);
+  }, [doc, path, ensure]);
+
+  const content = doc?.status === 'ready' ? doc.content : null;
+  const code = useMemo(() => (content === null ? null : toCodeLines(content, languageFor(path, content))), [path, content]);
+
+  const raw = rawFileUrl(slug, path);
+  const cut = code !== null && code.total > code.lines.length;
+
+  return (
+    <div className="fe">
+      <PaneHead path={path} info={info} onClose={ws.close}>
+        <button
+          type="button"
+          className="row-action fe-toggle"
+          aria-pressed={wrap}
+          title={wrap ? 'Não quebrar as linhas longas' : 'Quebrar as linhas longas'}
+          aria-label="Quebrar as linhas longas"
+          onClick={() => setWrap(!wrap)}
+        >
+          <WrapText />
+        </button>
+        {content !== null && <CopyButton text={content} label="Copiar" variant="quiet" title="Copiar o conteúdo do arquivo" />}
+        <RawLink slug={slug} path={path} />
+        <a href={raw} download={baseName(path)} className="btn btn-quiet btn-sm" title="Baixar só este arquivo">
+          <Download /> Baixar
+        </a>
+      </PaneHead>
+
+      <div className="fe-body">
+        {doc?.status === 'error' ? (
+          <div className="fe-problem">
+            <div className="alert warn">
+              <AlertTriangle />
+              <span>{doc.message}</span>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => void ws.revert(path)}>
+              <RotateCcw /> Tentar de novo
+            </Button>
+          </div>
+        ) : code === null ? (
+          <EditorSkeleton />
+        ) : content === '' ? (
+          <div className="fe-binary">
+            <EmptyState icon={<FileText />} title="Arquivo vazio" description="Não há nada escrito nele ainda." />
+          </div>
+        ) : (
+          <CodeView
+            key={path}
+            code={code}
+            wrap={wrap}
+            label={`Conteúdo de ${path}`}
+            more={
+              cut && (
+                <>
+                  Mostrando as primeiras {num(code.lines.length)} de {num(code.total)} linhas.{' '}
+                  <a href={raw} target="_blank" rel="noreferrer" className="link">
+                    Abrir cru
+                  </a>{' '}
+                  mostra o arquivo inteiro.
+                </>
+              )
+            }
+          />
+        )}
+      </div>
+
+      <div className="fe-foot">
+        <span>
+          {code === null
+            ? ' '
+            : [
+                content === '' ? 'vazio' : linesLabel(code.total),
+                languageLabel(code.language),
+                ...(code.language && !code.colored ? ['sem cores: trecho grande demais'] : []),
+              ].join(' · ')}
+        </span>
+        <span>Somente leitura</span>
+      </div>
+    </div>
+  );
+}
+
+/** O conteúdo sem edição dentro do editor, para quem não pode gravar: colorido, sem quebrar linhas. */
+function ReadOnlyCode({ path, content, firstLine, empty }: { path: string; content: string; firstLine?: number; empty: string }) {
+  const code = useMemo(() => toCodeLines(content, languageFor(path, content)), [path, content]);
+  if (content === '') {
+    return (
+      <div className="fe-binary">
+        <EmptyState icon={<FileText />} title={empty} />
+      </div>
+    );
+  }
+  return <CodeView code={code} firstLine={firstLine} label={`Conteúdo de ${path}`} />;
 }
 
 /** A forma do texto que está chegando: linhas de larguras variadas. */

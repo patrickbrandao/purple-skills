@@ -31,6 +31,12 @@ export function isUrlIcon(value: string): boolean {
 }
 
 export function isValidSkillIcon(value: string): boolean {
+  // O teto vale para os **dois** ramos. O de URL já o cobrava; o de emoji não
+  // tem limite próprio, e o regex aceita cadeia ZWJ de qualquer tamanho —
+  // duzentos emojis unidos passam com 599 caracteres. Quem os pararia seria o
+  // `skills_icon_length_chk` do banco (`database/schema/013-skill-icon.sql`),
+  // com 500 no lugar do 400 que esta função existe para dar.
+  if (value.length > SKILL_ICON_MAX_LENGTH) return false;
   return isEmojiIcon(value) || isUrlIcon(value);
 }
 

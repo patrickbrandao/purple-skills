@@ -59,12 +59,11 @@ export type SearchResult = {
  * em pé; `requiresKey`, se o `mcp.json` precisa do header `Authorization`.
  */
 export type PublicMcpInfo =
-  | { status: 'ok'; slug: string; name: string; description: string; requiresKey: boolean }
+  | { status: 'ok'; slug: string; name: string; requiresKey: boolean }
   | {
       status: 'none' | 'deleted' | 'inactive';
       slug: string | null;
       name: null;
-      description: null;
       requiresKey: null;
     };
 

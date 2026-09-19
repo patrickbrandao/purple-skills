@@ -136,16 +136,22 @@ export type SearchResult = {
   mode: 'text' | 'hybrid';
 };
 
+/**
+ * Os números do painel. `/api/stats` recorta por viewer (`docs/12` §3.1): quem
+ * não é admin recebe só os três primeiros, e os demais **faltam** na resposta.
+ * Faltar não é zero — quem lê precisa tratar a ausência, não exibir "0".
+ */
 export type Stats = {
   totalSkills: number;
   openSkills: number;
-  unlinkedSkills: number;
-  totalFiles: number;
-  totalViews: number;
-  totalDownloads: number;
   totalTags: number;
-  totalUsers: number;
-  activeUsers: number;
+  // Só para admin: são números da instalação inteira, não do que a conta vê.
+  unlinkedSkills?: number;
+  totalFiles?: number;
+  totalViews?: number;
+  totalDownloads?: number;
+  totalUsers?: number;
+  activeUsers?: number;
 };
 
 export type AuditAction =
@@ -155,6 +161,7 @@ export type AuditAction =
   | 'user.create'
   | 'user.role'
   | 'user.deactivate'
+  | 'user.password'
   | 'key.create'
   | 'key.revoke'
   | 'mcp.create'
@@ -182,6 +189,7 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'user.create',
   'user.role',
   'user.deactivate',
+  'user.password',
   'key.create',
   'key.revoke',
   'mcp.create',
@@ -258,7 +266,8 @@ export type AdminLinks = { docs: string | null; support: string | null; chat: st
 /** A marca do painel (ADMIN_BRAND_NAME / ADMIN_BRAND_ICON_URL). */
 export type AdminBrand = { name: string; iconUrl: string };
 
-export type Session = {
+/** O que `/api/session` entrega a qualquer visitante: o que a tela de login usa. */
+export type SessionLogin = {
   authenticated: boolean;
   user: SessionUser | null;
   needsSetup: boolean;
@@ -267,6 +276,15 @@ export type Session = {
   passwordResetByEmail: boolean;
   siteName: string;
   brand: AdminBrand;
+};
+
+/**
+ * O que a instalação conta de si mesma: endereços, janela de online, busca
+ * semântica e versão. O servidor só manda isto **com sessão** — a rota responde
+ * antes do `requireAuth`, porque o login depende dela, e sem o recorte a trava
+ * de papel da tela "Ambiente" seria apenas visual.
+ */
+export type SessionOperation = {
   siteBaseUrl: string;
   /** Base pública do MCP público — vazia quando `MCP_PUBLIC_URL` não foi configurada. */
   mcpPublicUrl: string;
@@ -279,6 +297,21 @@ export type Session = {
    */
   rag?: { driver: string | null; model: string | null };
   version: string;
+};
+
+export type Session = SessionLogin & SessionOperation;
+
+/**
+ * O que vale antes de haver sessão — e quando `/api/session` não responde.
+ * Completar a resposta anônima aqui mantém `Session` total: as telas de dentro,
+ * que são as únicas a ler estes campos, continuam sem fallback.
+ */
+export const SESSION_OPERATION_DEFAULTS: SessionOperation = {
+  siteBaseUrl: '/',
+  mcpPublicUrl: '',
+  links: { docs: null, support: null, chat: null },
+  onlineWindowMs: 120_000,
+  version: '',
 };
 
 export type UserSummary = {
@@ -606,12 +639,22 @@ function qs(params: Record<string, string | number | boolean | undefined | null>
   return text ? `?${text}` : '';
 }
 
-export const getSession = () => request<Session>('/api/session');
+export const getSession = async (): Promise<Session> => ({
+  ...SESSION_OPERATION_DEFAULTS,
+  ...(await request<SessionLogin & Partial<SessionOperation>>('/api/session')),
+});
 
 export const login = (credentials: { email?: string; password: string }) =>
   request<{ authenticated: boolean }>('/api/login', { method: 'POST', body: json(credentials) });
 
-export const logout = () => request<unknown>('/api/logout', { method: 'POST' });
+/**
+ * Sair apaga o cookie **e** revoga a conta: `revoked` diz que o `token_version`
+ * subiu, ou seja, que as sessões desta conta em outros aparelhos caíram junto
+ * (`docs/05-accounts-and-roles.md` §2.2). Vem `false` na sessão de bootstrap,
+ * que não tem conta, e quando o banco recusou o incremento.
+ */
+export const logout = () =>
+  request<{ authenticated: false; revoked: boolean }>('/api/logout', { method: 'POST' });
 
 export const setup = (body: {
   adminPassword: string;

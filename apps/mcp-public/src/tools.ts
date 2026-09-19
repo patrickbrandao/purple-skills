@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import {
+  AppError,
   getSkillDetail,
   getSkillSummary,
   listPublishedSkills,
@@ -12,6 +14,7 @@ import {
   composeSkillMd,
   isSkillMd,
   normalizeRelativePath,
+  readIntEnv,
   stripFrontmatter,
   type SkillDetail,
   type SkillSummary,
@@ -34,6 +37,67 @@ const fail = (message: string): ToolResult => ({
 const asJson = (value: unknown): ToolResult => text(JSON.stringify(value, null, 2));
 
 /**
+ * Loga o detalhe de uma falha imprevista e devolve a mensagem que vai ao
+ * cliente, com a **mesma** referência curta nos dois lados.
+ *
+ * A mensagem de uma exceção não prevista é escrita para quem opera, não para
+ * quem chama: a do `pg` cita tabela, índice e constraint. Aqui quem lê é um
+ * agente de IA — anônimo por padrão, neste servidor — que pode repetir o texto
+ * num resumo, num log ou numa issue pública. Então vale a política do
+ * `http.ts`: resposta genérica, detalhe no log, e a referência para o operador
+ * casar a reclamação do agente com a linha do log sem expor nada.
+ */
+function erroInterno(err: unknown): string {
+  const ref = randomUUID().slice(0, 8);
+  console.error(`[mcp-public] erro inesperado (ref ${ref}):`, err);
+  return (
+    `Erro interno do servidor (ref ${ref}). Tente de novo; se persistir, passe esta ` +
+    'referência a quem opera a instalação — o detalhe está no log do servidor.'
+  );
+}
+
+/**
+ * Embrulha o handler de uma tool. Toda tool é registrada por ele (`server.ts`):
+ * sem isso a exceção sobe ao `McpServer`, que monta o `isError` com a `message`
+ * crua — é o mesmo defeito que o `guard` do mcp-admin fechou.
+ *
+ * Nada de útil é engolido. `AppError` é erro de negócio — 400, 403, 404, 409 —
+ * escrito para o agente ler, e continua chegando com a mensagem inteira (o
+ * `badRequest` do `semanticScope` chega por aqui). As recusas das próprias
+ * ferramentas — skill fora do vínculo, caminho inválido, arquivo ausente — já
+ * são `fail` dentro do handler, e não exceção; a validação dos argumentos é do
+ * Zod e acontece no SDK, antes daqui; e a perna semântica nunca lança, por
+ * desenho (`rag.ts`).
+ */
+export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AppError) return fail(err.message);
+    return fail(erroInterno(err));
+  }
+}
+
+/**
+ * O mesmo cuidado nas superfícies de prompt e resource, que respondem com erro
+ * de protocolo em vez de resultado: o SDK monta o erro do JSON-RPC com a
+ * `message` da exceção, então uma falha do banco vazaria pelo mesmo caminho.
+ *
+ * `McpError` é a recusa escrita para o cliente (`naoEncontrado`) e passa
+ * inteira; `AppError` vira `InvalidParams`, que é o que o cliente pode
+ * corrigir.
+ */
+export async function guardSurface<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof McpError) throw err;
+    if (err instanceof AppError) throw new McpError(ErrorCode.InvalidParams, err.message);
+    throw new McpError(ErrorCode.InternalError, erroInterno(err));
+  }
+}
+
+/**
  * O MCP virtual em que as ferramentas estão rodando.
  *
  * Sempre há um: a raiz (`/mcp`) é o vMCP padrão da instalação, e
@@ -52,8 +116,21 @@ export type VirtualScope = {
 
 const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/');
 
-/** O site mostra a skill quando ela está em algum vMCP aberto e ligado. */
-const noSite = (skill: SkillSummary) => skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
+/**
+ * O site mostra a skill quando ela está ligada **e** é pública, ou está em vMCP
+ * aberto e ligado, ou participa de catálogo público e ligado
+ * (`docs/12-acesso-granular.md` §7 — revoga a regra do `09` §4.1, que era só o
+ * vínculo aberto, de quando `is_public` não existia). Aqui `is_active` é dado:
+ * o recorte do vínculo já exige a skill ligada.
+ *
+ * O terceiro ramo fica sem sinal: nesta visibilidade o `catalogs` da skill vem
+ * vazio, e o `catalogs` de cada vMCP diz por qual catálogo ela chega ao
+ * servidor, não se esse catálogo é público. Enquanto o banco não expuser um
+ * `onSite` derivado de `OPEN_EXPOSURE`, essa skill segue sem link — errar para
+ * menos (link ausente) é melhor que errar para mais (link para um 404).
+ */
+const noSite = (skill: SkillSummary) =>
+  skill.isPublic || skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
 
 /**
  * As URLs que as ferramentas devolvem.
@@ -89,6 +166,63 @@ const recorteDasFerramentas = (scope: VirtualScope) =>
   ({ virtualMcp: { uuid: scope.mcp.uuid, surface: 'skill' } }) as const;
 
 /**
+ * O teto da consulta de busca, em caracteres. É o mesmo do `normalizeQuery` do
+ * `@purple-skills/db`, que corta a perna textual; enquanto o `db` não exportar
+ * o número, ele vive aqui e em `apps/site/src/api.ts`.
+ */
+const MAX_QUERY_CHARS = 200;
+
+/**
+ * A consulta como as **duas** pernas da busca vão lê-la.
+ *
+ * `listSkills` já cortava em 200 caracteres, mas o embedding era resolvido
+ * antes, com o texto cru: a perna vetorial embutia uma pergunta que a textual
+ * nunca leu, e quem escolhia o tamanho do que ia ao provedor — pago, e que no
+ * nível gratuito do Google é lido por revisores humanos — era o visitante
+ * anônimo. Normalizar aqui, uma vez, resolve as duas coisas.
+ *
+ * Conta caractere e não byte, pelo mesmo motivo de ser um número só: contar
+ * byte encurtaria a consulta a cada acento, e uma frase em português perderia
+ * palavras que a mesma frase em inglês manteria.
+ *
+ * E corta na fronteira de palavra: termo partido é pior que termo ausente —
+ * `websearch_to_tsquery` junta os termos com AND, então uma palavra que ninguém
+ * escreveu zera a perna textual, além de embutir no vetor um pedaço de palavra.
+ */
+function consultaDaBusca(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const texto = raw.trim();
+  if (texto === '') return null;
+  if (texto.length <= MAX_QUERY_CHARS) return texto;
+
+  // O caractere a mais revela se o limite cai dentro de uma palavra; `\S*$`
+  // tira a palavra partida e o `trimEnd`, o espaço que sobra.
+  const naFronteira = texto.slice(0, MAX_QUERY_CHARS + 1).replace(/\S*$/, '').trimEnd();
+  if (naFronteira !== '') return naFronteira;
+
+  // Consulta sem espaço nenhum (um blob colado): corta no limite, sem deixar
+  // sozinha a metade alta de um par surrogate — ela viraria U+FFFD no JSON do
+  // provedor.
+  const duro = texto.slice(0, MAX_QUERY_CHARS);
+  const ultimo = duro.charCodeAt(duro.length - 1);
+  return ultimo >= 0xd800 && ultimo <= 0xdbff ? duro.slice(0, -1) : duro;
+}
+
+/**
+ * Teto do que `get_skill_file` devolve **dentro** do resultado da ferramenta.
+ *
+ * O arquivo já chega inteiro do banco, mas devolvê-lo como texto custa outras
+ * duas cópias — a string UTF-16 e o JSON-RPC da resposta —, e um arquivo de
+ * skill pode ser enorme (`ZIP_MAX_UNCOMPRESSED_BYTES` são 256 MB). Acima do
+ * teto a resposta passa a ser a URL de download, exatamente como já acontece com
+ * arquivo binário. Quatro MiB de texto são muitas vezes a janela de qualquer
+ * agente: o teto não corta leitura útil, corta o pedido que derruba o processo.
+ */
+const MAX_TEXTO_INLINE_BYTES = readIntEnv('MCP_MAX_FILE_TEXT_BYTES', 4 * 1024 * 1024, {
+  min: 1024,
+});
+
+/**
  * Handlers das ferramentas do MCP público. Ficam separados do registro no
  * servidor para poderem ser testados sem subir o transporte HTTP, e são
  * criados **por escopo**: cada vMCP — inclusive o padrão, na raiz — tem o seu.
@@ -104,12 +238,15 @@ export function createHandlers(scope: VirtualScope) {
       limit?: number;
       offset?: number;
     }): Promise<ToolResult> {
+      // Uma normalização só, antes das duas pernas: o vetor e o texto precisam
+      // ler a mesma pergunta (ver `consultaDaBusca`).
+      const query = consultaDaBusca(args.query);
       // A perna vetorial é resolvida antes da consulta: falha ou prazo estourado
       // devolvem `undefined` e a busca sai textual, sem erro para o cliente.
-      const { semantic } = await buscaSemantica.resolver(args.query);
+      const { semantic } = await buscaSemantica.resolver(query);
 
       const result = await listSkills({
-        query: args.query ?? null,
+        query,
         tag: args.tag ?? null,
         limit: args.limit ?? 10,
         offset: args.offset ?? 0,
@@ -122,7 +259,9 @@ export function createHandlers(scope: VirtualScope) {
 
       if (result.items.length === 0) {
         return text(
-          `Nenhuma skill encontrada${args.query ? ` para "${args.query}"` : ''}${
+          // A consulta ecoada é a normalizada: é o que foi procurado, e é
+          // assim que o cliente descobre que a dele foi cortada.
+          `Nenhuma skill encontrada${query ? ` para "${query}"` : ''}${
             args.tag ? ` na tag "${args.tag}"` : ''
           }.`,
         );
@@ -190,6 +329,18 @@ export function createHandlers(scope: VirtualScope) {
       if (!file.isText) {
         return text(
           `O arquivo "${path}" é binário (${file.mimeType}, ${file.sizeBytes} bytes). ` +
+            `Baixe pela URL: ${urls.file(skill.slug, path)}`,
+        );
+      }
+
+      // Texto grande demais para o resultado da ferramenta: a URL de download
+      // serve o arquivo em fluxo, sem as cópias que o JSON-RPC exigiria. O
+      // tamanho é o dos bytes lidos, não o `sizeBytes` gravado — a lição do
+      // `004` é não decidir limite por número declarado.
+      if (file.buffer.byteLength > MAX_TEXTO_INLINE_BYTES) {
+        return text(
+          `O arquivo "${path}" é grande demais para vir no resultado ` +
+            `(${file.buffer.byteLength} bytes; o teto é ${MAX_TEXTO_INLINE_BYTES}). ` +
             `Baixe pela URL: ${urls.file(skill.slug, path)}`,
         );
       }

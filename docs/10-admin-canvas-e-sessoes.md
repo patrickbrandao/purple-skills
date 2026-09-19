@@ -4,6 +4,12 @@
 Migrations `013-skill-icon.sql`, `014-canvas-do-vmcp.sql` e
 `015-mcp-sessions.sql`.
 
+> **Parcialmente revogado por [`12`](12-acesso-granular.md):** a `§4.4` (a
+> permissão do canvas e dos vínculos) deixou de exigir "dono ou admin" e
+> passou ao nível `edit` do acesso granular — a marca está no ponto, com o
+> alcance disso. O resto — o canvas e seus gestos, a gaveta, a paleta, as
+> sessões e a contabilidade de clientes — continua sendo o desenho em vigor.
+
 Este documento registra o desenho fechado na entrevista de 12/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
 em [`02-architecture-decisions.md`](02-architecture-decisions.md) e os
@@ -145,9 +151,11 @@ abertura contam como não lidos (`localStorage`). Nada disso é tabela nova.
 | `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/skills/new` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação |
 | `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
 | `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
-| `/meu-espaco/skills`, `/meu-espaco/catalogos`, `/meu-espaco/chaves` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` e as chaves que a conta emitiu — as `psk_` dela e as `psv_` dos servidores que ainda enxerga (`GET /api/me/mcp-keys`) |
+| `/meu-espaco/skills`, `/meu-espaco/catalogos` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` |
 | `/configuracoes/mcp-padrao`, `/configuracoes/busca-semantica`, `/configuracoes/ambiente`, `/configuracoes/conectar` | Configurações da instalação (admin), uma tela por assunto e um item por tela no submenu; `/configuracoes` leva à primeira |
-| `/account` | Minha conta: senha e chaves `psk_`; fechada na sessão de bootstrap, que não tem conta |
+| `/account` | Minha conta: só a senha; fechada na sessão de bootstrap, que não tem conta |
+| `/account/chaves-adm` | Adm MCP Keys: emitir, listar e revogar as `psk_` da própria conta — o `token` aparece uma vez só; fechada na sessão de bootstrap |
+| `/account/chaves-emitidas` | Chaves emitidas: tudo o que a conta emitiu — as `psk_` dela e as `psv_` dos servidores que ainda enxerga (`GET /api/me/mcp-keys`). Era `/meu-espaco/chaves`, que redireciona |
 
 ## 4. O canvas
 
@@ -215,9 +223,21 @@ publicação. A escolha de gravar no banco, e não no navegador, é a decisão
 
 ### 4.4 Permissão
 
-A mesma de sempre: o dono do servidor ou um admin (`loadManaged`). Quem
-não administra vê o canvas em modo leitura — sem arrastar, conectar ou
-adicionar — e a gaveta sem as caixas.
+> **Revogado neste ponto por [`12`](12-acesso-granular.md):** o canvas e os
+> vínculos deixaram de exigir "dono ou admin" e passaram ao nível `edit` do
+> acesso granular (`12` §3.2 e decisões 6 e 7). `loadManaged` não existe
+> mais.
+
+Nível `edit` no servidor — dono, admin ou conta com `edit` concedido —, pelo
+`load(user, slug, 'edit')` de `apps/admin/src/mcps.ts`; o painel usa o mesmo
+critério (`canEdit`). Quem só tem `view` vê o canvas em modo leitura — sem
+arrastar, conectar ou adicionar — e a gaveta sem as caixas. Nome, slug,
+estado, abertura e chaves continuam em `manage`.
+
+O alcance é maior do que parece: num servidor **aberto**, acrescentar uma
+skill a publica no site anônimo, e isso é ação de `edit` — conceder `edit`
+num servidor aberto é conceder publicação. O aviso do que fica público é a
+decisão 15 do `12`.
 
 ## 5. Sessões do MCP público
 
@@ -247,7 +267,10 @@ instante em que se pergunta.
 Nos transportes com sessão a linha nasce no `initialize` (Streamable) ou no
 `GET /sse`, e termina quando o cliente fecha (`closed`), o TTL vence
 (`timeout`, o mesmo TTL do mapa em memória, `MCP_SESSION_TTL_MS`) ou o
-processo para (`shutdown`). No stateless não há sessão: o cliente é
+processo para (`shutdown`). Desde o `007`, `timeout` também é o motivo gravado
+quando a sessão é **reciclada** pelo teto da própria credencial
+(`MCP_MAX_SESSIONS_PER_IDENTITY`) e acontece também em sessão **SSE**, que antes só
+terminava como `closed`. No stateless não há sessão: o cliente é
 reconhecido por IP + agente + credencial + vMCP (uma chave sintética
 `sl_<hash>`), e as requisições dele dentro da janela caem na mesma linha;
 passada a janela, a próxima abre outra e a varredura fecha a antiga com o
@@ -293,6 +316,10 @@ frontmatter do `SKILL.md`, porque é um atributo do catálogo, não da skill.
 | `ADMIN_BRAND_NAME` | admin | `SITE_NAME` (`Purple Skills`) |
 | `ADMIN_BRAND_ICON_URL` | admin | `/assets/images/purple-hat-256.png`; URL http(s) ou caminho, inválido derruba o boot |
 | `APP_VERSION` | admin (só exibição) | vazia |
+| `MCP_MAX_SESSIONS_PER_IDENTITY` | mcp-public e mcp-admin | um décimo de `MCP_MAX_SESSIONS`, mínimo 10 |
+
+O `APP_VERSION` deixou de ser inalcançável desde o `039` — está no `x-app-env` —,
+mas o padrão compilado nos dois MCPs segue congelado em `1.0.0-beta.1`.
 
 ## 8. Riscos aceitos
 

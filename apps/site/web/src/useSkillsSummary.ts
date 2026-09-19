@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
 import { fetchTags, searchSkills } from './api.js';
 
-export type CatalogSummary = {
+export type SkillsSummary = {
   total: number;
   tags: { name: string; count: number }[];
 };
 
-let cache: CatalogSummary | null = null;
-let inFlight: Promise<CatalogSummary> | null = null;
+let cache: SkillsSummary | null = null;
+let inFlight: Promise<SkillsSummary> | null = null;
 
-function load(): Promise<CatalogSummary> {
+function load(): Promise<SkillsSummary> {
   inFlight ??= Promise.all([searchSkills({ limit: 1 }), fetchTags()])
     .then(([skills, tags]) => {
       cache = { total: skills.total, tags: tags.items };
@@ -23,11 +23,11 @@ function load(): Promise<CatalogSummary> {
 }
 
 /**
- * Total de skills e lista de tags do catálogo, buscados uma única vez e
+ * Total de skills públicas e lista de tags, buscados uma única vez e
  * compartilhados entre as seções da home.
  */
-export function useCatalogSummary(): CatalogSummary | null {
-  const [summary, setSummary] = useState<CatalogSummary | null>(cache);
+export function useSkillsSummary(): SkillsSummary | null {
+  const [summary, setSummary] = useState<SkillsSummary | null>(cache);
 
   useEffect(() => {
     if (cache) return;

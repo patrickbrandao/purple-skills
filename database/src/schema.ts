@@ -1,16 +1,25 @@
 /**
  * Schema Drizzle usado para **tipagem** e como query builder.
  *
- * A fonte de verdade do banco são os arquivos SQL de `database/schema/`: os
- * índices trigram e por expressão, os CHECKs de `files` e `audit_log`, as
- * funções e os triggers de busca **não** estão declarados aqui. Não gere
- * migrations a partir deste arquivo (`drizzle-kit generate`/`push`) — o diff
- * removeria esses objetos.
+ * A fonte de verdade do banco são os arquivos SQL de `database/schema/`. Não
+ * gere migrations a partir deste arquivo (`drizzle-kit generate`/`push`): o que
+ * o DSL do Drizzle não expressa — índice por expressão, índice parcial, os
+ * CHECKs, as funções e os triggers de busca e de RAG — **não** está declarado
+ * aqui, e o diff proporia remover esses objetos.
+ *
+ * O que o DSL expressa fielmente **está**: coluna, tipo, NOT NULL, DEFAULT,
+ * chave primária, UNIQUE, chave estrangeira com a ação de remoção e índice por
+ * coluna (com a classe de operadores e o DESC). É o que
+ * `schema.integration.test.ts` confere, objeto a objeto, contra um banco
+ * migrado do zero: uma migration que acrescente um desses sem refletir aqui
+ * derruba o teste. A lista do que fica **só** no SQL, com o motivo de cada
+ * item, mora nesse teste.
  */
 import {
   bigint,
   boolean,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -18,6 +27,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -45,7 +55,7 @@ export const skills = pgTable(
   'skills',
   {
     uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
-    slug: text('slug').notNull().unique(),
+    slug: text('slug').notNull().unique('skills_slug_key'),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
     /**
@@ -71,8 +81,14 @@ export const skills = pgTable(
     viewCount: bigint('view_count', { mode: 'number' }).notNull().default(0),
     downloadCount: bigint('download_count', { mode: 'number' }).notNull().default(0),
     searchVector: tsvector('search_vector'),
-    /** Informativo (`docs/05-accounts-and-roles.md` §2.1): não autoriza nada. */
-    createdByUserUuid: uuid('created_by_user_uuid'),
+    /**
+     * Informativo (`docs/05-accounts-and-roles.md` §2.1): não autoriza nada. A
+     * FK é `SET NULL` (`schema/004-contas.sql`): remover a conta não apaga a
+     * skill dela, só esquece quem a criou.
+     */
+    createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
     /**
      * A skill precisa ser refatiada pelo RAG (`schema/020-rag.sql`). Nasce
      * `true` e é marcada pelos triggers de skill, arquivo e tag; quem limpa é
@@ -91,8 +107,19 @@ export const skills = pgTable(
   (table) => [
     index('skills_search_vector_idx').using('gin', table.searchVector),
     index('skills_owner_user_uuid_idx').on(table.ownerUserUuid),
-    // O índice da fila do indexador é **parcial** (`WHERE rag_stale`) e por
-    // isso fica só no SQL: `skills_rag_stale_idx` em `schema/020-rag.sql`.
+    // `004`: chave estrangeira sem índice faz da remoção de uma conta uma
+    // varredura inteira desta tabela. Nenhuma query filtra por esta coluna.
+    index('skills_created_by_idx').on(table.createdByUserUuid),
+    // Os quatro ramos do `OR` da busca, juntos de propósito: falta um e o
+    // `BitmapOr` não se forma, a varredura volta inteira. `name` é do `001`;
+    // `description` e `slug` são do `022-busca-por-substring.sql`.
+    index('skills_name_trgm_idx').using('gin', table.name.op('gin_trgm_ops')),
+    index('skills_description_trgm_idx').using('gin', table.description.op('gin_trgm_ops')),
+    index('skills_slug_trgm_idx').using('gin', table.slug.op('gin_trgm_ops')),
+    // Dois ficam só no SQL, por não caberem no DSL: o da fila do indexador é
+    // **parcial** (`skills_rag_stale_idx`, `WHERE rag_stale`, `020`) e o da
+    // pontuação é por **expressão** (`skills_score_idx`,
+    // `(view_count + download_count) DESC`, `012`).
   ],
 );
 
@@ -131,7 +158,7 @@ export const files = pgTable(
 
 export const tags = pgTable('tags', {
   id: uuid('id').primaryKey().default(sql`uuidv7()`),
-  name: text('name').notNull().unique(),
+  name: text('name').notNull().unique('tags_name_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -145,24 +172,58 @@ export const skillTags = pgTable(
       .notNull()
       .references(() => tags.id, { onDelete: 'cascade' }),
   },
-  (table) => [primaryKey({ columns: [table.skillUuid, table.tagId] })],
+  (table) => [
+    primaryKey({ name: 'skill_tags_pkey', columns: [table.skillUuid, table.tagId] }),
+    // A PK cobre a busca por skill; este é o caminho inverso, as skills de uma
+    // tag (`001`).
+    index('skill_tags_tag_id_idx').on(table.tagId),
+  ],
 );
 
-export const auditLog = pgTable('audit_log', {
-  id: uuid('id').primaryKey().default(sql`uuidv7()`),
-  skillUuid: uuid('skill_uuid'),
-  skillSlug: text('skill_slug'),
-  filePath: text('file_path'),
-  action: text('action').notNull(),
-  source: text('source').notNull(),
-  previousContent: text('previous_content'),
-  /** Nulo quando o ator não é uma conta (`token-global`, bootstrap). */
-  actorUserUuid: uuid('actor_user_uuid'),
-  actorLabel: text('actor_label'),
-  /** Alvo de um evento de conta — ver `schema/004-contas.sql`. */
-  targetLabel: text('target_label'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    /**
+     * Sem FK de propósito (`001`): a trilha sobrevive à remoção da skill, e o
+     * `skill_slug` ao lado é a cópia que fica.
+     */
+    skillUuid: uuid('skill_uuid'),
+    skillSlug: text('skill_slug'),
+    filePath: text('file_path'),
+    action: text('action').notNull(),
+    source: text('source').notNull(),
+    previousContent: text('previous_content'),
+    /**
+     * Nulo quando o ator não é uma conta (`token-global`, bootstrap) — e
+     * também depois de a conta ser removida, porque a FK é `SET NULL`
+     * (`schema/004-contas.sql`): a trilha não fica com uuid pendurado nem
+     * impede a remoção. Quem sempre existe é o `actor_label`.
+     */
+    actorUserUuid: uuid('actor_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    actorLabel: text('actor_label'),
+    /** Alvo de um evento de conta — ver `schema/004-contas.sql`. */
+    targetLabel: text('target_label'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // A página da trilha é sempre por data decrescente (`001`).
+    index('audit_log_created_at_idx').on(table.createdAt.desc()),
+    index('audit_log_skill_uuid_idx').on(table.skillUuid),
+    // `004`: como o de `skills`, é o índice do `SET NULL` — a trilha é filtrada
+    // por `actor_label`, não por este uuid.
+    index('audit_log_actor_user_uuid_idx').on(table.actorUserUuid),
+    // As quatro colunas do `q` de `listAuditPage` (`022-busca-por-substring.sql`):
+    // `ILIKE '%termo%'` só usa índice de trigrama, e num `OR` só há `BitmapOr`
+    // se **todos** os ramos tiverem um.
+    index('audit_log_skill_slug_trgm_idx').using('gin', table.skillSlug.op('gin_trgm_ops')),
+    index('audit_log_file_path_trgm_idx').using('gin', table.filePath.op('gin_trgm_ops')),
+    index('audit_log_actor_label_trgm_idx').using('gin', table.actorLabel.op('gin_trgm_ops')),
+    index('audit_log_target_label_trgm_idx').using('gin', table.targetLabel.op('gin_trgm_ops')),
+  ],
+);
 
 // ----------------------------------------------------------------- contas ---
 
@@ -197,7 +258,7 @@ export const apiKeys = pgTable(
       .references(() => users.uuid, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     /** Público e indexado: é por ele que a autenticação encontra a linha. */
-    prefix: text('prefix').notNull().unique(),
+    prefix: text('prefix').notNull().unique('api_keys_prefix_key'),
     keyHash: text('key_hash').notNull(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -213,9 +274,17 @@ export const resetTokens = pgTable(
     userUuid: uuid('user_uuid')
       .notNull()
       .references(() => users.uuid, { onDelete: 'cascade' }),
-    tokenHash: text('token_hash').notNull().unique(),
+    tokenHash: text('token_hash').notNull().unique('reset_tokens_token_hash_key'),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /** Preenchido = este link redefiniu a senha. É o que a auditoria conta. */
     usedAt: timestamp('used_at', { withTimezone: true }),
+    /**
+     * Preenchido = o link estava vivo e foi fechado **sem** uso, por um pedido
+     * novo ou pela troca da senha (`schema/023-links-de-reset-substituidos.sql`).
+     * Exclusivo com `usedAt` (`reset_tokens_estado_chk`); os dois nulos é link
+     * em aberto — vivo, ou morto por prazo.
+     */
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('reset_tokens_user_uuid_idx').on(table.userUuid)],
@@ -232,7 +301,7 @@ export const virtualMcps = pgTable(
   'virtual_mcps',
   {
     uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
-    slug: text('slug').notNull().unique(),
+    slug: text('slug').notNull().unique('virtual_mcps_slug_key'),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
     /** Desligado: tudo sob `/virtual/<slug>` responde 404; vínculos e chaves ficam. */
@@ -281,7 +350,10 @@ export const virtualMcpSkills = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.virtualMcpUuid, table.skillUuid] }),
+    primaryKey({
+      name: 'virtual_mcp_skills_pkey',
+      columns: [table.virtualMcpUuid, table.skillUuid],
+    }),
     index('virtual_mcp_skills_skill_uuid_idx').on(table.skillUuid),
   ],
 );
@@ -296,7 +368,7 @@ export const virtualMcpKeys = pgTable(
       .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     /** Público e indexado: é por ele que a autenticação encontra a linha. */
-    prefix: text('prefix').notNull().unique(),
+    prefix: text('prefix').notNull().unique('virtual_mcp_keys_prefix_key'),
     keyHash: text('key_hash').notNull(),
     /** Informativo: quem emitiu. Sobrevive à remoção da conta. */
     createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
@@ -329,7 +401,7 @@ export const catalogs = pgTable(
   'catalogs',
   {
     uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
-    slug: text('slug').notNull().unique(),
+    slug: text('slug').notNull().unique('catalogs_slug_key'),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
     /** Desligado: deixa de contribuir para todo vMCP vinculado; membros e vínculos ficam. */
@@ -366,7 +438,7 @@ export const catalogSkills = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.catalogUuid, table.skillUuid] }),
+    primaryKey({ name: 'catalog_skills_pkey', columns: [table.catalogUuid, table.skillUuid] }),
     index('catalog_skills_skill_uuid_idx').on(table.skillUuid),
   ],
 );
@@ -394,7 +466,10 @@ export const virtualMcpCatalogs = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.virtualMcpUuid, table.catalogUuid] }),
+    primaryKey({
+      name: 'virtual_mcp_catalogs_pkey',
+      columns: [table.virtualMcpUuid, table.catalogUuid],
+    }),
     index('virtual_mcp_catalogs_catalog_uuid_idx').on(table.catalogUuid),
   ],
 );
@@ -425,7 +500,7 @@ export const skillGrants = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.skillUuid, table.userUuid] }),
+    primaryKey({ name: 'skill_grants_pkey', columns: [table.skillUuid, table.userUuid] }),
     index('skill_grants_user_uuid_idx').on(table.userUuid),
   ],
 );
@@ -446,7 +521,7 @@ export const catalogGrants = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.catalogUuid, table.userUuid] }),
+    primaryKey({ name: 'catalog_grants_pkey', columns: [table.catalogUuid, table.userUuid] }),
     index('catalog_grants_user_uuid_idx').on(table.userUuid),
   ],
 );
@@ -467,7 +542,10 @@ export const virtualMcpGrants = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.virtualMcpUuid, table.userUuid] }),
+    primaryKey({
+      name: 'virtual_mcp_grants_pkey',
+      columns: [table.virtualMcpUuid, table.userUuid],
+    }),
     index('virtual_mcp_grants_user_uuid_idx').on(table.userUuid),
   ],
 );
@@ -525,8 +603,13 @@ export const mcpSessions = pgTable(
     requestCount: integer('request_count').notNull().default(0),
   },
   (table) => [
-    index('mcp_sessions_virtual_mcp_last_seen_idx').on(table.virtualMcpUuid, table.lastSeenAt),
-    index('mcp_sessions_last_seen_idx').on(table.lastSeenAt),
+    // A lista do painel, com e sem filtro por servidor, é por atividade
+    // decrescente: o `DESC` é do índice (`015`).
+    index('mcp_sessions_virtual_mcp_last_seen_idx').on(
+      table.virtualMcpUuid,
+      table.lastSeenAt.desc(),
+    ),
+    index('mcp_sessions_last_seen_idx').on(table.lastSeenAt.desc()),
     index('mcp_sessions_key_id_idx').on(table.keyId),
   ],
 );
@@ -584,39 +667,75 @@ export const skillAccesses = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    index('skill_accesses_skill_created_idx').on(table.skillUuid, table.createdAt),
+    // Toda guia de acessos é por data decrescente: o `DESC` é do índice.
+    index('skill_accesses_skill_created_idx').on(table.skillUuid, table.createdAt.desc()),
     index('skill_accesses_catalog_uuids_idx').using('gin', table.catalogUuids),
-    index('skill_accesses_virtual_mcp_created_idx').on(table.virtualMcpUuid, table.createdAt),
-    index('skill_accesses_created_idx').on(table.createdAt),
+    index('skill_accesses_virtual_mcp_created_idx').on(
+      table.virtualMcpUuid,
+      table.createdAt.desc(),
+    ),
+    index('skill_accesses_created_idx').on(table.createdAt.desc()),
     index('skill_accesses_key_id_idx').on(table.keyId),
     index('skill_accesses_api_key_id_idx').on(table.apiKeyId),
     // A guia da conta (`schema/019-acessos-por-conta.sql`), que substituiu o simples do `018`.
-    index('skill_accesses_user_created_idx').on(table.userUuid, table.createdAt),
+    index('skill_accesses_user_created_idx').on(table.userUuid, table.createdAt.desc()),
+    // As seis colunas do `q` da guia (`schema/022-busca-por-substring.sql`):
+    // `ILIKE '%termo%'` só usa índice de trigrama, e num `OR` só há
+    // `BitmapOr` se **todos** os ramos tiverem um.
+    index('skill_accesses_user_email_trgm_idx').using(
+      'gin',
+      table.userEmail.op('gin_trgm_ops'),
+    ),
+    index('skill_accesses_api_key_name_trgm_idx').using(
+      'gin',
+      table.apiKeyName.op('gin_trgm_ops'),
+    ),
+    index('skill_accesses_key_name_trgm_idx').using('gin', table.keyName.op('gin_trgm_ops')),
+    index('skill_accesses_ip_trgm_idx').using('gin', table.ip.op('gin_trgm_ops')),
+    index('skill_accesses_client_name_trgm_idx').using(
+      'gin',
+      table.clientName.op('gin_trgm_ops'),
+    ),
+    index('skill_accesses_session_id_trgm_idx').using('gin', table.sessionId.op('gin_trgm_ops')),
   ],
 );
 
 // -------------------------------------------------------------------- RAG ---
 
 /**
- * Um espaço de embedding (`schema/020-rag.sql`, `tmp/RAG-GOOGLE.md` §5):
+ * Um espaço de embedding (`schema/020-rag.sql`, `docs/14-rag.md` §5):
  * driver, modelo, dimensões e os **dois prefixos** do driver. A identidade é
  * a combinação dos cinco — trocar o prefixo cria outro espaço, como trocar o
  * modelo, e vetores de espaços diferentes nunca se misturam numa consulta. O
- * `UNIQUE (driver, model, dimensions, document_prefix, query_prefix)`, o
- * `UNIQUE (uuid, dimensions)` que a FK de `rag_vectors` usa e o CHECK de
- * tamanho dos prefixos ficam só no SQL.
+ * CHECK de tamanho dos prefixos fica só no SQL.
  */
-export const ragSpaces = pgTable('rag_spaces', {
-  uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
-  driver: text('driver').notNull(),
-  model: text('model').notNull(),
-  dimensions: integer('dimensions').notNull(),
-  /** O que o driver põe antes do texto ao embutir um documento; vazio é válido. */
-  documentPrefix: text('document_prefix').notNull(),
-  /** O mesmo, para a consulta. Sem DEFAULT no banco: esquecê-lo é erro. */
-  queryPrefix: text('query_prefix').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const ragSpaces = pgTable(
+  'rag_spaces',
+  {
+    uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+    driver: text('driver').notNull(),
+    model: text('model').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    /** O que o driver põe antes do texto ao embutir um documento; vazio é válido. */
+    documentPrefix: text('document_prefix').notNull(),
+    /** O mesmo, para a consulta. Sem DEFAULT no banco: esquecê-lo é erro. */
+    queryPrefix: text('query_prefix').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // A identidade do espaço são os cinco campos juntos.
+    unique('rag_spaces_identity_uniq').on(
+      table.driver,
+      table.model,
+      table.dimensions,
+      table.documentPrefix,
+      table.queryPrefix,
+    ),
+    // Redundante como unicidade (o uuid já é PK) e obrigatório como **alvo** da
+    // FK composta de `rag_vectors`: o Postgres só referencia coluna com UNIQUE.
+    unique('rag_spaces_uuid_dimensions_uniq').on(table.uuid, table.dimensions),
+  ],
+);
 
 /**
  * O texto canônico, endereçado pelo próprio SHA-256 e guardado **sem** o
@@ -657,7 +776,10 @@ export const ragSkillTexts = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.skillUuid, table.source, table.relativePath, table.part] }),
+    primaryKey({
+      name: 'rag_skill_texts_pkey',
+      columns: [table.skillUuid, table.source, table.relativePath, table.part],
+    }),
     index('rag_skill_texts_sha256_idx').on(table.textSha256),
     index('rag_skill_texts_file_idx').on(table.fileId),
   ],
@@ -665,10 +787,10 @@ export const ragSkillTexts = pgTable(
 
 /**
  * O vetor de um texto num espaço. `dimensions` é copiada do espaço pela FK
- * composta `(space_uuid, dimensions) → rag_spaces (uuid, dimensions)` e o
- * `rag_vectors_dimensions_chk` confere o vetor contra ela: as duas ficam só
- * no SQL, como a FK composta, que o Drizzle não declara aqui. A busca é
- * exata, sem índice — o HNSW do pgvector para em 2000 dimensões.
+ * composta `(space_uuid, dimensions) → rag_spaces (uuid, dimensions)`; o
+ * `rag_vectors_dimensions_chk`, que confere `vector_dims(embedding)` contra
+ * ela, fica só no SQL. A busca é exata, sem índice — o HNSW do pgvector para
+ * em 2000 dimensões.
  */
 export const ragVectors = pgTable(
   'rag_vectors',
@@ -682,8 +804,49 @@ export const ragVectors = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.spaceUuid, table.textSha256] }),
+    primaryKey({ name: 'rag_vectors_pkey', columns: [table.spaceUuid, table.textSha256] }),
+    // É esta FK que impede vetor de dimensão errada: a linha só existe se o par
+    // (espaço, dimensões) existir em `rag_spaces`, e o CHECK compara o vetor
+    // com a coluna copiada.
+    foreignKey({
+      name: 'rag_vectors_space_fk',
+      columns: [table.spaceUuid, table.dimensions],
+      foreignColumns: [ragSpaces.uuid, ragSpaces.dimensions],
+    }).onDelete('cascade'),
     index('rag_vectors_text_idx').on(table.textSha256),
+  ],
+);
+
+/**
+ * O estado do par (espaço, texto) na fila do indexador (`schema/025-fila-de-textos-do-rag.sql`):
+ * `state = 'reservado'` com `until` no futuro é "alguém está pagando por este
+ * texto agora"; `state = 'recusado'` com `until` nulo é "o provedor recusou o
+ * conteúdo de vez". As duas FKs são `CASCADE` — estado de fila não pode
+ * impedir a coleta de órfãos nem sobreviver ao espaço. O
+ * `rag_text_status_state_chk`, que é ao mesmo tempo o domínio de `state` e a
+ * forma de cada estado, fica só no SQL.
+ */
+export const ragTextStatus = pgTable(
+  'rag_text_status',
+  {
+    spaceUuid: uuid('space_uuid')
+      .notNull()
+      .references(() => ragSpaces.uuid, { onDelete: 'cascade' }),
+    textSha256: bytea('text_sha256')
+      .notNull()
+      .references(() => ragTexts.sha256, { onDelete: 'cascade' }),
+    state: text('state').notNull(),
+    /** Fim da reserva; nulo é o que marca a recusa, que não tem prazo. */
+    until: timestamp('until', { withTimezone: true }),
+    /** O que o provedor disse ao recusar; nulo numa reserva (CHECK). */
+    reason: text('reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ name: 'rag_text_status_pkey', columns: [table.spaceUuid, table.textSha256] }),
+    // Para a cascata vinda de `rag_texts` na coleta de órfãos.
+    index('rag_text_status_text_idx').on(table.textSha256),
   ],
 );
 
@@ -707,6 +870,7 @@ export type SettingRow = typeof settings.$inferSelect;
 export type McpSessionRow = typeof mcpSessions.$inferSelect;
 export type SkillAccessRow = typeof skillAccesses.$inferSelect;
 export type RagSpaceRow = typeof ragSpaces.$inferSelect;
+export type RagTextStatusRow = typeof ragTextStatus.$inferSelect;
 export type RagTextRow = typeof ragTexts.$inferSelect;
 export type RagSkillTextRow = typeof ragSkillTexts.$inferSelect;
 export type RagVectorRow = typeof ragVectors.$inferSelect;

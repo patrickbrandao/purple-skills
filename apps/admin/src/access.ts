@@ -124,11 +124,32 @@ export async function accountByEmail(rawEmail: string): Promise<{ uuid: string; 
   return { uuid: user.uuid, email: user.email };
 }
 
-/** Busca de contas para compartilhar (decisão 13): qualquer sessão, só contas ativas. */
+/**
+ * A conta como ela sai do painel: identificada pelo **e-mail**, sem o `uuid`.
+ *
+ * O `uuid` é o `sub` do cookie de sessão (`auth.ts`), e o único outro campo do
+ * payload é uma versão inteira pequena: entregar `uuid` + papel de toda conta
+ * ativa a qualquer sessão é dizer a um membro qual crachá forjar. O e-mail já
+ * identifica a conta em todas as rotas de concessão, e já é visível para o
+ * mesmo público (`docs/12` decisão 13 e §10), então nada de novo vaza aqui.
+ *
+ * `uuid` continua no objeto como apelido do e-mail só enquanto o painel o ler.
+ */
+export const withoutUuid = (user: UserLookup): UserLookup => ({
+  email: user.email,
+  name: user.name,
+  role: user.role,
+  uuid: user.email,
+});
+
+/**
+ * Busca de contas para compartilhar (decisão 13): qualquer sessão, só contas
+ * ativas, e nunca o `uuid` da conta — ver `withoutUuid`.
+ */
 export async function lookup(rawQuery: unknown): Promise<UserLookup[]> {
   const q = typeof rawQuery === 'string' ? rawQuery.trim() : '';
   if (q.length < 2) return [];
-  return lookupUsers(q);
+  return (await lookupUsers(q)).map(withoutUuid);
 }
 
 export async function shareSkill(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
@@ -142,6 +163,11 @@ export async function unshareSkill(user: AuthUser, slug: string, email: string):
   const target = await accountByEmail(email);
   await removeSkillGrant(skill.slug, target.uuid, SOURCE, actorOf(user));
 }
+
+/** UUID canônico, como o banco grava — o que não é e-mail tem de ter esta cara. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const OWNER_FORMAT = 'ownerUserUuid precisa ser o e-mail da conta, um UUID ou null';
 
 /** `ownerUserUuid` do corpo de um PATCH: transferir exige `'owner'` e uma conta ativa. */
 export async function ownerFrom(
@@ -158,6 +184,13 @@ export async function ownerFrom(
     if (user.role !== 'admin') throw forbidden(`Só um administrador deixa um ${what} sem dono`);
     return null;
   }
-  if (typeof raw !== 'string' || !raw.trim()) throw badRequest('ownerUserUuid precisa ser um UUID ou null');
-  return raw.trim();
+  if (typeof raw !== 'string' || !raw.trim()) throw badRequest(OWNER_FORMAT);
+  const target = raw.trim();
+  // A busca de contas não entrega mais o `uuid` (ver `withoutUuid`), então o
+  // novo dono chega pelo e-mail — o mesmo identificador das rotas de concessão,
+  // e com a conferência de conta ativa que o UUID cru não faz. O UUID continua
+  // aceito para quem já integra pela REST.
+  if (target.includes('@')) return (await accountByEmail(target)).uuid;
+  if (!UUID.test(target)) throw badRequest(OWNER_FORMAT);
+  return target;
 }

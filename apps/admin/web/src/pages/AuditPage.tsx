@@ -63,32 +63,28 @@ function Trail() {
   const dq = useDebounced(q, 300);
   const dactor = useDebounced(actor, 300);
 
-  const load = useCallback(async () => {
-    try {
-      setPage(
-        await getAudit({
-          limit: PAGE,
-          offset,
-          action: action || undefined,
-          actor: dactor.trim() || undefined,
-          q: dq.trim() || undefined,
-          since: since ? new Date(since).toISOString() : undefined,
-          until: until ? new Date(`${until}T23:59:59`).toISOString() : undefined,
-        }),
-      );
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    }
+  // Uma busca por interação: cada filtro volta à primeira página no mesmo
+  // render (o `setOffset(0)` está no próprio campo) e o cleanup descarta a
+  // resposta atrasada — senão a consulta antiga sobrescreve a nova e o rodapé
+  // acaba descrevendo outra faixa de linhas.
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    getAudit({
+      limit: PAGE,
+      offset,
+      action: action || undefined,
+      actor: dactor.trim() || undefined,
+      q: dq.trim() || undefined,
+      since: since ? new Date(since).toISOString() : undefined,
+      until: until ? new Date(`${until}T23:59:59`).toISOString() : undefined,
+    })
+      .then((data) => active && setPage(data))
+      .catch((err) => active && setError((err as Error).message));
+    return () => {
+      active = false;
+    };
   }, [offset, action, dactor, dq, since, until]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    setOffset(0);
-  }, [action, dactor, dq, since, until]);
 
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : offset + 1;
@@ -99,10 +95,34 @@ function Trail() {
       <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto]">
         <label className="search-bar">
           <Search />
-          <input className="field" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Skill, alvo ou arquivo…" />
+          <input
+            className="field"
+            type="search"
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setOffset(0);
+            }}
+            placeholder="Skill, alvo ou arquivo…"
+          />
         </label>
-        <input className="field" value={actor} onChange={(e) => setActor(e.target.value)} placeholder="Ator (e-mail, token-global…)" />
-        <select className="field" value={action} onChange={(e) => setAction(e.target.value as AuditAction | '')}>
+        <input
+          className="field"
+          value={actor}
+          onChange={(e) => {
+            setActor(e.target.value);
+            setOffset(0);
+          }}
+          placeholder="Ator (e-mail, token-global…)"
+        />
+        <select
+          className="field"
+          value={action}
+          onChange={(e) => {
+            setAction(e.target.value as AuditAction | '');
+            setOffset(0);
+          }}
+        >
           <option value="">Todas as ações</option>
           {AUDIT_ACTIONS.map((item) => (
             <option key={item} value={item}>
@@ -111,16 +131,34 @@ function Trail() {
           ))}
         </select>
         <Field label="" className="!block">
-          <input className="field" type="date" value={since} onChange={(e) => setSince(e.target.value)} title="Desde" />
+          <input
+            className="field"
+            type="date"
+            value={since}
+            onChange={(e) => {
+              setSince(e.target.value);
+              setOffset(0);
+            }}
+            title="Desde"
+          />
         </Field>
         <Field label="" className="!block">
-          <input className="field" type="date" value={until} onChange={(e) => setUntil(e.target.value)} title="Até" />
+          <input
+            className="field"
+            type="date"
+            value={until}
+            onChange={(e) => {
+              setUntil(e.target.value);
+              setOffset(0);
+            }}
+            title="Até"
+          />
         </Field>
       </div>
 
       <div className="mb-3 flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
         <span className="mr-auto">
-          {page ? `${from}–${to} de ${total} evento${total === 1 ? '' : 's'}` : 'Carregando…'}
+          {page ? `${from}–${to} de ${total} evento${total === 1 ? '' : 's'}` : error ? 'não foi possível carregar' : 'Carregando…'}
         </span>
         <button type="button" className="icon-btn" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))} title="Anterior">
           <ChevronLeft />

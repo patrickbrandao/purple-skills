@@ -52,6 +52,15 @@ COPY --from=build --chown=node:node /app/apps/admin/package.json ./apps/admin/pa
 COPY --from=build --chown=node:node /app/apps/admin/dist ./apps/admin/dist
 COPY --from=build --chown=node:node /app/apps/admin/dist-web ./apps/admin/dist-web
 
+# Versão que o app anuncia em tempo de execução (aqui, o rodapé de Configurações
+# do painel). Quem a passa é o `release-images.sh`, a partir do package.json da
+# raiz; num `docker build` comum ela sai vazia e o app cai no padrão compilado,
+# como antes. Depois dos COPY de propósito: mudar só a versão não invalida as
+# camadas acima. Atenção: o `docker-compose.yml` da raiz manda
+# `APP_VERSION: ${APP_VERSION:-}` e, vazio, esse valor SOBRESCREVE o daqui.
+ARG APP_VERSION=""
+ENV APP_VERSION=${APP_VERSION}
+
 USER node
 EXPOSE 3001
 

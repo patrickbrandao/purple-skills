@@ -8,6 +8,11 @@
  * configuração encerra o ciclo, limite de taxa e indisponibilidade recuam e
  * tentam de novo, prazo estourado de quem chamou não vira tentativa nova.
  *
+ * O orçamento de tempo, porém, é de **quem chama**, e é o `signal` que o diz:
+ * a busca do site e do MCP passa um prazo curto e a pausa entre tentativas é
+ * cortada com ele; o indexador não passa prazo nenhum, porque ninguém está
+ * esperando, e aí valem `maxRetries`, o recuo e o teto de `ESPERA_MAXIMA_MS`.
+ *
  * Deixar essa política em cada driver seria mantê-la três vezes, e a terceira
  * cópia é sempre a que fica para trás.
  */
@@ -32,8 +37,12 @@ export type OpcoesHttp = {
   fetchImpl?: typeof fetch;
   /** Tentativas em erro temporário. Padrão: 5. */
   maxRetries?: number;
-  /** Espera entre tentativas, em ms. Injetável para teste não dormir. */
-  sleep?: (ms: number) => Promise<void>;
+  /**
+   * Espera entre tentativas, em ms. Injetável para teste não dormir. Recebe o
+   * `signal` da requisição porque é ele que encurta a pausa quando o prazo de
+   * quem chamou estoura.
+   */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 
 export type Requisicao = {
@@ -49,13 +58,41 @@ export type Requisicao = {
  */
 export type MapearErro = (resposta: Response, corpo: unknown) => never;
 
-const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/**
+ * Espera cancelável: o prazo de quem chamou encurta a pausa entre tentativas.
+ *
+ * Com `setTimeout` puro, abortar o `fetch` não abortava a espera — e a busca,
+ * que promete responder em `RAG_QUERY_TIMEOUT_MS`, ficava presa pelo tempo que
+ * o provedor pedisse. Quem não passa `signal` (o indexador) dorme a espera
+ * inteira, como antes — limitada ao teto abaixo.
+ */
+const dormir = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const fim = () => {
+      clearTimeout(alarme);
+      signal?.removeEventListener('abort', fim);
+      resolve();
+    };
+    const alarme = setTimeout(fim, ms);
+    signal?.addEventListener('abort', fim, { once: true });
+  });
+
+/**
+ * Teto de uma espera, inclusive da que o provedor pede no `Retry-After`.
+ *
+ * Sem ele era o provedor quem decidia por quanto tempo esta instalação ficava
+ * parada: um `Retry-After: 300` virava cinco minutos de pausa por tentativa.
+ * O caminho **sem** `Retry-After` já respeitava este teto (`recuoDoLimite`);
+ * não faz sentido o caminho explícito ser o menos protegido.
+ */
+const ESPERA_MAXIMA_MS = 60_000;
 
 /** Um cliente HTTP com a política de tentativas do projeto. */
 export class ClienteHttp {
   private readonly fetchImpl: typeof fetch;
   private readonly maxRetries: number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   constructor(
     /** Como o provedor aparece nas mensagens de erro: "o Google", "a OpenAI". */
@@ -106,7 +143,14 @@ export class ClienteHttp {
           erro instanceof RagRateLimitError
             ? (erro.retryAfterMs ?? recuoDoLimite(tentativa))
             : recuoExponencial(tentativa);
-        await this.sleep(espera);
+        await this.sleep(Math.min(espera, ESPERA_MAXIMA_MS), req.signal);
+
+        // A espera pode ter sido encurtada pelo abort: o prazo de quem chamou
+        // acabou no meio da pausa, e gastar outra tentativa só atrasaria a
+        // resposta que já vai sair em modo textual.
+        if (req.signal?.aborted) {
+          throw new RagTimeoutError(`o prazo da requisição a ${this.provedor} estourou`);
+        }
       }
     }
 
@@ -140,9 +184,9 @@ export function retryAfterMs(resposta: Response): number | null {
   return Number.isFinite(segundos) && segundos >= 0 ? segundos * 1000 : null;
 }
 
-/** Sem `Retry-After`: recua de 1 a 60 segundos. */
+/** Sem `Retry-After`: recua de 1 segundo até o teto. */
 export function recuoDoLimite(tentativa: number): number {
-  return Math.min(60_000, 1000 * 2 ** tentativa);
+  return Math.min(ESPERA_MAXIMA_MS, 1000 * 2 ** tentativa);
 }
 
 export function recuoExponencial(tentativa: number): number {

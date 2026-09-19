@@ -51,6 +51,15 @@ COPY --from=build --chown=node:node /app/database/dist ./database/dist
 COPY --from=build --chown=node:node /app/apps/mcp-public/package.json ./apps/mcp-public/package.json
 COPY --from=build --chown=node:node /app/apps/mcp-public/dist ./apps/mcp-public/dist
 
+# Versão que o servidor anuncia no handshake MCP. Quem a passa é o
+# `release-images.sh`, a partir do package.json da raiz; num `docker build` comum
+# ela sai vazia e o app cai no padrão compilado (`1.0.0-beta.1`), como antes.
+# Depois dos COPY de propósito: mudar só a versão não invalida as camadas acima.
+# Atenção: o `docker-compose.yml` da raiz manda `APP_VERSION: ${APP_VERSION:-}`
+# e, vazio, esse valor SOBRESCREVE o daqui.
+ARG APP_VERSION=""
+ENV APP_VERSION=${APP_VERSION}
+
 USER node
 EXPOSE 3002
 

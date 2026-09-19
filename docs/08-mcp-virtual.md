@@ -7,12 +7,13 @@ as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 > Não existe mais um "MCP principal": o que responde em `/mcp` é o vMCP
 > escolhido como padrão. Deixaram de valer a decisão 2 (o "universal" por
 > `is_public AND use_as_skill`), a decisão 7 e a `§7` inteira (`MCP_PUBLIC_AUTH`
-> e as chaves `psp_`, removidas no `011`), e a decisão 12 e a `§3.3` caem no
-> PR2 de `09` (vínculo pelos dois lados, fim de `confirm_open`). O item "listar
-> virtuais abertos no site" da `§9` entra no escopo do PR2. O resto — recorte
-> pelo vínculo, chaves `psv_`, dono, identidade da sessão, downloads próprios,
-> 404/401 — continua sendo o desenho de **todo** ponto de montagem, inclusive
-> a raiz.
+> e as chaves `psp_`, removidas no `011`), e as decisões 6 e 12 e a `§3.3`
+> caem no PR2 de `09` (vínculo pelos dois lados, fim de `confirm_open` — a
+> regra em vigor é o aviso inline da decisão 15 do
+> [`12`](12-acesso-granular.md)). O item "listar virtuais abertos no site" da
+> `§9` entra no escopo do PR2. O resto — recorte pelo vínculo, chaves `psv_`,
+> dono, identidade da sessão, downloads próprios, 404/401 — continua sendo o
+> desenho de **todo** ponto de montagem, inclusive a raiz.
 >
 > **Também parcialmente revogado por [`12`](12-acesso-granular.md):** a
 > decisão 9 e a `§3.1` ("admin manda em todos; o dono, no seu; ninguém mais";
@@ -58,7 +59,7 @@ universalidade.
 | 3 | Superfícies no virtual | Três flags **do vínculo** (`as_skill`, `as_prompt`, `as_resource`), escolha obrigatória; as `use_as_*` da skill são ignoradas |
 | 4 | Path | `/virtual/<slug>/mcp` — namespace fixo, sem lista de slugs reservados |
 | 5 | Downloads de skill privada | Servidos pelo próprio mcp-public sob `/virtual/<slug>/skills/<skill>/…`, com a mesma credencial |
-| 6 | Acesso | Chave obrigatória por padrão; `is_open` por MCP. Abrir com skill privada dentro **exige confirmação explícita** |
+| 6 | Acesso | Chave obrigatória por padrão; `is_open` por MCP. ~~Abrir com skill privada dentro **exige confirmação explícita**~~ — **revogada pela decisão 9 do [`09`](09-mcp-padrao-e-skills-flutuantes.md)**: a confirmação saiu do código no PR2 dele; vale o aviso inline (`12`, decisão 15) |
 | 7 | Modo do principal | `MCP_PUBLIC_AUTH=open\|key\|managed`; ausente = deduzido da `MCP_PUBLIC_KEY` |
 | 8 | Aceitação cruzada | **Nenhuma**: cada servidor só aceita as próprias chaves |
 | 9 | Dono | `editor`+ cria; dono = criador; admin manda em todos e transfere; conta desativada não desliga o MCP |
@@ -122,17 +123,32 @@ de `list_tags` não têm conserto depois.
 
 ### 3.3 Aberto é publicação
 
+> **Revogado neste ponto por [`09`](09-mcp-padrao-e-skills-flutuantes.md):** a
+> confirmação (decisão 6 e o parágrafo "Era" abaixo) saiu no PR2 dele (decisão
+> 9 e `§4.4`), e com ela o `400 confirm_open_required`, o `confirmOpen` do
+> corpo, o `confirm_open` da tool e o `privateSkillCount` do resumo: nada disso
+> existe no código. O que vale é o **aviso inline, sem confirmação**, da
+> decisão 15 do [`12`](12-acesso-granular.md), que devolveu à skill o
+> `is_public` que o `09` havia tirado; a exposição por `view` é risco aceito em
+> `12` §10. Abrir um vMCP é `manage` (`12` §3.2) e continua na auditoria como
+> `mcp.update`.
+
 `is_open = true` dispensa chave. Com skill privada dentro, isso é **tornar a
-skill pública neste endereço**, e o sistema permite — mas só com confirmação
-explícita, nas duas portas: o painel devolve `400 confirm_open_required` e
-reenvia com `confirmOpen: true` depois de a pessoa aceitar o aviso; a tool
-recusa até receber `confirm_open: true`. A confirmação é exigida nos dois
-sentidos: ao abrir um MCP que já tem privada, e ao vincular privada a um MCP
-que já está aberto. Fica na auditoria como `mcp.update`.
+skill pública neste endereço**, e o sistema permite. Fica na auditoria como
+`mcp.update`.
+
+**Era**, até o PR2 do `09`: permitia "mas só com confirmação explícita, nas
+duas portas" — o painel devolvia `400 confirm_open_required` e reenviava com
+`confirmOpen: true` depois de a pessoa aceitar o aviso; a tool recusava até
+receber `confirm_open: true`; e a confirmação valia nos dois sentidos, ao abrir
+um MCP que já tinha privada e ao vincular privada a um MCP já aberto.
 
 A alternativa — proibir a combinação — foi descartada na entrevista: há casos
 legítimos (uma rede interna, um recorte que o time considera público) e a
-regra cruzada custaria duas validações que se contradizem.
+regra cruzada custaria duas validações que se contradizem. **Esta parte
+continua valendo**: o que caiu foi a confirmação, não a permissão — um vMCP
+aberto com skill privada dentro segue sendo um caso legítimo, informado e não
+impedido.
 
 ### 3.4 Contadores em dois lugares
 
@@ -161,6 +177,13 @@ responder em `/virtual/b` ou na raiz é a **identidade**, portada do
 mcp-admin: `virtual:<uuid>:key:<id>` ou `virtual:<uuid>:open`. A raiz tem
 identidade `undefined` — com ou sem `MCP_PUBLIC_KEY`, todo cliente é o mesmo
 cliente, como antes.
+
+Desde o `007`, o teto global é o **total dos dois transportes** (~~o SSE tinha um
+pool próprio de 500~~) e existe um segundo teto ao lado dele, **por identidade**:
+`MCP_MAX_SESSIONS_PER_IDENTITY`, padrão de um décimo de `MCP_MAX_SESSIONS` com
+mínimo de 10. Ele **recicla** em vez de recusar — cai a sessão mais parada da
+própria credencial, com `end_reason: 'timeout'` — e só o teto global responde 429;
+o porquê está em [`02`](02-architecture-decisions.md) §7.3.
 
 ### 4.2 Resolução por requisição
 
@@ -219,6 +242,14 @@ O texto completo aparece uma vez, na emissão — no painel e na resposta de
 ## 6. Administração
 
 ### 6.1 Painel
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md) `§3.1`:** ~~a lista
+> traz todos para admin e os próprios para os demais~~. Traz tudo para admin
+> e, para os demais, os seus, os concedidos **e os abertos e ligados**, com o
+> filtro meus / compartilhados comigo / públicos (`listMine` em
+> `apps/admin/src/mcps.ts`). A tabela de skills virou o canvas do
+> [`10`](10-admin-canvas-e-sessoes.md), e o selo somente-leitura da página da
+> skill virou o "Publicada em" editável do `09` `§4.3`.
 
 Seção "MCPs virtuais": a lista (todos para admin, os próprios para os
 demais), a página do MCP com a tabela de skills vinculadas — cada linha com
@@ -282,8 +313,9 @@ Sessões no principal ficam presas à identidade como nos virtuais:
 
 ## 8. Riscos aceitos
 
-- Um virtual `is_open` com skill privada é publicação de fato, protegida só
-  pela confirmação (`§3.3`).
+- Um virtual `is_open` com skill privada é publicação de fato. A confirmação
+  que a protegia caiu no PR2 do `09`: o que resta é o aviso inline da decisão
+  15 do `12`, que informa e não impede (`§3.3`, e `12` §10).
 - 404 vs 401 permite enumerar slugs de MCPs (`§4.5`).
 - Ownership entra no modelo pela primeira vez, restrito a MCPs virtuais.
 - Os downloads sob `/virtual/` **não** passam pelos contadores do site nem

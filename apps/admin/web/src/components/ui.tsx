@@ -3,10 +3,12 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -190,7 +192,19 @@ export function Skel({
   return <div className={`skel ${className}`.trim()} style={{ height: h, width: w, ...style }} aria-hidden />;
 }
 
-export function CopyButton({ text, label, size = 'sm' }: { text: string; label?: string; size?: 'sm' | 'lg' }) {
+export function CopyButton({
+  text,
+  label,
+  size = 'sm',
+  variant = 'ghost',
+  title,
+}: {
+  text: string;
+  label?: string;
+  size?: 'sm' | 'lg';
+  variant?: 'ghost' | 'quiet';
+  title?: string;
+}) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -213,7 +227,7 @@ export function CopyButton({ text, label, size = 'sm' }: { text: string; label?:
     );
   }
   return (
-    <Button variant="ghost" size={size === 'sm' ? 'sm' : undefined} onClick={() => void copy()}>
+    <Button variant={variant} size={size === 'sm' ? 'sm' : undefined} onClick={() => void copy()} title={title} aria-live="polite">
       {copied ? <Check /> : <Copy />} {copied ? 'Copiado' : label}
     </Button>
   );
@@ -233,8 +247,20 @@ export function Tabs({
   onChange?: (key: string) => void;
   className?: string;
 }) {
+  // Numa tela estreita a barra rola para o lado: a guia ativa fica à vista.
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = bar.current;
+    const active = el?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!el || !active) return;
+    const box = el.getBoundingClientRect();
+    const tab = active.getBoundingClientRect();
+    if (tab.left < box.left) el.scrollLeft += tab.left - box.left - 16;
+    else if (tab.right > box.right) el.scrollLeft += tab.right - box.right + 16;
+  }, [value]);
+
   return (
-    <div className={`tabs ${className}`.trim()} role="tablist">
+    <div ref={bar} className={`tabs ${className}`.trim()} role="tablist">
       {items.map((item) =>
         item.to ? (
           <Link key={item.key} to={item.to} role="tab" aria-selected={value === item.key} className={value === item.key ? 'active' : ''}>
@@ -369,6 +395,74 @@ export function MenuItem({
 export const MenuSeparator = () => <div className="sep" role="separator" />;
 export const MenuHeading = ({ children }: { children: ReactNode }) => <div className="hd">{children}</div>;
 
+/* ---- foco das janelas modais ---- */
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Quem tinha o foco fora da janela: é a ele que o foco volta ao fechar. */
+function openerOutside(card: HTMLElement | null): HTMLElement | null {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || active === document.body || card?.contains(active)) return null;
+  return active;
+}
+
+/**
+ * O que uma janela modal precisa e o CSS não dá: foco inicial dentro dela,
+ * `Tab` circulando por dentro e o foco devolvido a quem abriu ao fechar. Sem
+ * isso, quem usa teclado ou leitor de tela tabula a página inteira até
+ * alcançar a janela, sai dela sem perceber e, ao fechar, cai no `body`. Um
+ * `autoFocus` no conteúdo tem prioridade: a janela só leva o foco quando
+ * ninguém lá dentro o pediu.
+ */
+function useModalFocus(open: boolean) {
+  const card = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let opener = openerOutside(card.current);
+    // A paleta ⌘K devolve o foco a quem a abriu num `setTimeout(0)` ao fechar,
+    // e é ela que abre parte destas janelas (a de adicionar skill ao
+    // servidor): o foco inicial daqui só fica de pé se vier depois disso — e é
+    // depois, também, que se sabe a quem devolvê-lo.
+    const timer = setTimeout(() => {
+      const el = card.current;
+      if (!el) return;
+      opener ??= openerOutside(el);
+      if (!el.contains(document.activeElement)) (el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus();
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      // Quem abriu pode ter saído da tela junto com a ação (a linha que se
+      // apagou, o nó que se tirou): aí não há a quem devolver o foco.
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [open]);
+
+  const trapTab = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Tab') return;
+    const el = card.current;
+    if (!el) return;
+    const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((item) => item.offsetParent !== null);
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    // Só nas bordas: no meio da janela o `Tab` é o do navegador. A própria
+    // janela conta como borda de cima porque é ela que recebe o foco inicial
+    // quando não há nada focável dentro.
+    if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    } else if (event.shiftKey && (active === first || active === el)) {
+      event.preventDefault();
+      last.focus();
+    }
+  }, []);
+
+  return { card, trapTab };
+}
+
 /* ---- confirmação (no lugar do window.confirm) ---- */
 type ConfirmOptions = {
   title: string;
@@ -384,6 +478,7 @@ export const useConfirm = () => useContext(ConfirmContext);
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<{ options: ConfirmOptions; resolve: (ok: boolean) => void } | null>(null);
+  const { card, trapTab } = useModalFocus(pending !== null);
 
   const confirm = useCallback(
     (options: ConfirmOptions) =>
@@ -414,7 +509,15 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {pending && (
         <>
           <div className="overlay" onClick={() => settle(false)} />
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+          <div
+            ref={card}
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            tabIndex={-1}
+            onKeyDown={trapTab}
+          >
             <h2 id="confirm-title">{pending.options.title}</h2>
             {pending.options.description && <p className="d">{pending.options.description}</p>}
             <div className="actions">
@@ -446,6 +549,11 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
 }) {
+  // O `<h2>` já existia; o `aria-labelledby` é o que faz o leitor de tela
+  // anunciar o título ao entrar na janela.
+  const titleId = useId();
+  const { card, trapTab } = useModalFocus(open);
+
   useEffect(() => {
     if (!open) return;
     const escape = (event: KeyboardEvent) => {
@@ -459,8 +567,17 @@ export function Modal({
   return (
     <>
       <div className="overlay" onClick={onClose} />
-      <div className="modal" role="dialog" aria-modal="true" style={wide ? { width: 'min(640px, calc(100vw - 2rem))' } : undefined}>
-        <h2>{title}</h2>
+      <div
+        ref={card}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={trapTab}
+        style={wide ? { width: 'min(640px, calc(100vw - 2rem))' } : undefined}
+      >
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
     </>
@@ -649,4 +766,33 @@ export function isTypingTarget(target: EventTarget | null): boolean {
     return !['checkbox', 'radio', 'button', 'submit', 'range', 'file'].includes(type);
   }
   return false;
+}
+
+/* ---- acorde "g + tecla" ---- */
+
+/** Janela do acorde: passado isso, o `g` não arma mais nada. */
+const CHORD_MS = 800;
+let chordAt = 0;
+let chordKey: KeyboardEvent | null = null;
+
+/** O `g` foi apertado: arma o acorde de navegação (`App.tsx`). */
+export function armChord(): void {
+  chordAt = Date.now();
+}
+
+/**
+ * Esta tecla é a segunda metade de um acorde `g + tecla`? Quem pergunta
+ * primeiro consome o acorde, mas a resposta segue `true` para o **mesmo**
+ * evento: a navegação e os atalhos de uma letra só (os do palco, por exemplo)
+ * escutam o mesmo `keydown` em `document`, em ordem que muda a cada
+ * remontagem, e os dois precisam concordar sobre de quem é a tecla — senão
+ * `g c` navega para Catálogos **e** abre "adicionar catálogo" no servidor.
+ */
+export function isChordKey(event: KeyboardEvent): boolean {
+  if (chordKey === event) return true;
+  chordKey = null; // não segura o evento (nem o alvo dele) além do necessário
+  if (Date.now() - chordAt > CHORD_MS) return false;
+  chordAt = 0;
+  chordKey = event;
+  return true;
 }

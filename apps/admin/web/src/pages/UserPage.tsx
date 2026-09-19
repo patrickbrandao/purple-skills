@@ -307,7 +307,7 @@ function KeysTab({ user }: { user: UserSummary }) {
   return (
     <Panel title="Chaves do MCP administrativo" icon={<KeyRound />}>
       <p className="panel-hint">
-        As chaves <code>psk_</code> que esta conta emitiu em Minha conta. Cada uma carrega o papel dela e aparece na
+        As chaves <code>psk_</code> que esta conta emitiu em Adm MCP Keys. Cada uma carrega o papel dela e aparece na
         auditoria com o nome dela; revogar é em Editar → Chaves. Só a própria pessoa emite.
       </p>
       <KeysTable keys={keys} />

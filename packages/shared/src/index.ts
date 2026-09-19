@@ -3,6 +3,8 @@ export * from './slug.js';
 export * from './rating.js';
 export * from './paths.js';
 export * from './proxy.js';
+export * from './ratelimit.js';
+export * from './headers.js';
 export * from './zip.js';
 export * from './frontmatter.js';
 export * from './secrets.js';

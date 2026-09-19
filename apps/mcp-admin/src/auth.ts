@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { NextFunction, Request, Response } from 'express';
 import { getApiKeyByPrefix, getUserByUuid, touchApiKey } from '@purple-skills/db';
 import {
@@ -100,4 +101,30 @@ export function requireBearer(req: Request, res: Response, next: NextFunction): 
       next();
     })
     .catch((err) => next(err));
+}
+
+/**
+ * A credencial da requisição em curso.
+ *
+ * Numa sessão MCP o servidor é construído **uma vez**, no `initialize`, e os
+ * handlers fechariam sobre o `Caller` daquele instante: papel, ator, IP e
+ * agente ficariam congelados até a sessão cair. `resolveCaller` já roda a cada
+ * requisição e já relê a chave e a conta no banco — este contexto é o que leva
+ * o resultado dessa releitura até as tools, em vez de descartá-lo. Sem ele,
+ * rebaixar uma conta no painel não tirava o poder de quem já estava conectado
+ * (e o audit registrava sempre o IP da primeira requisição).
+ */
+const contexto = new AsyncLocalStorage<Caller>();
+
+/** Despacha a requisição com a credencial dela no contexto. */
+export function comCaller(req: Request, run: () => Promise<void>): Promise<void> {
+  return req.caller ? contexto.run(req.caller, run) : run();
+}
+
+/**
+ * A credencial da requisição em curso; `padrao` fora de uma requisição — o
+ * `Caller` do `initialize`, que é como era antes deste contexto existir.
+ */
+export function callerAtual(padrao: Caller): Caller {
+  return contexto.getStore() ?? padrao;
 }

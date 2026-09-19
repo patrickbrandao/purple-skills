@@ -83,6 +83,23 @@
   --gold: var(--warn);
   --gold-deep: var(--warn);
   --glow: var(--accent-tint);
+
+  /* cores de sintaxe do leitor de arquivos (classes `sx-*`) */
+  --syn-keyword: #c79bf2;
+  --syn-string: #8fd19e;
+  --syn-number: #eeb36f;
+  --syn-comment: #7f7d8c;
+  --syn-function: #7cc0f2;
+  --syn-type: #e6c77c;
+  --syn-builtin: #74cfc7;
+  --syn-attr: #93b7ef;
+  --syn-tag: #ef8394;
+  --syn-variable: #f0a07a;
+  --syn-regexp: #e6a3c6;
+  --syn-meta: #a3a8ff;
+  --syn-heading: #d3b0f7;
+  --syn-add-bg: rgba(58, 137, 99, 0.18);
+  --syn-del-bg: rgba(215, 50, 45, 0.18);
 }
 
 :root[data-theme='light'] {
@@ -144,6 +161,22 @@
   --gold: var(--warn);
   --gold-deep: var(--warn);
   --glow: var(--accent-tint);
+
+  --syn-keyword: #7a2dbf;
+  --syn-string: #1c7340;
+  --syn-number: #a1520a;
+  --syn-comment: #74727f;
+  --syn-function: #1b5fae;
+  --syn-type: #855400;
+  --syn-builtin: #0c716c;
+  --syn-attr: #2d58a6;
+  --syn-tag: #b0243c;
+  --syn-variable: #ad4712;
+  --syn-regexp: #9c2767;
+  --syn-meta: #4a4cc0;
+  --syn-heading: #6a22ad;
+  --syn-add-bg: rgba(46, 122, 85, 0.12);
+  --syn-del-bg: rgba(196, 43, 39, 0.1);
 }
 
 /* Tokens expostos ao Tailwind. `inline` faz as utilities emitirem

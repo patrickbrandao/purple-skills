@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { criarBuscaSemantica, logDaBusca, type SearchPorts } from './search.js';
 import { FakeDriver, MODELO_FALSO } from './fake.js';
+import { GEMINI_EMBEDDING_2, GoogleDriver } from './google.js';
 import { RagTimeoutError, RagUnavailableError } from './driver.js';
 
 const ESPACO = { uuid: '00000000-0000-7000-8000-00000000fa11' };
@@ -179,6 +180,42 @@ describe('cair para textual nunca é erro', () => {
     expect((await resolvedor.resolver('x')).mode).toBe('text');
     // A próxima já sabe que precisa conferir de novo, em vez de bater no 42P01.
     expect((await resolvedor.resolver('x'))).toMatchObject({ reason: 'sem-migration' });
+  });
+});
+
+describe('o orçamento de tempo total', () => {
+  it('o Retry-After do provedor não estica a busca além do prazo', async () => {
+    // Driver de verdade, com as tentativas e a espera de produção (nada de
+    // `sleep` injetado): o provedor responde 429 pedindo cinco minutos. O prazo
+    // de quem chamou tem de cortar a **pausa** entre tentativas também, senão a
+    // requisição do visitante fica pendurada o tempo que o provedor mandar — e
+    // segura com ela a perna textual, que é o refúgio quando o provedor falha.
+    const driver = new GoogleDriver({
+      apiKey: 'chave-de-teste',
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '300' },
+        }),
+    });
+    const resolvedor = criarBuscaSemantica({
+      ports: portas({
+        getRagSettings: async () => ({
+          'rag.driver': { value: 'google' },
+          'rag.model': { value: GEMINI_EMBEDDING_2.id },
+        }),
+      }),
+      driver,
+      timeoutMs: 120,
+    });
+
+    const inicio = Date.now();
+    const r = await resolvedor.resolver('mensagem de commit');
+    const gasto = Date.now() - inicio;
+
+    expect(r).toMatchObject({ mode: 'text', reason: 'falha-no-embedding' });
+    // Folga para máquina ocupada; sem o corte, isto levaria minutos.
+    expect(gasto).toBeLessThan(1500);
   });
 });
 

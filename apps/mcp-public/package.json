@@ -1,6 +1,6 @@
 {
   "name": "@purple-skills/mcp-public",
-  "version": "1.0.0-beta.21",
+  "version": "1.0.0-beta.22",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -15,12 +15,15 @@
     "@purple-skills/db": "*",
     "@purple-skills/rag": "*",
     "@purple-skills/shared": "*",
+    "archiver": "^7.0.1",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.0"
+    "@types/express": "^5.0.0",
+    "@types/pg": "^8.15.4",
+    "pg": "^8.16.3"
   }
 }

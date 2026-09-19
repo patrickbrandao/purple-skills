@@ -10,13 +10,24 @@ referência de *por que* cada peça é assim.
 > concessões por objeto, o papel `leitor` virou `membro` e só a criação e a
 > administração da instalação continuam sendo decididas pelo papel. O resto —
 > contas locais e OIDC, sessão com `token_version`, bootstrap, chaves `psk_`,
-> recuperação de senha, rate limiting e auditoria — continua como está aqui. O resumo do que está no ar está na
-`§7.1` de [`02-architecture-decisions.md`](02-architecture-decisions.md); os
-desvios e as decisões que esta spec deixou em aberto, em
+> recuperação de senha, rate limiting e auditoria — continua como está aqui.
+>
+> **A troca do nome do papel não isenta o OIDC.** Onde este documento escreve
+> `leitor` — a decisão 5, a decisão 9, a matriz da `§2.1`, a `§2.4`, a `§2.5`,
+> o `CHECK` da `§3` e a tabela da `§4` —, leia **`membro`**: o `017` fez
+> `UPDATE users SET role = 'membro' WHERE role = 'leitor'` e trocou o `CHECK`,
+> e `ROLES` em `packages/shared/src/roles.ts` é `['admin', 'editor',
+> 'membro']`. Gravar `leitor` hoje é recusado pelo banco.
+
+O resumo do que está no ar está na `§7.1` de
+[`02-architecture-decisions.md`](02-architecture-decisions.md); os desvios e as
+decisões que esta spec deixou em aberto, em
 [`03-implementation-notes.md`](03-implementation-notes.md).
 
-O plano de execução, com as três fases marcadas como entregues, está em
-[`../tasks/contas-e-papeis.md`](../tasks/contas-e-papeis.md).
+O plano de execução das três fases era um arquivo de trabalho em `tasks/`, que o
+repositório **não versiona** (`.gitignore`) — quem clona não o recebe. O que as
+três fases entregaram está descrito aqui mesmo, seção por seção, e resumido na
+`§7.1` do `02`.
 
 ## 1. Por que
 
@@ -41,7 +52,7 @@ administrativo um token único (`MCP_ADMIN_TOKEN`). Consequências práticas:
 | 6 | Alcance do editor | Mexe em **todas** as skills; o papel limita ação, não escopo |
 | 7 | Sessão | Cookie stateless + `token_version` (sem tabela de sessões) |
 | 8 | MCP admin | Chaves de API por usuário, além do token global |
-| 9 | OIDC | Auto-provisiona como `leitor`, com allowlist de domínio **obrigatória** |
+| 9 | OIDC | Auto-provisiona como ~~`leitor`~~ **`membro`** (o `017` renomeou o papel), com allowlist de domínio **obrigatória** — vazia, ela recusa todo login por SSO (`§2.4`) |
 | 10 | Vinculação OIDC ↔ conta local | Sempre pelo e-mail, **dentro dos domínios autorizados** |
 | 11 | Recuperação de senha | Link por e-mail quando há SMTP; sem SMTP, reset pelo admin |
 | 12 | Escopo extra | Rate limiting no login, `created_by` nas skills, desativar em vez de deletar, auditoria dos eventos críticos de conta |
@@ -79,9 +90,13 @@ O cookie continua stateless e assinado por HMAC
 type SessionPayload = { sub: string; role: Role; ver: number; exp: number };
 ```
 
-`users.token_version` é a alavanca de revogação. Trocar senha, mudar papel ou
-desativar a conta **incrementa** a versão, e todo cookie emitido antes deixa de
-valer na requisição seguinte.
+`users.token_version` é a alavanca de revogação. Trocar senha, mudar papel,
+desativar a conta — e, desde o `029`, **sair** — incrementa a versão, e todo
+cookie emitido antes deixa de valer na requisição seguinte. Com cookie stateless
+não existe revogação por dispositivo, então sair encerra **todas** as sessões
+daquela conta, o mesmo contrato da troca da própria senha: é por isso que o painel
+pergunta ("Sair de todos os aparelhos?") e que a tela de login mostra o recado. A
+sessão de bootstrap não tem conta e sai apagando só o cookie.
 
 Duas consequências assumidas:
 
@@ -131,10 +146,16 @@ a entrada.
 Opcional, ligado por `OIDC_ISSUER`. Fluxo authorization code + PKCE via
 `openid-client` (discovery automático; não escrever o fluxo à mão).
 
-- **Auto-provisionamento** cria o usuário como `leitor` no primeiro login.
-- **`OIDC_ALLOWED_DOMAINS` é obrigatória** para que o auto-provisionamento
-  funcione. Vazia, ele fica desligado e só entra quem já foi convidado — falha
-  fechado: uma instalação mal configurada não vaza o catálogo privado.
+- **Auto-provisionamento** cria o usuário como ~~`leitor`~~ **`membro`** no
+  primeiro login (`resolveOidcUser` em `apps/admin/src/accounts.ts`; o papel
+  foi renomeado pelo `017`). Conta que já existe mantém o papel que tem.
+- **`OIDC_ALLOWED_DOMAINS` é obrigatória para o SSO inteiro**, não só para o
+  auto-provisionamento. Vazia, **nenhum login OIDC passa** — nem o de uma conta
+  que já existe e já está vinculada, porque `resolveOidcUser` confere a
+  allowlist **antes** de procurar a conta. É a falha fechada: uma instalação mal
+  configurada não vaza o catálogo privado a qualquer conta do provedor. Quem
+  recupera é o login local, e o 401 nomeia a variável para o operador não
+  procurar o erro no domínio de quem tentou entrar.
 - A allowlist vale nos **três** caminhos: autenticar, provisionar e **vincular**.
   E-mail fora dos domínios autorizados não faz nenhum dos três.
 - **Vinculação é sempre pelo e-mail.** Um login OIDC cujo e-mail bate com uma
@@ -148,6 +169,14 @@ Opcional, ligado por `OIDC_ISSUER`. Fluxo authorization code + PKCE via
 > A mitigação é operacional: só configure `OIDC_ISSUER` apontando para um
 > provedor que você controla ou confia, e restrinja
 > `OIDC_ALLOWED_DOMAINS` a domínios sob sua administração.
+>
+> **Desde o `013` isto deixou de valer para a vinculação:** vincular a uma conta
+> local que já existe exige `email_verified` verdadeiro, porque vincular é assumir
+> papel, posse e concessões, e a allowlist de domínio só responde de onde vem o
+> endereço, não quem é o dono dele. A mitigação operacional continua valendo para
+> os outros dois caminhos — autenticar e provisionar — e para o IdP que não emite o
+> claim, que hoje simplesmente não vincula (ver
+> [`03`](03-implementation-notes.md), "Contas, papéis e credenciais").
 
 ### 2.5 Chaves de API e o MCP administrativo
 
@@ -179,6 +208,16 @@ SMTP é **opcional**:
 Assim o `docker compose up` continua funcionando sem infraestrutura de e-mail,
 e quem configurar SMTP ganha a experiência completa.
 
+Vale **um** link vivo por conta de cada vez (`027`): emitir fecha os anteriores, e
+**qualquer troca de senha** fecha os vivos — por trigger em `users`, então valem
+igual o link consumido, a redefinição pelo admin e a troca pelo próprio dono. A
+redefinição pelo admin também é **auditada**, como `user.password` com o e-mail da
+conta afetada em `target_label` (`030`).
+
+Sem `ADMIN_PUBLIC_URL`, o link só é montado para pedido vindo de rede interna; de
+fora, a rota responde `503 public_url_required` e manda procurar o administrador
+(`003`, `02` §7.1).
+
 ### 2.7 Rate limiting no login
 
 Duas camadas, porque nenhuma sozinha resolve:
@@ -194,7 +233,8 @@ com contas nomeadas, o atacante passa a conhecer o usuário.
 
 `audit_log` ganha `actor_user_uuid` e `actor_label` (para `token-global` e para
 o bootstrap), e o `CHECK` de `action` é ampliado para incluir `user.create`,
-`user.role`, `user.deactivate`, `key.create` e `key.revoke`. Essas linhas não
+`user.role`, `user.deactivate`, `key.create`, `key.revoke` e — desde o `030` —
+`user.password`, a troca da senha de uma conta por quem não é ela. Essas linhas não
 têm `skill_uuid` — a coluna já é nula.
 
 Login e falha de login **não** são auditados: o rate limiting já os trata, e
@@ -208,6 +248,12 @@ e-mails de contas, então `GET /api/audit` fica atrás do mesmo guarda de
 ## 3. Modelo de dados
 
 Domínio do agente dba, em `database/schema/004-contas.sql`.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md):** o `CHECK` abaixo
+> é o do `004`, como foi escrito. O `017` o trocou por
+> `CHECK (role IN ('admin', 'editor', 'membro'))`, depois de um
+> `UPDATE users SET role = 'membro' WHERE role = 'leitor'` — quem copiar o
+> `CHECK` daqui grava um papel que o banco recusa.
 
 ```
 users

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   AppError,
   createSkill,
@@ -5,6 +6,7 @@ import {
   deleteSkill,
   getSkillDetail,
   getVirtualMcp,
+  listFiles,
   listSkills,
   listTags,
   readFile,
@@ -55,21 +57,44 @@ const fail = (message: string): ToolResult => ({
 
 /**
  * Converte erros de domínio em resultados `isError` (o agente consegue ler a
- * mensagem e corrigir a chamada) e deixa falhas inesperadas propagarem.
+ * mensagem e corrigir a chamada) e embrulha o que for imprevisto.
+ *
+ * `AppError` é erro de negócio — 400, 403, 404, 409 — escrito para o agente
+ * ler, e continua chegando com a mensagem inteira: é o que deixa quem opera
+ * corrigir a chamada. A mensagem de uma falha imprevista é o oposto: a do `pg`
+ * cita tabela, índice e constraint, e quem lê aqui é um agente de IA, que pode
+ * repetir o texto num resumo, num log ou numa issue pública. Então vale a
+ * mesma política do `http.ts`: o detalhe vai para o log, a resposta é genérica
+ * — com uma referência curta nos dois lados, para o operador casar a
+ * reclamação do agente com a linha do log sem expor nada.
  */
 export async function guard(run: () => Promise<ToolResult>): Promise<ToolResult> {
   try {
     return await run();
   } catch (err) {
     if (err instanceof AppError) return fail(err.message);
-    console.error('[mcp-admin] erro inesperado:', err);
-    return fail(`Erro inesperado: ${(err as Error).message}`);
+    const ref = randomUUID().slice(0, 8);
+    console.error(`[mcp-admin] erro inesperado (ref ${ref}):`, err);
+    return fail(
+      `Erro interno do servidor (ref ${ref}). Tente de novo; se persistir, passe esta ` +
+        'referência a quem opera a instalação — o detalhe está no log do servidor.',
+    );
   }
 }
 
-/** A página no site existe quando a skill está ligada e em algum vMCP aberto e ligado. */
+/**
+ * A página no site existe quando a skill está ligada **e** é pública, ou está
+ * em algum vMCP aberto e ligado, ou participa de catálogo público e ligado
+ * (`docs/12-acesso-granular.md` §7 — revoga a regra do `09` §4.1, que era só
+ * o vínculo aberto, de quando `is_public` não existia).
+ *
+ * O terceiro ramo fica sem sinal: `skill.catalogs` traz o estado do catálogo e
+ * o da participação, não o `is_public` dele. Enquanto o banco não expuser um
+ * `onSite` derivado de `OPEN_EXPOSURE`, essa skill segue sem link — errar para
+ * menos (link ausente) é melhor que errar para mais (link para um 404).
+ */
 const pageUrl = (skill: SkillSummary): string | undefined =>
-  skill.isActive && skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive)
+  skill.isActive && (skill.isPublic || skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive))
     ? `${config.siteBaseUrl}/skills/${skill.slug}`
     : undefined;
 
@@ -101,6 +126,59 @@ const catalogsOf = (skill: SkillSummary) =>
     memberActive: catalog.memberActive,
   }));
 
+/** Quantos caminhos a recusa do `set_files_bulk` lista antes de resumir o resto. */
+const MAX_CAMINHOS_NA_RECUSA = 20;
+
+/**
+ * O que um `set_files_bulk` com `replace` removeria: o que já está gravado e
+ * não veio no .zip.
+ *
+ * Repete a régua do `setFiles` no banco, que apaga por
+ * `lower(relative_path) <> ALL(<caminhos enviados> + SKILL.md)`: a comparação
+ * ignora a caixa e o SKILL.md nunca sai. `normalizeRelativePath` é aplicado de
+ * novo porque o banco também o aplica — um `pasta/skill.md` que o `extractZip`
+ * desembrulhou para `skill.md` só vira `SKILL.md` aí.
+ *
+ * É uma prévia, não uma garantia: a skill não fica trancada entre esta leitura
+ * e a transação — um `SELECT … FOR UPDATE` em `skills` daria deadlock com o
+ * gatilho `files_rag_stale_trg`. Serve para o agente decidir com a lista na
+ * mão, e conferir o número na segunda chamada é o que recusa a remoção quando
+ * a árvore mudou no meio.
+ */
+async function aRemover(
+  skillUuid: string,
+  enviados: readonly { relativePath: string }[],
+): Promise<string[]> {
+  const chegando = new Set(
+    enviados.map((file) =>
+      (normalizeRelativePath(file.relativePath) ?? file.relativePath).toLowerCase(),
+    ),
+  );
+  const atuais = await listFiles(skillUuid);
+  return atuais
+    .map((file) => file.relativePath)
+    .filter((path) => !isSkillMd(path) && !chegando.has(path.toLowerCase()));
+}
+
+/** A recusa da remoção: o que sairia e as duas saídas, com o número a repetir. */
+function recusaDeRemocao(removidos: readonly string[], confirmado: number | undefined): string {
+  const lista = removidos.slice(0, MAX_CAMINHOS_NA_RECUSA).map((path) => `- ${path}`);
+  if (removidos.length > MAX_CAMINHOS_NA_RECUSA) {
+    lista.push(`- … e outros ${removidos.length - MAX_CAMINHOS_NA_RECUSA}`);
+  }
+
+  return [
+    confirmado === undefined
+      ? `Este .zip removeria ${removidos.length} arquivo(s) que não estão nele:`
+      : `confirm_deletions: ${confirmado} não corresponde — este .zip removeria ${removidos.length} arquivo(s):`,
+    ...lista,
+    'A remoção não se desfaz pela API: a auditoria registra cada caminho removido, com o ' +
+      'conteúdo anterior dos arquivos de texto, mas quem reconstrói a árvore é você. Repita com ' +
+      `confirm_deletions: ${removidos.length} para removê-los, ou com replace: false para apenas ` +
+      'acrescentar e sobrescrever, sem remover nada.',
+  ].join('\n');
+}
+
 /** Entrada de `create_skill.mcps`: o vMCP pelo slug e as três portas. */
 type McpLinkArg = { slug: string; asSkill: boolean; asPrompt: boolean; asResource: boolean };
 
@@ -114,10 +192,12 @@ const accessOf = (skill: SkillSummary) => ({
 /**
  * Handlers das ferramentas administrativas, testáveis sem transporte HTTP.
  *
- * São criados **por chamador**: o papel decide se ele cria, o acesso por
- * objeto (`docs/12-acesso-granular.md`) decide o resto, e o ator vai junto
- * para o `audit_log`. Uma chave de `membro` vê o que é seu, o que lhe foi
- * concedido e o que é público, e administra o que é seu.
+ * São criados **por chamada**, com a credencial revalidada na requisição em
+ * curso (`createMcpServer`): o papel decide se ele cria, o acesso por objeto
+ * (`docs/12-acesso-granular.md`) decide o resto, e o ator, o IP e o agente vão
+ * juntos para o `audit_log` e para o registro de acessos. Uma chave de
+ * `membro` vê o que é seu, o que lhe foi concedido e o que é público, e
+ * administra o que é seu.
  */
 export function createHandlers(caller: Caller = TOKEN_CALLER) {
   const actor = caller.actor;
@@ -363,10 +443,18 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     async set_file(args: { slug: string; path: string; content: string }): Promise<ToolResult> {
       await skillWith(args.slug, 'edit');
 
+      // Normaliza **antes** de decidir, como `get_file`: `isSkillMd` compara o
+      // texto exato em minúsculas, então `"./SKILL.md"` não é o arquivo
+      // principal para ele — mas `setFile` canoniza para `SKILL.md` na hora de
+      // gravar. Decidir com o caminho cru gravava o frontmatter enviado na
+      // linha do SKILL.md, e nem `edit` deveria mexer em metadados (é `manage`).
+      const path = normalizeRelativePath(args.path);
+      if (!path) return fail(`Caminho inválido: "${args.path}"`);
+
       // Gravar o SKILL.md não redefine os metadados da skill (isso é
       // edit_skill): o frontmatter enviado é descartado.
-      const content = isSkillMd(args.path) ? stripFrontmatter(args.content) : args.content;
-      const file = await setFile(args.slug, args.path, content, SOURCE, actor);
+      const content = isSkillMd(path) ? stripFrontmatter(args.content) : args.content;
+      const file = await setFile(args.slug, path, content, SOURCE, actor);
       return text(`Arquivo gravado em "${args.slug}": ${file.relativePath} (${file.sizeBytes} bytes).`);
     },
 
@@ -374,8 +462,9 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       slug: string;
       zip_base64: string;
       replace?: boolean;
+      confirm_deletions?: number;
     }): Promise<ToolResult> {
-      await skillWith(args.slug, 'edit');
+      const skill = await skillWith(args.slug, 'edit');
 
       // Recusa antes de decodificar: o único teto até aqui era o limite do corpo
       // JSON (64 MB), e um .zip desse tamanho descomprime para muito mais.
@@ -400,25 +489,67 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       }
       if (extracted.length === 0) return fail('O .zip não contém nenhum arquivo aproveitável.');
 
-      const files = await setFiles(
-        args.slug,
-        extracted.map((file) => ({
-          relativePath: file.relativePath,
-          // Um SKILL.md vindo do .zip entra só com o corpo: os metadados da
-          // skill já cadastrada mandam.
-          content: isSkillMd(file.relativePath)
-            ? Buffer.from(stripFrontmatter(file.textContent ?? ''), 'utf8')
-            : (file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8')),
-        })),
-        SOURCE,
-        // O zip representa o estado desejado completo da árvore (seção 4 das
-        // decisões de arquitetura); passe replace: false para só adicionar.
-        { replace: args.replace !== false },
-        actor,
-      );
+      // `replace` (o padrão) trata o .zip como a árvore inteira: o que não veio
+      // é apagado. Isso é o desejado num "substituir tudo" e catastrófico num
+      // envio parcial, e o audit da escrita em massa não guarda o conteúdo (uma
+      // linha `update`, com `previousContent: null`), então não há como desfazer.
+      // Uma tool MCP não pergunta nada, então a confirmação só pode ser
+      // argumento — e pedimos o **número** de arquivos a remover, não um
+      // `confirm: true`, porque o acidente que se quer evitar é justamente o do
+      // agente que não olhou a árvore: um booleano é o campo que ele preenche
+      // por reflexo, enquanto o número só sai desta recusa (ou de `get_skill`).
+      // De quebra, se a árvore mudar entre a recusa e a segunda chamada o número
+      // deixa de bater e a remoção é recusada de novo, em vez de levar arquivo
+      // que ninguém viu. Só o caso destrutivo pede confirmação: um .zip que não
+      // remove nada continua passando na primeira chamada, como antes.
+      const replace = args.replace !== false;
+      const removidos = replace ? await aRemover(skill.uuid, extracted) : [];
+      if (removidos.length > 0 && args.confirm_deletions !== removidos.length) {
+        return fail(recusaDeRemocao(removidos, args.confirm_deletions));
+      }
+
+      let files: Awaited<ReturnType<typeof setFiles>>;
+      try {
+        files = await setFiles(
+          args.slug,
+          extracted.map((file) => ({
+            relativePath: file.relativePath,
+            // Um SKILL.md vindo do .zip entra só com o corpo: os metadados da
+            // skill já cadastrada mandam.
+            content: isSkillMd(file.relativePath)
+              ? Buffer.from(stripFrontmatter(file.textContent ?? ''), 'utf8')
+              : (file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8')),
+          })),
+          SOURCE,
+          // O zip representa o estado desejado completo da árvore (seção 4 das
+          // decisões de arquitetura); passe replace: false para só adicionar.
+          //
+          // `expectedDeletions` refaz a conferência de `confirm_deletions`
+          // **dentro** da transação, com a árvore travada: a contagem acima é
+          // prévia (ela e a escrita são idas ao banco distintas), e é nessa
+          // janela que outra aba, outro operador ou outra sessão MCP podiam
+          // acrescentar arquivo que o .zip levaria sem ninguém ter visto.
+          { replace, expectedDeletions: removidos.length },
+          actor,
+        );
+      } catch (err) {
+        // 409 nesta chamada é só a divergência da contagem — `setFiles` não tem
+        // outro. A mensagem de negócio chega inteira (`tasks/031`); o que falta
+        // nela é o próximo passo, e quem sabe qual é são as tools daqui.
+        if (err instanceof AppError && err.status === 409) {
+          return fail(
+            `${err.message}.\n` +
+              `Releia a árvore com get_skill (slug: "${args.slug}") e repita set_files_bulk com ` +
+              'confirm_deletions igual ao número de arquivos que sairiam agora, ou com ' +
+              'replace: false para só acrescentar e sobrescrever, sem remover nada.',
+          );
+        }
+        throw err;
+      }
 
       return text(
         `${extracted.length} arquivo(s) importado(s) para "${args.slug}".\n` +
+          (removidos.length > 0 ? `${removidos.length} arquivo(s) removido(s), como confirmado.\n` : '') +
           `Árvore final (${files.length} arquivos):\n` +
           files.map((file) => `- ${file.relativePath}`).join('\n'),
       );
@@ -472,8 +603,27 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       return asJson({ tags: await listTags({ viewer }) });
     },
 
+    /**
+     * Os números, recortados pelo que a credencial enxerga (`docs/12` §3.1) —
+     * o mesmo recorte de `/api/stats` no painel, pelo mesmo motivo.
+     *
+     * `stats()` conta a instalação inteira, inclusive as contas, e não aceita
+     * `viewer`: contagem agregada mora no SQL e é camada do dba. Até lá, uma
+     * credencial que não é admin recebe o que dá para recortar com as funções
+     * que já recebem `viewer`, mais `openSkills` — o número que o site mostra
+     * a qualquer anônimo. Os de arquivos, visitas, downloads e flutuantes
+     * dimensionariam o acervo privado, e os de contas são dado da instalação:
+     * saem do corpo em vez de sair globais.
+     */
     async get_stats(): Promise<ToolResult> {
-      return asJson(await stats());
+      if (viewer.role === 'admin') return asJson(await stats());
+
+      const [instalacao, skills, tags] = await Promise.all([
+        stats(),
+        listSkills({ viewer, limit: 1 }),
+        listTags({ viewer }),
+      ]);
+      return asJson({ totalSkills: skills.total, openSkills: instalacao.openSkills, totalTags: tags.length });
     },
   };
 }

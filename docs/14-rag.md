@@ -6,9 +6,11 @@ container `apps/indexer/`.
 
 Este documento registra o desenho fechado nas entrevistas de 15/09/2026 (o
 driver `google`) e de 16/09/2026 (a generalização para três provedores). Ele é
-a referência de *por que* cada peça é assim; o resumo do que está no ar entra
-em [`02-architecture-decisions.md`](02-architecture-decisions.md) e os desvios
-em [`03-implementation-notes.md`](03-implementation-notes.md). O que é do
+a referência de *por que* cada peça é assim; o resumo do que está no ar é a
+§12.5 de [`02-architecture-decisions.md`](02-architecture-decisions.md) — que
+também marca ali, nas §3 e §5, a decisão "sem busca vetorial no v1" que esta
+entrega revogou — e os desvios são a seção "Busca semântica" de
+[`03-implementation-notes.md`](03-implementation-notes.md). O que é do
 banco — tabelas, índices, queries — está em
 [`../database/README.md`](../database/README.md), que é do agente dba.
 
@@ -97,10 +99,49 @@ jogaria fora os vetores do driver anterior — que hoje sobrevivem no espaço
 deles. O teto por texto de cada provedor continua declarado em
 `maxInputTokens`, e todos são folgados para 6.000 caracteres.
 
+### 4.1 O que entra na divisão — e o que sai da instalação
+
+A pergunta que a divisão responde não é "quais arquivos a skill tem", é **o que
+vai para o provedor**. Entra (`packages/rag/src/chunk.ts`):
+
+- **o texto de metadados**: nome, descrição e tags;
+- **todo arquivo de texto da skill**, e não só o `SKILL.md` — o guia, o
+  exemplo, o script, o `.json` de configuração. Inteiro quando cabe nos 6.000
+  caracteres; em partes numeradas de 0 em diante quando não cabe.
+
+Fica fora:
+
+- **o binário** (`.png`, `.pdf`, `.zip`, fonte). Ele vive em
+  `files.binary_content`, e `readSkillForRag` só pede quem tem `text_content`:
+  nunca chega a ser fatiado. É o que a `020` anota como "binário não é
+  embutido";
+- **a imagem que por acaso é texto**: o `.svg`. Ele é textual *para guardar e
+  exibir* — o leitor e o editor do painel abrem o XML —, e não é documentação.
+  Embuti-lo pagaria ao provedor por coordenadas de desenho, devolveria um vetor
+  que só acrescenta ruído à busca e mandaria para fora um arquivo que quem
+  anexou não escreveu para ser lido;
+- **arquivo vazio** e **arquivo acima de 256 KB**, pulados com o motivo no log.
+
+O critério de tipo é o **mesmo** que decidiu gravar o arquivo como texto —
+`mimeTypeFor` + `isTextualMime` do `shared`, a regra única de `fileColumns` —,
+menos as imagens. Não existe segunda lista de extensões de propósito: ampliar a
+tabela de mime para o leitor do painel não pode passar a mandar tipo novo para
+fora sem ninguém decidir.
+
+Onde cortar um arquivo que não cabe: primeiro nos títulos Markdown, depois nas
+linhas em branco, por último no teto, sem sobreposição.
+
+**O alcance é toda skill indexada, inclusive a privada.** A visibilidade recorta
+a *busca* (§8), não a indexação — ligar a busca semântica é decisão de quem
+opera a instalação, e vale para o acervo inteiro, enquanto anexar o arquivo é
+decisão de quem escreve a skill. Não há como indexar só parte do acervo. Com
+`rag.driver` desligado, que é o padrão, nada disso sai da máquina.
+
 ## 5. Configuração: o ambiente semeia, o banco decide
 
-Cinco containers leem a configuração do RAG. Se o ambiente valesse sempre, um
-container com a variável diferente divergiria dos outros em silêncio. Então:
+Quatro containers leem a configuração do RAG: o admin (que semeia e edita), o
+indexador, o mcp-public e o site. Se o ambiente valesse sempre, um container com
+a variável diferente divergiria dos outros em silêncio. Então:
 
 1. **o admin semeia no boot**: para cada chave, grava o valor do ambiente só
    quando o banco ainda não tem linha, com o ator `ambiente` na auditoria;
@@ -133,6 +174,7 @@ e a montagem a partir do ambiente saem daí sozinhas.
 | `RAG_<DRIVER>_BASE_URL` | URL base já com a versão; nos testes aponta para o servidor falso | não | indexer, mcp-public, site |
 | `RAG_QUERY_TIMEOUT_MS` | prazo do embedding da consulta (padrão 2000) | não | mcp-public, site |
 | `RAG_INDEX_INTERVAL_SECONDS` | intervalo da varredura (padrão 30) | não | indexer |
+| `RAG_INDEX_TIMEOUT_MS` | prazo de **um lote** da indexação, tentativas incluídas (padrão 120000) | não | indexer |
 
 Valor inválido **derruba o boot**, como manda a convenção do projeto:
 desligar em silêncio é pior que não subir. `cohere` é recusado com "ainda não
@@ -164,6 +206,17 @@ não importa — qualquer erro vira modo textual. Ela existe para o indexador.
 
 A política de tentativas mora uma vez só, em `packages/rag/src/http.ts`: ela
 não vem da API, vem do que o indexador precisa, e é igual nos três.
+
+Duas regras de prazo que valem para os três drivers:
+
+- **o `signal` é o orçamento de tempo total da consulta**, não de cada
+  tentativa. Ele aborta o `fetch` **e** a espera entre tentativas, que é o que
+  faz `RAG_QUERY_TIMEOUT_MS` ser o teto do ciclo inteiro. Quem chama sem
+  `signal` — hoje só o indexador, em `embedDocuments` — dorme as esperas
+  inteiras, o que é o certo para ele;
+- **nenhuma espera passa de 60 segundos**, inclusive a que o provedor pede no
+  `Retry-After`. Sem esse teto, seria o provedor a decidir por quanto tempo esta
+  instalação fica parada.
 
 | | google | openai | voyage |
 |---|---|---|---|
@@ -232,15 +285,72 @@ vetor que já tinham, porque o endereço deles é o hash do conteúdo.
 
 O ciclo **nunca derruba o processo** por causa do ambiente: sem a migration ele
 espera, sem chave refatia e avisa, com o driver `off` só publica o estado em
-`rag.indexer.status`. Mais de uma réplica pode rodar — a reserva usa
-`SKIP LOCKED` e a gravação de vetores ignora conflito.
+`rag.indexer.status`. E nenhuma chamada ao provedor fica sem prazo: cada lote
+leva o seu (`RAG_INDEX_TIMEOUT_MS`), senão um provedor que aceita a conexão e
+nunca responde segura a rodada pelos prazos internos do `undici` multiplicados
+pelas tentativas, com o painel mostrando dado velho sem dizer que o ciclo está
+pendurado. O lote cortado não se perde: a rodada seguinte retoma de onde parou.
+
+Mais de uma réplica pode rodar **sem corromper nada** — a reserva de skills usa
+`SKIP LOCKED` e a gravação de vetores ignora conflito. Segura não quer dizer
+econômica: a fila de textos (§7.1) **não tem reserva**, então duas réplicas leem
+a mesma lista e as duas pagam ao provedor pelo mesmo texto; o banco fica certo, a
+fatura dobra. Dar reserva à fila é mudança de `@purple-skills/db` (pedido
+aberto). O que o indexador já não faz é *se enganar* com isso: quem perde a
+corrida recebe zero de `insertRagVectors`, e é pelo número de textos
+**processados** — não pelo de gravados — que o `--once` decide se a fila andou.
+Pelo outro, ele encerraria dizendo "não há mais nada a fazer" logo depois de ter
+pago por um lote inteiro.
+
+### 7.1 O texto que o provedor recusa
+
+A fila de pendentes é ordenada por `created_at` e **não tem reserva**: ela
+devolve os textos sem vetor mais antigos, sempre os mesmos, até eles ganharem
+vetor. Um texto que o provedor recusa pelo conteúdo — `RagInputTooLongError`, que
+é onde caem os 400 residuais dos três drivers — nunca ganha vetor. Sem
+tratamento, ele volta em **todo** ciclo, é pago de novo a cada intervalo e nada
+atrás dele chega a ser tentado: basta um texto assim no acervo para a fila parar
+de andar, com a fatura crescendo e a cobertura parada onde estava.
+
+Por isso a etapa de embutir faz três coisas:
+
+1. **grava lote a lote.** Cada lote que volta é gravado antes de o próximo sair;
+   um erro adiante não joga fora o que já foi pago;
+2. **isola o culpado.** Lote recusado pelo conteúdo volta um texto por vez —
+   texto sozinho não deixa o driver dividir o lote outra vez, e é assim que se
+   descobre qual deles o provedor não aceita;
+3. **marca o recusado.** Ele sai da fila: não é reenviado nos ciclos seguintes,
+   o log registra o hash curto e o tamanho (nunca o conteúdo, que pode ser de
+   skill privada), e `rag.indexer.status` publica `refusedTexts`.
+
+Recusa tratada **não** conta como erro do ciclo: o `--once` não pode sair com 1
+por causa de um texto que nunca vai passar. Erro que não é de conteúdo, esse sim,
+encerra a etapa em vez de seguir para os lotes seguintes — a política de
+tentativas de `http.ts` já recuou e tentou de novo antes de ele chegar aqui, e o
+que foi gravado ficou gravado.
+
+A marca vive **em memória do processo**: gravá-la no banco depende de uma função
+de `@purple-skills/db` que ainda não existe (a porta `markRagTextRefused` do
+indexador já espera por ela). O limite disso é estreito e conhecido — reiniciar o
+container tenta o texto recusado uma vez mais, uma vez por vida em vez de uma vez
+por ciclo, e acima de algumas centenas de recusas no mesmo espaço a janela pedida
+à fila bate no teto de 500 linhas e o bloqueio volta.
 
 ## 8. A busca
 
+O passo zero é **normalizar a consulta**: teto de 200 caracteres, cortado na
+fronteira de palavra, pelo mesmo `consultaDaBusca` que alimenta a perna textual
+(`022`). É esse recorte que vai ao provedor — o custo e o conteúdo enviados não são
+escolhidos pelo cliente — e ele não é variável de ambiente, porque tem de ser o
+mesmo número do `normalizeQuery` do banco.
+
 Por requisição: ler a configuração (cache de 10 s), resolver o driver, achar o
 espaço, embutir a consulta com prazo, e fundir com a busca textual por RRF com
-`k = 60` — perna textual limitada a 100 skills, 20 vizinhos na perna vetorial,
-sem corte por distância. O recorte de visibilidade vale **nas duas pernas**:
+`k = 60` — a **perna textual entra inteira**, 20 vizinhos na perna vetorial, sem
+corte por distância. O teto de 100 skills que a perna textual tinha caiu: ele
+travava o conjunto fundido em 100 + vizinhos, e com ele o `total` e a paginação —
+ligar o RAG **encolhia** a busca. Quem põe a cauda no lugar dela é o próprio RRF,
+que decresce com a posição. O recorte de visibilidade vale **nas duas pernas**:
 uma skill que o site não mostra não aparece por ter vetor parecido com a busca.
 
 A resposta traz `mode`, `text` ou `hybrid`, para o cliente saber o que leu —
@@ -298,6 +408,11 @@ couber numa varredura.
 
 ## 12. Riscos aceitos
 
+- **conteúdo de skill privada no provedor:** ligar a busca semântica manda a um
+  terceiro o texto de **todo** arquivo de texto de **toda** skill indexada,
+  privada ou não (§4.1). Quem anexa o arquivo e quem liga o RAG podem ser
+  pessoas diferentes, e não há controle de escopo da indexação — a escolha é
+  ligar ou não ligar;
 - **dados no nível gratuito do Google:** conteúdo e consultas são usados para
   melhorar produtos, e revisores humanos podem lê-los. No Espaço Econômico
   Europeu, na Suíça e no Reino Unido, só o nível pago é permitido para quem
@@ -308,7 +423,18 @@ couber numa varredura.
   e do site;
 - **ambiente ignorado:** depois que o banco tem um valor, mudar o `.env` não
   altera a configuração — só gera aviso;
-- **crescimento:** vetores e textos órfãos se acumulam até existir a limpeza;
+- **recusa só em memória:** o texto que o provedor recusa sai da fila enquanto o
+  processo viver (§7.1); reiniciar o indexador o tenta uma vez mais, e nada no
+  painel diz *qual* texto foi recusado — só quantos;
+- **crescimento:** vetores e textos órfãos se acumulam até existir a limpeza.
+  Editar ou apagar uma skill tira as ocorrências e deixa o texto canônico: a FK
+  de `rag_skill_texts` é sem cascata de propósito, e nada apaga o que ficou. O
+  ciclo do indexador já chama a coleta no fim de cada rodada — depois de o
+  refatiamento ter commitado, senão apagaria um texto que a ocorrência seguinte
+  vai referenciar —, mas a função que apaga é de `@purple-skills/db` e ainda não
+  existe (a porta `collectOrphanRagTexts` espera por ela). O custo de hoje é de
+  disco, não de API: a fila de pendentes exige ocorrência e não manda órfão ao
+  provedor;
 - **visão do admin:** um erro de chave no mcp-public ou no site aparece no log
   desses containers, não no painel;
 - **limites não publicados:** o tamanho máximo de lote do Google não é

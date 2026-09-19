@@ -280,6 +280,12 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
     // E a trilha paginada acha as mesmas linhas pelos filtros de sempre.
     expect((await listAuditPage({ actor: 'ana@exemplo.dev' })).total).toBe(4);
     expect((await listAuditPage({ action: 'catalog.update', q: 'orfao ana@' })).total).toBe(1);
+
+    // O `q` é **literal**: `%` casava a trilha inteira e `_` qualquer
+    // caractere. O pior caso de LIKE também deixa de casar tudo.
+    expect((await listAuditPage({ q: '%' })).total).toBe(0);
+    expect((await listAuditPage({ q: 'orfao_ana@' })).total).toBe(0);
+    expect((await listAuditPage({ q: '%_'.repeat(60) })).total).toBe(0);
   });
 
   it('a segunda chamada não adota nem audita nada', async () => {

@@ -1,5 +1,6 @@
 import { scryptSync } from 'node:crypto';
 import {
+  assertNotPlaceholder,
   isBrandIconUrl,
   parseDomainList,
   readIntEnv,
@@ -70,8 +71,10 @@ export const config = {
 
   /**
    * Endereço público do próprio painel — usado para montar o `redirect_uri` do
-   * OIDC e o link de redefinição de senha. Sem ele, os dois caem no `Host` da
-   * requisição, o que só funciona quando o proxy repassa o header correto.
+   * OIDC e o link de redefinição de senha. Sem ele, o `redirect_uri` cai no
+   * `Host` da requisição (o provedor ainda confere o valor registrado), e o
+   * link de redefinição só aceita o `Host` quando o pedido vem de uma rede
+   * interna — ver `resetLinkBaseUrl`.
    */
   publicUrl: readTextEnv('ADMIN_PUBLIC_URL', '').replace(/\/+$/, ''),
 
@@ -142,10 +145,17 @@ let sessionSecret: string | null = null;
  * Deixou de ser obrigatória: ela só serve para criar o **primeiro** admin em
  * `/api/setup`. Depois que existe uma conta, o painel recusa esse caminho e a
  * variável fica inerte (`docs/05-accounts-and-roles.md` §2.3).
+ *
+ * Enquanto vale, ela **é** a credencial que cria o primeiro administrador — e
+ * ainda é a semente do segredo de sessão quando `ADMIN_SESSION_SECRET` falta.
+ * Por isso o placeholder é recusado aqui. Só quem chega a este ponto é
+ * atingido: com uma conta já criada, o `/api/setup` responde 404 e o login
+ * legado 401 antes de consultar a senha, então um `CHANGE_ME` esquecido no
+ * `.env` de uma instalação em uso continua inerte, sem derrubar o boot.
  */
 export function getAdminPassword(): string | null {
   if (adminPassword === undefined) adminPassword = readSecret('ADMIN_PASSWORD') ?? null;
-  return adminPassword;
+  return adminPassword === null ? null : assertNotPlaceholder('ADMIN_PASSWORD', adminPassword);
 }
 
 /**
@@ -162,13 +172,23 @@ export function getAdminPassword(): string | null {
  * sessões antigas. Ainda assim, prefira definir o segredo explicitamente em
  * produção — `openssl rand -hex 32`. Com contas, a derivação a partir da senha
  * de bootstrap perde sentido: defina o segredo.
+ *
+ * O salt da derivação é constante e público, o que permitiria pré-computar uma
+ * tabela válida para todas as instalações do projeto. A derivação continua
+ * existindo porque removê-la derrubaria quem hoje sobe só com `ADMIN_PASSWORD`,
+ * e um salt por instalação teria de vir do banco — que este módulo não acessa.
+ * O que fecha o ataque barato é a recusa do placeholder: sem um
+ * `ADMIN_PASSWORD` público, não há entrada conhecida para pré-computar.
  */
 export function getSessionSecret(): string {
   if (sessionSecret) return sessionSecret;
 
   const configured = readSecret('ADMIN_SESSION_SECRET');
   if (configured) {
-    sessionSecret = configured;
+    // O placeholder do `.env.example` é público: aceitá-lo deixaria qualquer
+    // pessoa assinar o cookie de sessão, que é a única fonte de verdade da
+    // autenticação do painel (sessão stateless, sem tabela de sessões).
+    sessionSecret = assertNotPlaceholder('ADMIN_SESSION_SECRET', configured);
     return sessionSecret;
   }
 
@@ -202,6 +222,62 @@ export function getSessionSecret(): string {
 /** Base pública do painel, com fallback no `Host` da requisição. */
 export function panelBaseUrl(proto: string, host: string): string {
   return config.publicUrl || `${proto}://${host}`;
+}
+
+/**
+ * `true` para os endereços que o `TRUST_PROXY` padrão já trata como internos
+ * (`loopback, uniquelocal`): 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12,
+ * 192.168.0.0/16 e fc00::/7. Fora dessas faixas, a requisição atravessou uma
+ * rede que esta instalação não controla.
+ */
+export function isInternalAddress(ip: string | undefined): boolean {
+  if (!ip) return false;
+
+  // Socket dual-stack entrega IPv4 mapeado (`::ffff:172.18.0.1`): o que
+  // interessa classificar é o IPv4 de dentro.
+  const value = ip.trim().toLowerCase().replace(/^::ffff:/, '');
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(value);
+  if (v4) {
+    const first = Number(v4[1]);
+    const second = Number(v4[2]);
+    if (first === 127 || first === 10) return true;
+    if (first === 172) return second >= 16 && second <= 31;
+    return first === 192 && second === 168;
+  }
+
+  if (value === '::1') return true;
+  // fc00::/7 são os prefixos `fc` e `fd`. O primeiro hexteto sempre aparece com
+  // os quatro dígitos, porque começa por um dígito diferente de zero.
+  return /^f[cd][0-9a-f]{2}:/.test(value);
+}
+
+/**
+ * Base do link de redefinição de senha — o único endereço do painel que sai por
+ * e-mail. `null` significa "não há base confiável": a rota falha fechada em vez
+ * de montar o link.
+ *
+ * Aqui o `Host` não pode ser fallback cego como no `panelBaseUrl`. Quem pede a
+ * redefinição é qualquer visitante, e o link chega à caixa de **outra** pessoa:
+ * deduzir o domínio do `Host` deixaria quem pede escolher o servidor que recebe
+ * o token da vítima — e ele viaja na querystring, então basta o clique. No
+ * `redirect_uri` do OIDC o mesmo truque não paga, porque o provedor compara com
+ * o endereço registrado; neste caminho não existe segunda conferência.
+ *
+ * Exigir `ADMIN_PUBLIC_URL` sempre travaria quem sobe a stack sem configurar
+ * nada, então o `Host` continua valendo quando o pedido vem de uma rede interna
+ * (`isInternalAddress`) — o caso do `docker compose up` publicado em 127.0.0.1 e
+ * do acesso pela LAN. Exposta na Internet sem a variável, a rota responde 503 e
+ * a redefinição volta a ser feita por um administrador (§2.6).
+ */
+export function resetLinkBaseUrl(
+  proto: string,
+  host: string | undefined,
+  ip: string | undefined,
+): string | null {
+  if (config.publicUrl) return config.publicUrl;
+  if (!host || !isInternalAddress(ip)) return null;
+  return `${proto}://${host}`;
 }
 
 /** Valor inválido derruba o boot, em vez de virar um ícone quebrado em silêncio. */

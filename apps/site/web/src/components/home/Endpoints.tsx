@@ -49,7 +49,7 @@ export function Endpoints() {
       id: 'mcp-admin',
       title: 'MCP administrativo',
       auth: 'Authorization: Bearer',
-      text: 'CRUD completo do catálogo pelo agente: cria, edita, importa .zip e alterna a visibilidade das skills.',
+      text: 'A administração pelo agente: cria e edita skills e catálogos, importa .zip e decide o que fica público.',
       url: meta?.mcpAdminUrl ?? null,
       icon: <McpIcon />,
     },
@@ -57,7 +57,7 @@ export function Endpoints() {
       id: 'admin',
       title: 'Painel administrativo',
       auth: 'senha',
-      text: 'A mesma administração pelo navegador, para quando é você — e não o agente — quem vai mexer no catálogo.',
+      text: 'A mesma administração pelo navegador. É lá que ficam, para quem tem acesso, as skills e os catálogos privados.',
       url: meta?.adminUrl ?? null,
       icon: <ShieldIcon />,
     },
@@ -65,7 +65,7 @@ export function Endpoints() {
       id: 'api',
       title: 'API REST pública',
       auth: 'leitura · CORS aberto',
-      text: 'Alternativa ao MCP para scripts e integrações: a mesma busca e os mesmos downloads, em JSON.',
+      text: 'Alternativa ao MCP para scripts e integrações: a mesma busca e os mesmos downloads das skills públicas, em JSON.',
       url: `${meta?.baseUrl ?? ''}/api/skills`,
       icon: <GlobeIcon />,
     },
@@ -74,13 +74,13 @@ export function Endpoints() {
   return (
     <section className="endpoints" id="enderecos">
       <div className="wrap">
-        <div className="head center reveal">
+        <div className="head reveal">
           <h2 className="display">
-            Endereços <span className="grad-text">de acesso.</span>
+            Endereços <span className="grad-text">de acesso</span>
           </h2>
           <p>
-            As portas desta instalação. Guarde as duas primeiras para configurar seus agentes; a
-            terceira é onde você publica skills novas.
+            As portas desta instalação. Os dois MCPs configuram seus agentes; o painel é onde você
+            publica skills e catálogos novos.
           </p>
         </div>
 
