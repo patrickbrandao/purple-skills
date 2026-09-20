@@ -20,6 +20,7 @@ run-rebuild.sh
 run-builder.sh
 run-local.sh
 run-prod.sh
+run-commit.sh
 run-mcp-inspector.sh
 docker-compose-builder.yml
 
