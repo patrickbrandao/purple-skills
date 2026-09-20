@@ -6,6 +6,7 @@ import { usePalette } from '../commands.js';
 import { Badge, Kbd, useStored } from '../ui.js';
 import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 import { Notifications } from './Notifications.js';
+import { isNewSkillPath } from './routes.js';
 import { NARROW, Sidebar } from './Sidebar.js';
 import type { OnLogout } from './UserMenu.js';
 
@@ -13,6 +14,8 @@ type Crumb = { label: string; to?: string };
 
 /** Trilha da barra superior, derivada da URL. */
 function crumbsFor(pathname: string): Crumb[] {
+  // A criação de skill tem endereço próprio, fora de `/skills/` (`routes.ts`).
+  if (isNewSkillPath(pathname)) return [{ label: 'Skills', to: '/skills' }, { label: 'nova skill' }];
   const parts = pathname.split('/').filter(Boolean);
   const [head, second, third] = parts;
   switch (head) {
@@ -21,7 +24,7 @@ function crumbsFor(pathname: string): Crumb[] {
         ? [{ label: 'Servidores MCP', to: '/mcps' }, { label: second, to: `/mcps/${second}` }, ...(third ? [{ label: third }] : [])]
         : [{ label: 'Servidores MCP' }];
     case 'skills':
-      if (second === 'new') return [{ label: 'Skills', to: '/skills' }, { label: 'nova skill' }];
+      // Tudo sob `/skills/` é de uma skill — inclusive a de slug `new`.
       return second
         ? [{ label: 'Skills', to: '/skills' }, { label: second, to: `/skills/${second}` }, ...(third ? [{ label: third }] : [])]
         : [{ label: 'Skills' }];

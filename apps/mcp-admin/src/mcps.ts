@@ -3,6 +3,7 @@ import {
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
+  getSkillSummary,
   getVirtualMcp,
   linkSkill,
   listVirtualMcpKeys,
@@ -30,7 +31,7 @@ import {
   type VirtualMcpDetail,
   type VirtualMcpSkillInput,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, assertSkillsViewable, levelFrom, viewerOf } from './access.js';
+import { accountByEmail, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
 import type { Caller } from './auth.js';
 
 const SOURCE = 'mcp-admin' as const;
@@ -47,6 +48,39 @@ const fail = (message: string): ToolResult => ({
   isError: true,
 });
 
+/**
+ * Teto do nome de vMCP, de catálogo e de chave `psv_`, em caracteres — gêmeo do
+ * `NAME_MAX` do painel (`apps/admin/src/mcps.ts`), onde está o porquê inteiro:
+ * nome não tinha teto nenhum, e estes são copiados em cada linha de
+ * `skill_accesses`, que nunca é podada (relatório 042 da auditoria de
+ * 2026-09-19). É um número, não um contrato: quem mudar um muda o outro,
+ * mantendo-o abaixo dos 512 em que o banco corta a cópia.
+ *
+ * Fica no handler, e não como `.max()` no schema zod da tool, por dois motivos:
+ * a recusa chega ao agente em português, dizendo o limite, em vez do erro de
+ * validação do protocolo; e o schema não conhece o nome **atual**.
+ */
+export const NAME_MAX = 200;
+
+/**
+ * Recusa o nome acima do teto. Vale para quem **cria ou renomeia**: nome antigo
+ * mais longo continua válido até alguém mexer nele — reenviar o nome que o
+ * objeto já tem (`unchanged`) não é renomear.
+ */
+export function assertNameFits(rawName: string, what: string, unchanged?: string): void {
+  const name = (rawName ?? '').trim();
+  if (name === unchanged?.trim() || name.length <= NAME_MAX) return;
+  throw badRequest(`O nome ${what} é longo demais: ${name.length} caracteres (o limite é ${NAME_MAX})`);
+}
+
+/**
+ * O rótulo de uma chave na trilha: `<slug>: <nome> (<prefixo>)`, o mesmo na
+ * emissão e na revogação, como no painel. O prefixo desempata chaves de mesmo
+ * nome e já é público — o segredo é o que vem depois.
+ */
+const keyLabel = (slug: string, key: { name: string; prefix: string }): string =>
+  `${slug}: ${key.name} (${key.prefix})`;
+
 /** O que uma tool devolve de um MCP virtual — o mesmo shape do painel. */
 const view = (mcp: VirtualMcpDetail) => ({
   slug: mcp.slug,
@@ -58,8 +92,10 @@ const view = (mcp: VirtualMcpDetail) => ({
   owner: mcp.ownerEmail,
   access: mcp.access,
   // A lista de concessões só para quem as administra (`docs/12` decisão 11).
+  // `isActive: false` é a conta desativada: a linha fica, inerte, volta a valer
+  // se a conta for reativada — e `unshare_mcp` a revoga assim mesmo.
   grants: canManage(mcp.access)
-    ? mcp.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level }))
+    ? mcp.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
     : undefined,
   path: `/virtual/${mcp.slug}/mcp`,
   skills: mcp.skills.map((skill) => ({
@@ -156,6 +192,7 @@ export function createMcpHandlers(caller: Caller) {
       if (!canCreate(caller.role)) {
         return fail(`Criar MCP virtual exige papel "editor" ou "admin"; sua credencial é "${caller.role}".`);
       }
+      assertNameFits(args.name, 'do MCP virtual');
       const mcp = await createVirtualMcp(
         {
           name: args.name,
@@ -186,6 +223,7 @@ export function createMcpHandlers(caller: Caller) {
     }): Promise<ToolResult> {
       // Nome, slug, descrição, aberto e ligado são propriedades: `manage`.
       const current = await managed(args.slug, 'manage');
+      if (args.name !== undefined) assertNameFits(args.name, 'do MCP virtual', current.name);
 
       const mcp = await updateVirtualMcp(
         current.uuid,
@@ -274,6 +312,9 @@ export function createMcpHandlers(caller: Caller) {
         SOURCE,
         actor,
       );
+      // A escrita relê na visão do admin: a contagem sai do que **esta**
+      // credencial vê — número agregado também é alcance (`docs/12` §3.1).
+      const seen = await getSkillSummary(detail.slug, { viewer });
       return text(
         `"${detail.slug}" publicada em "${current.slug}" como ${[
           args.asSkill && 'skill',
@@ -281,20 +322,35 @@ export function createMcpHandlers(caller: Caller) {
           args.asResource && 'resource',
         ]
           .filter(Boolean)
-          .join(', ')}. Agora está em ${detail.mcps.length} MCP(s) virtual(is).`,
+          .join(', ')}.${seen ? ` Agora está em ${seen.mcps.length} MCP(s) virtual(is) que esta credencial vê.` : ''}`,
       );
     },
 
+    /** Desfaz o vínculo direto: `edit` no vMCP, nada na skill — é mexer só no servidor. */
     async unlink_skill(args: { skill: string; mcp: string }): Promise<ToolResult> {
       const current = await managed(args.mcp, 'edit');
+      // Uma resposta só para "não existe" e "não está aqui". O banco distingue
+      // as duas, e a diferença diria a quem edita um servidor qualquer quais
+      // slugs de skill privada alheia existem (relatório 009 da auditoria de
+      // 2026-09-19). `current.skills` são os vínculos diretos — o que sairia.
+      if (!current.skills.some((skill) => skill.slug === args.skill)) {
+        throw notFound(`A skill "${args.skill}" não está vinculada a este MCP virtual`);
+      }
       const detail = await unlinkSkill(args.skill, current.uuid, SOURCE, actor);
-      return text(
-        `"${detail.slug}" saiu de "${current.slug}". ${
-          detail.mcps.length > 0
-            ? `Continua em ${detail.mcps.map((mcp) => mcp.slug).join(', ')}.`
-            : 'Ficou sem vínculo: não é exibida em lugar nenhum.'
-        }`,
-      );
+
+      // O detalhe da escrita é a visão do admin: ele nomearia todo servidor em
+      // que a skill continua, inclusive o fechado de terceiros. O texto conta só
+      // o que esta credencial vê — e ela pode ter deixado de ver a própria skill.
+      const seen = await getSkillSummary(detail.slug, { viewer });
+      const onde = seen?.mcps.map((mcp) => mcp.slug) ?? [];
+      const resto = !seen
+        ? 'Esta credencial deixou de vê-la: ela só chegava aqui por este servidor.'
+        : onde.length > 0
+          ? `Continua em ${onde.join(', ')}.`
+          : viewer.role === 'admin'
+            ? 'Ficou sem vínculo: não é exibida em lugar nenhum.'
+            : 'Não está em nenhum outro MCP virtual que esta credencial veja.';
+      return text(`"${detail.slug}" saiu de "${current.slug}". ${resto}`);
     },
 
     async list_virtual_mcp_keys(args: { slug: string }): Promise<ToolResult> {
@@ -318,6 +374,7 @@ export function createMcpHandlers(caller: Caller) {
       const current = await managed(args.slug, 'manage');
       const name = (args.name ?? '').trim();
       if (!name) throw badRequest('Dê um nome à chave (ex.: "CI do projeto X")');
+      assertNameFits(name, 'da chave');
 
       const generated = generateApiKey(VIRTUAL_KEY_SCHEME);
       const key = await createVirtualMcpKey({
@@ -331,7 +388,7 @@ export function createMcpHandlers(caller: Caller) {
         action: 'mcp.key.create',
         source: SOURCE,
         actor,
-        targetLabel: `${current.slug}: ${name}`,
+        targetLabel: keyLabel(current.slug, { name, prefix: generated.prefix }),
       });
 
       return asJson({
@@ -348,13 +405,16 @@ export function createMcpHandlers(caller: Caller) {
       const revoked = await revokeVirtualMcpKey(args.key_id, current.uuid);
       if (!revoked) return fail('Chave não encontrada neste MCP virtual, ou já revogada.');
 
+      // Pelo nome que a revogação devolve, e não pelo uuid da chave — que some
+      // com o vMCP (`ON DELETE CASCADE`) e deixava a linha sem referente
+      // (relatório 040 da auditoria de 2026-09-19).
       await recordAccountAudit({
         action: 'mcp.key.revoke',
         source: SOURCE,
         actor,
-        targetLabel: `${current.slug}: ${args.key_id}`,
+        targetLabel: keyLabel(current.slug, revoked),
       });
-      return text(`Chave ${args.key_id} revogada.`);
+      return text(`Chave "${revoked.name}" (psv_${revoked.prefix}_…) revogada.`);
     },
 
     // ----------------------------------------------------------- acesso ---
@@ -366,11 +426,12 @@ export function createMcpHandlers(caller: Caller) {
       return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} o MCP virtual "${current.slug}".`);
     },
 
+    /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
     async unshare_mcp(args: { slug: string; email: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
-      await removeVirtualMcpGrant(current.slug, target.uuid, SOURCE, actor);
-      return text(`${target.email} perdeu o acesso ao MCP virtual "${current.slug}".`);
+      const grant = grantOf(current.grants, args.email, 'neste MCP virtual');
+      await removeVirtualMcpGrant(current.slug, grant.userUuid, SOURCE, actor);
+      return text(`${grant.email} perdeu o acesso ao MCP virtual "${current.slug}".`);
     },
 
     async transfer_mcp(args: { slug: string; email: string }): Promise<ToolResult> {

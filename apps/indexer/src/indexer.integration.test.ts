@@ -20,14 +20,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import {
   claimStaleSkills,
+  clearRagRefusals,
   closeDb,
   createSkill,
   getRagSettings,
   insertRagVectors,
   listPendingRagTexts,
+  markRagTextRefused,
   ragCoverage,
   ragSchemaReady,
   readSkillForRag,
+  releaseRagTextReservations,
   releaseStaleSkill,
   replaceSkillTexts,
   resolveRagSpace,
@@ -39,10 +42,12 @@ import {
 import {
   GEMINI_EMBEDDING_2,
   GoogleDriver,
+  RagInputTooLongError,
   subirServidorFalso,
+  type EmbeddingDriver,
   type ServidorFalso,
 } from '@purple-skills/rag';
-import { runOnce, type IndexerPorts } from './indexer.js';
+import { runCycle, runOnce, RecusasRag, TEXTO_SONDA, type IndexerPorts } from './indexer.js';
 
 const url = process.env.TEST_DATABASE_URL;
 const descreve = url ? describe : describe.skip;
@@ -261,6 +266,176 @@ descreve('o indexador ponta a ponta', () => {
     // Só as duas gravações do beforeAll, nenhuma do indexador.
     expect(rows[0].n).toBe(2);
   });
+
+  // ------------------------------------------------------------------------
+  // A fila quando algo dá errado (relatórios 024, 025 e 027 da auditoria de
+  // 2026-09-19), com as funções de verdade do banco: é aqui que se vê que a
+  // porta do indexador e a query do `@purple-skills/db` falam da mesma coisa.
+
+  /** As portas que o container liga: as de sempre, a recusa e a devolução. */
+  const portasDoContainer = (over: Partial<IndexerPorts> = {}): IndexerPorts =>
+    portasReais({ markRagTextRefused, releaseRagTextReservations, ...over });
+
+  /** O driver de verdade sem tentativa nova: o teste não fica esperando o recuo. */
+  const driverSemRecuo = () =>
+    new GoogleDriver({ apiKey: 'sem-custo', baseUrl: servidor.baseUrl, maxRetries: 0 });
+
+  const contarEstado = async (estado: 'reservado' | 'recusado') =>
+    Number(
+      (
+        await raw.query('SELECT count(*)::int AS n FROM rag_text_status WHERE state = $1', [
+          estado,
+        ])
+      ).rows[0].n,
+    );
+
+  it('lote que falha volta à fila na hora: o --once seguinte embute sem esperar a reserva', async () => {
+    await setFile(
+      'code-review',
+      'SKILL.md',
+      '# Code Review\n\nTexto novo, para haver o que embutir quando o provedor cair.',
+      SOURCE,
+      ACTOR,
+    );
+
+    servidor.simular('indisponivel');
+    try {
+      const falhou = await runOnce(portasDoContainer({ driver: driverSemRecuo() }));
+      expect(falhou.exitCode).toBe(1);
+      expect(falhou.result.lastErrorKind).toBe('unavailable');
+      // A reserva não fica com quem já desistiu do lote.
+      expect(await contarEstado('reservado')).toBe(0);
+    } finally {
+      servidor.simular(undefined);
+    }
+
+    // Antes: a fila vinha vazia por dez minutos, e esta execução saía com 0 e
+    // "0 erro(s)" deixando o texto sem vetor.
+    const retomou = await runOnce(portasDoContainer());
+    expect(retomou.exitCode).toBe(0);
+    expect((await ragCoverage(retomou.result.space?.uuid ?? null)).pendingTexts).toBe(0);
+  }, 120_000);
+
+  it('400 a tudo, inclusive ao texto-sonda: nenhuma recusa é gravada, e o estado diz por quê', async () => {
+    await setFile(
+      'bolo-de-fuba',
+      'SKILL.md',
+      '# Bolo de fubá\n\nOutra receita, para haver o que embutir quando tudo for 400.',
+      SOURCE,
+      ACTOR,
+    );
+
+    const antes = servidor.requisicoes.length;
+    servidor.simular('conteudo-recusado');
+    try {
+      const { exitCode, result } = await runOnce(portasDoContainer());
+      // Antes: o texto era marcado como recusado para sempre, e o modo único saía
+      // com 0 e a chave "aceita pelo provedor".
+      expect(exitCode).toBe(1);
+      expect(result.lastErrorKind).toBe('config');
+      expect(result.textosRecusados).toBe(0);
+    } finally {
+      servidor.simular(undefined);
+    }
+
+    expect(await contarEstado('recusado')).toBe(0);
+    expect(await contarEstado('reservado')).toBe(0);
+
+    // A sonda saiu pelo driver, com o prefixo de documento, como qualquer texto.
+    const enviados = servidor.requisicoes.slice(antes).flatMap((r) => {
+      const corpo = r.corpo as { requests?: { content: { parts: { text: string }[] } }[] };
+      return (corpo.requests ?? []).map((p) => p.content.parts[0]!.text);
+    });
+    expect(enviados).toContain(`${GEMINI_EMBEDDING_2.documentPrefix}${TEXTO_SONDA}`);
+
+    const estado = JSON.parse((await getRagSettings())['rag.indexer.status']!.value!) as Record<
+      string,
+      unknown
+    >;
+    expect(estado).toMatchObject({ lastErrorKind: 'config' });
+    expect(String(estado.lastError)).toContain('texto-sonda');
+
+    // Corrigida a causa, nada precisa de reparo: a indexação retoma sozinha.
+    const retomou = await runOnce(portasDoContainer());
+    expect(retomou.exitCode).toBe(0);
+    expect((await ragCoverage(retomou.result.space?.uuid ?? null)).pendingTexts).toBe(0);
+  }, 120_000);
+
+  it('recusa limpa pelo painel volta a ser tentada pelo mesmo processo do indexador', async () => {
+    const VENENO = '# Code Review\n\nEste é o texto que o provedor recusa pelo conteúdo.';
+    await setFile('code-review', 'SKILL.md', VENENO, SOURCE, ACTOR);
+
+    // O servidor falso recusa tudo ou nada; quem recusa **um** texto é este
+    // driver, por cima do de verdade — a sonda e os outros textos passam.
+    const real = new GoogleDriver({ apiKey: 'sem-custo', baseUrl: servidor.baseUrl });
+    let enviosDoVeneno = 0;
+    const seletivo: EmbeddingDriver = {
+      id: real.id,
+      models: real.models,
+      embedQuery: (modelo, texto, sinal) => real.embedQuery(modelo, texto, sinal),
+      embedDocuments: async (modelo, textos, sinal) => {
+        if (textos.includes(VENENO)) {
+          enviosDoVeneno += 1;
+          throw new RagInputTooLongError('o Google recusou o conteúdo enviado (400)');
+        }
+        return real.embedDocuments(modelo, textos, sinal);
+      },
+    };
+    // Um processo só: as mesmas portas e a mesma memória de recusas, do começo ao fim.
+    const portas = portasDoContainer({ driver: seletivo });
+    const recusas = new RecusasRag();
+
+    const marcou = await runOnce(portas, { recusas });
+    expect(marcou.exitCode).toBe(0);
+    const espaco = marcou.result.space!.uuid;
+    expect((await ragCoverage(espaco)).refusedTexts).toBe(1);
+
+    // A fila do banco deixou de devolvê-lo: o ciclo seguinte nem o vê.
+    const depoisDaRecusa = enviosDoVeneno;
+    await runCycle(portas, { recusas });
+    expect(enviosDoVeneno).toBe(depoisDaRecusa);
+
+    // O "tentar de novo" do painel. `clearRagRefusals` não alcança a memória deste
+    // processo — e não precisa: ela só guarda a recusa que o banco não guardou.
+    expect(await clearRagRefusals(espaco, SOURCE, ACTOR)).toBe(1);
+    const tentou = await runCycle(portas, { recusas });
+
+    // Antes: o texto liberado era reservado, descartado em memória e segurado por
+    // dez minutos a cada ciclo, até alguém reiniciar o container.
+    expect(enviosDoVeneno).toBeGreaterThan(depoisDaRecusa);
+    // A recusa era genuína: recusado uma vez mais e remarcado, como o reparo promete.
+    expect(tentou.textosRecusados).toBe(1);
+    expect((await ragCoverage(espaco)).refusedTexts).toBe(1);
+    expect(await contarEstado('reservado')).toBe(0);
+  }, 120_000);
+
+  it('parada pedida entre skills: o resto do lote volta à fila, sem reserva pendurada', async () => {
+    await raw.query('UPDATE skills SET rag_stale = true');
+    let refatiadas = 0;
+    const portas = portasDoContainer({
+      replaceSkillTexts: async (uuid, textos) => {
+        refatiadas += 1;
+        return replaceSkillTexts(uuid, textos);
+      },
+    });
+
+    // O SIGTERM chega enquanto a primeira skill do lote está sendo gravada.
+    const r = await runCycle(portas, { deveParar: () => refatiadas >= 1 });
+
+    expect(r.skillsRefatiadas).toBe(1);
+    expect(r.continuar).toBe(false);
+    // As que nem começaram voltaram a pendentes e **sem** reserva: entram no
+    // ciclo seguinte, e não quando a reserva delas vencer.
+    const pendentes = await raw.query('SELECT count(*)::int AS n FROM skills WHERE rag_stale');
+    expect(pendentes.rows[0].n).toBe(BASE.length - 1);
+    const reservas = await raw.query('SELECT count(*)::int AS n FROM rag_skill_claims');
+    expect(reservas.rows[0].n).toBe(0);
+    expect((await ragCoverage(null)).staleSkills).toBe(BASE.length - 1);
+
+    const retomou = await runOnce(portasDoContainer());
+    expect(retomou.exitCode).toBe(0);
+    expect((await ragCoverage(retomou.result.space?.uuid ?? null)).staleSkills).toBe(0);
+  }, 120_000);
 
   it('sem a migration, o modo único espera sem cair', async () => {
     await raw.query('DROP TABLE IF EXISTS rag_vectors, rag_skill_texts, rag_texts, rag_spaces CASCADE');

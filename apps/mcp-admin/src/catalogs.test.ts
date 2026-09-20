@@ -32,6 +32,7 @@ const db = vi.hoisted(() => ({
 vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
 const { createCatalogHandlers } = await import('./catalogs.js');
+const { NAME_MAX } = await import('./mcps.js');
 const { guard } = await import('./tools.js');
 
 type Role = 'admin' | 'editor' | 'membro';
@@ -66,7 +67,11 @@ const catalog = {
   isPublic: false,
   ownerUserUuid: 'uuid-editor',
   ownerEmail: 'editor@exemplo.com',
-  grants: [],
+  // Uma concessão de conta ativa e uma de conta desativada depois de recebê-la.
+  grants: [
+    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'view' },
+    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'edit' },
+  ],
   skillCount: 2,
   activeSkillCount: 1,
   mcpCount: 1,
@@ -278,6 +283,105 @@ describe('acesso: share / unshare / transfer', () => {
     const negado = await guard(() => editor.share_catalog({ slug: 'dados', email: 'maria@exemplo.com', level: 'view' }));
     expect(negado.isError).toBe(true);
     expect(negado.content[0].text).toMatch(/exige "administrar"/);
+  });
+
+  /**
+   * `manage` revoga **qualquer** concessão (`docs/12` decisão 10), inclusive a
+   * de conta desativada depois de recebê-la (relatório 039 da auditoria de
+   * 2026-09-19). Conceder e transferir continuam exigindo conta ativa.
+   */
+  it('revoga a concessão de conta desativada, que a ficha marca; conceder a ela continua recusado', async () => {
+    const dono = createCatalogHandlers(caller('editor'));
+    db.getUserByEmail.mockImplementation(async (email: string) =>
+      email === 'saiu@exemplo.com' ? { uuid: 'uuid-saiu', email, isActive: false } : null,
+    );
+
+    const ficha = JSON.parse((await dono.get_catalog({ slug: 'dados' })).content[0].text);
+    expect(ficha.grants).toEqual([
+      { email: 'maria@exemplo.com', name: 'Maria', level: 'view', isActive: true },
+      { email: 'saiu@exemplo.com', name: 'Saiu', level: 'edit', isActive: false },
+    ]);
+
+    const tirado = await dono.unshare_catalog({ slug: 'dados', email: 'saiu@exemplo.com' });
+    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    expect(db.removeCatalogGrant).toHaveBeenCalledWith('dados', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
+
+    const concedido = await guard(() => dono.share_catalog({ slug: 'dados', email: 'saiu@exemplo.com', level: 'view' }));
+    expect(concedido.isError).toBe(true);
+    expect(concedido.content[0].text).toMatch(/desativada/);
+    expect(db.setCatalogGrant).not.toHaveBeenCalled();
+  });
+
+  // Revogar não consulta `users`: a resposta não diz se existe conta com aquele e-mail.
+  it('e-mail sem concessão aqui é recusado sem consultar a conta', async () => {
+    const nada = await guard(() => createCatalogHandlers(caller('editor')).unshare_catalog({ slug: 'dados', email: 'x@exemplo.com' }));
+
+    expect(nada.isError).toBe(true);
+    expect(nada.content[0].text).toBe('A conta não tem concessão neste catálogo');
+    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.removeCatalogGrant).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A ficha do catálogo revelava todo vMCP vinculado, inclusive o fechado de
+ * terceiros; o banco passou a recortar a **leitura** com `viewer`. As escritas
+ * releem sem `viewer`, na visão do admin — então nenhuma tool de escrita pode
+ * repassar `mcps` do detalhe que a escrita devolve (relatório 010 da auditoria de
+ * 2026-09-19).
+ */
+describe('as tools de escrita não repassam os vMCPs do detalhe da escrita', () => {
+  const FECHADO = { uuid: 'mcp-9', slug: 'fechado-de-outro', name: 'Fechado de outro', isOpen: false, isActive: true, isDefault: false, ownerUserUuid: 'uuid-outro', asSkill: true, asPrompt: false, asResource: false };
+  const naVisaoDoAdmin = { ...catalog, mcps: [FECHADO] };
+
+  it('get_catalog lê com o viewer da credencial, que é quem recorta', async () => {
+    await createCatalogHandlers(caller('membro', 'uuid-terceiro')).get_catalog({ slug: 'publico' });
+
+    expect(db.getCatalog).toHaveBeenCalledWith('publico', { viewer: { role: 'membro', userUuid: 'uuid-terceiro' } });
+  });
+
+  it('update_catalog e set_catalog_skills respondem sem citar servidor nenhum', async () => {
+    grants['uuid-terceiro'] = 'manage';
+    const gerente = createCatalogHandlers(caller('membro', 'uuid-terceiro'));
+    db.updateCatalog.mockResolvedValue(naVisaoDoAdmin);
+    db.setCatalogSkills.mockResolvedValue(naVisaoDoAdmin);
+
+    const alterado = await gerente.update_catalog({ slug: 'dados', description: 'nova' });
+    const membros = await gerente.set_catalog_skills({ slug: 'dados', skills: [{ slug: 'a' }] });
+
+    for (const result of [alterado, membros]) {
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).not.toContain('fechado-de-outro');
+      expect(result.content[0].text).not.toContain('Fechado de outro');
+    }
+  });
+});
+
+/**
+ * Nome de catálogo não tinha teto, e é copiado em cada linha de
+ * `skill_accesses` (relatório 042 da auditoria de 2026-09-19).
+ */
+describe('teto de nome', () => {
+  const LONGO = 'n'.repeat(NAME_MAX + 1);
+
+  it('criar acima do teto é recusado com o limite, antes do banco', async () => {
+    const recusado = await guard(() => createCatalogHandlers(caller('editor')).create_catalog({ name: LONGO }));
+
+    expect(recusado.isError).toBe(true);
+    expect(recusado.content[0].text).toContain(`o limite é ${NAME_MAX}`);
+    expect(db.createCatalog).not.toHaveBeenCalled();
+  });
+
+  it('renomear acima do teto é recusado; reenviar o nome que o catálogo já tem, não', async () => {
+    const dono = createCatalogHandlers(caller('editor'));
+
+    const recusado = await guard(() => dono.update_catalog({ slug: 'dados', name: LONGO }));
+    expect(recusado.isError).toBe(true);
+    expect(db.updateCatalog).not.toHaveBeenCalled();
+
+    db.getCatalog.mockImplementation(async (_slug: string, options?: { viewer?: Viewer }) => seen({ ...catalog, name: LONGO }, options?.viewer));
+    db.updateCatalog.mockResolvedValue(catalog);
+    expect((await dono.update_catalog({ slug: 'dados', name: LONGO, is_active: false })).isError).toBeUndefined();
   });
 });
 

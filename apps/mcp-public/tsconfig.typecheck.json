@@ -1,0 +1,24 @@
+// Só para `npm run typecheck`: é o tsconfig de build com os testes de volta.
+//
+// O `exclude` do `tsconfig.json` tira `src/**/*.test.ts` porque o `dist/` das
+// imagens não leva teste — motivo legítimo, que este arquivo não desfaz. O
+// efeito colateral era que nenhum teste de servidor passava pelo `tsc`: o
+// Vitest transpila sem checar tipo, então erro de tipo em teste só aparecia
+// quando alguém abria o arquivo (relatório 073 da auditoria de 2026-09-19).
+//
+// `"exclude": []` substitui o padrão do TypeScript (`node_modules`, `dist`), e
+// aqui isso é seguro **porque o `include` é estreito**: `src/**/*.ts` não
+// alcança nenhum dos dois. Alargar o `include` quebra essa premissa.
+//
+// O `rootDir` alargado é exclusivo deste app: `search.integration.test.ts`
+// importa `../../indexer/src/indexer.js` para rodar um ciclo do indexador de
+// verdade antes de consultar os vetores, e com `rootDir: ./src` o `tsc` recusa
+// o arquivo de fora (TS6059). `rootDir` só governa o **emit**, e aqui o emit é
+// o do `tsconfig.json`, que não muda: este arquivo roda sempre com `--noEmit`.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".."
+  },
+  "exclude": []
+}

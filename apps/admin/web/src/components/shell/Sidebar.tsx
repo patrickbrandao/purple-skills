@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { ROLE_LABEL, canManageUsers, type Session, type SessionUser } from '../../api.js';
 import { initials } from '../SkillIcon.js';
+import { isNewSkillPath } from './routes.js';
 import { UserMenu, type OnLogout } from './UserMenu.js';
 import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 
@@ -119,7 +120,11 @@ export function Sidebar({
           <NavLink to="/mcps" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
             <LayoutGrid /> Servidores MCP
           </NavLink>
-          <NavLink to="/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          {/* A criação mora fora de `/skills/` (`routes.ts`), mas é desta seção: o item segue aceso nela. */}
+          <NavLink
+            to="/skills"
+            className={({ isActive }) => `nav-item${isActive || isNewSkillPath(location.pathname) ? ' active' : ''}`}
+          >
             <BookOpenCheck /> Skills
           </NavLink>
           <NavLink to="/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>

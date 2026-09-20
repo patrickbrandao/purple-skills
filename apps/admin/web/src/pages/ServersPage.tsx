@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, LayoutGrid, List, Plus, Search, Star } from 'lucide-react';
 import {
@@ -49,20 +49,26 @@ export function ServersPage({ session, user }: { session: Session; user: Session
   const [favorites, setFavorites] = useStored<string[]>('purple-skills-admin:mcps-favorites', []);
   const creating = params.get('novo') === '1';
 
-  const load = useCallback(async () => {
-    try {
-      const [list, stats] = await Promise.all([getMcps(scope === 'todos' ? '' : scope), getStats().catch(() => null)]);
-      setItems(list.items);
-      if (stats) setOpenSkills(stats.openSkills);
-    } catch (err) {
-      toast.error((err as Error).message);
-      setItems([]);
-    }
-  }, [toast, scope]);
-
+  // Uma busca por recorte. O cleanup descarta a resposta atrasada: trocando de
+  // recorte depressa, a consulta antiga podia chegar por último e repor a lista
+  // do recorte anterior sob o filtro novo — e aqui nada recarrega sozinho.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let active = true;
+    Promise.all([getMcps(scope === 'todos' ? '' : scope), getStats().catch(() => null)])
+      .then(([list, stats]) => {
+        if (!active) return;
+        setItems(list.items);
+        if (stats) setOpenSkills(stats.openSkills);
+      })
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        setItems([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [toast, scope]);
 
   useRegisterCommands(
     [{ id: 'mcps-view', label: view === 'grid' ? 'Ver servidores em lista' : 'Ver servidores em cards', group: 'Recurso', icon: view === 'grid' ? <List /> : <LayoutGrid />, run: () => setView(view === 'grid' ? 'list' : 'grid') }],

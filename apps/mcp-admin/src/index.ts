@@ -1,5 +1,5 @@
 import { closeDb, getDb, waitForDatabase } from '@purple-skills/db';
-import { readTextEnv } from '@purple-skills/shared';
+import { readSizeEnv } from '@purple-skills/shared';
 import { comCaller, requireBearer } from './auth.js';
 import { adminToken, config } from './config.js';
 import { createHttpApp, type McpApp } from './http.js';
@@ -16,7 +16,10 @@ async function main() {
     withRequest: comCaller,
     identityOf: (req) => req.caller?.identity,
     // `set_files_bulk` manda ~32 MB de base64; o resto é o envelope JSON-RPC.
-    jsonLimit: readTextEnv('MCP_JSON_LIMIT', '48mb'),
+    // Lido por `readSizeEnv`: o `bytes` do body-parser lê "48m" como 48 bytes,
+    // sem erro, e o serviço subia respondendo 413 a tudo — formato inválido
+    // agora derruba o boot. No compose o nome do `.env` é `MCP_ADMIN_JSON_LIMIT`.
+    jsonLimit: readSizeEnv('MCP_JSON_LIMIT', '48mb'),
     openCors: false,
     info: {
       name: config.serverName,

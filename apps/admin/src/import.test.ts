@@ -28,9 +28,9 @@ function rota(method: string, path: string): RequestHandler {
   return found.route.stack[found.route.stack.length - 1]!.handle;
 }
 
-function zipCom(skillMd: string): Buffer {
+function zipCom(skillMd: string | Buffer): Buffer {
   const zip = new AdmZip();
-  zip.addFile('SKILL.md', Buffer.from(skillMd, 'utf8'));
+  zip.addFile('SKILL.md', Buffer.isBuffer(skillMd) ? skillMd : Buffer.from(skillMd, 'utf8'));
   return zip.toBuffer();
 }
 
@@ -64,7 +64,7 @@ const timeA = {
   access: 'owner' as const,
 };
 
-async function importar(skillMd: string, campos: Record<string, string> = {}, user = admin) {
+async function importar(skillMd: string | Buffer, campos: Record<string, string> = {}, user = admin) {
   const req = { file: { buffer: zipCom(skillMd), originalname: 'pacote.zip' }, body: campos, user };
   const res = {
     statusCode: 200,
@@ -160,6 +160,69 @@ describe('POST /api/skills/import', () => {
     });
 
     expect(res.statusCode).toBe(400);
+    expect(criar).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Ponta a ponta do relatório 064 da auditoria de 2026-09-19: a `description`
+   * em escalar de bloco (`>-`, `|`) é como boa parte das skills publicadas a
+   * escreve — o `skill-creator` inclusive. O parser lia só a primeira linha, e
+   * com o formulário em branco a skill nascia com a descrição `">-"`.
+   */
+  describe('descrição em escalar de bloco, com o formulário em branco', () => {
+    const CORPO = '\n# Revisor de PR\n\nPrimeiro parágrafo do corpo, que não é a descrição.\n';
+
+    it('`description: >-` (dobrado) nasce com a descrição inteira, numa linha só', async () => {
+      const { input, res } = await importar(
+        '---\nname: revisor-de-pr\ndescription: >-\n' +
+          '  Revisa pull requests em busca de bugs de concorrência, vazamento de\n' +
+          '  recurso e erro de borda. Use quando pedirem revisão de código,\n' +
+          '  mesmo que não digam "PR".\n' +
+          'metadata:\n  title: Revisor de PR\n  tags: revisao, git\n---\n' +
+          CORPO,
+      );
+
+      expect(res.statusCode).toBe(201);
+      expect(input).toMatchObject({
+        name: 'Revisor de PR',
+        slug: 'revisor-de-pr',
+        description:
+          'Revisa pull requests em busca de bugs de concorrência, vazamento de recurso e erro de borda. ' +
+          'Use quando pedirem revisão de código, mesmo que não digam "PR".',
+        tags: ['revisao', 'git'],
+        // O que é gravado é só o corpo: o bloco inteiro sai, não só a 1ª linha.
+        skillMd: '# Revisor de PR\n\nPrimeiro parágrafo do corpo, que não é a descrição.\n',
+      });
+    });
+
+    it('`description: |` (literal) mantém as quebras de linha', async () => {
+      const { input } = await importar(
+        '---\nname: revisor-de-pr\ndescription: |\n  Revisa pull requests.\n  Use quando pedirem revisão.\n---\n' + CORPO,
+      );
+
+      expect(input.description).toBe('Revisa pull requests.\nUse quando pedirem revisão.');
+    });
+
+    it('o que o formulário traz continua vencendo o frontmatter', async () => {
+      const { input } = await importar('---\nname: revisor-de-pr\ndescription: >-\n  Do arquivo.\n---\n' + CORPO, {
+        description: '  Do formulário  ',
+      });
+
+      expect(input.description).toBe('Do formulário');
+    });
+  });
+
+  // Quem recusa é o `extractZip` (`ZipContentError`, relatório 015 da auditoria
+  // de 2026-09-19): `toString('utf8')` trocaria cada byte inválido por U+FFFD,
+  // e a skill nasceria com o prompt corrompido, sem aviso.
+  it('SKILL.md fora de UTF-8 é 400 com a causa, e a skill não é criada', async () => {
+    // `# Instruções` em Windows-1252: o `ç` e o `õ` são um byte cada.
+    const windows1252 = Buffer.from([0x23, 0x20, 0x49, 0x6e, 0x73, 0x74, 0x72, 0x75, 0xe7, 0xf5, 0x65, 0x73, 0x0a]);
+
+    const { res } = await importar(windows1252);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/UTF-8 válido/) });
     expect(criar).not.toHaveBeenCalled();
   });
 });

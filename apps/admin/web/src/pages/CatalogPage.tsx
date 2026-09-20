@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Server, SlidersHorizontal, Users } from 'lucide-react';
 import {
@@ -50,19 +50,28 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
 
   const tab = catalogTabOf(location.pathname, `/catalogos/${slug}`);
 
-  const load = useCallback(async () => {
-    try {
-      setDetail(await getCatalog(slug));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigate('/catalogos');
-    }
-  }, [slug, toast, navigate]);
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
+  // dependesse dele, cada troca de guia buscaria o catálogo de novo e piscaria
+  // o esqueleto da ficha inteira.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
+  // Uma carga por catálogo. O cleanup descarta a resposta atrasada: trocando de
+  // catálogo com a ficha montada, a do anterior podia chegar por último.
   useEffect(() => {
+    let active = true;
     setDetail(null);
-    void load();
-  }, [load]);
+    getCatalog(slug)
+      .then((fresh) => active && setDetail(fresh))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/catalogos');
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug, toast]);
 
   const canEdit = detail ? canEditAccess(detail.access) : false;
   const manages = detail ? canManage(detail.access) : false;
@@ -243,8 +252,24 @@ export function MemberState({ skill, catalogActive }: { skill: CatalogSkill; cat
   );
 }
 
+/**
+ * A última linha de uma lista que o servidor recortou pelo que a conta vê: os
+ * contadores do catálogo (`mcpCount`, `skillCount`) são globais de propósito — é
+ * o número da confirmação de exclusão —, então a ficha pode anunciar 3
+ * servidores e listar 1. A diferença é dita, em vez de parecer um erro de conta
+ * (relatório 010 da auditoria de 2026-09-19).
+ */
+export function hiddenRowLabel(total: number, listed: number, one: string, many: string): string | null {
+  const hidden = total - listed;
+  if (hidden <= 0) return null;
+  const what = hidden === 1 ? `1 ${one}` : `${hidden} ${many}`;
+  return `${listed > 0 ? 'e mais ' : ''}${what} que você não vê`;
+}
+
 /** A guia Skills em leitura: os membros e o estado de cada um. */
 function MembersTable({ catalog }: { catalog: CatalogDetail }) {
+  // Quem chega só pelo "público" não recebe o membro privado de participação desativada.
+  const hidden = hiddenRowLabel(catalog.skillCount, catalog.skills.length, 'skill', 'skills');
   return (
     <Panel title="Skills" icon={<Library />}>
       <p className="panel-hint">
@@ -280,7 +305,8 @@ function MembersTable({ catalog }: { catalog: CatalogDetail }) {
                 </td>
               </tr>
             ))}
-            {catalog.skills.length === 0 && <EmptyRow colSpan={3}>Nenhuma skill ainda</EmptyRow>}
+            {catalog.skills.length === 0 && !hidden && <EmptyRow colSpan={3}>Nenhuma skill ainda</EmptyRow>}
+            {hidden && <EmptyRow colSpan={3}>{hidden}</EmptyRow>}
           </tbody>
         </table>
       </div>
@@ -290,6 +316,10 @@ function MembersTable({ catalog }: { catalog: CatalogDetail }) {
 
 /** "Vinculado em": os servidores que recebem o catálogo, com as portas. Leitura nas duas fichas. */
 export function LinkedMcpsPanel({ catalog }: { catalog: CatalogDetail }) {
+  // A lista vem só com os servidores que a conta vê (aberto e ligado, dela ou
+  // concedido a ela): o fechado de terceiros não é nomeado aqui, como não é na
+  // ficha da skill. O que sobra do contador é dito na última linha.
+  const hidden = hiddenRowLabel(catalog.mcpCount, catalog.mcps.length, 'servidor', 'servidores');
   return (
     <Panel title="Vinculado em" icon={<Server />}>
       <p className="panel-hint">
@@ -320,7 +350,8 @@ export function LinkedMcpsPanel({ catalog }: { catalog: CatalogDetail }) {
                 </td>
               </tr>
             ))}
-            {catalog.mcps.length === 0 && <EmptyRow colSpan={2}>Em nenhum servidor ainda</EmptyRow>}
+            {catalog.mcps.length === 0 && !hidden && <EmptyRow colSpan={2}>Em nenhum servidor ainda</EmptyRow>}
+            {hidden && <EmptyRow colSpan={2}>{hidden}</EmptyRow>}
           </tbody>
         </table>
       </div>

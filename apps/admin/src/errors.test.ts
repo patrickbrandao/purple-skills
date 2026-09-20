@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
 const { onError } = await import('./errors.js');
+const { UploadTooLargeError } = await import('./uploads.js');
 
 function fakeRes() {
   const res = {
@@ -40,6 +41,15 @@ describe('onError', () => {
     expect(res.statusCode).toBe(413);
     expect(res.body.error).toBe('payload_too_large');
     expect(res.body.message).toMatch(/limite/i);
+  });
+
+  it('traduz a soma estourada no meio do envio (chunked) em 413 JSON', () => {
+    // Sai do storage do upload, não do multer: sem o ramo próprio cairia no 500.
+    const res = run(new UploadTooLargeError());
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body.error).toBe('payload_too_large');
+    expect(res.body.message).toMatch(/MB por requisição/);
   });
 
   it('traduz outros erros de upload em 400 JSON', () => {

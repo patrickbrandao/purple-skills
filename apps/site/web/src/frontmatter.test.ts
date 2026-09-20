@@ -53,6 +53,11 @@ const CASOS: { titulo: string; meta: shared.SkillMeta; corpo: string }[] = [
     meta: { slug: 'sem-descricao', name: 'Sem descrição', tags: [] },
     corpo: 'Corpo.\n',
   },
+  {
+    titulo: 'corpo que abre com uma régua horizontal',
+    meta: { slug: 'com-regua', description: 'Abre com um preâmbulo entre réguas.' },
+    corpo: '---\n\n# Preâmbulo\n\nTexto\n\n---\n\nResto\n',
+  },
 ];
 
 describe('espelho do frontmatter no navegador', () => {
@@ -66,9 +71,51 @@ describe('espelho do frontmatter no navegador', () => {
     '﻿---\nname: x\n---\n\n\n# Corpo\n',
     '# Sem frontmatter\n',
     '---\nname: x\n---   \r\nCorpo\r\n',
+    // Régua horizontal não é frontmatter, e fechamento malformado não fecha.
+    '---\n\n# Título\n\nTexto\n\n---\n\nRodapé\n',
+    '---\nIntrodução do prompt.\nNota: leia tudo antes.\n---\nResto\n',
+    '---\nhttps://example.com/docs\n---\nResto\n',
+    '---\n- passo um\n- passo dois\n---\nResto\n',
+    '---\nname: x\n---abc\n# Corpo\n',
+    '---\nname: x\n----------\n# Corpo\n',
+    '---\nname: x\n---abc\n# Corpo\n\n---\n\nFim\n',
+    // Frontmatter de verdade, nas formas que o parser do pacote lê.
+    '---\r\nname: x\r\ndescription: y\r\n---\r\n# Corpo\r\n',
+    '---\nname: x\ndescription: >-\n  Texto em\n  duas linhas.\nmetadata:\n  tags:\n    - a\n---\ncorpo',
+    '---\nname: x\ntags:\n- a\n- b\n---\ncorpo',
+    '---\n# comentário\n  name: x\n  description: y\n---\ncorpo',
+    '--- \nname: x\n---\ncorpo',
+    '---\nname: x\n---',
+    // Idempotência: linha em branco antes do bloco e blocos empilhados.
+    '\n\n---\nname: x\n---\ncorpo',
+    '---\nname: x\n---\n---\nname: y\n---\n\nB\n',
+    '---\nname: x\n---\n---\nA\n---\nB\n',
     '',
   ])('remove o frontmatter como o pacote — %j', (fonte) => {
     expect(stripFrontmatter(fonte)).toBe(shared.stripFrontmatter(fonte));
+  });
+
+  // Os casos acima só comparam o espelho com o pacote; estes fixam o resultado,
+  // para os dois não errarem juntos. É o navegador que corta primeiro: o Salvar
+  // do painel manda o texto já sem o "frontmatter".
+  it('não apaga o trecho entre duas réguas horizontais', () => {
+    const prompt = '---\n\n# Título\n\nTexto\n\n---\n\nRodapé\n';
+    expect(stripFrontmatter(prompt)).toBe(prompt);
+    expect(composeSkillMd({ slug: 'x', description: 'Faz X' }, prompt)).toBe(
+      `---\nname: x\ndescription: Faz X\n---\n\n${prompt}`,
+    );
+  });
+
+  it('é idempotente: o passe do Salvar não tira nada além do que o de abrir já tirou', () => {
+    for (const fonte of [
+      '---\nname: x\n---\n---\nA\n---\nB\n',
+      '---\nname: x\n---\n---\nname: y\n---\nB\n',
+      '\n---\nname: x\n---\nB\n',
+    ]) {
+      const uma = stripFrontmatter(fonte);
+      expect(stripFrontmatter(uma)).toBe(uma);
+    }
+    expect(stripFrontmatter('---\nname: x\n---\n---\nA\n---\nB\n')).toBe('---\nA\n---\nB\n');
   });
 });
 

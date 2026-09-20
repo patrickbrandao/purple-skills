@@ -16,6 +16,7 @@ import { AccessBadge } from '../components/AccessPanel.js';
 import { Badge, Button, EmptyRow, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
+import { IMPORT_SKILL_PATH, NEW_SKILL_PATH } from '../components/shell/routes.js';
 import { useToast } from '../components/Toast.js';
 
 type Sort = 'recent' | 'score' | 'name';
@@ -161,10 +162,10 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
           </label>
           {podeCriar && (
             <>
-              <Link to="/skills/new?modo=zip" className="btn btn-ghost">
+              <Link to={IMPORT_SKILL_PATH} className="btn btn-ghost">
                 <Upload /> Importar
               </Link>
-              <Link to="/skills/new" className="btn btn-primary">
+              <Link to={NEW_SKILL_PATH} className="btn btn-primary">
                 <Plus /> Nova skill
               </Link>
             </>

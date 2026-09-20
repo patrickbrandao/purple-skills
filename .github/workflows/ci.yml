@@ -71,6 +71,37 @@ jobs:
             exit 1
           fi
 
+      # Byte de controle literal num fonte esconde o conteúdo do arquivo da
+      # varredura: quando é o nulo, o git passa a tratar o blob como binário —
+      # o diff vira "Binary files differ" e o `gitleaks git`, que lê o
+      # histórico por diffs, nunca enxerga aquelas linhas. O grep também
+      # recusa o arquivo, então a busca manual por segredo não o alcança.
+      #
+      # A guarda é sobre os **bytes**, não sobre o veredito do git, e a
+      # diferença foi medida: o git procura o nulo só nos primeiros 8 000
+      # bytes, então `queries.ts`, com o nulo no byte 274 217, nunca foi
+      # marcado como binário — uma guarda baseada em `--numstat` não o
+      # pegaria. Três arquivos desta árvore tinham o problema
+      # (`explorer.ts`, `queries.ts`, `chunk.test.ts`), todos corrigidos na
+      # auditoria de 2026-09-19 (relatório 063).
+      #
+      # TAB, LF e CR ficam de fora, que é o único conjunto legítimo em fonte.
+      # Precisa mesmo do caractere? Monte-o em código
+      # (`String.fromCharCode(0)`), como `queries.ts` já fazia — escrever o
+      # escape não resolve: há ferramenta de edição que o "resolve" de volta
+      # para o byte cru ao gravar o arquivo, que foi como estes três nasceram.
+      - name: Nenhum byte de controle nos fontes
+        run: |
+          sujos=$(git ls-files -z -- \
+                    '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.json' '*.md' \
+                    '*.sql' '*.yml' '*.yaml' '*.css' '*.html' '*.sh' \
+                    '*.toml' '*.example' \
+                  | xargs -0 perl -ne 'if (/[\000-\010\013\014\016-\037\177]/) { print "$ARGV\n"; close ARGV; }')
+          if [ -n "$sujos" ]; then
+            echo "::error::byte de controle literal em fonte: $sujos"
+            exit 1
+          fi
+
       # O pacote é extraído dentro do PATH: conferir os bytes antes de extrair.
       # O hash sai do `checksums.txt` que o próprio gitleaks publica em cada
       # release, não de um valor colado aqui — assim trocar GITLEAKS_VERSION

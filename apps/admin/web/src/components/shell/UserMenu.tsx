@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { ExternalLink, LogOut, Moon, Sun, UserPlus, UserRound } from 'lucide-react';
 import type { Session, SessionUser } from '../../api.js';
 import { Menu, MenuHeading, MenuItem, MenuSeparator } from '../ui.js';
-import { useTheme } from '../../useTheme.js';
+import { useTheme } from '../../themeStore.js';
 
 /**
  * Pede a saída da sessão. Com `'setup'`, o login abre já no cadastro do

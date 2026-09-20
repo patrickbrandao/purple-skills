@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { closeDb, getDb, resolveDefaultVirtualMcp, waitForDatabase } from '@purple-skills/db';
-import { readTextEnv } from '@purple-skills/shared';
+import { readSizeEnv } from '@purple-skills/shared';
 import { rootAuth, virtualAuth } from './auth.js';
 import { assertNoLegacyAuthEnv, config } from './config.js';
 import { avisoDeBoot } from './rag.js';
@@ -9,7 +9,7 @@ import { SESSION_TTL_MS, createHttpApp, type McpApp } from './http.js';
 import { createMcpServer } from './server.js';
 import { createSessionTracker, statelessSessionId, type SessionScope } from './sessions.js';
 import type { VirtualScope } from './tools.js';
-import { accessContextOf } from './access.js';
+import { accessContextOf, comOrigem } from './access.js';
 
 /**
  * O escopo do vMCP desta requisição — `rootAuth` ou `virtualAuth` já o
@@ -70,6 +70,9 @@ async function main() {
 
   const app = createHttpApp({
     sessions,
+    // A origem (IP, agente) que vai para o registro de acessos é a da requisição
+    // que leu, não a do `initialize` que abriu a sessão.
+    withRequest: comOrigem,
     mounts: [
       {
         basePath: '',
@@ -87,8 +90,12 @@ async function main() {
       },
     ],
     // As ferramentas públicas recebem slug, termo de busca e paginação: alguns
-    // bytes. 1 MB já é folga larga.
-    jsonLimit: readTextEnv('MCP_JSON_LIMIT', '1mb'),
+    // bytes. 1 MB já é folga larga. Lido por `readSizeEnv`: o `bytes` do
+    // body-parser aproveita o começo do que não entende ("1m" vale 1 byte,
+    // "48 megas" valem 48) e o serviço subia respondendo 413 a tudo — formato
+    // inválido agora derruba o boot. No compose o nome do `.env` é por serviço
+    // (`MCP_PUBLIC_JSON_LIMIT`), para o teto do admin não chegar aqui.
+    jsonLimit: readSizeEnv('MCP_JSON_LIMIT', '1mb'),
     openCors: true,
     info: {
       name: config.serverName,

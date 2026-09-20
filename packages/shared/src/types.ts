@@ -124,6 +124,8 @@ export type Grant = {
   email: string;
   name: string;
   role: Role;
+  /** A conta está ativa? Desativada mantém a linha, inerte (`docs/12` §2). */
+  isActive: boolean;
   level: AccessLevel;
   grantedByUserUuid: string | null;
   grantedByEmail: string | null;
@@ -184,6 +186,9 @@ export type AuditAction =
   | 'user.create'
   | 'user.role'
   | 'user.deactivate'
+  // O par de `user.deactivate`: reativar devolve o login, as concessões e as
+  // chaves `psk_` da conta de uma vez.
+  | 'user.activate'
   // Senha de uma conta trocada por quem não é ela: a redefinição pelo admin e o
   // link de e-mail consumido (`docs/05-accounts-and-roles.md` §2.6).
   // `target_label` é o e-mail da conta afetada e o ator diz por qual caminho
@@ -191,6 +196,11 @@ export type AuditAction =
   // que **toda sessão daquela conta caiu** (`token_version`) e que o próximo
   // acesso exige nova senha; ela nunca leva a senha, o hash nem o token.
   | 'user.password'
+  // Uma identidade OIDC passou a abrir uma conta local que já existia
+  // (`docs/05-accounts-and-roles.md` §2.4). Uma vez por conta — não é login. O
+  // ator é o caminho (`oidc:<issuer>`); `target_label` leva o e-mail da conta e
+  // o `subject` que a assumiu.
+  | 'user.link'
   | 'key.create'
   | 'key.revoke'
   // Eventos de MCP virtual (`docs/08-mcp-virtual.md` §6). `target_label` é o

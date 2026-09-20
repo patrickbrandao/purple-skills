@@ -31,6 +31,103 @@ describe('parseFrontmatter', () => {
     const source = '# Sem frontmatter\n';
     expect(parseFrontmatter(source)).toEqual({ data: {}, body: source });
   });
+
+  it('lê arquivo com quebra de linha do Windows (CRLF)', () => {
+    const { data, body } = parseFrontmatter(
+      '---\r\nname: minha-skill\r\ndescription: Faz X\r\nmetadata:\r\n  title: Minha Skill\r\n---\r\n# Corpo\r\n',
+    );
+    expect(data).toMatchObject({ name: 'minha-skill', description: 'Faz X', title: 'Minha Skill' });
+    expect(body).toBe('# Corpo\r\n');
+  });
+
+  it('aceita o bloco que termina junto com o texto, sem quebra final', () => {
+    expect(parseFrontmatter('---\nname: x\n---')).toEqual({ data: { name: 'x' }, body: '' });
+  });
+
+  it('a régua `---` no meio do corpo não é confundida com frontmatter', () => {
+    const source = '# Título\n\n---\n\nname: isto é corpo\n\n---\n\nFim\n';
+    expect(parseFrontmatter(source)).toEqual({ data: {}, body: source });
+  });
+
+  // O valor pode vir NAS LINHAS DE BAIXO. O parser lia só o resto da linha da
+  // chave: `description: >-` virava a descrição literal ">-" e o texto sumia.
+  it('lê escalar de bloco dobrado (`>`): as linhas viram uma só', () => {
+    const { data, body } = parseFrontmatter(
+      '---\nname: pdf-tools\ndescription: >-\n  Use quando o usuário quiser extrair, juntar\n  ou dividir PDFs.\nlicense: MIT\n---\n# Corpo\n',
+    );
+    expect(data.description).toBe('Use quando o usuário quiser extrair, juntar ou dividir PDFs.');
+    // A chave depois do bloco continua sendo lida, e o corpo não muda.
+    expect(data.license).toBe('MIT');
+    expect(body).toBe('# Corpo\n');
+  });
+
+  it('no dobrado, linha em branco separa parágrafos', () => {
+    const { data } = parseFrontmatter('---\ndescription: >\n  Primeiro\n  parágrafo.\n\n  Segundo.\n---\n');
+    expect(data.description).toBe('Primeiro parágrafo.\nSegundo.');
+  });
+
+  it('lê escalar de bloco literal (`|`): as quebras e a indentação interna ficam', () => {
+    const { data } = parseFrontmatter('---\ndescription: |\n  Linha um\n    recuada\n  Linha três\nname: x\n---\n');
+    expect(data.description).toBe('Linha um\n  recuada\nLinha três');
+    expect(data.name).toBe('x');
+  });
+
+  it.each(['>', '>-', '>+', '|', '|-', '|+', '>2', '|2-', '>-2', '>- # comentário'])(
+    'reconhece o indicador de bloco `%s`, que nunca vira valor',
+    (indicador) => {
+      const { data } = parseFrontmatter(`---\ndescription: ${indicador}\n  Texto da descrição.\n---\n`);
+      expect(data.description).toBe('Texto da descrição.');
+    },
+  );
+
+  it('dentro do bloco, linha em forma de `chave: valor` é texto, não chave', () => {
+    const { data } = parseFrontmatter('---\ndescription: |\n  Use para PDFs.\n  Triggers: pdf, merge\nname: x\n---\n');
+    expect(data.description).toBe('Use para PDFs.\nTriggers: pdf, merge');
+    expect(data).not.toHaveProperty('Triggers');
+  });
+
+  it('lê escalar de bloco dentro do `metadata:` indentado', () => {
+    const { data } = parseFrontmatter(
+      '---\nname: x\nmetadata:\n  title: >-\n    Um título\n    comprido\n  tags: git, ci\n---\n',
+    );
+    expect(data.title).toBe('Um título comprido');
+    expect(data.tags).toBe('git, ci');
+  });
+
+  it('indicador de bloco sem linha nenhuma embaixo é valor vazio', () => {
+    expect(parseFrontmatter('---\ndescription: >-\nname: x\n---\n').data).toEqual({ description: '', name: 'x' });
+  });
+
+  it('junta o escalar simples que continua na linha de baixo, como o PyYAML escreve', () => {
+    // `yaml.safe_dump` quebra texto longo em 80 colunas assim; a continuação era
+    // descartada e a descrição ficava cortada no meio da frase.
+    const { data } = parseFrontmatter(
+      '---\nname: pdf-tools\ndescription: Use quando o usuário quiser extrair, juntar ou dividir PDFs, preencher\n  formulários, e também quando pedir OCR de documento escaneado.\nlicense: MIT\n---\n',
+    );
+    expect(data.description).toBe(
+      'Use quando o usuário quiser extrair, juntar ou dividir PDFs, preencher formulários, e também quando pedir OCR de documento escaneado.',
+    );
+    expect(data.license).toBe('MIT');
+  });
+
+  it('a continuação que começa com um link não vira a chave `https`', () => {
+    // Em YAML o par pede espaço (ou fim de linha) depois dos dois-pontos.
+    const { data } = parseFrontmatter('---\ndescription: A documentação completa está em\n  https://example.com/docs\n---\n');
+    expect(data).toEqual({ description: 'A documentação completa está em https://example.com/docs' });
+  });
+
+  it('junta o escalar entre aspas que fecha na linha de baixo, e o valor que começa embaixo da chave', () => {
+    expect(parseFrontmatter('---\ndescription: "Faz X: e\n  também Y"\n---\n').data.description).toBe('Faz X: e também Y');
+    expect(parseFrontmatter('---\ndescription:\n  Faz X\n  e Y.\nname: x\n---\n').data).toEqual({
+      description: 'Faz X e Y.',
+      name: 'x',
+    });
+  });
+
+  it('item de lista e comentário não entram no valor da chave de cima', () => {
+    const { data } = parseFrontmatter('---\ntags:\n  - a\n  # nota\n  - b\ndescription: y\n---\n');
+    expect(data).toEqual({ tags: '', description: 'y' });
+  });
 });
 
 describe('stripFrontmatter', () => {
@@ -42,9 +139,89 @@ describe('stripFrontmatter', () => {
     expect(stripFrontmatter('# Corpo\n\nParágrafo.')).toBe('# Corpo\n\nParágrafo.');
   });
 
+  // O que já funcionava antes de a régua horizontal deixar de ser confundida
+  // com frontmatter — fixado aqui para provar que não regrediu.
+  it.each([
+    ['CRLF', '---\r\nname: x\r\ndescription: y\r\n---\r\n# Corpo\r\n', '# Corpo\r\n'],
+    ['espaço depois do `---` de fechamento', '---\nname: x\n---   \r\nCorpo\r\n', 'Corpo\r\n'],
+    ['bloco que termina junto com o texto', '---\nname: x\n---', ''],
+    ['bloco `metadata:` indentado', '---\nname: x\nmetadata:\n  title: T\n  tags: a, b\n---\ncorpo', 'corpo'],
+    ['lista em bloco', '---\nname: x\nmetadata:\n  tags:\n    - a\n    - b\n---\ncorpo', 'corpo'],
+    ['lista sem indentação, que o YAML aceita', '---\nname: x\ntags:\n- a\n- b\n---\ncorpo', 'corpo'],
+    ['comentário YAML', '---\n# gerado pelo painel\nname: x\n---\ncorpo', 'corpo'],
+    ['linha em branco dentro do bloco', '---\nname: x\n\ndescription: y\n---\ncorpo', 'corpo'],
+    ['frontmatter inteiro indentado', '---\n  name: x\n  description: y\n---\ncorpo', 'corpo'],
+    ['réguas no meio do corpo, depois do frontmatter', '---\nname: x\n---\n# T\n\nA\n\n---\n\nB\n', '# T\n\nA\n\n---\n\nB\n'],
+    ['réguas no meio do corpo, sem frontmatter', '# T\n\n---\n\nA\n\n---\n\nB\n', '# T\n\n---\n\nA\n\n---\n\nB\n'],
+    ['texto vazio', '', ''],
+    ['só espaço em branco', ' \n\n', ''],
+  ])('segue valendo: %s', (_caso, fonte, esperado) => {
+    expect(stripFrontmatter(fonte)).toBe(esperado);
+  });
+
   it('é idempotente — o segundo bloco `---` do corpo fica', () => {
-    const uma = stripFrontmatter('---\nname: x\n---\n# Corpo\n');
+    // O fixture antigo (`'---\nname: x\n---\n# Corpo\n'`) não exercitava o
+    // título: o resultado não começava com `---`, então o segundo passe nunca
+    // chegava a casar. Este começa, e o bloco que sobra é régua + prosa.
+    const uma = stripFrontmatter('---\nname: x\n---\n---\nA\n---\nB\n');
+    expect(uma).toBe('---\nA\n---\nB\n');
     expect(stripFrontmatter(uma)).toBe(uma);
+  });
+
+  // Bloco `---`…`---` sem cara de mapa YAML é régua horizontal do corpo, não
+  // frontmatter: tudo que estava entre as duas réguas era apagado, em cada
+  // leitura e em cada gravação, sem aviso.
+  it.each([
+    ['título e prosa entre duas réguas', '---\n\n# Título\n\nTexto\n\n---\n\nRodapé\n'],
+    ['prosa com uma linha em forma de rótulo', '---\nIntrodução do prompt.\nNota: leia tudo antes.\n---\nResto\n'],
+    ['rótulo com acento, que não é chave de YAML', '---\nAtenção: leia tudo antes.\n---\nResto\n'],
+    ['um link sozinho entre as réguas', '---\nhttps://example.com/docs\n---\nResto\n'],
+    ['lista de Markdown entre as réguas', '---\n- passo um\n- passo dois\n---\nResto\n'],
+    ['prosa indentada antes de qualquer chave', '---\n    código de exemplo\nnome: x\n---\nResto\n'],
+    ['`---abc` não fecha o bloco', '---\nname: x\n---abc\n# Corpo\n'],
+    ['régua de dez hifens não fecha o bloco', '---\nname: x\n----------\n# Corpo\n'],
+    ['fechamento malformado seguido de uma régua', '---\nname: x\n---abc\n# Corpo\n\n---\n\nFim\n'],
+  ])('não descarta o que não é frontmatter: %s', (_caso, fonte) => {
+    expect(stripFrontmatter(fonte)).toBe(fonte);
+    expect(parseFrontmatter(fonte)).toEqual({ data: {}, body: fonte });
+  });
+
+  it('tolera espaço depois do `---` de abertura, como já tolerava no de fechamento', () => {
+    expect(stripFrontmatter('--- \nname: x\n---\ncorpo')).toBe('corpo');
+    expect(stripFrontmatter('---\t\r\nname: x\r\n---\r\ncorpo')).toBe('corpo');
+  });
+
+  it('acha o frontmatter atrás de linhas em branco num passe só', () => {
+    // O `^\s+` rodava depois de procurar o bloco: o primeiro passe só aparava, e
+    // era o passe seguinte (a leitura) que descartava o frontmatter.
+    expect(stripFrontmatter('\n\n---\nname: x\n---\ncorpo')).toBe('corpo');
+  });
+
+  it('descarta de uma vez os blocos de frontmatter empilhados', () => {
+    // Descartar só o primeiro deixava o resultado começando por outro bloco de
+    // frontmatter, que o passe seguinte comia: a função não era idempotente.
+    expect(stripFrontmatter('---\nname: x\n---\n---\nname: y\n---\n\nB\n')).toBe('B\n');
+  });
+
+  it('é idempotente de verdade: o segundo passe nunca muda o resultado do primeiro', () => {
+    // A regra "tirar o frontmatter também na leitura, sem migração" depende
+    // disto — o texto passa por até quatro passes num abrir-e-salvar do painel.
+    const fontes = [
+      '---\nname: x\n---\n---\nA\n---\nB',
+      '---\nname: x\n---\n---\nname: y\n---\nB',
+      '---\nname: x\n---\n\n\n---\nname: y\n---\n\n---\nC\n---\nD',
+      '\n---\nname: x\n---\nB',
+      '\uFEFF\n---\nname: x\n---\n---\n\nTexto\n\n---\nFim',
+      '---\n\n# Título\n\nTexto\n\n---\n\nRodapé\n',
+      '---\nname: x\n---abc\n# Corpo\n\n---\n\nFim\n',
+      '--- \nname: x\n--- \n--- \nname: y\n---',
+      '---\r\nname: x\r\n---\r\n---\r\nname: y\r\n---\r\nB\r\n',
+      '---\n---\nname: x\n---\nB',
+    ];
+    for (const fonte of fontes) {
+      const uma = stripFrontmatter(fonte);
+      expect(stripFrontmatter(uma)).toBe(uma);
+    }
   });
 
   it('remove o BOM antes de procurar o bloco', () => {
@@ -125,6 +302,16 @@ describe('composeSkillMd', () => {
       '---\nname: minha-skill\ndescription: Faz X\nmetadata:\n  title: Minha Skill\n---\n',
     );
   });
+
+  it('mantém inteiro o corpo que abre com uma régua horizontal, e segue idempotente', () => {
+    const corpo = '---\n\n# Preâmbulo\n\nTexto\n\n---\n\nResto\n';
+    const uma = composeSkillMd(meta, corpo);
+    expect(uma).toBe(
+      `---\nname: minha-skill\ndescription: Faz X\nmetadata:\n  title: Minha Skill\n---\n\n${corpo}`,
+    );
+    expect(composeSkillMd(meta, uma)).toBe(uma);
+    expect(stripFrontmatter(uma)).toBe(corpo);
+  });
 });
 
 describe('skillMetaFromMarkdown', () => {
@@ -166,6 +353,44 @@ describe('skillMetaFromMarkdown', () => {
       slug: null,
       tags: [],
     });
+  });
+
+  it('a descrição em escalar de bloco chega inteira, e não como ">-"', () => {
+    const meta = skillMetaFromMarkdown(
+      '---\nname: pdf-tools\ndescription: >-\n  Use quando o usuário quiser extrair, juntar\n  ou dividir PDFs.\n---\n# PDF Tools\n\nCorpo.\n',
+    );
+    expect(meta).toEqual({
+      name: 'PDF Tools',
+      description: 'Use quando o usuário quiser extrair, juntar ou dividir PDFs.',
+      slug: 'pdf-tools',
+      tags: [],
+    });
+  });
+
+  it('`description:` vazia cai para o próximo candidato, em vez de nascer vazia', () => {
+    // O `??` só pulava a chave AUSENTE: presente e vazia, ela vencia o `summary`
+    // e o primeiro parágrafo, e a skill nascia sem descrição.
+    for (const vazia of ['description:', 'description: ""', "description: ''", 'description: >-']) {
+      expect(skillMetaFromMarkdown(`---\nname: a\n${vazia}\n---\n# Título\n\nPrimeiro parágrafo.\n`).description).toBe(
+        'Primeiro parágrafo.',
+      );
+    }
+    expect(skillMetaFromMarkdown('---\nname: a\ndescription:\nsummary: Do resumo\n---\ncorpo').description).toBe('Do resumo');
+  });
+
+  it('o corpo que abre com uma régua não perde o título nem o primeiro parágrafo', () => {
+    // O trecho entre as duas réguas era tratado como frontmatter sem chave
+    // nenhuma, e nome e descrição saíam do que vinha DEPOIS dele.
+    const meta = skillMetaFromMarkdown('---\n\n# Título\n\nTexto\n\n---\n\nRodapé\n');
+    expect(meta.name).toBe('Título');
+    // E a própria régua não é parágrafo.
+    expect(meta.description).toBe('Texto');
+  });
+
+  it('faz round-trip de uma descrição com quebras de linha, que sai achatada', () => {
+    const original = { slug: 'minha-skill', description: 'Linha um.\nLinha dois: com dois pontos.' };
+    const meta = skillMetaFromMarkdown(composeSkillMd(original, '# Corpo\n'));
+    expect(meta.description).toBe('Linha um. Linha dois: com dois pontos.');
   });
 
   it('faz round-trip com buildFrontmatter', () => {

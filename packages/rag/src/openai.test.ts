@@ -10,9 +10,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { OpenAIDriver } from './openai.js';
 import { TEXT_EMBEDDING_3_LARGE, TEXT_EMBEDDING_3_SMALL } from './models.js';
 import {
+  ragErrorKind,
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
+  RagQuotaError,
   RagRateLimitError,
   RagTimeoutError,
   RagUnavailableError,
@@ -54,7 +57,7 @@ const erro = (status: number, body: unknown, headers: Record<string, string> = {
 
 function driverCom(
   respostas: (chamada: Chamada) => Response,
-  extra: { onUsage?: (u: UsoDeTokens) => void } = {},
+  extra: { onUsage?: (u: UsoDeTokens) => void; apiKey?: string } = {},
 ) {
   const { chamadas, fetchImpl } = comFetch(respostas);
   const driver = new OpenAIDriver({
@@ -211,8 +214,9 @@ describe('o mapeamento dos erros', () => {
     [401, corpoErro('invalid_request_error', 'invalid_api_key'), RagAuthError],
     [403, corpoErro('invalid_request_error', 'unsupported_country_region_territory'), RagAuthError],
     [404, corpoErro('invalid_request_error', 'model_not_found'), RagConfigError],
-    // Um 400 qualquer é tratado como "o texto não cabe": quem chamou divide o
-    // lote, que é o que acha o texto culpado sem perder os outros.
+    // Um 400 qualquer é tratado como "o texto não cabe": o driver divide o lote
+    // até chegar ao culpado. Que o 400 seja mesmo do conteúdo, quem confere é o
+    // indexador, com o texto-sonda, antes de gravar a recusa.
     [400, corpoErro('invalid_request_error', 'context_length_exceeded'), RagInputTooLongError],
     [500, corpoErro('server_error'), RagUnavailableError],
     [503, corpoErro('server_error'), RagUnavailableError],
@@ -278,6 +282,58 @@ describe('o mapeamento dos erros', () => {
     expect(chamadas).toHaveLength(2);
   });
 
+  it('insufficient_quota sai como RagQuotaError: o painel lê o kind, não a mensagem', async () => {
+    // A mensagem não tem "cota" nem "limite de taxa" — de propósito —, e era por
+    // pedaço de texto que o painel decidia: conta sem crédito aparecia como
+    // "chave aceita pelo provedor".
+    const { driver } = driverCom(() =>
+      erro(429, corpoErro('insufficient_quota', 'insufficient_quota', 'You exceeded your quota')),
+    );
+
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    expect(falha).toBeInstanceOf(RagQuotaError);
+    expect(ragErrorKind(falha)).toBe('quota');
+  });
+
+  it('o 429 de taxa tem outro kind: esperar resolve, pagar não', async () => {
+    const { driver } = driverCom(() =>
+      erro(429, corpoErro('rate_limit_error', 'rate_limit_exceeded')),
+    );
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    expect(falha).toBeInstanceOf(RagRateLimitError);
+    expect(ragErrorKind(falha)).toBe('rate-limit');
+  });
+
+  it('403 de país sem suporte é a origem recusada, não a chave', async () => {
+    const { chamadas, driver } = driverCom(() =>
+      erro(
+        403,
+        corpoErro(
+          'invalid_request_error',
+          'unsupported_country_region_territory',
+          'Country, region, or territory not supported',
+        ),
+      ),
+    );
+
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    // A política é a do erro de chave — não insiste —, o estado exibido não.
+    expect(falha).toBeInstanceOf(RagOriginError);
+    expect(falha).toBeInstanceOf(RagAuthError);
+    expect(ragErrorKind(falha)).toBe('origin');
+    expect((falha as Error).message).toMatch(/a origem da requisição .* não a chave/);
+    expect(chamadas).toHaveLength(1);
+  });
+
+  it('os outros 403 continuam sendo chave recusada', async () => {
+    const { driver } = driverCom(() =>
+      erro(403, corpoErro('invalid_request_error', null, 'You do not have access to this model')),
+    );
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    expect(falha).not.toBeInstanceOf(RagOriginError);
+    expect(ragErrorKind(falha)).toBe('auth');
+  });
+
   it('503 é tentado de novo, e a tentativa seguinte funciona quando a falha passa', async () => {
     let n = 0;
     const { chamadas, driver } = driverCom(() => {
@@ -300,5 +356,78 @@ describe('o mapeamento dos erros', () => {
       RagTimeoutError,
     );
     expect(chamadas).toHaveLength(1);
+  });
+});
+
+/**
+ * A mensagem do provedor vai inteira para o log do indexador, para
+ * `rag.indexer.status` e daí para o "Último erro" do painel — e o 401 da OpenAI
+ * **ecoa a chave recebida**: mascarada quando tem cara de chave (o começo,
+ * asteriscos e os quatro últimos caracteres), e como veio quando é curta ou está
+ * fora do formato. O segundo caso é o de quem colou o segredo errado na variável.
+ */
+describe('a chave ecoada pelo provedor', () => {
+  const corpo401 = (message: string) => ({
+    error: { message, type: 'invalid_request_error', param: null, code: 'invalid_api_key' },
+  });
+
+  it('a chave mascarada não sai na mensagem do erro', async () => {
+    const apiKey = 'sk-proj-Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St90';
+    const eco = `sk-proj-${'*'.repeat(36)}St90`;
+    const { driver } = driverCom(
+      () =>
+        erro(
+          401,
+          corpo401(
+            `Incorrect API key provided: ${eco}. You can find your API key at ` +
+              'https://platform.openai.com/account/api-keys.',
+          ),
+        ),
+      { apiKey },
+    );
+
+    const falha = (await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e)) as Error;
+
+    expect(falha).toBeInstanceOf(RagAuthError);
+    // Nem o começo nem o fim: os dois são pedaço do segredo.
+    expect(falha.message).not.toContain('St90');
+    expect(falha.message).not.toContain('sk-proj-');
+    expect(falha.message).toContain('[chave omitida]');
+    // O resto da mensagem, que é o que o operador precisa ler, fica.
+    expect(falha.message).toContain('Incorrect API key provided');
+    expect(falha.message).toContain('https://platform.openai.com/account/api-keys');
+  });
+
+  it('a chave devolvida como veio também não sai', async () => {
+    const apiKey = 'senha-de-outro-servico-colada-por-engano';
+    const { driver } = driverCom(
+      () => erro(401, corpo401(`Incorrect API key provided: ${apiKey}.`)),
+      { apiKey },
+    );
+
+    const falha = (await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e)) as Error;
+
+    expect(falha.message).not.toContain(apiKey);
+    expect(falha.message).toContain('Incorrect API key provided: [chave omitida]');
+  });
+
+  it('mensagem sem chave nenhuma passa intacta', async () => {
+    const { driver } = driverCom(() =>
+      erro(404, {
+        error: {
+          message: 'The model `text-embedding-9` does not exist',
+          type: 'invalid_request_error',
+          param: 'model',
+          code: 'model_not_found',
+        },
+      }),
+    );
+
+    const falha = (await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e)) as Error;
+
+    expect(falha.message).toBe(
+      'configuração recusada pela OpenAI (404 invalid_request_error: ' +
+        'The model `text-embedding-9` does not exist)',
+    );
   });
 });

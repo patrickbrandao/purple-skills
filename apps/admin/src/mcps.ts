@@ -4,6 +4,7 @@ import {
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
+  getSkillDetail,
   getVirtualMcp,
   linkSkill as dbLinkSkill,
   listMcpSessions,
@@ -49,7 +50,10 @@ import {
   assertAccess,
   assertSkillsViewable,
   forbidden,
+  grantByEmail,
+  grantOf,
   levelFrom,
+  ownerByEmail,
   ownerFrom,
   withGrants,
 } from './access.js';
@@ -66,12 +70,14 @@ const janela = () => ({ onlineWindowMs: config.onlineWindowMs });
  * para admin; para os demais, os seus, os concedidos e os abertos. `scope`
  * é o filtro das listas do painel (meus / compartilhados / públicos).
  */
-export function listMine(user: AuthUser, rawScope?: unknown): Promise<VirtualMcpSummary[]> {
-  return listVirtualMcps({
+export async function listMine(user: AuthUser, rawScope?: unknown): Promise<VirtualMcpSummary[]> {
+  const items = await listVirtualMcps({
     viewer: viewerOf(user),
     ...(isAccessScope(rawScope) ? { scope: rawScope } : {}),
     ...janela(),
   });
+  // O dono sai pelo e-mail, nunca pelo uuid da conta (`ownerByEmail`).
+  return items.map(ownerByEmail);
 }
 
 /**
@@ -97,13 +103,55 @@ export async function detail(user: AuthUser, slug: string): Promise<VirtualMcpDe
   return withGrants(await load(user, slug, 'view'));
 }
 
+/**
+ * Teto do nome de vMCP, de catálogo e de chave `psv_`, em caracteres.
+ *
+ * Nome não tinha teto nenhum — o único freio era o limite do corpo da
+ * requisição, de dezenas de megabytes —, e estes três são copiados por extenso
+ * em **cada** linha de `skill_accesses`, que nunca é podada (relatório 042 da
+ * auditoria de 2026-09-19). O banco corta a **cópia** em 512; este teto é o que
+ * impede o nome gigante de existir. 200 é folgado de propósito: o dobro do teto
+ * de slug (96) e duas vezes e meia o da chave `psk_` (`accounts.ts`).
+ *
+ * É um número, não um contrato: quem precisar de outro muda aqui e no gêmeo do
+ * mcp-admin (`apps/mcp-admin/src/mcps.ts`), mantendo-o abaixo dos 512 do corte.
+ */
+export const NAME_MAX = 200;
+
+/**
+ * O nome que chega no corpo: aparado, e 400 quando não é texto.
+ * `String(valor ?? '')` num objeto cujo `toString` não é função lança
+ * `TypeError` — 500 e uma linha de "erro inesperado" no log por um corpo que é
+ * erro de quem chamou (achado do relatório 007 da mesma auditoria). Ausente é
+ * vazio: "dê um nome" continua sendo de quem valida o vazio.
+ */
+export function nameFrom(raw: unknown): string {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') throw badRequest('O campo "name" deve ser uma string');
+  return raw.trim();
+}
+
+/**
+ * Recusa o nome acima do teto. Vale para quem **cria ou renomeia**: nome antigo
+ * mais longo continua válido até alguém mexer nele — o Salvar do painel reenvia
+ * o nome, e um teto retroativo travaria a edição de um objeto por causa do nome
+ * que ele já tem. Por isso quem edita passa o nome atual em `unchanged`.
+ */
+export function assertNameFits(name: string, what: string, unchanged?: string): void {
+  if (name === unchanged?.trim() || name.length <= NAME_MAX) return;
+  throw badRequest(`O nome ${what} é longo demais: ${name.length} caracteres (o limite é ${NAME_MAX})`);
+}
+
 export async function create(
   user: AuthUser,
   body: { name?: unknown; slug?: unknown; description?: unknown; isOpen?: unknown },
 ): Promise<VirtualMcpDetail> {
-  return createVirtualMcp(
+  const name = nameFrom(body.name);
+  assertNameFits(name, 'do MCP virtual');
+
+  const created = await createVirtualMcp(
     {
-      name: String(body.name ?? '').trim(),
+      name,
       slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined,
       description: typeof body.description === 'string' ? body.description : undefined,
       // Nasce vazio, então abrir aqui ainda não expõe nada. Quando a primeira
@@ -118,6 +166,8 @@ export async function create(
     SOURCE,
     actorOf(user),
   );
+  // Quem cria é o dono, e a escrita já devolve `'owner'`: sai como toda ficha.
+  return withGrants(created);
 }
 
 export async function update(
@@ -136,7 +186,10 @@ export async function update(
   const current = await load(user, slug, 'manage');
 
   const patch: Parameters<typeof updateVirtualMcp>[1] = {};
-  if (typeof body.name === 'string') patch.name = body.name.trim();
+  if (typeof body.name === 'string') {
+    patch.name = body.name.trim();
+    assertNameFits(patch.name, 'do MCP virtual', current.name);
+  }
   if (typeof body.slug === 'string') patch.slug = body.slug.trim();
   if (typeof body.description === 'string') patch.description = body.description;
   if (typeof body.isOpen === 'boolean') patch.isOpen = body.isOpen;
@@ -222,6 +275,22 @@ export function flagsFrom(body: unknown): SkillLinkFlags {
 }
 
 /**
+ * A ficha da skill como **quem chamou** a vê, depois de uma escrita de vínculo.
+ *
+ * `linkSkill` e `unlinkSkill` do banco releem na visão do admin: `access:
+ * 'owner'`, a ACL inteira e todo contêiner, inclusive o servidor fechado e o
+ * catálogo privado de terceiros. A ação exige só `edit` em **algum** vMCP e
+ * `view` na skill, então repassar aquilo entregava a quem só lê o que o `GET`
+ * da mesma skill esconde (relatório 009 da auditoria de 2026-09-19; `docs/12`
+ * decisão 11). Nulo quando a skill saiu do alcance da sessão — o que desfazer
+ * um vínculo pode causar, e não é erro.
+ */
+async function skillSeenBy(user: AuthUser, slug: string): Promise<SkillDetail | null> {
+  const seen = await getSkillDetail(slug, { viewer: viewerOf(user) });
+  return seen ? withGrants(seen) : null;
+}
+
+/**
  * Publica a skill num vMCP a partir da página dela
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md` §4.3): `edit` no vMCP alvo e
  * `view` na skill, como no `PUT …/skills` do MCP (decisão 6 do `12`).
@@ -231,12 +300,15 @@ export async function linkSkill(
   mcpSlug: string,
   skillSlug: string,
   body: unknown,
-): Promise<SkillDetail> {
+): Promise<SkillDetail | null> {
   const mcp = await load(user, mcpSlug, 'edit');
   await assertSkillsViewable(user, [skillSlug]);
   // A posição vem do canvas: o nó nasce onde foi solto. Ausente, fica onde estava.
   const position = pointFrom((body as { position?: unknown } | null)?.position, 'position');
-  return dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user), position ? { position } : undefined);
+  const linked = await dbLinkSkill(skillSlug, mcp.uuid, flagsFrom(body), SOURCE, actorOf(user), position ? { position } : undefined);
+  // Visível ela continua — o vínculo só soma um caminho, e a sessão vê o vMCP.
+  // Nulo aqui é só a skill renomeada ou apagada entre a escrita e a releitura.
+  return skillSeenBy(user, linked.slug);
 }
 
 /** Um ponto do canvas: `{ x, y }` finitos, arredondados para inteiro. Ausente é `undefined`. */
@@ -351,13 +423,26 @@ export async function listSessions(
   return listMcpSessions({ ...janela(), virtualMcpUuids: mine.map((mcp) => mcp.uuid), ...pageOf(query) });
 }
 
+/**
+ * Desfaz o vínculo direto: `edit` no vMCP, nada na skill — tirar uma skill da
+ * lista é mexer só no servidor, como `catalogs.unlinkFromMcp`.
+ */
 export async function unlinkSkill(
   user: AuthUser,
   mcpSlug: string,
   skillSlug: string,
-): Promise<SkillDetail> {
+): Promise<SkillDetail | null> {
   const mcp = await load(user, mcpSlug, 'edit');
-  return dbUnlinkSkill(skillSlug, mcp.uuid, SOURCE, actorOf(user));
+  // Uma resposta só para "não existe" e "não está aqui". O banco distingue as
+  // duas — `Skill não encontrada` e `não está vinculada`, ambas 404 —, e a
+  // diferença diria a quem edita um servidor qualquer quais slugs de skill
+  // privada alheia existem. `mcp.skills` são os vínculos diretos, inclusive de
+  // skill desligada ou que a sessão não vê: exatamente o que o banco apagaria.
+  if (!mcp.skills.some((skill) => skill.slug === skillSlug)) {
+    throw notFound(`A skill "${skillSlug}" não está vinculada a este MCP virtual`);
+  }
+  const unlinked = await dbUnlinkSkill(skillSlug, mcp.uuid, SOURCE, actorOf(user));
+  return skillSeenBy(user, unlinked.slug);
 }
 
 /**
@@ -383,9 +468,19 @@ export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillL
 
 // ------------------------------------------------------------------ chaves ---
 
+/**
+ * As chaves do servidor, para quem o administra. `createdByUserUuid` só sai
+ * quando a chave é de quem está lendo: é uuid de conta, sem e-mail ao lado para
+ * virar apelido, e o painel não mostra quem emitiu (ver `ownerByEmail`, em
+ * `access.ts`). De outra conta ele sai nulo, como o de quem não é conta.
+ */
 export async function listKeys(user: AuthUser, slug: string): Promise<VirtualMcpKeySummary[]> {
   const current = await load(user, slug, 'manage');
-  return listVirtualMcpKeys(current.uuid);
+  const keys = await listVirtualMcpKeys(current.uuid);
+  return keys.map((key) => ({
+    ...key,
+    createdByUserUuid: user.uuid !== null && key.createdByUserUuid === user.uuid ? key.createdByUserUuid : null,
+  }));
 }
 
 /**
@@ -400,6 +495,14 @@ export async function listIssuedKeys(user: AuthUser): Promise<VirtualMcpKeyWithM
   return keys.filter((key) => uuids.has(key.virtualMcpUuid));
 }
 
+/**
+ * O rótulo de uma chave na trilha: `<slug>: <nome> (<prefixo>)`, o mesmo na
+ * emissão e na revogação, para as duas linhas se casarem na leitura. O prefixo
+ * desempata chaves de mesmo nome e já é público — o segredo é o que vem depois.
+ */
+const keyLabel = (slug: string, key: { name: string; prefix: string }): string =>
+  `${slug}: ${key.name} (${key.prefix})`;
+
 /** Emite uma chave `psv_`. O texto completo só existe na resposta desta chamada. */
 export async function issueKey(
   user: AuthUser,
@@ -410,8 +513,9 @@ export async function issueKey(
   // acesso, o mesmo que conceder — `manage` (`docs/12` §3.2).
   const current = await load(user, slug, 'manage');
 
-  const name = String(rawName ?? '').trim();
+  const name = nameFrom(rawName);
   if (!name) throw badRequest('Dê um nome à chave (ex.: "CI do projeto X")');
+  assertNameFits(name, 'da chave');
 
   const generated = generateApiKey(VIRTUAL_KEY_SCHEME);
   const key = await createVirtualMcpKey({
@@ -426,7 +530,7 @@ export async function issueKey(
     action: 'mcp.key.create',
     source: SOURCE,
     actor: actorOf(user),
-    targetLabel: `${current.slug}: ${name}`,
+    targetLabel: keyLabel(current.slug, { name, prefix: generated.prefix }),
   });
 
   return { key, token: generated.token };
@@ -438,11 +542,14 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
   const revoked = await revokeVirtualMcpKey(id, current.uuid);
   if (!revoked) throw notFound('Chave não encontrada ou já revogada');
 
+  // Pelo nome que a revogação devolve, e não pelo uuid da chave — que não
+  // aparece em tela nenhuma e some com o vMCP (`ON DELETE CASCADE`), deixando a
+  // linha sem referente (relatório 040 da auditoria de 2026-09-19).
   await recordAccountAudit({
     action: 'mcp.key.revoke',
     source: SOURCE,
     actor: actorOf(user),
-    targetLabel: `${current.slug}: ${id}`,
+    targetLabel: keyLabel(current.slug, revoked),
   });
 }
 
@@ -451,13 +558,14 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
 export async function share(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
   const current = await load(user, slug, 'manage');
   const target = await accountByEmail(email);
-  return setVirtualMcpGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user));
+  return grantByEmail(await setVirtualMcpGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
 }
 
+/** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
 export async function unshare(user: AuthUser, slug: string, email: string): Promise<void> {
   const current = await load(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  await removeVirtualMcpGrant(current.slug, target.uuid, SOURCE, actorOf(user));
+  const grant = grantOf(current.grants, email, 'neste MCP virtual');
+  await removeVirtualMcpGrant(current.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 
 // ---------------------------------------------------- configuração ---

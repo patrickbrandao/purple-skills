@@ -29,6 +29,7 @@ import {
   getVirtualMcpByUuid,
   listMcpSessions,
   listVirtualMcps,
+  MCP_SESSION_LABEL_MAX,
   openMcpSession,
   touchMcpSession,
 } from './queries.js';
@@ -345,6 +346,15 @@ describe.skipIf(!url)('sessões do MCP público: abrir, tocar, fechar, expirar e
     expect((await listMcpSessions({ onlineWindowMs: MINUTO, limit: 0 })).limit).toBe(1);
     expect((await listMcpSessions({ onlineWindowMs: MINUTO, limit: 999 })).limit).toBe(200);
     expect((await listMcpSessions({ onlineWindowMs: MINUTO, offset: -3 })).offset).toBe(0);
+    // Além da faixa do `bigint` o offset satura: página vazia com o total
+    // certo, em vez de 22003/22P02 do driver (`tasks/086`).
+    for (const offset of [1e20, 1e21]) {
+      expect(await listMcpSessions({ onlineWindowMs: MINUTO, offset })).toMatchObject({
+        items: [],
+        total: 11,
+        offset: Number.MAX_SAFE_INTEGER,
+      });
+    }
 
     expect((await capture(listMcpSessions({ onlineWindowMs: 0 }))).status).toBe(400);
     expect((await capture(listMcpSessions({ onlineWindowMs: MINUTO, virtualMcpUuid: 'torto' }))).status).toBe(400);
@@ -410,5 +420,59 @@ describe.skipIf(!url)('sessões do MCP público: abrir, tocar, fechar, expirar e
     const { rows } = await raw.query<{ n: number }>('SELECT count(*)::int AS n FROM mcp_sessions');
     expect(rows[0]?.n).toBe(11);
     expect((await countOnlineMcpSessions({ onlineWindowMs: MINUTO })).total).toBe(0);
+  });
+
+  it('byte nulo e controle no clientInfo são limpos: a sessão entra e o touch não perde as requisições', async () => {
+    // U+0000 e ESC montados por código: o escape resolvido por uma ferramenta
+    // deixaria o byte literal neste arquivo.
+    const NUL = String.fromCharCode(0);
+    const ESC = String.fromCharCode(27);
+
+    // O `text` do Postgres recusa U+0000 (22021): antes, o `initialize` com um
+    // nulo no nome fazia a sessão inteira não existir para o painel.
+    const naAbertura = await openMcpSession(
+      abertura({
+        sessionId: 'nul-1',
+        virtualMcpUuid: betaUuid,
+        virtualMcpSlug: 'beta',
+        userAgent: `node${NUL}\tfetch`,
+        clientName: `Cla${NUL}ude\nCode`,
+        clientVersion: `${NUL}`,
+      }),
+    );
+    expect(await sessao(naAbertura)).toMatchObject({
+      userAgent: 'node  fetch',
+      clientName: 'Cla ude Code',
+      clientVersion: null,
+      requestCount: 1,
+    });
+
+    // O `clientInfo` que chega depois (SSE): o flush levava junto as
+    // requisições acumuladas, e a recusa do nome as perdia.
+    const depois = await openMcpSession(
+      abertura({ sessionId: 'nul-2', transport: 'sse', virtualMcpUuid: betaUuid, virtualMcpSlug: 'beta' }),
+    );
+    await touchMcpSession(depois, { requests: 7, clientName: `${ESC}[31mCursor${NUL}`, clientVersion: `1${NUL}0` });
+    expect(await sessao(depois)).toMatchObject({ clientName: '[31mCursor', clientVersion: '1 0', requestCount: 8 });
+
+    // Um nome além do teto entra cortado, como sempre.
+    const longa = await openMcpSession(
+      abertura({ sessionId: 'nul-3', virtualMcpUuid: betaUuid, virtualMcpSlug: 'beta', clientName: 'n'.repeat(5000) }),
+    );
+    expect((await sessao(longa)).clientName).toBe('n'.repeat(MCP_SESSION_LABEL_MAX));
+
+    // Nos campos obrigatórios o nulo é bug de quem chama: 400, não 500 do driver.
+    for (const override of [
+      { sessionId: `x${NUL}y` },
+      { ip: `10.0.0.1${NUL}` },
+      { virtualMcpSlug: `be${NUL}ta` },
+    ]) {
+      const erro = await capture(
+        openMcpSession(abertura({ virtualMcpUuid: betaUuid, virtualMcpSlug: 'beta', ...override })),
+      );
+      expect(erro).toBeInstanceOf(AppError);
+      expect(erro.status).toBe(400);
+    }
+    expect((await capture(findOpenMcpSession({ sessionId: `x${NUL}`, transport: 'sse', withinMs: MINUTO }))).status).toBe(400);
   });
 });

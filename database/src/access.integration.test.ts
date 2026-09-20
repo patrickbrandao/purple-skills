@@ -24,7 +24,9 @@ import {
   createUser,
   createVirtualMcp,
   deleteSkill,
+  deleteVirtualMcp,
   getCatalog,
+  getCatalogByUuid,
   getPublicCatalog,
   getSkillDetail,
   getSkillSummary,
@@ -50,6 +52,7 @@ import {
   setSkillGrant,
   setVirtualMcpGrant,
   stats,
+  unlinkCatalog,
   updateCatalog,
   updateSkill,
   updateSkillWithContent,
@@ -186,17 +189,14 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       [legadoUuid],
     );
 
-    expect(await runMigrations(url!)).toEqual([
-      '017-acesso-granular.sql',
-      '018-acessos-por-skill.sql',
-      '019-acessos-por-conta.sql',
-      '020-rag.sql',
-      '021-chaves-por-emissor.sql',
-      '022-busca-por-substring.sql',
-      '023-links-de-reset-substituidos.sql',
-      '024-auditoria-de-troca-de-senha.sql',
-      '025-fila-de-textos-do-rag.sql',
-    ]);
+    // Tudo o que a pasta traz do `017` em diante, lido dela — como a suíte de
+    // `settings` faz: uma lista escrita à mão quebra a cada migration nova, de
+    // quem quer que seja.
+    const doDezesseteEmDiante = readdirSync(schemaDir())
+      .filter((file) => file.endsWith('.sql') && file.slice(0, 3) >= '017')
+      .sort();
+    expect(doDezesseteEmDiante.slice(0, 2)).toEqual(['017-acesso-granular.sql', '018-acessos-por-skill.sql']);
+    expect(await runMigrations(url!)).toEqual(doDezesseteEmDiante);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
@@ -313,6 +313,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       email: 'carla@exemplo.dev',
       name: 'Carla',
       role: 'membro',
+      isActive: true,
       level: 'view',
       grantedByUserUuid: evaUuid,
       grantedByEmail: 'eva@exemplo.dev',
@@ -607,6 +608,135 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       ),
     ).rejects.toThrow(/audit_log_action_check/);
   });
+
+  it('a concessão de conta desativada aparece marcada e é revogável nos três tipos', async () => {
+    // `tasks/039`. A conta desativada mantém as linhas, inertes, e reativar
+    // devolve o acesso — por isso quem administra a ACL precisa **ver** que a
+    // conta está desativada (`Grant.isActive`) e conseguir **revogar** antes de
+    // uma reativação. O banco nunca recusou a revogação; quem a recusava era o
+    // funil de e-mail dos apps, e este caso fixa o que eles passam a usar.
+    await setSkillGrant('da-eva', carlaUuid, 'view', SOURCE, eva);
+    await setCatalogGrant('priv', carlaUuid, 'edit', SOURCE, eva);
+    await setVirtualMcpGrant('fechado', carlaUuid, 'manage', SOURCE, eva);
+    const daEva = (await getSkillSummary('da-eva', { visibility: 'all' }))!.uuid;
+    const marcas = async (): Promise<[string, boolean][][]> =>
+      (await Promise.all([listSkillGrants(daEva), listCatalogGrants(privUuid), listVirtualMcpGrants(fechadoUuid)])).map(
+        (grants) => grants.map((g): [string, boolean] => [g.email, g.isActive]),
+      );
+    expect(await marcas()).toEqual([
+      [['carla@exemplo.dev', true]],
+      [['carla@exemplo.dev', true]],
+      [['carla@exemplo.dev', true]],
+    ]);
+
+    await updateUser(carlaUuid, { isActive: false });
+    expect(await marcas()).toEqual([
+      [['carla@exemplo.dev', false]],
+      [['carla@exemplo.dev', false]],
+      [['carla@exemplo.dev', false]],
+    ]);
+    // O detalhe, que é o que o painel lê, traz a mesma marca.
+    expect((await getCatalog('priv'))?.grants.map((g) => g.isActive)).toEqual([false]);
+    expect((await getVirtualMcp('fechado'))?.grants.map((g) => g.isActive)).toEqual([false]);
+
+    // Mudar o nível é a mesma chamada de conceder (upsert), e continua recusada
+    // para conta desativada: só a revogação precisa valer.
+    const mudarNivel = await capture(setSkillGrant('da-eva', carlaUuid, 'edit', SOURCE, eva));
+    expect(mudarNivel.status).toBe(400);
+    expect(mudarNivel.message).toMatch(/desativada/);
+
+    await removeSkillGrant('da-eva', carlaUuid, SOURCE, eva);
+    await removeCatalogGrant('priv', carlaUuid, SOURCE, eva);
+    await removeVirtualMcpGrant('fechado', carlaUuid, SOURCE, eva);
+    expect(await marcas()).toEqual([[], [], []]);
+    const trilha = await listAudit(10);
+    expect(trilha.find((e) => e.action === 'skill.unshare')?.targetLabel).toBe('carla@exemplo.dev');
+    expect(trilha.find((e) => e.action === 'catalog.unshare')?.targetLabel).toBe('priv carla@exemplo.dev');
+    expect(trilha.find((e) => e.action === 'mcp.unshare')?.targetLabel).toBe('fechado carla@exemplo.dev');
+
+    // Reativada, a conta não recebe de volta o que foi revogado enquanto estava fora.
+    await updateUser(carlaUuid, { isActive: true });
+    expect(await getSkillSummary('da-eva', { viewer: viewer.carla })).toBeNull();
+    expect(await getCatalog('priv', { viewer: viewer.carla })).toBeNull();
+    expect(await getVirtualMcp('fechado', { viewer: viewer.carla })).toBeNull();
+  });
+
+  it('a ficha do catálogo lista só os vMCPs que a conta vê e os membros que ela consegue abrir', async () => {
+    // `tasks/010`. `getVirtualMcp('fechado', { viewer })` é `null` para quem não
+    // vê o servidor, e a lista `mcps` da **skill** já era recortada; a ficha do
+    // **catálogo** entregava nome, slug, uuid, estado e dono de todo servidor
+    // vinculado — e um catálogo público é legível por qualquer conta logada.
+    const doBruno = await createVirtualMcp({ name: 'Do Bruno', slug: 'do-bruno', ownerUserUuid: brunoUuid }, SOURCE, bruno);
+    await linkCatalog(abertoUuid, pubUuid, TOOLS, SOURCE, eva);
+    await linkCatalog(fechadoUuid, pubUuid, TOOLS, SOURCE, eva);
+    await linkCatalog(doBruno.uuid, pubUuid, TOOLS, SOURCE, bruno);
+    try {
+      await fichaRecortada(doBruno.uuid);
+    } finally {
+      // O cenário volta ao que era mesmo se uma asserção falhar: os casos
+      // seguintes contam com `pub` sem vínculo e com um membro só.
+      await setCatalogSkills(pubUuid, [{ slug: 'no-catalogo-publico' }], SOURCE, eva);
+      await unlinkCatalog(abertoUuid, pubUuid, SOURCE, eva);
+      await unlinkCatalog(fechadoUuid, pubUuid, SOURCE, eva);
+      await deleteVirtualMcp(doBruno.uuid, SOURCE, bruno);
+    }
+  });
+
+  /** As asserções do caso acima, separadas para a limpeza dele ficar num `finally`. */
+  async function fichaRecortada(doBrunoUuid: string): Promise<void> {
+    expect((await getVirtualMcp('do-bruno', { viewer: viewer.carla }))).toBeNull();
+    expect((await getVirtualMcp('do-bruno'))?.uuid).toBe(doBrunoUuid);
+
+    const mcpsDe = async (options: Parameters<typeof getCatalog>[1]) =>
+      (await getCatalog('pub', options))?.mcps.map((m) => m.slug);
+    // Carla só chega ao catálogo por ele ser público: vê o servidor aberto.
+    expect(await mcpsDe({ viewer: viewer.carla })).toEqual(['aberto']);
+    // Bruno é dono de um dos fechados; o da Eva ele não vê…
+    expect(await mcpsDe({ viewer: viewer.bruno })).toEqual(['aberto', 'do-bruno']);
+    // …até receber concessão nele.
+    await setVirtualMcpGrant('fechado', brunoUuid, 'view', SOURCE, eva);
+    expect(await mcpsDe({ viewer: viewer.bruno })).toEqual(['aberto', 'do-bruno', 'fechado']);
+    await removeVirtualMcpGrant('fechado', brunoUuid, SOURCE, eva);
+    // A regra é a da lista `mcps` da skill e vale para todo `viewer` que não é
+    // admin, **inclusive a dona do catálogo**: o fechado do Bruno não é dela.
+    expect(await mcpsDe({ viewer: viewer.eva })).toEqual(['aberto', 'fechado']);
+    // Admin e a leitura sem `viewer` (o `'all'` das escritas) veem todos.
+    expect(await mcpsDe({ viewer: viewer.ana })).toEqual(['aberto', 'do-bruno', 'fechado']);
+    expect(await mcpsDe({})).toEqual(['aberto', 'do-bruno', 'fechado']);
+    expect((await getCatalogByUuid(pubUuid, { viewer: viewer.carla }))?.mcps.map((m) => m.slug)).toEqual(['aberto']);
+    // O contador **não** é recortado: é ele que a confirmação de exclusão do
+    // painel mostra ("os N servidores vinculados deixam de receber…"), e ali
+    // subestimar é pior. `mcpCount - mcps.length` é o "e mais N que você não vê".
+    expect((await getCatalog('pub', { viewer: viewer.carla }))?.mcpCount).toBe(3);
+
+    // Os membros: `escondida` é privada e entra com a participação desativada.
+    await setCatalogSkills(pubUuid, [{ slug: 'no-catalogo-publico' }, { slug: 'escondida', isActive: false }], SOURCE, eva);
+    const membrosDe = async (options: Parameters<typeof getCatalog>[1]) =>
+      (await getCatalog('pub', options))?.skills.map((s) => [s.slug, s.isActive]);
+    const inteira = [
+      ['escondida', false],
+      ['no-catalogo-publico', true],
+    ];
+    // Pelo "público" só chega a participação **ativa** (`docs/12` §3.1): Carla
+    // não abre `escondida`, e a ficha não lhe entrega nome, slug e descrição.
+    expect(await getSkillSummary('escondida', { viewer: viewer.carla })).toBeNull();
+    expect(await membrosDe({ viewer: viewer.carla })).toEqual([['no-catalogo-publico', true]]);
+    // Bruno a abre por outra rota (o `manage` direto): para ele a linha aparece.
+    expect((await getSkillSummary('escondida', { viewer: viewer.bruno }))?.access).toBe('manage');
+    expect(await membrosDe({ viewer: viewer.bruno })).toEqual(inteira);
+    // Dona, admin e a leitura sem `viewer`: a lista inteira, como sempre.
+    expect(await membrosDe({ viewer: viewer.eva })).toEqual(inteira);
+    expect(await membrosDe({ viewer: viewer.ana })).toEqual(inteira);
+    expect(await membrosDe({})).toEqual(inteira);
+    // Com concessão no catálogo, todo membro é legível (decisão 5) — e listado.
+    await setCatalogGrant('pub', carlaUuid, 'view', SOURCE, eva);
+    expect((await getSkillSummary('escondida', { viewer: viewer.carla }))?.access).toBe('view');
+    expect(await membrosDe({ viewer: viewer.carla })).toEqual(inteira);
+    await removeCatalogGrant('pub', carlaUuid, SOURCE, eva);
+    expect(await membrosDe({ viewer: viewer.carla })).toEqual([['no-catalogo-publico', true]]);
+    // `skillCount` também fica global, pelo mesmo motivo de `mcpCount`.
+    expect((await getCatalog('pub', { viewer: viewer.carla }))?.skillCount).toBe(2);
+  }
 
   it('transferir apaga a concessão do novo dono, recusa conta inativa ou inexistente, audita o e-mail', async () => {
     // Bruno tinha `manage` em `escondida`; vira dono e a linha some.

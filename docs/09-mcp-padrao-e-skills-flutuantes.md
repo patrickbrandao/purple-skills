@@ -15,7 +15,13 @@
 > *onde é servida*; a exposição no MCP continua sendo vínculo. A regra do site
 > (decisão 5) ampliou: skills públicas e catálogos públicos também aparecem.
 > A decisão 6 ("só dono ou admin vinculam") virou `edit` no vMCP e `view` na
-> skill.
+> skill. Pelo mesmo motivo estão marcados no ponto o "`'all'` é o painel e o
+> mcp-admin" da `§4.2` e o `loadManaged` da `§4.3`.
+>
+> **Corrigido no relatório `074`** (19/09/2026), sem mudar decisão nenhuma: a
+> `§3.4` dizia que as três variáveis antigas saíam também do compose. Elas
+> voltaram ao `environment` do `mcp-public`, só para a trava de boot enxergar o
+> `.env` — o porquê está marcado lá.
 
 Este documento registra o desenho fechado na entrevista de 12/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra em
@@ -149,10 +155,20 @@ valores `public.key.create` / `public.key.revoke` continuam no CHECK de
 `audit_log` e no tipo `AuditAction` porque a trilha carrega linhas com eles.
 
 `MCP_PUBLIC_AUTH`, `MCP_PUBLIC_KEY` e `MCP_PUBLIC_KEY_FILE` saem do
-`.env.example` e do compose. O mcp-public **recusa subir** enquanto qualquer
+`.env.example` ~~e do compose~~. O mcp-public **recusa subir** enquanto qualquer
 uma estiver definida (`assertNoLegacyAuthEnv`), com uma mensagem que diz o que
 fazer. Ignorá-las com um aviso no log abriria em silêncio um servidor que o
 operador protegia, porque o `public` do backfill nasce aberto (`§3.5`).
+
+**Era**, até o relatório `074` (19/09/2026): fora do compose. As três
+**voltaram** ao `environment` do `mcp-public` no `docker-compose.yml`, sem
+configurar nada, porque a trava lê o ambiente **do container** e o `.env` só
+interpola o compose — ao container chega apenas o que o `environment` do
+serviço lista. Tiradas de lá, a trava nunca via o resíduo do `.env` de quem
+sobe de versão pelo compose, que é o caminho que o README ensina, e o `/mcp`
+antes protegido abria em silêncio: o caso que ela existe para cobrir. Elas
+entram com padrão vazio (`${VAR:-}`), e vazio conta como ausente — quem não as
+define não sente nada.
 
 ### 3.5 Migração e trava de boot
 
@@ -221,9 +237,11 @@ percorre exatamente esse caminho, de uma base parada no `010`.
 
 `SkillSummary` perde os quatro campos e ganha `mcps: SkillMcpRef[]` — em
 quais vMCPs a skill está, com estado (`isOpen`, `isActive`, `isDefault`) e as
-três portas do vínculo. Numa leitura `'all'` vêm todos os vínculos; nas demais
-só os com vMCP aberto e ligado, porque o site não pode revelar em qual
-servidor fechado uma skill está. É por essa lista que o mcp-public e o
+três portas do vínculo. Numa leitura `'all'` vêm todos os vínculos; com
+`viewer` (o terceiro modo, que o [`12`](12-acesso-granular.md) acrescentou), só
+os que a conta vê — aberto e ligado, dela ou concedido a ela; nas demais só os
+com vMCP aberto e ligado, porque o site não pode revelar em qual servidor
+fechado uma skill está. É por essa lista que o mcp-public e o
 mcp-admin sabem se a skill tem página no site. `setVisibility`, a rota
 `/visibility`, a tool `set_visibility`, `listVirtualMcpsForSkill` (o `mcps`
 o substitui) e a leitura de flags do frontmatter no import saem;
@@ -235,10 +253,19 @@ o substitui) e a leitura de flags do frontmatter no import saem;
 `ListOptions` troca `includePrivate` e `onlyAsSkill` por `visibility: 'open'
 | 'all'`. `'open'` é o padrão e o que o site e a API REST usam: um `EXISTS`
 sobre `virtual_mcp_skills` com `virtual_mcps.is_open AND is_active`, sem
-olhar as flags do vínculo (decisão derivada da `§2`). `'all'` é o painel e o
-mcp-admin. O padrão é o restritivo de propósito: um chamador que esquece a
+olhar as flags do vínculo (decisão derivada da `§2`). ~~`'all'` é o painel e o
+mcp-admin.~~ O padrão é o restritivo de propósito: um chamador que esquece a
 opção mostra de menos, nunca de mais. O mesmo filtro vale para tags, arquivos
 e downloads do site.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md) `§3.1`:** `'all'`
+> ficou reservada ao **admin, ao token global e ao bootstrap**. O painel e o
+> mcp-admin passam `viewer: { role, userUuid }`, que sobrepõe `visibility` e só
+> vira `'all'` quando o papel é `admin` — ver a tabela de visibilidade do
+> [README do banco](../database/README.md) e `readMode`, em
+> `database/src/queries.ts`. Uma leitura `visibility: 'all'` **sem** `viewer`
+> devolve o acervo inteiro, inclusive o privado de terceiros, e fura a decisão
+> 1 do `12`: nenhum app a faz hoje.
 
 O site ganha `/api/mcps` (`listOpenVirtualMcps`: abertos e ligados, sem dono
 nem chaves) e uma seção "Servidores MCP abertos" com endereço e cópia; a
@@ -251,10 +278,20 @@ públicas/privadas por `openSkills` (no site) e `unlinkedSkills` (flutuantes).
 `createSkill` aceita `mcps` (uuid do vMCP e as três flags) e grava os
 vínculos na mesma transação, auditando `mcp.update` por vMCP como
 `setVirtualMcpSkills`; `linkSkill` / `unlinkSkill` fazem o mesmo para uma
-skill existente. A permissão continua sendo a do vMCP alvo — `loadManaged`
-no painel, `canManageVirtualMcp` no mcp-admin — e uma lista com um vMCP que
+skill existente. A permissão continua sendo a do vMCP alvo — ~~`loadManaged`
+no painel, `canManageVirtualMcp` no mcp-admin~~ — e uma lista com um vMCP que
 o chamador não administra recusa a criação inteira, antes de gravar qualquer
 coisa.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisão 6):
+> `loadManaged` não existe mais, e o nível exigido passou de "administrar"
+> para **`edit` no vMCP** (mais `view` na skill). No painel é
+> `load(user, slug, 'edit')`, chamado por `mcps.resolveLinks`
+> (`apps/admin/src/mcps.ts`); no mcp-admin, `assertAccess(mcp.access, 'edit',
+> …)` no `resolveLinks` de `create_skill` (`tools.ts`) e `managed(mcp, 'edit')`
+> em `link_skill` / `unlink_skill` (`mcps.ts`). `canManageVirtualMcp` continua
+> em `packages/shared/src/roles.ts`, `@deprecated` e sem chamador. A recusa da
+> criação inteira continua valendo.
 
 No painel: "Publicar em" na skill nova e no import (um `mcps` em JSON no
 multipart), e o painel "Publicada em" na página da skill, com uma linha por

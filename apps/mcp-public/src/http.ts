@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { healthCheck } from '@purple-skills/db';
-import { createRateLimiter, rateLimitKey, readIntEnv, trustProxySetting } from '@purple-skills/shared';
+import { createRateLimiter, rateLimitKey, readIntEnv, trustProxySetting, type RateLimiter } from '@purple-skills/shared';
 import type { SessionTracker, StatefulTransport } from './sessions.js';
 
 /**
@@ -50,6 +50,14 @@ export type McpMount = {
 
 export type McpHttpOptions = {
   mounts: McpMount[];
+  /**
+   * Envolve o despacho da requisição ao transporte no contexto dela.
+   *
+   * O servidor de uma sessão é criado só no `initialize` (ou no `GET /sse`);
+   * sem isto o registro de acessos leria para sempre a origem — IP e agente —
+   * daquele momento. Ver `comOrigem` em `access.ts`. Ausente, despacha direto.
+   */
+  withRequest?: (req: Request, run: () => Promise<void>) => Promise<void>;
   /**
    * Tamanho máximo do corpo JSON aceito nas rotas POST.
    *
@@ -100,6 +108,8 @@ export type McpHttpOptions = {
    */
   rateLimitMax?: number;
   rateLimitWindowSeconds?: number;
+  /** Teto de mensagens num lote JSON-RPC. Ausente vale `MCP_MAX_BATCH`. */
+  maxBatch?: number;
 };
 
 const jsonRpcError = (code: number, message: string) => ({
@@ -151,12 +161,38 @@ const SESSION_SWEEP_MS = readIntEnv('MCP_SESSION_SWEEP_MS', 60_000, { min: 1000 
 const RATE_LIMIT_MAX = readIntEnv('MCP_RATE_LIMIT_MAX', 600, { min: 0 });
 
 /**
+ * Teto de mensagens num lote JSON-RPC.
+ *
+ * O limite acima conta **uma** marca por requisição HTTP, antes de o corpo ser
+ * lido — e o corpo de um POST pode ser um array (o `clientInfoOf` de
+ * `sessions.ts` já conta com isso). O SDK despacha o array inteiro: o único
+ * corte dele é o `initialize`, que tem de vir sozinho. Sem teto próprio, quem
+ * limitava o lote era o tamanho do corpo: medido, 2 000 `tools/call` cabem em
+ * 183 KB e custaram **uma** marca — cada uma grava em `skill_accesses`, e cada
+ * busca com termo paga um embedding.
+ *
+ * 20 cabe no uso legítimo: o lote saiu da especificação na revisão 2025-06-18,
+ * e quem ainda o usa (2025-03-26) agrupa a notificação de início com as
+ * primeiras chamadas. `1` recusa todo lote de mais de uma mensagem. Vale também
+ * com `MCP_RATE_LIMIT_MAX=0`: o proxy que limita na frente conta requisições, e
+ * tampouco enxerga dentro do corpo.
+ */
+const MAX_BATCH = readIntEnv('MCP_MAX_BATCH', 20, { min: 1 });
+
+/**
  * A identidade de quem chegou autenticado por chave própria: é o que `auth.ts`
  * monta (`virtual:<uuid>:key:<id>`), contra o `virtual:<uuid>:open` do vMCP
  * aberto. O acoplamento com aquele formato é deliberado e está documentado nos
  * dois lados — é o único sinal confiável de credencial que chega até aqui.
  */
 const AUTENTICADA_POR_CHAVE = /:key:/;
+
+/**
+ * A identidade anônima de um vMCP aberto (`virtual:<uuid>:open`, de `auth.ts`):
+ * **todo** cliente sem chave a compartilha, venha de onde vier — então o teto
+ * por credencial é, ali, um balde só para todos eles (`enforcePerIdentity`).
+ */
+const ANONIMA = /:open$/;
 
 type TrackedStreamable = {
   transport: StreamableHTTPServerTransport;
@@ -189,6 +225,21 @@ export const TRANSPORTS = {
 };
 
 /**
+ * O 404 da sessão que o servidor não conhece mais: venceu o TTL, foi reciclada
+ * pelo teto da credencial ou o processo reiniciou — o cliente não tem como saber
+ * qual, e nos três casos o remédio é o mesmo. Como a recusa do teto global, a
+ * resposta diz o que fazer em vez de só negar. `base` é o prefixo do ponto de
+ * montagem já resolvido (`req.baseUrl`).
+ */
+const sessaoDesconhecida = (base: string, sse = false) =>
+  jsonRpcError(
+    -32001,
+    `Sessão ${sse ? 'SSE ' : ''}desconhecida ou expirada: abra outra ` +
+      `(${sse ? `GET ${base}${TRANSPORTS.sse.stream}` : `initialize em POST ${base}${TRANSPORTS.streamableHttp}`}), ` +
+      `ou use POST ${base}${TRANSPORTS.streamableHttpStateless}, que não depende de sessão`,
+  );
+
+/**
  * Monta o app Express com as três formas de transporte do MCP em cada ponto
  * de montagem:
  *
@@ -198,6 +249,7 @@ export const TRANSPORTS = {
  */
 export function createHttpApp(options: McpHttpOptions): Express {
   const app = express();
+  const dispatch = options.withRequest ?? ((_req: Request, run: () => Promise<void>) => run());
   const streamableSessions = new Map<string, TrackedStreamable>();
   const sseSessions = new Map<string, TrackedSse>();
   const maxSessions = options.maxSessions ?? MAX_SESSIONS;
@@ -211,6 +263,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     rateLimitMax > 0
       ? createRateLimiter({ max: rateLimitMax, windowSeconds: rateLimitWindowS })
       : undefined;
+  const maxBatch = options.maxBatch ?? MAX_BATCH;
 
   /** Sessões vivas do processo: o teto global é um orçamento de memória só. */
   const liveSessions = () => streamableSessions.size + sseSessions.size;
@@ -266,6 +319,16 @@ export function createHttpApp(options: McpHttpOptions): Express {
    * é justamente a mais parada; recusar o `initialize` derrubaria o cliente
    * legítimo no momento em que ele reconecta. Assim o prejuízo fica dentro da
    * credencial que estourou o teto, que é o ponto de o teto ser por credencial.
+   *
+   * Na identidade **aberta** a credencial é uma só para todos os clientes sem
+   * chave, e o balde também: a mais parada que cai pode ser a de um estranho.
+   * É consequência aceita — o balde existe para o anônimo não tomar a vaga de
+   * quem tem chave, e o anônimo legítimo não pode levar recusa (`02` §7.3).
+   * Escolher a vítima pelo endereço foi medido e **recusado** (`tasks/048`):
+   * com o balde cheio de sessões abandonadas, que é o estado normal de um
+   * servidor popular, "primeiro a do próprio endereço" reduz cada endereço — e
+   * cada NAT — a uma sessão só, em pingue-pongue. O aviso abaixo diz ao operador
+   * qual alavanca puxar.
    */
   const enforcePerIdentity = (identity: string | undefined, keep: { transport: StatefulTransport; id: string }): void => {
     const own: { transport: StatefulTransport; id: string; lastSeen: number }[] = [];
@@ -289,7 +352,10 @@ export function createHttpApp(options: McpHttpOptions): Express {
     }
     warnLimit(
       `teto de ${maxPerIdentity} sessões por credencial atingido (${identity ?? 'sem identidade'}): ` +
-        'reciclada a sessão parada há mais tempo',
+        'reciclada a sessão parada há mais tempo' +
+        (ANONIMA.test(identity ?? '')
+          ? ' — num vMCP aberto todos os clientes sem chave dividem este teto; MCP_MAX_SESSIONS sobe os dois'
+          : ''),
     );
   };
 
@@ -317,6 +383,25 @@ export function createHttpApp(options: McpHttpOptions): Express {
       ),
     );
     return true;
+  };
+
+  /**
+   * A recusa do limite de taxa: 429, `Retry-After` e corpo JSON-RPC. Uma só para
+   * a entrada e para o lote (`lote`, mais abaixo), que cobram do mesmo limitador.
+   */
+  const recusarPorTaxa = (limiter: RateLimiter, res: Response, chave: string, mensagensDoLote?: number): void => {
+    const retryS = limiter.retryAfter(chave);
+    const noLote = mensagensDoLote === undefined ? '' : ` num lote de ${mensagensDoLote} mensagens`;
+    warnLimit(`limite de ${rateLimitMax} requisições em ${rateLimitWindowS} s atingido${noLote} (${chave})`);
+    res.setHeader('Retry-After', String(retryS));
+    res.status(429).json(
+      jsonRpcError(
+        -32000,
+        `Limite de ${rateLimitMax} requisições em ${rateLimitWindowS} s atingido para este endereço. ` +
+          (mensagensDoLote === undefined ? '' : 'Cada mensagem de um lote conta como uma requisição. ') +
+          `Tente de novo em ${retryS} s. Uma chave psv_ deste MCP virtual não gasta essa cota.`,
+      ),
+    );
   };
 
   app.disable('x-powered-by');
@@ -362,19 +447,26 @@ export function createHttpApp(options: McpHttpOptions): Express {
         next();
         return;
       }
-
-      const retryS = rateLimit.retryAfter(chave);
-      warnLimit(`limite de ${rateLimitMax} requisições em ${rateLimitWindowS} s atingido (${chave})`);
-      res.setHeader('Retry-After', String(retryS));
-      res.status(429).json(
-        jsonRpcError(
-          -32000,
-          `Limite de ${rateLimitMax} requisições em ${rateLimitWindowS} s atingido para este endereço. ` +
-            `Tente de novo em ${retryS} s. Uma chave psv_ deste MCP virtual não gasta essa cota.`,
-        ),
-      );
+      recusarPorTaxa(rateLimit, res, chave);
     });
   }
+
+  // O caractere nulo não tem uso legítimo em URL nenhuma daqui, e o `text` do
+  // Postgres o recusa com 22021: `/virtual/a%00b/mcp` e `/skills/a%00b/download`
+  // chegavam à consulta do slug e voltavam 500, com a SQL no log a cada
+  // tentativa — sem credencial, num vMCP aberto (achado do relatório 038 da
+  // auditoria de 2026-09-19). Uma guarda só, antes dos pontos de montagem, cobre
+  // o caminho e a query string de todas as rotas: `%00` é a única forma de o nulo
+  // chegar pela URL (o parser HTTP do Node recusa o byte cru, e UTF-8 inválido já
+  // é 400 do próprio Express). Depois do limite de taxa, para a sondagem gastar
+  // a cota de quem sonda.
+  app.use((req, res, next) => {
+    if (!req.originalUrl.includes('%00')) {
+      next();
+      return;
+    }
+    res.status(400).json(jsonRpcError(-32600, 'Requisição inválida: o endereço não pode conter o caractere nulo (%00)'));
+  });
 
   app.get('/', (_req, res) => {
     const fixed = { ...options.info, transports: TRANSPORTS };
@@ -416,11 +508,61 @@ export function createHttpApp(options: McpHttpOptions): Express {
       });
     };
 
+    /**
+     * O lote JSON-RPC, que o limite por IP não enxerga.
+     *
+     * Registrado **depois** do `json` de propósito: no middleware do limite o
+     * corpo ainda não foi lido, então a conta não tem como ser feita lá. Faz
+     * duas coisas. Recusa o lote acima de `maxBatch` — para todo mundo, com ou
+     * sem chave, porque o que esse teto protege é o banco, não a cota. E cobra
+     * do limitador **uma marca por mensagem**; a primeira já foi cobrada na
+     * entrada. Chave `psv_` não gasta a cota anônima do endereço, pela razão
+     * escrita no `auth` acima. O que o lote recusado chegou a gastar fica gasto:
+     * é a mesma conta de quem mandasse as mensagens uma a uma até o 429.
+     *
+     * Corpo que não é array passa direto: o cliente que manda uma mensagem por
+     * POST — todos os atuais — não muda de comportamento. O SSE legado fica de
+     * fora porque o `handlePostMessage` do SDK só aceita uma mensagem.
+     */
+    const lote: RequestHandler = (req, res, next) => {
+      const body: unknown = req.body;
+      if (!Array.isArray(body)) {
+        next();
+        return;
+      }
+
+      if (body.length > maxBatch) {
+        res
+          .status(400)
+          .json(
+            jsonRpcError(
+              -32600,
+              `Lote de ${body.length} mensagens acima do limite de ${maxBatch} por requisição. ` +
+                'Mande as chamadas em requisições separadas.',
+            ),
+          );
+        return;
+      }
+
+      if (!rateLimit || AUTENTICADA_POR_CHAVE.test(identity(req) ?? '')) {
+        next();
+        return;
+      }
+
+      const chave = rateLimitKey(req.ip);
+      for (let i = 1; i < body.length; i += 1) {
+        if (rateLimit.hit(chave)) continue;
+        recusarPorTaxa(rateLimit, res, chave, body.length);
+        return;
+      }
+      next();
+    };
+
     mount.routes?.(router);
 
     // ----------------------------------------- Streamable HTTP com sessão ---
 
-    router.post('/mcp', auth, json, async (req, res) => {
+    router.post('/mcp', auth, json, lote, async (req, res) => {
       try {
         const sessionId = req.header('mcp-session-id');
         const existing = sessionId ? streamableSessions.get(sessionId) : undefined;
@@ -432,12 +574,12 @@ export function createHttpApp(options: McpHttpOptions): Express {
           }
           existing.lastSeen = Date.now();
           sessions?.seen('streamable', sessionId!, req);
-          await existing.transport.handleRequest(req, res, req.body);
+          await dispatch(req, () => existing.transport.handleRequest(req, res, req.body));
           return;
         }
 
         if (sessionId) {
-          res.status(404).json(jsonRpcError(-32001, 'Sessão desconhecida ou expirada'));
+          res.status(404).json(sessaoDesconhecida(req.baseUrl));
           return;
         }
 
@@ -466,7 +608,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
         const server = mount.createServer(req);
         await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
+        await dispatch(req, () => transport.handleRequest(req, res, req.body));
       } catch (err) {
         console.error('[mcp] erro no POST /mcp:', err);
         if (!res.headersSent) res.status(500).json(jsonRpcError(-32603, 'Erro interno do servidor'));
@@ -478,7 +620,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       const tracked = sessionId ? streamableSessions.get(sessionId) : undefined;
 
       if (!tracked) {
-        res.status(404).json(jsonRpcError(-32001, 'Sessão desconhecida ou expirada'));
+        res.status(404).json(sessaoDesconhecida(req.baseUrl));
         return;
       }
       if (tracked.identity !== identity(req)) {
@@ -488,7 +630,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
       tracked.lastSeen = Date.now();
       sessions?.seen('streamable', sessionId!, req);
-      await tracked.transport.handleRequest(req, res);
+      await dispatch(req, () => tracked.transport.handleRequest(req, res));
     };
 
     router.get('/mcp', auth, streamableSession);
@@ -496,7 +638,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
     // ---------------------------------------------- Streamable HTTP stateless ---
 
-    router.post('/mcp/stateless', auth, json, async (req, res) => {
+    router.post('/mcp/stateless', auth, json, lote, async (req, res) => {
       sessions?.stateless(req);
       const server = mount.createServer(req);
       const transport = new StreamableHTTPServerTransport({
@@ -511,7 +653,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
 
       try {
         await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
+        await dispatch(req, () => transport.handleRequest(req, res, req.body));
       } catch (err) {
         console.error('[mcp] erro no POST /mcp/stateless:', err);
         if (!res.headersSent) res.status(500).json(jsonRpcError(-32603, 'Erro interno do servidor'));
@@ -549,7 +691,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       const tracked = sseSessions.get(sessionId);
 
       if (!tracked) {
-        res.status(404).json(jsonRpcError(-32001, 'Sessão SSE desconhecida ou expirada'));
+        res.status(404).json(sessaoDesconhecida(req.baseUrl, true));
         return;
       }
       if (tracked.identity !== identity(req)) {
@@ -560,7 +702,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
       // Renova a atividade: sem isto a varredura fecharia sessão SSE em uso.
       tracked.lastSeen = Date.now();
       sessions?.seen('sse', sessionId, req);
-      await tracked.transport.handlePostMessage(req, res, req.body);
+      await dispatch(req, () => tracked.transport.handlePostMessage(req, res, req.body));
     });
 
     if (mount.basePath) app.use(mount.basePath, router);

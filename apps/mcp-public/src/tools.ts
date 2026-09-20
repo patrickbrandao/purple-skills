@@ -8,9 +8,11 @@ import {
   listSkills,
   listTags,
   readFile,
+  SEARCH_QUERY_MAX_LENGTH,
   type VirtualMcpRuntime,
 } from '@purple-skills/db';
 import {
+  SKILL_MD,
   composeSkillMd,
   isSkillMd,
   normalizeRelativePath,
@@ -166,14 +168,15 @@ const recorteDasFerramentas = (scope: VirtualScope) =>
   ({ virtualMcp: { uuid: scope.mcp.uuid, surface: 'skill' } }) as const;
 
 /**
- * O teto da consulta de busca, em caracteres. É o mesmo do `normalizeQuery` do
- * `@purple-skills/db`, que corta a perna textual; enquanto o `db` não exportar
- * o número, ele vive aqui e em `apps/site/src/api.ts`.
- */
-const MAX_QUERY_CHARS = 200;
-
-/**
  * A consulta como as **duas** pernas da busca vão lê-la.
+ *
+ * O teto é o `SEARCH_QUERY_MAX_LENGTH` do `@purple-skills/db` — o mesmo número
+ * em que o `normalizeQuery` de lá corta a perna textual, importado e não
+ * repetido: uma cópia local aqui e outra no site deixavam quem mudasse o número
+ * no banco sem efeito nenhum, e quem o mudasse só nos apps com as duas pernas
+ * lendo perguntas diferentes (relatório 037 da auditoria de 2026-09-19). O que
+ * os apps **não** compartilham com o banco é o algoritmo: o corte daqui é mais
+ * cuidadoso (fronteira de palavra, par surrogate) e vem antes.
  *
  * `listSkills` já cortava em 200 caracteres, mas o embedding era resolvido
  * antes, com o texto cru: a perna vetorial embutia uma pergunta que a textual
@@ -193,23 +196,24 @@ function consultaDaBusca(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const texto = raw.trim();
   if (texto === '') return null;
-  if (texto.length <= MAX_QUERY_CHARS) return texto;
+  if (texto.length <= SEARCH_QUERY_MAX_LENGTH) return texto;
 
   // O caractere a mais revela se o limite cai dentro de uma palavra; `\S*$`
   // tira a palavra partida e o `trimEnd`, o espaço que sobra.
-  const naFronteira = texto.slice(0, MAX_QUERY_CHARS + 1).replace(/\S*$/, '').trimEnd();
+  const naFronteira = texto.slice(0, SEARCH_QUERY_MAX_LENGTH + 1).replace(/\S*$/, '').trimEnd();
   if (naFronteira !== '') return naFronteira;
 
   // Consulta sem espaço nenhum (um blob colado): corta no limite, sem deixar
   // sozinha a metade alta de um par surrogate — ela viraria U+FFFD no JSON do
   // provedor.
-  const duro = texto.slice(0, MAX_QUERY_CHARS);
+  const duro = texto.slice(0, SEARCH_QUERY_MAX_LENGTH);
   const ultimo = duro.charCodeAt(duro.length - 1);
   return ultimo >= 0xd800 && ultimo <= 0xdbff ? duro.slice(0, -1) : duro;
 }
 
 /**
- * Teto do que `get_skill_file` devolve **dentro** do resultado da ferramenta.
+ * Teto do texto que as leituras devolvem **dentro** da resposta — as quatro:
+ * `get_skill_file`, `get_skill`, `prompts/get` e `resources/read`.
  *
  * O arquivo já chega inteiro do banco, mas devolvê-lo como texto custa outras
  * duas cópias — a string UTF-16 e o JSON-RPC da resposta —, e um arquivo de
@@ -217,10 +221,27 @@ function consultaDaBusca(raw: unknown): string | null {
  * teto a resposta passa a ser a URL de download, exatamente como já acontece com
  * arquivo binário. Quatro MiB de texto são muitas vezes a janela de qualquer
  * agente: o teto não corta leitura útil, corta o pedido que derruba o processo.
+ *
+ * O SKILL.md não é exceção: nada limita o tamanho dele por skill (o "sem limite
+ * por skill" do `docs/02` é decisão de armazenamento, não de resposta), e o
+ * teto nasceu só em `get_skill_file` — o mesmo byte tinha teto por uma porta e
+ * não tinha pelas outras três (relatório 032 da auditoria de 2026-09-19).
  */
 const MAX_TEXTO_INLINE_BYTES = readIntEnv('MCP_MAX_FILE_TEXT_BYTES', 4 * 1024 * 1024, {
   min: 1024,
 });
+
+/**
+ * Bytes UTF-8 do SKILL.md gravado quando ele passa do teto, ou `null` quando
+ * cabe. Mede o texto **lido**, nunca o `sizeBytes` declarado — a lição do `004`
+ * —, e mede o que está gravado, antes de tirar ou montar frontmatter: é a mesma
+ * régua de `get_skill_file`, então a skill que uma porta recusa as outras três
+ * recusam também, e nenhuma cópia a mais nasce só para ser medida.
+ */
+const excedeTetoInline = (skillMd: string): number | null => {
+  const bytes = Buffer.byteLength(skillMd, 'utf8');
+  return bytes > MAX_TEXTO_INLINE_BYTES ? bytes : null;
+};
 
 /**
  * Handlers das ferramentas do MCP público. Ficam separados do registro no
@@ -289,8 +310,6 @@ export function createHandlers(scope: VirtualScope) {
       const detail = await getSkillDetail(args.slug, recorte);
       if (!detail) return fail(`Skill não encontrada: "${args.slug}"`);
 
-      registrarAcesso(scope, detail.uuid, 'view', 'tool');
-
       const attachments = detail.files.filter(
         (file) => file.relativePath.toLowerCase() !== 'skill.md',
       );
@@ -311,6 +330,21 @@ export function createHandlers(scope: VirtualScope) {
       ]
         .filter(Boolean)
         .join('\n');
+
+      // SKILL.md grande demais para o resultado: vão os metadados e o link, como
+      // em `get_skill_file`. Sem `registrarAcesso` — leitura que não entregou o
+      // texto não é visualização, e quem seguir o link conta na rota do arquivo
+      // (`downloads.ts`); contar aqui também daria duas por leitura.
+      const excedeu = excedeTetoInline(detail.skillMd);
+      if (excedeu !== null) {
+        return text(
+          `${header}\nO SKILL.md desta skill é grande demais para vir no resultado ` +
+            `(${excedeu} bytes; o teto é ${MAX_TEXTO_INLINE_BYTES}). ` +
+            `Baixe pela URL: ${urls.file(detail.slug, SKILL_MD)}`,
+        );
+      }
+
+      registrarAcesso(scope, detail.uuid, 'view', 'tool');
 
       return text(`${header}\n${stripFrontmatter(detail.skillMd)}`);
     },
@@ -334,9 +368,11 @@ export function createHandlers(scope: VirtualScope) {
       }
 
       // Texto grande demais para o resultado da ferramenta: a URL de download
-      // serve o arquivo em fluxo, sem as cópias que o JSON-RPC exigiria. O
-      // tamanho é o dos bytes lidos, não o `sizeBytes` gravado — a lição do
-      // `004` é não decidir limite por número declarado.
+      // serve o arquivo sem as cópias que o JSON-RPC exigiria — a rota faz
+      // `readFile` + `res.send`, o `Buffer` lido e mais nada; quem sai em fluxo é
+      // o `.zip` (`zip.ts`), não o arquivo avulso. O tamanho é o dos bytes lidos,
+      // não o `sizeBytes` gravado — a lição do `004` é não decidir limite por
+      // número declarado.
       if (file.buffer.byteLength > MAX_TEXTO_INLINE_BYTES) {
         return text(
           `O arquivo "${path}" é grande demais para vir no resultado ` +
@@ -405,10 +441,35 @@ const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams
  */
 export function createSurfaces(scope: VirtualScope) {
   const mcpUuid = scope.mcp.uuid;
+  const urls = urlsFor(scope);
 
   /** A skill oferecida na superfície, ou nada — a consulta já filtra pelo vínculo. */
   const skillPublicada = (slug: string, surface: 'prompt' | 'resource'): Promise<SkillDetail | null> =>
     getSkillDetail(slug, { virtualMcp: { uuid: mcpUuid, surface } });
+
+  /**
+   * A recusa do SKILL.md que não cabe na resposta (`MAX_TEXTO_INLINE_BYTES`).
+   *
+   * Aqui o link não pode ir **no lugar** do texto, como em `get_skill`: o
+   * conteúdo de um prompt é lido pelo modelo como instrução, e o de um resource,
+   * como o próprio SKILL.md. Vai como erro de protocolo, que o `guardSurface`
+   * deixa passar inteiro. E o link só entra quando a skill também está nas
+   * ferramentas deste servidor: a rota de download só atende o vínculo
+   * `as_skill` (`downloads.ts`), e uma skill pode viver só como prompt ou
+   * resource — mandar o cliente para um 404 seria pior que dizer que não há URL.
+   * A consulta a mais só roda nesta recusa.
+   */
+  const grandeDemais = async (detail: SkillDetail, bytes: number): Promise<McpError> => {
+    const nasFerramentas = await getSkillSummary(detail.slug, recorteDasFerramentas(scope));
+    return new McpError(
+      ErrorCode.InvalidParams,
+      `O SKILL.md de "${detail.slug}" é grande demais para vir na resposta ` +
+        `(${bytes} bytes; o teto é ${MAX_TEXTO_INLINE_BYTES}). ` +
+        (nasFerramentas
+          ? `Baixe pela URL: ${urls.file(detail.slug, SKILL_MD)}`
+          : 'Esta skill não está nas ferramentas deste servidor, então não há URL de download aqui.'),
+    );
+  };
 
   return {
     async listPrompts() {
@@ -438,6 +499,10 @@ export function createSurfaces(scope: VirtualScope) {
     async getPrompt(name: string) {
       const detail = await skillPublicada(name, 'prompt');
       if (!detail) throw naoEncontrado(`Prompt não encontrado: "${name}"`);
+
+      // Antes do acesso: leitura recusada não é visualização.
+      const excedeu = excedeTetoInline(detail.skillMd);
+      if (excedeu !== null) throw await grandeDemais(detail, excedeu);
 
       registrarAcesso(scope, detail.uuid, 'view', 'prompt');
 
@@ -475,6 +540,10 @@ export function createSurfaces(scope: VirtualScope) {
       const slug = uri.startsWith(RESOURCE_SCHEME) ? uri.slice(RESOURCE_SCHEME.length) : '';
       const detail = slug ? await skillPublicada(slug, 'resource') : null;
       if (!detail) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+
+      // Antes do acesso e do `composeSkillMd`, que é mais uma cópia do texto.
+      const excedeu = excedeTetoInline(detail.skillMd);
+      if (excedeu !== null) throw await grandeDemais(detail, excedeu);
 
       registrarAcesso(scope, detail.uuid, 'view', 'resource');
 

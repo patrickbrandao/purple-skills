@@ -130,7 +130,7 @@ services:
       retries: 20
     networks: [internal]
 
-  # Passo dedicado de migrations — nunca roda junto com os 4 serviços.
+  # Passo dedicado de migrations — nunca roda junto com os 5 serviços.
   # Perfil próprio: `up -d` não sobe este serviço, só `compose run migrate`.
   migrate:
     <<: *db-job

@@ -124,7 +124,7 @@ describe('a skill inteira', () => {
           arquivo('SKILL.md', '# Conventional Commits'),
           arquivo('assets/logo.svg', '<svg><path d="M0 0 L9 9"/></svg>'),
           // O banco não deveria dar isto como texto; se der, também não sai.
-          arquivo('firmware.bin', 'MZ'),
+          arquivo('firmware.bin', `MZ${String.fromCharCode(1)}`),
         ],
       },
       MODELO_FALSO,

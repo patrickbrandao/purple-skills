@@ -22,8 +22,9 @@ import {
   type VirtualMcpCatalogInput,
   type VirtualMcpDetail,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, assertSkillsViewable, levelFrom, viewerOf } from './access.js';
+import { accountByEmail, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
 import type { Caller } from './auth.js';
+import { assertNameFits } from './mcps.js';
 
 const SOURCE = 'mcp-admin' as const;
 
@@ -39,7 +40,16 @@ const fail = (message: string): ToolResult => ({
   isError: true,
 });
 
-/** O que uma tool devolve de um catálogo — o mesmo shape do painel. */
+/**
+ * O que uma tool devolve de um catálogo — o mesmo shape do painel.
+ *
+ * Só para um detalhe **lido com `viewer`** (`managed`): é a leitura que recorta
+ * `mcps` aos servidores que a credencial vê e `skills` aos membros que ela abre.
+ * As escritas do banco releem sem `viewer`, na visão do admin — por isso as
+ * tools de escrita respondem com texto montado do que quem escreve já alcança
+ * (nome, estado, membros), e nunca com `view(...)` do detalhe que a escrita
+ * devolve (relatório 010 da auditoria de 2026-09-19).
+ */
 const view = (catalog: CatalogDetail) => ({
   slug: catalog.slug,
   name: catalog.name,
@@ -49,8 +59,10 @@ const view = (catalog: CatalogDetail) => ({
   owner: catalog.ownerEmail,
   access: catalog.access,
   // A lista de concessões só para quem as administra (`docs/12` decisão 11).
+  // `isActive: false` é a conta desativada: a linha fica, inerte, volta a valer
+  // se a conta for reativada — e `unshare_catalog` a revoga assim mesmo.
   grants: canManage(catalog.access)
-    ? catalog.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level }))
+    ? catalog.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
     : undefined,
   activeSkills: catalog.activeSkillCount,
   views: catalog.viewCount,
@@ -136,6 +148,8 @@ export function createCatalogHandlers(caller: Caller) {
       if (!canCreate(caller.role)) {
         return fail(`Criar catálogo exige papel "editor" ou "admin"; sua credencial é "${caller.role}".`);
       }
+      // Mesmo teto do nome de vMCP — ver `NAME_MAX`, em `mcps.ts`.
+      assertNameFits(args.name, 'do catálogo');
       const catalog = await createCatalog(
         {
           name: args.name,
@@ -163,6 +177,8 @@ export function createCatalogHandlers(caller: Caller) {
       is_public?: boolean;
     }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
+      // Só para quem renomeia: reenviar o nome que o catálogo já tem não é renomear.
+      if (args.name !== undefined) assertNameFits(args.name, 'do catálogo', current.name);
       const catalog = await updateCatalog(
         current.uuid,
         {
@@ -219,11 +235,12 @@ export function createCatalogHandlers(caller: Caller) {
       return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} o catálogo "${current.slug}".`);
     },
 
+    /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
     async unshare_catalog(args: { slug: string; email: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
-      await removeCatalogGrant(current.slug, target.uuid, SOURCE, actor);
-      return text(`${target.email} perdeu o acesso ao catálogo "${current.slug}".`);
+      const grant = grantOf(current.grants, args.email, 'neste catálogo');
+      await removeCatalogGrant(current.slug, grant.userUuid, SOURCE, actor);
+      return text(`${grant.email} perdeu o acesso ao catálogo "${current.slug}".`);
     },
 
     async transfer_catalog(args: { slug: string; email: string }): Promise<ToolResult> {

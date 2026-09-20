@@ -10,13 +10,17 @@
  *
  * O orçamento de tempo, porém, é de **quem chama**, e é o `signal` que o diz:
  * a busca do site e do MCP passa um prazo curto e a pausa entre tentativas é
- * cortada com ele; o indexador não passa prazo nenhum, porque ninguém está
- * esperando, e aí valem `maxRetries`, o recuo e o teto de `ESPERA_MAXIMA_MS`.
+ * cortada com ele; o indexador passa um prazo largo, por chamada
+ * (`RAG_INDEX_TIMEOUT_MS`): ninguém está esperando, mas um provedor que aceita
+ * a conexão e nunca responde não pode segurar a rodada. Hoje nenhum chamador de
+ * produção fica sem `signal`; quem chama o driver direto sem ele — um teste, um
+ * script — fica só com `maxRetries`, o recuo e o teto de `ESPERA_MAXIMA_MS`.
  *
  * Deixar essa política em cada driver seria mantê-la três vezes, e a terceira
  * cópia é sempre a que fica para trás.
  */
 import {
+  ragErrorKind,
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
@@ -63,8 +67,10 @@ export type MapearErro = (resposta: Response, corpo: unknown) => never;
  *
  * Com `setTimeout` puro, abortar o `fetch` não abortava a espera — e a busca,
  * que promete responder em `RAG_QUERY_TIMEOUT_MS`, ficava presa pelo tempo que
- * o provedor pedisse. Quem não passa `signal` (o indexador) dorme a espera
- * inteira, como antes — limitada ao teto abaixo.
+ * o provedor pedisse. Quem não passa `signal` dorme a espera inteira, como
+ * antes — limitada ao teto abaixo. Hoje nenhum chamador de produção está nesse
+ * caso: o indexador também passa o seu (`AbortSignal.timeout` por chamada), e o
+ * prazo dele corta esta espera do mesmo jeito.
  */
 const dormir = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -154,9 +160,62 @@ export class ClienteHttp {
       }
     }
 
-    if (ultimo instanceof Error) throw ultimo;
-    throw new RagUnavailableError(`${this.provedor} não respondeu`);
+    // Erro do pacote que sobrou das tentativas (limite de taxa, 5xx) sai como
+    // veio: o driver já o escreveu com o detalhe do provedor.
+    if (ragErrorKind(ultimo) !== null) throw ultimo;
+
+    // O resto é a requisição que nem chegou a ter resposta — `TypeError: fetch
+    // failed` do undici, conexão recusada, DNS — ou a resposta que não deu para
+    // ler. `driver.ts` promete `RagUnavailableError` para "falha de rede"; cru,
+    // este erro saía **sem classe**, e o indexador o publicava como erro que não
+    // veio do provedor (é o que `lastErrorKind: null` quer dizer). Só a classe
+    // muda: as tentativas e o recuo acima são os de sempre, e o original vai em
+    // `cause`.
+    throw new RagUnavailableError(`${this.provedor} não respondeu (${detalheDaFalha(ultimo)})`, {
+      cause: ultimo,
+    });
   }
+}
+
+/**
+ * O que houve, em uma linha. No undici a mensagem é sempre "fetch failed", e
+ * quem diz o motivo — `ECONNREFUSED`, `ENOTFOUND`, certificado — é a causa.
+ * Nenhum dos dois traz a chave: ela vai no header, nunca na URL.
+ */
+function detalheDaFalha(erro: unknown): string {
+  if (!(erro instanceof Error)) return String(erro);
+  const causa = erro.cause;
+  if (causa instanceof Error && causa.message !== '') return `${erro.message}: ${causa.message}`;
+  return erro.message;
+}
+
+/** O que entra no lugar da chave, inteira ou mascarada, na mensagem do provedor. */
+const CHAVE_OMITIDA = '[chave omitida]';
+
+/**
+ * Tira da mensagem **do provedor** o que for a chave, antes de ela virar mensagem
+ * de erro — que vai para o log do indexador, para `rag.indexer.status` no banco
+ * e, de lá, para o "Último erro" do painel, que nunca recebe a chave (§9).
+ *
+ * O caso real é o 401 da OpenAI, que **ecoa a chave recebida**: mascarada quando
+ * tem cara de chave (o começo, uma fileira de asteriscos e os quatro últimos
+ * caracteres), e como veio quando é curta ou está fora do formato — que é
+ * justamente o caso de quem colou o segredo errado na variável. Pedaço de
+ * segredo em log também é segredo em log, e a parte útil da mensagem ("Incorrect
+ * API key provided") não depende dele.
+ *
+ * Os três drivers passam por aqui, e não só o da OpenAI, para o corte não
+ * depender de quem ecoa hoje. O que sai:
+ *
+ *   * a chave **literal**, onde aparecer (menos de 4 caracteres não é segredo,
+ *     e trocá-los picotaria a mensagem inteira);
+ *   * qualquer palavra com uma fileira de três ou mais `*` ou `•` — a máscara.
+ *     A palavra sai inteira, pontuação colada inclusive: parar no primeiro ponto
+ *     deixaria passar o resto de um token com pontos no meio.
+ */
+export function ocultarChave(mensagem: string, chave: string): string {
+  const semLiteral = chave.length >= 4 ? mensagem.split(chave).join(CHAVE_OMITIDA) : mensagem;
+  return semLiteral.replace(/\S*(?:\*{3,}|•{3,})\S*/g, CHAVE_OMITIDA);
 }
 
 /** O corpo do erro, ou `{}` quando o provedor não mandou JSON nenhum. */
@@ -222,9 +281,14 @@ export function* lotes(model: EmbeddingModel, texts: readonly string[]): Generat
  * Embute em lotes, dividindo o lote ao meio quando o provedor recusa o
  * conteúdo.
  *
- * Quase sempre é um texto só que passou do limite de tokens; dividir acha qual
- * sem perder o resto do lote. Texto sozinho que falha sobe o erro para quem
- * chamou decidir — o indexador pula e registra.
+ * A divisão salva a chamada quando o problema é o **tamanho do lote**: as
+ * metades passam, e os vetores voltam na ordem. Quando é **um texto** que passou
+ * do limite de tokens, ela só chega até ele — texto sozinho que falha sobe o
+ * erro, e a chamada inteira é rejeitada, inclusive as metades que já tinham
+ * voltado: `embedDocuments` é tudo ou nada. Quem separa o culpado do resto é o
+ * indexador, que reenvia a fatia um texto por vez e marca o recusado. (**Era**
+ * "dividir acha qual sem perder o resto do lote", que é o que **não** acontece
+ * nesse caso. Manter a divisão assim mesmo é decisão registrada.)
  */
 export async function embutirEmLotes(
   model: EmbeddingModel,

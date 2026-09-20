@@ -11,10 +11,11 @@
  * O banco apontado é **recriado do zero** (DROP SCHEMA public CASCADE) a cada
  * execução: aponte para um banco descartável, nunca para o de desenvolvimento.
  */
+import { readdirSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { closeDb } from './client.js';
-import { runMigrations } from './migrate.js';
+import { runMigrations, schemaDir } from './migrate.js';
 import { AppError } from './errors.js';
 import {
   consumeResetToken,
@@ -28,6 +29,7 @@ import {
   getUserByUuid,
   listApiKeys,
   listAudit,
+  listAuditPage,
   listUsers,
   recordAccountAudit,
   registerFailedLogin,
@@ -126,6 +128,57 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     await raw.query('DELETE FROM users');
   });
 
+  it('sem o campo, a primeira conta pode nascer membro — e a receita do README devolve o admin', async () => {
+    // `tasks/001`. A invariante "a primeira conta é o admin do setup" **não** é
+    // de `createUser`: sem `onlyIfTableEmpty` ele grava em qualquer estado da
+    // tabela, com qualquer papel, e quem confere é o chamador. O resultado é o
+    // estado do relatório: há conta, e ninguém que possa promover ninguém.
+    expect(await countUsers()).toBe(0);
+    const pessoa = await createUser({ email: 'Pessoa@Exemplo.dev', name: 'Pessoa', role: 'membro' });
+    expect((await listUsers()).filter((u) => u.role === 'admin' && u.isActive)).toHaveLength(0);
+
+    // A saída é "Instalação sem administrador" do `README.md`; o SQL é o de lá,
+    // com o e-mail trocado. Se o `CHECK` de `action`/`source` ou as colunas de
+    // `audit_log` mudarem, é aqui que a receita deixa de valer.
+    const receita = (email: string): string => `
+      WITH promovida AS (
+        UPDATE users
+        SET role = 'admin', is_active = true, token_version = token_version + 1, updated_at = now()
+        WHERE lower(email) = lower('${email}')
+          AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND is_active)
+        RETURNING email
+      )
+      INSERT INTO audit_log (action, source, actor_label, target_label)
+      SELECT 'user.role', 'web-admin', 'sql-manual', email || ' → admin' FROM promovida
+      RETURNING target_label
+    `;
+
+    const primeira = await raw.query<{ target_label: string }>(receita('pessoa@exemplo.dev'));
+    expect(primeira.rows).toEqual([{ target_label: 'Pessoa@Exemplo.dev → admin' }]);
+
+    const promovida = await getUserByUuid(pessoa.uuid);
+    expect(promovida?.role).toBe('admin');
+    // A sessão aberta como `membro` cai: o papel viaja no cookie.
+    expect(promovida?.tokenVersion).toBe(pessoa.tokenVersion + 1);
+
+    const daReceita = async () => (await listAudit(20)).filter((e) => e.actorLabel === 'sql-manual');
+    expect(await daReceita()).toMatchObject([
+      { action: 'user.role', source: 'web-admin', actorUserUuid: null, targetLabel: 'Pessoa@Exemplo.dev → admin' },
+    ]);
+
+    // Segura ao repetir: com um admin ativo ela não promove nem audita — nem a
+    // mesma conta de novo, nem uma segunda.
+    const outra = await createUser({ email: 'outra@exemplo.dev', name: 'Outra', role: 'membro' });
+    expect((await raw.query(receita('pessoa@exemplo.dev'))).rows).toHaveLength(0);
+    expect((await raw.query(receita('outra@exemplo.dev'))).rows).toHaveLength(0);
+    expect((await getUserByUuid(pessoa.uuid))?.tokenVersion).toBe(pessoa.tokenVersion + 1);
+    expect((await getUserByUuid(outra.uuid))?.role).toBe('membro');
+    expect(await daReceita()).toHaveLength(1);
+
+    await raw.query("DELETE FROM audit_log WHERE actor_label = 'sql-manual'");
+    await raw.query('DELETE FROM users');
+  });
+
   it('cria a conta e a encontra por e-mail sem diferenciar caixa', async () => {
     expect(await countUsers()).toBe(0);
 
@@ -199,6 +252,34 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect((await listUsers()).map((u) => u.name)).toEqual(['Ana', 'Bruno']);
   });
 
+  it('revogar a sessão, sozinho, não carimba updated_at; com campo da conta, carimba', async () => {
+    // `tasks/034`. `updated_at` é "última alteração administrativa da conta" —
+    // a razão de `registerFailedLogin`/`registerSuccessfulLogin` não o tocarem.
+    // O "Sair" do painel é `updateUser(uuid, { bumpTokenVersion: true })`:
+    // movimento de sessão, sem linha na trilha que explique uma data nova.
+    const pausa = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+    const antes = (await getUserByUuid(brunoUuid))!;
+
+    await pausa();
+    const logout = await updateUser(brunoUuid, { bumpTokenVersion: true });
+    expect(logout.tokenVersion).toBe(antes.tokenVersion + 1);
+    expect(logout.updatedAt).toBe(antes.updatedAt);
+
+    // Qualquer campo da conta junto volta a carimbar — é o reset de senha, a
+    // troca de papel e a desativação, que também derrubam as sessões.
+    await pausa();
+    const editado = await updateUser(brunoUuid, { name: 'Bruno', bumpTokenVersion: true });
+    expect(editado.tokenVersion).toBe(antes.tokenVersion + 2);
+    expect(new Date(editado.updatedAt).getTime()).toBeGreaterThan(new Date(antes.updatedAt).getTime());
+
+    // `{}` é o PATCH do painel que não mudou nada (`updateAccount`): continua
+    // sendo um UPDATE válido — o `SET` não fica vazio — e continua carimbando.
+    await pausa();
+    const vazio = await updateUser(brunoUuid, {});
+    expect(vazio.tokenVersion).toBe(editado.tokenVersion);
+    expect(new Date(vazio.updatedAt).getTime()).toBeGreaterThan(new Date(editado.updatedAt).getTime());
+  });
+
   it('trava a conta ao atingir o teto de tentativas e libera no login aceito', async () => {
     const primeira = await registerFailedLogin(anaUuid, { maxAttempts: 3, lockSeconds: 60 });
     expect(primeira).toEqual({ failedAttempts: 1, lockedUntil: null });
@@ -222,6 +303,49 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect(ana?.lastLoginAt).not.toBeNull();
   });
 
+  it('clearLoginLock destrava no mesmo UPDATE da senha nova; sem o campo a trava fica', async () => {
+    // `tasks/005`. O login confere `locked_until` **antes** da senha, então a
+    // senha temporária certa é recusada com 429 até a trava vencer — e o único
+    // outro código que a limpa (`registerSuccessfulLogin`) fica inalcançável.
+    const travar = async (): Promise<void> => {
+      for (let i = 0; i < 3; i++) await registerFailedLogin(anaUuid, { maxAttempts: 3, lockSeconds: 60 });
+      // Mais um erro depois de travada: o contador também precisa voltar a zero.
+      await registerFailedLogin(anaUuid, { maxAttempts: 3, lockSeconds: 60 });
+    };
+
+    await travar();
+    // Sem o campo — e com `false`, que é "não mexe" — a senha muda e a trava fica.
+    const semCampo = await updateUser(anaUuid, { passwordHash: 'scrypt$temporaria-1', bumpTokenVersion: true });
+    expect(semCampo.lockedUntil).not.toBeNull();
+    expect(semCampo.failedAttempts).toBe(1);
+    const comFalse = await updateUser(anaUuid, { passwordHash: 'scrypt$temporaria-2', clearLoginLock: false });
+    expect(comFalse.lockedUntil).not.toBeNull();
+    expect(comFalse.failedAttempts).toBe(1);
+
+    const destravada = await updateUser(anaUuid, {
+      passwordHash: 'scrypt$temporaria-3',
+      mustChangePassword: true,
+      bumpTokenVersion: true,
+      clearLoginLock: true,
+    });
+    expect(destravada.lockedUntil).toBeNull();
+    expect(destravada.failedAttempts).toBe(0);
+    expect(destravada.passwordHash).toBe('scrypt$temporaria-3');
+    expect(destravada.tokenVersion).toBe(semCampo.tokenVersion + 1);
+    // Não é login: `last_login_at` fica como estava.
+    expect(destravada.lastLoginAt).toBe(semCampo.lastLoginAt);
+
+    // Sozinho também vale (um "destravar" sem trocar a senha), e a contagem
+    // recomeça do zero para quem errar depois.
+    await travar();
+    expect((await updateUser(anaUuid, { clearLoginLock: true })).lockedUntil).toBeNull();
+    expect(await registerFailedLogin(anaUuid, { maxAttempts: 3, lockSeconds: 60 })).toEqual({
+      failedAttempts: 1,
+      lockedUntil: null,
+    });
+    await registerSuccessfulLogin(anaUuid);
+  });
+
   it('emite, resolve pelo prefixo e revoga uma chave de API', async () => {
     const chave = await createApiKey({
       userUuid: anaUuid,
@@ -241,12 +365,25 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     await touchApiKey(chave.id);
     expect((await listApiKeys(anaUuid))[0]?.lastUsedAt).not.toBeNull();
 
-    // O dono revoga a própria chave; a segunda tentativa não faz nada.
-    expect(await revokeApiKey(chave.id, anaUuid)).toBe(true);
-    expect(await revokeApiKey(chave.id, anaUuid)).toBe(false);
-
+    // O dono revoga a própria chave. A revogação devolve o que identifica a
+    // chave numa linha de auditoria — nome, prefixo e de quem era (`tasks/040`):
+    // o app rotula o `key.revoke` como rotulou o `key.create`, sem uma leitura a
+    // mais e sem o uuid, que não aparece em tela nenhuma.
+    expect(await revokeApiKey(chave.id, anaUuid)).toEqual({
+      name: 'agente-do-ci',
+      prefix: 'abc12345',
+      userUuid: anaUuid,
+      userEmail: 'Ana@Exemplo.dev',
+    });
     const revogada = (await listApiKeys(anaUuid)).find((k) => k.id === chave.id);
     expect(revogada?.revokedAt).not.toBeNull();
+
+    // A segunda tentativa não faz nada: `null`, e o `revoked_at` que datou a
+    // revogação não é reescrito.
+    expect(await revokeApiKey(chave.id, anaUuid)).toBeNull();
+    expect((await listApiKeys(anaUuid)).find((k) => k.id === chave.id)?.revokedAt).toBe(
+      revogada?.revokedAt,
+    );
   });
 
   it('só deixa o dono revogar quando o dono é informado; admin revoga qualquer uma', async () => {
@@ -258,13 +395,20 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     });
 
     // Ana pedindo a chave do Bruno: não é dela, não revoga.
-    expect(await revokeApiKey(chave.id, anaUuid)).toBe(false);
+    expect(await revokeApiKey(chave.id, anaUuid)).toBeNull();
     expect((await listApiKeys(brunoUuid))[0]?.revokedAt).toBeNull();
 
-    // Sem dono = admin.
-    expect(await revokeApiKey(chave.id)).toBe(true);
-    expect(await revokeApiKey(chave.id)).toBe(false);
-    expect(await revokeApiKey('nao-e-uuid')).toBe(false);
+    // Sem dono = admin. Quem revogou não é o dono da chave, e é por isso que o
+    // retorno diz de quem ela era: o rótulo da auditoria é `<e-mail>: <nome>`.
+    expect(await revokeApiKey(chave.id)).toEqual({
+      name: 'agente-do-bruno',
+      prefix: 'def67890',
+      userUuid: brunoUuid,
+      userEmail: 'bruno@exemplo.dev',
+    });
+    expect(await revokeApiKey(chave.id)).toBeNull();
+    expect(await revokeApiKey('nao-e-uuid')).toBeNull();
+    expect(await revokeApiKey(chave.id, 'nao-e-uuid')).toBeNull();
 
     // A listagem inclui as revogadas, mais novas primeiro.
     const doBruno = await listApiKeys(brunoUuid);
@@ -389,6 +533,67 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect(revogacao?.actorUserUuid).toBeNull();
     expect(revogacao?.actorLabel).toBe('token-global');
     expect(revogacao?.source).toBe('mcp-admin');
+  });
+
+  it('a reativação e o vínculo OIDC cabem na trilha (026), e o CHECK segue fechado', async () => {
+    // `tasks/003`. Os dois eventos mudam quem consegue entrar na conta e não
+    // tinham **ação**: o INSERT era recusado pelo `CHECK` de `audit_log.action`.
+    await recordAccountAudit({
+      action: 'user.activate',
+      source: 'web-admin',
+      actor: { userUuid: anaUuid, label: 'ana@exemplo.dev' },
+      targetLabel: 'bruno@exemplo.dev',
+    });
+    // O ator do vínculo é o caminho, sem conta — como `link-de-redefinicao`.
+    await recordAccountAudit({
+      action: 'user.link',
+      source: 'web-admin',
+      actor: { userUuid: null, label: 'oidc:https://idp.exemplo.dev' },
+      targetLabel: 'bruno@exemplo.dev (sub 0a1b2c)',
+    });
+
+    // As duas são filtro válido da tela da trilha (o espelho `AUDIT_ACTIONS`).
+    const reativacao = await listAuditPage({ action: 'user.activate' });
+    expect(reativacao.total).toBe(1);
+    expect(reativacao.items[0]).toMatchObject({
+      actorUserUuid: anaUuid,
+      actorLabel: 'ana@exemplo.dev',
+      targetLabel: 'bruno@exemplo.dev',
+      skillUuid: null,
+    });
+    const vinculo = await listAuditPage({ action: 'user.link' });
+    expect(vinculo.total).toBe(1);
+    expect(vinculo.items[0]).toMatchObject({
+      actorUserUuid: null,
+      actorLabel: 'oidc:https://idp.exemplo.dev',
+      targetLabel: 'bruno@exemplo.dev (sub 0a1b2c)',
+    });
+    // Dá para achar o vínculo pelo `subject`, que é o dado que faltava.
+    expect((await listAuditPage({ q: 'sub 0a1b2c' })).total).toBe(1);
+
+    // O que não está na lista continua 400 no filtro e recusado pelo banco.
+    expect((await capture(listAuditPage({ action: 'user.inventada' as never }))).status).toBe(400);
+    await expect(
+      raw.query(
+        `INSERT INTO audit_log (action, source, actor_label, target_label)
+         VALUES ('user.inventada', 'web-admin', 'x', 'y')`,
+      ),
+    ).rejects.toThrow(/audit_log_action_check/);
+
+    // Re-executar a migration recria a mesma constraint, com as linhas novas já
+    // na tabela. O arquivo é achado pelo nome, não pelo número.
+    const arquivo = readdirSync(schemaDir()).find((f) => f.endsWith('-auditoria-de-vinculo-e-reativacao.sql'));
+    expect(arquivo).toBeDefined();
+    await raw.query('DELETE FROM schema_migrations WHERE name = $1', [arquivo]);
+    expect(await runMigrations(url!)).toEqual([arquivo]);
+    expect((await listAuditPage({ action: 'user.link' })).total).toBe(1);
+    await recordAccountAudit({
+      action: 'user.activate',
+      source: 'web-admin',
+      actor: { userUuid: null, label: 'bootstrap' },
+      targetLabel: 'ana@exemplo.dev',
+    });
+    expect((await listAuditPage({ action: 'user.activate' })).total).toBe(2);
   });
 
   it('conta usuários totais e ativos no stats', async () => {

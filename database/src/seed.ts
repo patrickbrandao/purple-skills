@@ -334,10 +334,11 @@ async function main() {
         tags: seed.tags,
       },
       'web-admin',
+      SEED_ACTOR,
     );
 
     for (const file of seed.extraFiles ?? []) {
-      await setFile(seed.slug, file.path, file.content, 'web-admin');
+      await setFile(seed.slug, file.path, file.content, 'web-admin', SEED_ACTOR);
     }
 
     console.log(`[seed] criada: ${seed.slug}`);

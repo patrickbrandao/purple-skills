@@ -23,11 +23,19 @@
  * um único texto venenoso trava o acervo inteiro atrás dele e é pago de novo a
  * cada ciclo — inclusive depois de reiniciar o container.
  *
+ * A marca é permanente, e por isso só é gravada **com prova**: um 400 diz que o
+ * provedor não aceitou a requisição, não que o problema é aquele texto. Antes de
+ * virar recusa, todo lote recusado é conferido com o texto-sonda (`TEXTO_SONDA`);
+ * se o provedor recusa também a sonda, o problema é da instalação e nada é
+ * marcado.
+ *
  * Mais de uma réplica pode rodar **sem corromper nada e sem pagar duas vezes**:
  * a reserva de skills usa `SKIP LOCKED`, a gravação de vetores ignora conflito e
  * a leitura da fila **reserva** o que devolve (`RESERVA_MS`), então cada texto
- * sai para um indexador só. A reserva vence sozinha, e `insertRagVectors` a baixa
- * assim que o vetor entra. Onde ela não alcança — reserva vencida no meio do
+ * sai para um indexador só. A reserva vence sozinha, `insertRagVectors` a baixa
+ * assim que o vetor entra, e o ciclo que desiste do lote — erro que não é de
+ * conteúdo, parada pedida — a **devolve** (`releaseRagTextReservations`) em vez
+ * de segurá-la até o prazo. Onde ela não alcança — reserva vencida no meio do
  * caminho —, o ciclo continua sabendo não *se enganar*: quem perde a corrida
  * recebe zero de `insertRagVectors` e mesmo assim sabe que a fila andou
  * (`textosProcessados`), em vez de concluir que não havia mais nada a fazer.
@@ -42,6 +50,7 @@ import {
   driverInfo,
   lotes,
   modeloPeloId,
+  ragErrorKind,
   DRIVERS_IMPLEMENTADOS,
   type RagProviderId,
   RagAuthError,
@@ -50,6 +59,7 @@ import {
   RagRateLimitError,
   type EmbeddingDriver,
   type EmbeddingModel,
+  type RagErrorKind,
 } from '@purple-skills/rag';
 import type {
   RagCoverage,
@@ -103,6 +113,20 @@ export type IndexerPorts = {
    */
   markRagTextRefused?: (spaceUuid: string, sha256: Buffer, motivo: string) => Promise<void>;
   /**
+   * Devolve à fila os textos que este ciclo reservou e **não** resolveu: o lote
+   * falhou por motivo que não é o conteúdo, ou nem chegou a ser tentado porque um
+   * lote anterior dos mesmos textos falhou. Devolve quantas reservas saíram.
+   *
+   * Sem ela a reserva só tinha duas saídas, o vetor e o vencimento: o indexador
+   * **vivo** que desistia do lote o segurava por `RESERVA_MS`, o ciclo seguinte
+   * reservava os textos seguintes e falhava de novo, e com a fila inteira
+   * reservada o estado publicado passava a dizer "sem erro" com o acervo sem
+   * vetor (relatório 024 da auditoria de 2026-09-19).
+   *
+   * **Opcional**, como as outras portas da `025`: sem ela vale o vencimento.
+   */
+  releaseRagTextReservations?: (spaceUuid: string, hashes: readonly Buffer[]) => Promise<number>;
+  /**
    * Apaga textos canônicos sem ocorrência nenhuma — e, pela cascata de
    * `rag_vectors`, os vetores deles. Devolve quantos saíram.
    *
@@ -152,6 +176,18 @@ export type CycleOptions = {
   timeoutMs?: number;
   /** Órfãos coletados por rodada, quando a porta de coleta existir. */
   orphanBatch?: number;
+  /**
+   * Pedido de parada (SIGTERM, SIGINT). O ciclo o consulta onde dá para sair sem
+   * deixar nada pela metade — **entre** uma skill e outra, **entre** um lote de
+   * textos e outro — e devolve à fila o que reservou e não começou. O que está
+   * em curso termina.
+   *
+   * A reserva de skills tem prazo desde a migration `reserva-de-skills-com-prazo`,
+   * então o lote largado volta sozinho; devolver é o que troca "volta quando a
+   * reserva vencer" por "volta no ciclo seguinte" no caso de todo dia, que é o
+   * deploy (relatório 027 da auditoria de 2026-09-19).
+   */
+  deveParar?: () => boolean;
 };
 
 export type CycleResult = {
@@ -179,7 +215,18 @@ export type CycleResult = {
   erros: number;
   /** Último erro do ciclo, para o estado publicado e o log. */
   lastError: string | null;
-  /** Falso quando não adianta insistir neste ciclo (chave ou configuração). */
+  /**
+   * A **classe** de `lastError`, publicada junto com ele. O painel resume a
+   * situação da chave por ela: a mensagem é prosa para o operador, e decidir por
+   * pedaço de texto fazia conta sem crédito e IP recusado aparecerem como "chave
+   * aceita". `null` com `lastError` preenchido é erro que não veio do provedor —
+   * refatiar, gravar — e nada diz sobre a chave.
+   */
+  lastErrorKind: RagErrorKind | null;
+  /**
+   * Falso quando não adianta insistir neste ciclo (chave ou configuração) — e
+   * quando a parada foi pedida no meio dele (`deveParar`).
+   */
   continuar: boolean;
   space: RagSpace | null;
 };
@@ -210,17 +257,37 @@ export const RESERVA_MS = 10 * 60_000;
 export const TIMEOUT_EMBEDDING_MS = 120_000;
 /** Órfãos apagados por rodada: `LIMIT` para a coleta não segurar lock. */
 export const ORPHAN_BATCH = 500;
+/**
+ * O texto-sonda: fixo, curto e **sem conteúdo de skill**.
+ *
+ * Serve para uma pergunta só — "este provedor, com esta chave, esta URL e este
+ * formato de requisição, aceita alguma coisa?" —, feita antes de gravar uma
+ * recusa, que é permanente (`025`). Os três drivers jogam todo 400 residual em
+ * `RagInputTooLongError`; um 400 que é da instalação (intermediário na
+ * `RAG_<DRIVER>_BASE_URL` que não entende um campo, contrato de API que mudou,
+ * erro de conta devolvido como 400) atinge **todo** texto, e sem esta pergunta o
+ * acervo inteiro virava "recusado para sempre", 64 textos por ciclo, sem um erro
+ * no painel (relatório 025 da auditoria de 2026-09-19).
+ *
+ * Vai pelo mesmo `embedDocuments` do ciclo — quem fala com o provedor continua
+ * sendo só o driver —, e o vetor dele é descartado.
+ */
+export const TEXTO_SONDA = 'purple-skills: texto-sonda do indexador';
 
 /**
- * As recusas definitivas que este processo já conhece, por espaço.
+ * As recusas que este processo conhece **e o banco não guardou**, por espaço.
  *
  * Quem tira o texto recusado da fila **de vez** é o banco: `markRagTextRefused`
  * grava a recusa e `listPendingRagTexts` deixa de devolvê-la (`025`). Esta
- * memória deixou de ser o mecanismo e ficou sendo **a rede de segurança**: a
- * gravação da marca roda dentro do tratamento de um erro e é engolida se
- * falhar, e sem esta lista o texto voltaria no ciclo seguinte para ser pago de
- * novo. Ela também cobre a janela entre a recusa e o vencimento da reserva,
- * caso a gravação tenha falhado.
+ * memória é só **a rede de segurança**: a gravação da marca roda dentro do
+ * tratamento de um erro e é engolida se falhar (e a porta é opcional), e sem
+ * esta lista o texto voltaria no ciclo seguinte para ser pago de novo.
+ *
+ * Por isso ela guarda **só** a recusa que não chegou ao banco. Guardando todas,
+ * como fazia, ela passava por cima do reparo do painel: `clearRagRefusals` apaga
+ * as linhas do banco e não alcança este processo, que reservava os textos
+ * liberados, os descartava aqui e os segurava por `RESERVA_MS` a cada ciclo —
+ * até alguém reiniciar o container.
  *
  * A chave é o par (espaço, texto), não o texto: outro modelo pode muito bem
  * aceitar o que o anterior recusou, e o espaço é o que identifica o par
@@ -264,6 +331,7 @@ export async function runCycle(
     textosRecusados: 0,
     erros: 0,
     lastError: null,
+    lastErrorKind: null,
     continuar: true,
     space: null,
   };
@@ -274,7 +342,7 @@ export async function runCycle(
     return { ...resultado, state: 'esperando-migration' };
   }
 
-  // 1. O banco decide o driver, não o ambiente (§4.1).
+  // 1. O banco decide o driver, não o ambiente (§5).
   const settings = await ports.getRagSettings();
   const driverConfigurado = settings['rag.driver']?.value ?? 'off';
   const modeloConfigurado = settings['rag.model']?.value ?? null;
@@ -290,15 +358,26 @@ export async function runCycle(
 
   if (driverConfigurado !== 'off' && !conhecido) {
     const mensagem = `rag.driver="${driverConfigurado}" não é um driver conhecido`;
+    // Recusada aqui mesmo, antes de qualquer chamada: a classe é a de um
+    // `RagConfigError`, e o painel não conclui nada sobre a chave a partir dela.
+    const classe: RagErrorKind = 'config';
     ports.log(`[indexer] configuração recusada: ${mensagem}`);
     await ports.setRagIndexerStatus({
       at: agora().toISOString(),
       driver: driverConfigurado,
       keyPresent: false,
       lastError: mensagem,
+      lastErrorKind: classe,
       lastErrorAt: agora().toISOString(),
     });
-    return { ...resultado, state: 'ok', erros: 1, lastError: mensagem, continuar: false };
+    return {
+      ...resultado,
+      state: 'ok',
+      erros: 1,
+      lastError: mensagem,
+      lastErrorKind: classe,
+      continuar: false,
+    };
   }
 
   if (driverConfigurado === 'off' || driver === null) {
@@ -308,6 +387,9 @@ export async function runCycle(
       driver: driverConfigurado,
       keyPresent,
       ...cobertura,
+      // Sem erro até aqui, e dito com todas as letras: estado sem os campos é o
+      // que um indexador antigo gravava, e o painel o lê pelo recuo por mensagem.
+      ...erroPublicado(resultado, agora),
     });
     if (driverConfigurado === 'off') {
       ports.log('[indexer] driver desligado (rag.driver=off): nada a fazer');
@@ -322,15 +404,25 @@ export async function runCycle(
       modelo = modeloPeloId(driver, modeloConfigurado ?? driver.models[0]!.id);
     } catch (erro) {
       const mensagem = erro instanceof Error ? erro.message : String(erro);
+      // `modeloPeloId` lança `RagConfigError`; a classe sai do próprio erro.
+      const classe = ragErrorKind(erro);
       ports.log(`[indexer] configuração recusada: ${mensagem}`);
       await ports.setRagIndexerStatus({
         at: agora().toISOString(),
         driver: driverConfigurado,
         keyPresent,
         lastError: mensagem,
+        lastErrorKind: classe,
         lastErrorAt: agora().toISOString(),
       });
-      return { ...resultado, state: 'ok', erros: 1, lastError: mensagem, continuar: false };
+      return {
+        ...resultado,
+        state: 'ok',
+        erros: 1,
+        lastError: mensagem,
+        lastErrorKind: classe,
+        continuar: false,
+      };
     }
   }
 
@@ -349,8 +441,21 @@ export async function runCycle(
   }
 
   // 3. Refatiar. Não custa nada e não precisa de chave.
+  //
+  // A parada é consultada antes de reservar e **entre** uma skill e outra: a que
+  // está em curso termina, e as reservadas que nem começaram voltam à fila agora,
+  // em vez de quando a reserva delas vencer. `readSkillForRag` conta uma
+  // tentativa a cada leitura, então devolver sem ler também não gasta a conta que
+  // decide quando uma skill é "travada".
+  if (options.deveParar?.()) return { ...resultado, continuar: false };
   const reservadas = await ports.claimStaleSkills(skillBatch);
-  for (const uuid of reservadas) {
+  for (const [i, uuid] of reservadas.entries()) {
+    if (options.deveParar?.()) {
+      const resto = reservadas.slice(i);
+      ports.log(`[indexer] parada pedida: devolvendo ${resto.length} skill(s) reservada(s) à fila`);
+      await devolverSkills(ports, resto);
+      return { ...resultado, continuar: false };
+    }
     try {
       const skill = await ports.readSkillForRag(uuid);
       // Sumiu entre a reserva e a leitura: caso normal, não erro.
@@ -399,10 +504,16 @@ export async function runCycle(
       );
       resultado.skillsRefatiadas += 1;
     } catch (erro) {
-      // A skill volta para pendente: nada se perde, a próxima rodada tenta.
-      await ports.releaseStaleSkill(uuid).catch(() => {});
+      // A skill volta para pendente, e a próxima rodada tenta — **se** o banco
+      // ainda responder. Quando não responde (é o caso de o erro ter sido o
+      // próprio banco caindo), ela só volta quando a reserva vencer, e isso ao
+      // menos aparece no log.
+      await devolverSkills(ports, [uuid]);
       resultado.erros += 1;
       resultado.lastError = erro instanceof Error ? erro.message : String(erro);
+      // Refatiar não fala com o provedor: este erro não tem classe, e o painel
+      // não pode tirar dele conclusão nenhuma sobre a chave.
+      resultado.lastErrorKind = null;
       ports.log(`[indexer] falha ao refatiar ${uuid}: ${resultado.lastError}`);
     }
   }
@@ -415,7 +526,7 @@ export async function runCycle(
       driver: driverConfigurado,
       keyPresent,
       ...(await ports.ragCoverage(espaco?.uuid ?? null)),
-      lastError: resultado.lastError,
+      ...erroPublicado(resultado, agora),
     });
     if (!keyPresent) {
       // O nome da variável sai do registro (`AGENTS.md`, "Regra da busca
@@ -435,10 +546,17 @@ export async function runCycle(
   // motivo — e passaria a **reservar** textos que este ciclo não vai embutir.
   // A reserva é o que impede duas réplicas de pagarem pelo mesmo embedding; o
   // filtro em memória continua atrás dela como rede de segurança, para o caso
-  // de a gravação da recusa ter falhado.
-  const pendentes = (
-    await ports.listPendingRagTexts(espaco.uuid, textBatch, { reserveMs: RESERVA_MS })
-  ).filter((t) => !recusas.tem(espaco.uuid, t.sha256));
+  // de a gravação da recusa ter falhado. O que o filtro descarta **não** é
+  // devolvido, de propósito: reservado, ele ocupa a cabeça da fila num ciclo a
+  // cada `RESERVA_MS`; devolvido, ocuparia em todos.
+  //
+  // Parada pedida: nada de reservar um lote para largá-lo em seguida.
+  if (options.deveParar?.()) return { ...resultado, continuar: false };
+  const reservadoEm = agora().getTime();
+  const lidos = await ports.listPendingRagTexts(espaco.uuid, textBatch, {
+    reserveMs: RESERVA_MS,
+  });
+  const pendentes = lidos.filter((t) => !recusas.tem(espaco.uuid, t.sha256));
 
   if (pendentes.length > 0) {
     const embutido = await embutirPendentes({
@@ -450,12 +568,21 @@ export async function runCycle(
       recusas,
       resultado,
       timeoutMs: options.timeoutMs ?? TIMEOUT_EMBEDDING_MS,
+      deveParar: options.deveParar,
+      agora,
+      reservadoEm,
     });
     // Conta o que foi gravado mesmo quando um lote adiante falhou: era
     // justamente isso que a chamada única jogava fora.
     resultado.textosEmbutidos = embutido.gravados;
     resultado.textosProcessados = embutido.processados;
     tokens = embutido.tokens;
+    // Parada pedida entre dois lotes: o que nem saiu já voltou à fila. Coletar
+    // órfãos e publicar estado é trabalho de quem vai continuar no ar.
+    if (embutido.interrompido) {
+      ports.log('[indexer] parada pedida: a etapa de embutir parou entre dois lotes');
+      return { ...resultado, continuar: false };
+    }
   }
 
   // 4.1 Coletar os órfãos. Só agora: todo `replaceSkillTexts` desta rodada já
@@ -465,6 +592,17 @@ export async function runCycle(
   // 5. Publicar o estado. O painel não recebe a chave: só o indexador sabe se
   // ela existe e se o Google a aceitou.
   const cobertura = await ports.ragCoverage(espaco.uuid);
+  // Fila vazia com texto sem vetor que não é recusa: está reservado — pela outra
+  // réplica, ou por um indexador que morreu no meio do lote, que é o caso que a
+  // devolução não alcança. Sem esta linha o ciclo "vazio" é mudo, e o operador lê
+  // silêncio como "terminou".
+  const foraDaFila = cobertura.pendingTexts - cobertura.refusedTexts;
+  if (lidos.length === 0 && foraDaFila > 0) {
+    ports.log(
+      `[indexer] ${foraDaFila} textos sem vetor estão reservados e fora da fila; ` +
+        `voltam em até ${RESERVA_MS / 60_000} min se ninguém os embutir antes`,
+    );
+  }
   await ports.setRagIndexerStatus({
     at: agora().toISOString(),
     driver: driverConfigurado,
@@ -477,8 +615,7 @@ export async function runCycle(
     // tamanho da lista em memória, que voltava a zero a cada reinício e não
     // enxergava a recusa da outra réplica.
     ...cobertura,
-    lastError: resultado.lastError,
-    lastErrorAt: resultado.lastError ? agora().toISOString() : null,
+    ...erroPublicado(resultado, agora),
   });
 
   if (
@@ -515,10 +652,24 @@ export async function runCycle(
  *     (`RagInputTooLongError`) é definitiva: o lote volta um texto por vez para
  *     achar o culpado, e o culpado sai da fila em vez de voltar para sempre.
  *
+ * A recusa é permanente, então ela só é gravada **com prova** de que o problema
+ * é o conteúdo. Os três drivers jogam todo 400 residual em
+ * `RagInputTooLongError`, e um 400 só diz que é *aquele texto* se o provedor, com
+ * a mesma chave, URL, modelo e formato, aceita outro. Por isso todo lote recusado
+ * passa primeiro pelo texto-sonda: sonda aceita, segue a caça ao culpado; sonda
+ * **também** recusada, o problema é da instalação — nada é marcado, o ciclo
+ * registra um `RagConfigError` e encerra, e o `--once` sai com 1. A prova vem
+ * **depois** do 400 e a cada lote recusado, e não de "já aceitou algo neste
+ * ciclo": o 400 sistêmico pode começar no meio dele. Custa uma requisição de
+ * poucos tokens por lote recusado, que em regime normal é uma vez por texto
+ * venenoso — depois de marcado ele não volta.
+ *
  * Erro que **não** é de conteúdo encerra a etapa: o `ClienteHttp` já tentou de
  * novo com recuo antes de chegar aqui, então insistir nos lotes seguintes só
- * queimaria requisição. A rodada seguinte retoma de onde parou, porque o que foi
- * gravado ficou gravado.
+ * queimaria requisição. A rodada seguinte retoma de onde parou: o que foi gravado
+ * ficou gravado, e o que não foi — a fatia que falhou **e** os lotes que nem
+ * saíram — é devolvido à fila (`devolverReservas`) em vez de ficar reservado por
+ * quem já desistiu dele. O mesmo vale para a parada pedida entre dois lotes.
  *
  * Cada chamada leva o **seu** prazo: `AbortSignal.timeout` por lote, e não um
  * para a etapa inteira, senão o último lote herdaria o tempo que os anteriores
@@ -538,12 +689,61 @@ async function embutirPendentes(entrada: {
   recusas: RecusasRag;
   resultado: CycleResult;
   timeoutMs: number;
-}): Promise<{ gravados: number; processados: number; tokens: number }> {
+  deveParar?: (() => boolean) | undefined;
+  agora: () => Date;
+  /** O relógio de **antes** da leitura que reservou: a reserva vence daí a `RESERVA_MS`. */
+  reservadoEm: number;
+}): Promise<{ gravados: number; processados: number; tokens: number; interrompido: boolean }> {
   const { ports, driver, modelo, espacoUuid, pendentes, recusas, resultado, timeoutMs } = entrada;
   let gravados = 0;
   let processados = 0;
   let tokens = 0;
   let inicio = 0;
+
+  // Quem já teve destino neste ciclo: vetor gravado ou recusa marcada. Quando a
+  // etapa desiste, todo o resto está reservado à toa e volta para a fila.
+  //
+  // Menos quando a etapa durou mais que a própria reserva (provedor segurando as
+  // chamadas até o prazo, lote após lote): **a reserva não tem dono**, a nossa já
+  // venceu sozinha, e o que estiver reservado agora pode ser da réplica vizinha —
+  // devolver baixaria a reserva dela, e as duas pagariam pelo mesmo embedding.
+  const resolvidos = new Set<RagPendingText>();
+  const desistir = async (interrompido: boolean) => {
+    if (entrada.agora().getTime() - entrada.reservadoEm < RESERVA_MS) {
+      await devolverReservas(
+        ports,
+        espacoUuid,
+        pendentes.filter((t) => !resolvidos.has(t)),
+      );
+    }
+    return { gravados, processados, tokens, interrompido };
+  };
+
+  /**
+   * O 400 que acabou de chegar é do conteúdo? Pergunta ao provedor com o
+   * texto-sonda. `false` já deixa a falha registrada — a da instalação, ou a que
+   * derrubou a própria sonda — e, na dúvida, nenhuma marca permanente é gravada.
+   */
+  const recusaEhDoConteudo = async (recusa: Error): Promise<boolean> => {
+    try {
+      await driver.embedDocuments(modelo, [TEXTO_SONDA], AbortSignal.timeout(timeoutMs));
+      return true;
+    } catch (erro) {
+      registrarFalha(
+        ports,
+        resultado,
+        erro instanceof RagInputTooLongError
+          ? new RagConfigError(
+              'o provedor respondeu 400 também ao texto-sonda: o problema não é o conteúdo ' +
+                'das skills, é a requisição (intermediário ou endereço em ' +
+                'RAG_<DRIVER>_BASE_URL, contrato da API, conta). Nenhum texto foi marcado ' +
+                `como recusado. Resposta do provedor: ${recusa.message}`,
+            )
+          : erro,
+      );
+      return false;
+    }
+  };
 
   for (const grupo of lotes(
     modelo,
@@ -554,21 +754,29 @@ async function embutirPendentes(entrada: {
     const fatia = pendentes.slice(inicio, inicio + grupo.length);
     inicio += grupo.length;
 
+    if (entrada.deveParar?.()) return desistir(true);
+
     try {
       const vetores = await driver.embedDocuments(modelo, grupo, AbortSignal.timeout(timeoutMs));
       gravados += await gravarVetores(ports, espacoUuid, fatia, vetores);
+      for (const pendente of fatia) resolvidos.add(pendente);
       processados += fatia.length;
       tokens += estimarTokens(fatia);
       continue;
     } catch (erro) {
       if (!(erro instanceof RagInputTooLongError)) {
         registrarFalha(ports, resultado, erro);
-        return { gravados, processados, tokens };
+        return desistir(false);
       }
+      // Antes de caçar o culpado, a prova de que há um: sem ela, o um a um
+      // queimaria uma requisição por texto num erro que não é de texto nenhum, e
+      // marcaria todos.
+      if (!(await recusaEhDoConteudo(erro))) return desistir(false);
       // Lote de um texto só: o culpado já está identificado, e reenviá-lo seria
       // pagar por um erro garantido.
       if (fatia.length === 1) {
         await marcarRecusado(ports, recusas, espacoUuid, fatia[0]!, erro, resultado);
+        resolvidos.add(fatia[0]!);
         continue;
       }
     }
@@ -576,6 +784,7 @@ async function embutirPendentes(entrada: {
     // Algum texto deste lote o provedor não aceita. Reenviar um por um acha
     // qual — e texto sozinho não deixa o driver dividir o lote outra vez.
     for (const [i, pendente] of fatia.entries()) {
+      if (entrada.deveParar?.()) return desistir(true);
       try {
         const vetores = await driver.embedDocuments(
           modelo,
@@ -583,19 +792,99 @@ async function embutirPendentes(entrada: {
           AbortSignal.timeout(timeoutMs),
         );
         gravados += await gravarVetores(ports, espacoUuid, [pendente], vetores);
+        resolvidos.add(pendente);
         processados += 1;
         tokens += estimarTokens([pendente]);
       } catch (erro) {
         if (!(erro instanceof RagInputTooLongError)) {
           registrarFalha(ports, resultado, erro);
-          return { gravados, processados, tokens };
+          return desistir(false);
         }
         await marcarRecusado(ports, recusas, espacoUuid, pendente, erro, resultado);
+        resolvidos.add(pendente);
       }
     }
   }
 
-  return { gravados, processados, tokens };
+  return { gravados, processados, tokens, interrompido: false };
+}
+
+/**
+ * Devolve à fila o que o ciclo reservou e não resolveu.
+ *
+ * Roda dentro do tratamento de outro erro (ou do encerramento): falhar aqui não
+ * pode escondê-lo, e a reserva vence sozinha de qualquer jeito — o prazo continua
+ * sendo a rede de segurança. Mas a falha vai para o log.
+ *
+ * Devolve **já**, inclusive no limite de taxa: adiar a volta destes textos não
+ * pouparia o provedor — o ciclo seguinte reservaria os textos seguintes e bateria
+ * nele do mesmo jeito — e, com a fila toda adiada, o estado publicado voltaria a
+ * dizer "sem erro" com o acervo sem vetor. Quem espera o `Retry-After` é o
+ * `ClienteHttp`, dentro do prazo da chamada.
+ */
+async function devolverReservas(
+  ports: IndexerPorts,
+  espacoUuid: string,
+  textos: readonly RagPendingText[],
+): Promise<void> {
+  if (!ports.releaseRagTextReservations || textos.length === 0) return;
+  try {
+    const devolvidos = await ports.releaseRagTextReservations(
+      espacoUuid,
+      textos.map((t) => t.sha256),
+    );
+    if (devolvidos > 0) {
+      ports.log(`[indexer] ${devolvidos} textos devolvidos à fila: voltam no ciclo seguinte`);
+    }
+  } catch (falha) {
+    ports.log(
+      `[indexer] não deu para devolver os textos à fila ` +
+        `(${falha instanceof Error ? falha.message : String(falha)}); ` +
+        `eles voltam sozinhos em até ${RESERVA_MS / 60_000} min`,
+    );
+  }
+}
+
+/**
+ * Devolve skills reservadas à fila de refatiar.
+ *
+ * Não lança, pelo mesmo motivo de `devolverReservas`. A skill que não volta por
+ * aqui volta quando a reserva dela vencer (migration `reserva-de-skills-com-prazo`)
+ * — nada se perde, mas o log deve a verdade a quem espera vê-la na rodada
+ * seguinte. **Era** `.catch(() => {})`, ao lado de um comentário que dizia "nada
+ * se perde" quando a devolução tinha acabado de falhar.
+ */
+async function devolverSkills(ports: IndexerPorts, uuids: readonly string[]): Promise<void> {
+  for (const uuid of uuids) {
+    try {
+      await ports.releaseStaleSkill(uuid);
+    } catch (falha) {
+      ports.log(
+        `[indexer] não deu para devolver a skill ${uuid} à fila ` +
+          `(${falha instanceof Error ? falha.message : String(falha)}): ` +
+          'ela volta sozinha quando a reserva vencer',
+      );
+    }
+  }
+}
+
+/**
+ * Os três campos do erro no estado publicado, **sempre juntos**.
+ *
+ * O painel resume a chave pela classe e mostra a mensagem logo abaixo: classe de
+ * um erro com mensagem de outro — ou mensagem sem classe, que ele lê como estado
+ * de indexador antigo — faria a tela se desmentir. Todo ponto que publica estado
+ * passa por aqui ou escreve os três à mão.
+ */
+function erroPublicado(
+  resultado: CycleResult,
+  agora: () => Date,
+): { lastError: string | null; lastErrorKind: RagErrorKind | null; lastErrorAt: string | null } {
+  return {
+    lastError: resultado.lastError,
+    lastErrorKind: resultado.lastErrorKind,
+    lastErrorAt: resultado.lastError ? agora().toISOString() : null,
+  };
 }
 
 /**
@@ -649,6 +938,9 @@ function estimarTokens(textos: readonly RagPendingText[]): number {
 function registrarFalha(ports: IndexerPorts, resultado: CycleResult, erro: unknown): void {
   resultado.erros += 1;
   resultado.lastError = erro instanceof Error ? erro.message : String(erro);
+  // A mensagem é para o operador; a classe é para o painel. `null` quando o erro
+  // não é do pacote do RAG — falha ao gravar o vetor, por exemplo.
+  resultado.lastErrorKind = ragErrorKind(erro);
 
   // Chave recusada ou configuração errada: insistir neste ciclo só queima
   // requisição. A cota esgotada zera à meia-noite do horário do Pacífico.
@@ -663,14 +955,18 @@ function registrarFalha(ports: IndexerPorts, resultado: CycleResult, erro: unkno
 }
 
 /**
- * Tira o texto da fila de vez — é o que a §7 promete.
+ * Tira o texto da fila de vez — é o que a §7 promete. Quem chama já tem a prova
+ * de que o problema é o conteúdo (o texto-sonda foi aceito depois do 400).
  *
  * A marca vai para o banco (`rag_text_status`), que é o que a faz sobreviver ao
- * reinício do container e valer para todas as réplicas; a lista em memória fica
- * como rede de segurança. Falhar ao marcar **não** invalida a recusa deste
- * processo: o texto segue fora da fila enquanto ele viver, e o log diz que a
- * gravação não passou — engolir a falha é de propósito, porque isto roda dentro
- * do tratamento de outro erro e um segundo erro aqui esconderia o primeiro.
+ * reinício do container e valer para todas as réplicas. A lista em memória é a
+ * rede de segurança, e por isso só entra nela a recusa que o banco **não**
+ * guardou — a porta não existe, ou a gravação falhou: o texto segue fora da fila
+ * enquanto o processo viver, e o log diz que a gravação não passou. Engolir a
+ * falha é de propósito, porque isto roda dentro do tratamento de outro erro e um
+ * segundo erro aqui esconderia o primeiro. A recusa que o banco guardou não fica
+ * na memória: quem a desfaz é o reparo do painel (`clearRagRefusals`), e este
+ * processo tem de enxergar o texto de volta na fila.
  */
 async function marcarRecusado(
   ports: IndexerPorts,
@@ -680,7 +976,6 @@ async function marcarRecusado(
   erro: Error,
   resultado: CycleResult,
 ): Promise<void> {
-  recusas.marcar(espacoUuid, pendente.sha256);
   resultado.textosRecusados += 1;
 
   // O hash curto é o que permite achar o texto no banco sem despejar no log
@@ -691,14 +986,19 @@ async function marcarRecusado(
       `não será tentado de novo: ${erro.message}`,
   );
 
-  try {
-    await ports.markRagTextRefused?.(espacoUuid, pendente.sha256, erro.message);
-  } catch (falha) {
-    ports.log(
-      `[indexer] não deu para marcar o texto ${hash} como recusado no banco: ` +
-        `${falha instanceof Error ? falha.message : String(falha)}`,
-    );
+  let noBanco = false;
+  if (ports.markRagTextRefused) {
+    try {
+      await ports.markRagTextRefused(espacoUuid, pendente.sha256, erro.message);
+      noBanco = true;
+    } catch (falha) {
+      ports.log(
+        `[indexer] não deu para marcar o texto ${hash} como recusado no banco: ` +
+          `${falha instanceof Error ? falha.message : String(falha)}`,
+      );
+    }
   }
+  if (!noBanco) recusas.marcar(espacoUuid, pendente.sha256);
 }
 
 /**
@@ -743,6 +1043,7 @@ export async function runOnce(
     textosRecusados: 0,
     erros: 0,
     lastError: null,
+    lastErrorKind: null,
     continuar: true,
     space: null,
   };
@@ -756,6 +1057,9 @@ export async function runOnce(
     // Sem a migration ou desligado, o modo único não tem o que esperar.
     if (ultimo.state !== 'ok' && ultimo.state !== 'sem-chave') break;
     if (!ultimo.continuar) break;
+    // Parada pedida com a rodada já terminada: não começa outra. Quem chama sabe
+    // que houve sinal, e é ele quem decide o código de saída.
+    if (options.deveParar?.()) break;
     // Terminou quando uma rodada não achou mais nada para fazer. Recusar também
     // é andar: a fila encurtou, e a rodada seguinte alcança quem estava atrás.
     //

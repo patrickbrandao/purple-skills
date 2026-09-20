@@ -6,9 +6,10 @@ import {
   deleteSkill,
   getSkillDetail,
   getVirtualMcp,
-  listFiles,
+  listSkillGrants,
   listSkills,
   listTags,
+  previewSetFilesDeletions,
   readFile,
   recordSkillAccess,
   removeSkillGrant,
@@ -34,12 +35,48 @@ import {
   type AccessLevel,
   type SkillSummary,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, levelFrom, loadSkill, viewerOf } from './access.js';
+import { accountByEmail, assertAccess, grantOf, levelFrom, loadSkill, viewerOf } from './access.js';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
 
 /** Teto do payload base64 do `set_files_bulk` (~32 MB codificados). */
 const MAX_ZIP_BASE64_CHARS = readIntEnv('MCP_MAX_ZIP_BASE64', 32 * 1024 * 1024, { min: 1024 });
+
+/**
+ * Teto do texto devolvido **dentro** do resultado: `get_file` e o `skillMd` do
+ * `get_skill`. A mesma variável do mcp-public, pelo mesmo motivo — um arquivo de
+ * texto chega a `ZIP_MAX_UNCOMPRESSED_BYTES` (256 MB), e cada leitura o
+ * materializa de novo como string UTF-16 e como JSON-RPC —, e que aqui não
+ * existia: o teto nasceu só no `get_skill_file` do público (relatório 032 da
+ * auditoria de 2026-09-19). A diferença é a saída: este servidor **não tem** rota
+ * de download, então acima do teto a resposta recusa dizendo tamanho e tipo,
+ * como já faz com binário.
+ */
+const MAX_TEXTO_INLINE_BYTES = readIntEnv('MCP_MAX_FILE_TEXT_BYTES', 4 * 1024 * 1024, {
+  min: 1024,
+});
+
+/**
+ * O corpo do SKILL.md como o `get_skill` o devolve: sem frontmatter, e só
+ * quando cabe no resultado. Acima do teto o campo `skillMd` não vai, e no lugar
+ * dele vão o tamanho e o porquê — os metadados e a lista de arquivos, que são o
+ * que o agente precisa para editar, seguem completos. Mede o texto gravado, não
+ * o `sizeBytes` declarado (a lição do `004`), e antes do `stripFrontmatter`, que
+ * já seria mais uma cópia.
+ */
+function corpoDoSkillMd(
+  skillMd: string,
+): { skillMd: string } | { skillMdBytes: number; skillMdOmitido: string } {
+  const bytes = Buffer.byteLength(skillMd, 'utf8');
+  if (bytes <= MAX_TEXTO_INLINE_BYTES) return { skillMd: stripFrontmatter(skillMd) };
+  return {
+    skillMdBytes: bytes,
+    skillMdOmitido:
+      `O SKILL.md tem ${bytes} bytes e passa do teto de ${MAX_TEXTO_INLINE_BYTES} para vir no ` +
+      'resultado (MCP_MAX_FILE_TEXT_BYTES). Os demais campos estão completos; para ler o corpo, ' +
+      'baixe o pacote da skill pelo painel.',
+  };
+}
 
 const SOURCE = 'mcp-admin' as const;
 
@@ -128,37 +165,6 @@ const catalogsOf = (skill: SkillSummary) =>
 
 /** Quantos caminhos a recusa do `set_files_bulk` lista antes de resumir o resto. */
 const MAX_CAMINHOS_NA_RECUSA = 20;
-
-/**
- * O que um `set_files_bulk` com `replace` removeria: o que já está gravado e
- * não veio no .zip.
- *
- * Repete a régua do `setFiles` no banco, que apaga por
- * `lower(relative_path) <> ALL(<caminhos enviados> + SKILL.md)`: a comparação
- * ignora a caixa e o SKILL.md nunca sai. `normalizeRelativePath` é aplicado de
- * novo porque o banco também o aplica — um `pasta/skill.md` que o `extractZip`
- * desembrulhou para `skill.md` só vira `SKILL.md` aí.
- *
- * É uma prévia, não uma garantia: a skill não fica trancada entre esta leitura
- * e a transação — um `SELECT … FOR UPDATE` em `skills` daria deadlock com o
- * gatilho `files_rag_stale_trg`. Serve para o agente decidir com a lista na
- * mão, e conferir o número na segunda chamada é o que recusa a remoção quando
- * a árvore mudou no meio.
- */
-async function aRemover(
-  skillUuid: string,
-  enviados: readonly { relativePath: string }[],
-): Promise<string[]> {
-  const chegando = new Set(
-    enviados.map((file) =>
-      (normalizeRelativePath(file.relativePath) ?? file.relativePath).toLowerCase(),
-    ),
-  );
-  const atuais = await listFiles(skillUuid);
-  return atuais
-    .map((file) => file.relativePath)
-    .filter((path) => !isSkillMd(path) && !chegando.has(path.toLowerCase()));
-}
 
 /** A recusa da remoção: o que sairia e as duas saídas, com o número a repetir. */
 function recusaDeRemocao(removidos: readonly string[], confirmado: number | undefined): string {
@@ -326,8 +332,10 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         isActive: detail.isActive,
         ...accessOf(detail),
         // A lista de concessões só para quem as administra (decisão 11).
+        // `isActive: false` é a conta desativada: a linha fica, inerte, volta a
+        // valer se a conta for reativada — e `unshare_skill` a revoga assim mesmo.
         grants: canManage(detail.access)
-          ? detail.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level }))
+          ? detail.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
           : undefined,
         mcps: mcpsOf(detail),
         catalogs: catalogsOf(detail),
@@ -341,8 +349,9 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           sizeBytes: file.sizeBytes,
           isText: file.isText,
         })),
-        // Os metadados estão nos campos acima; aqui vai só o corpo do prompt.
-        skillMd: stripFrontmatter(detail.skillMd),
+        // Os metadados estão nos campos acima; aqui vai só o corpo do prompt —
+        // `skillMd`, ou `skillMdBytes` + `skillMdOmitido` quando ele não cabe.
+        ...corpoDoSkillMd(detail.skillMd),
       });
     },
 
@@ -357,6 +366,16 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       if (!file) return fail(`Arquivo não encontrado em "${args.slug}": ${path}`);
       if (!file.isText) {
         return fail(`"${path}" é binário (${file.mimeType}, ${file.sizeBytes} bytes) e não pode ser lido como texto.`);
+      }
+      // Texto grande demais para o resultado: recusa com tamanho e tipo, como o
+      // binário acima — aqui não há URL de download para onde mandar. O tamanho
+      // é o dos bytes lidos, não o `sizeBytes` gravado (a lição do `004`).
+      if (file.buffer.byteLength > MAX_TEXTO_INLINE_BYTES) {
+        return fail(
+          `"${path}" tem ${file.buffer.byteLength} bytes (${file.mimeType}) e passa do teto de ` +
+            `${MAX_TEXTO_INLINE_BYTES} para vir no resultado (MCP_MAX_FILE_TEXT_BYTES). ` +
+            'Para lê-lo, baixe o pacote da skill pelo painel.',
+        );
       }
 
       // O SKILL.md é montado na hora: o frontmatter sai dos metadados da skill.
@@ -447,7 +466,9 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       // texto exato em minúsculas, então `"./SKILL.md"` não é o arquivo
       // principal para ele — mas `setFile` canoniza para `SKILL.md` na hora de
       // gravar. Decidir com o caminho cru gravava o frontmatter enviado na
-      // linha do SKILL.md, e nem `edit` deveria mexer em metadados (é `manage`).
+      // linha do SKILL.md — que guarda só o corpo: o bloco não redefinia
+      // metadado nenhum (eles moram em colunas), mas ficava fora da vista e
+      // dentro do índice de busca e do texto do RAG.
       const path = normalizeRelativePath(args.path);
       if (!path) return fail(`Caminho inválido: "${args.path}"`);
 
@@ -467,7 +488,8 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       const skill = await skillWith(args.slug, 'edit');
 
       // Recusa antes de decodificar: o único teto até aqui era o limite do corpo
-      // JSON (64 MB), e um .zip desse tamanho descomprime para muito mais.
+      // JSON (`MCP_JSON_LIMIT`, 48 MB por padrão), e um .zip desse tamanho
+      // descomprime para muito mais.
       if (args.zip_base64.length > MAX_ZIP_BASE64_CHARS) {
         return fail(
           `zip_base64 grande demais (limite de ~${Math.round(MAX_ZIP_BASE64_CHARS / (1024 * 1024))} MB codificados).`,
@@ -502,8 +524,24 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       // deixa de bater e a remoção é recusada de novo, em vez de levar arquivo
       // que ninguém viu. Só o caso destrutivo pede confirmação: um .zip que não
       // remove nada continua passando na primeira chamada, como antes.
+      //
+      // Quem diz o que sairia é o banco, com o mesmo predicado do `DELETE` de
+      // `setFiles` (`previewSetFilesDeletions`): a caixa é dobrada pela `lower()`
+      // do Postgres dos dois lados e o SKILL.md nunca sai. A conta era refeita
+      // aqui com o `toLowerCase()` do JS, que discorda do banco em `İ` — a
+      // recusa anunciava uma remoção que não acontece, e o número que ela
+      // induzia dava 409 para sempre (relatório 017 da auditoria de 2026-09-19).
+      // Continua sendo prévia, não garantia: a skill não fica trancada entre
+      // esta leitura e a transação (um `SELECT … FOR UPDATE` em `skills` daria
+      // deadlock com o gatilho `files_rag_stale_trg`), e é por isso que o número
+      // é conferido de novo lá dentro, em `expectedDeletions`.
       const replace = args.replace !== false;
-      const removidos = replace ? await aRemover(skill.uuid, extracted) : [];
+      const removidos = replace
+        ? await previewSetFilesDeletions(
+            skill.uuid,
+            extracted.map((file) => file.relativePath),
+          )
+        : [];
       if (removidos.length > 0 && args.confirm_deletions !== removidos.length) {
         return fail(recusaDeRemocao(removidos, args.confirm_deletions));
       }
@@ -558,11 +596,17 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
     async delete_file(args: { slug: string; path: string }): Promise<ToolResult> {
       await skillWith(args.slug, 'edit');
 
-      if (isSkillMd(args.path)) {
+      // Normaliza antes de decidir, como `get_file` e `set_file`: com o caminho
+      // cru, `"./SKILL.md"` passava por aqui e quem recusava era o banco — sem
+      // dano, mas sem dizer ao agente qual é a saída.
+      const path = normalizeRelativePath(args.path);
+      if (!path) return fail(`Caminho inválido: "${args.path}"`);
+
+      if (isSkillMd(path)) {
         return fail(`O arquivo ${SKILL_MD} não pode ser removido — use set_file para sobrescrevê-lo.`);
       }
-      await deleteFile(args.slug, args.path, SOURCE, actor);
-      return text(`Arquivo removido de "${args.slug}": ${args.path}`);
+      await deleteFile(args.slug, path, SOURCE, actor);
+      return text(`Arquivo removido de "${args.slug}": ${path}`);
     },
 
     async delete_skill(args: { slug: string; confirm: boolean }): Promise<ToolResult> {
@@ -585,11 +629,12 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} a skill "${skill.slug}".`);
     },
 
+    /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
     async unshare_skill(args: { slug: string; email: string }): Promise<ToolResult> {
       const skill = await skillWith(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
-      await removeSkillGrant(skill.slug, target.uuid, SOURCE, actor);
-      return text(`${target.email} perdeu o acesso à skill "${skill.slug}".`);
+      const grant = grantOf(await listSkillGrants(skill.uuid), args.email, 'nesta skill');
+      await removeSkillGrant(skill.slug, grant.userUuid, SOURCE, actor);
+      return text(`${grant.email} perdeu o acesso à skill "${skill.slug}".`);
     },
 
     async transfer_skill(args: { slug: string; email: string }): Promise<ToolResult> {

@@ -33,6 +33,20 @@ const PLACEHOLDERS =
   /^(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+|undefined)$/i;
 
 /**
+ * Diz se o valor é um dos placeholders do `.env.example`, sem lançar.
+ *
+ * Existe para quem precisa tratar o placeholder como **ausência** em vez de
+ * erro de boot — hoje, as chaves do RAG (`readApiKeyEnv`, em
+ * `@purple-skills/rag`), que saem do `.env.example` com `CHANGE_ME`: elas não
+ * podem derrubar serviço nenhum (ver `assertNotPlaceholder`), mas também não
+ * podem ser enviadas a um provedor como se fossem credencial. A lista é a mesma
+ * do `assertNotPlaceholder`, de propósito: uma só, em par com o `.gitleaks.toml`.
+ */
+export function isPlaceholder(value: string): boolean {
+  return PLACEHOLDERS.test(value.trim());
+}
+
+/**
  * Recusa o placeholder do `.env.example`; devolve o próprio valor quando serve.
  *
  * Um placeholder é público no repositório aberto: aceitá-lo como credencial
@@ -47,7 +61,7 @@ const PLACEHOLDERS =
  */
 export function assertNotPlaceholder(name: string, value: string): string {
   const limpo = value.trim();
-  if (PLACEHOLDERS.test(limpo)) {
+  if (isPlaceholder(limpo)) {
     throw new Error(
       `${name} está com o placeholder do .env.example ("${limpo}"), que é público no ` +
         'repositório: qualquer pessoa se autenticaria nesta instalação. Gere um valor ' +

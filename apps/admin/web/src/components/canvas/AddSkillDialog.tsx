@@ -128,6 +128,7 @@ export function AddSkillDialog({
                   type="checkbox"
                   className="mt-1"
                   checked={ports.includes(port)}
+                  disabled={busy}
                   onChange={(event) =>
                     setPorts((current) => (event.target.checked ? [...current, port] : current.filter((item) => item !== port)))
                   }

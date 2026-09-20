@@ -11,8 +11,9 @@ export function Finale() {
             Rode o seu <span className="grad-text">Purple Skills.</span>
           </h2>
           <p>
-            Cinco containers, um Postgres e nenhuma conta em nuvem. Em menos de um minuto você tem
-            homepage, catálogo, painel e os dois servidores MCP de pé — tudo sob o seu domínio.
+            Um <code className="mono">docker compose</code>, um Postgres e nenhuma conta em nuvem. Em
+            menos de um minuto você tem homepage, catálogo, painel e os dois servidores MCP de pé —
+            tudo sob o seu domínio.
           </p>
 
           <div className="code-card">
@@ -27,8 +28,17 @@ export function Finale() {
               {'\n'}
               <span className="k">git</span> clone {REPO}
               {'\n'}
-              <span className="k">cp</span> .env.example .env{'   '}
-              <span className="c">{'# ADMIN_PASSWORD, MCP_ADMIN_TOKEN'}</span>
+              <span className="k">cd</span> purple-skills
+              {'\n'}
+              <span className="k">cp</span> .env.example .env
+              {'\n'}
+              {/* Os quatro, como no README: o painel e o mcp-admin recusam subir
+                  com o placeholder, que é público no repositório. A lista é
+                  conferida contra o `.env.example` em
+                  `apps/homepage/src/afirmacoes.test.ts`. */}
+              <span className="c">{'# troque os CHANGE_ME: POSTGRES_PASSWORD, ADMIN_PASSWORD,'}</span>
+              {'\n'}
+              <span className="c">{'# ADMIN_SESSION_SECRET e MCP_ADMIN_TOKEN (openssl rand -hex 32)'}</span>
               {'\n'}
               <span className="k">docker</span> compose run --rm migrate
               {'\n'}

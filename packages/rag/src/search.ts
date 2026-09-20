@@ -57,7 +57,7 @@ export type SemanticSearchOptions = {
   driver: EmbeddingDriver | null | DriverResolver;
   /** Prazo do embedding da consulta. */
   timeoutMs: number;
-  /** Quanto tempo a configuração fica em cache. Padrão: 10 s (§4.1). */
+  /** Quanto tempo a configuração fica em cache. Padrão: 10 s (§5). */
   cacheMs?: number;
   log?: (mensagem: string) => void;
   now?: () => number;

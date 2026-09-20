@@ -23,6 +23,8 @@ import {
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
+  RagQuotaError,
   RagRateLimitError,
   RagUnavailableError,
   type EmbeddingDriver,
@@ -30,7 +32,13 @@ import {
   type UsoDeTokens,
 } from './driver.js';
 import { BASE_URL_OPENAI, MODELOS_OPENAI } from './models.js';
-import { embutirEmLotes, retryAfterMs, ClienteHttp, type OpcoesHttp } from './http.js';
+import {
+  embutirEmLotes,
+  ocultarChave,
+  retryAfterMs,
+  ClienteHttp,
+  type OpcoesHttp,
+} from './http.js';
 
 export { BASE_URL_OPENAI };
 
@@ -152,8 +160,19 @@ export class OpenAIDriver implements EmbeddingDriver {
   private lancarPeloStatus(resposta: Response, corpo: OpenAIErrorBody): never {
     const codigo = corpo.error?.code ?? '';
     const tipo = corpo.error?.type ?? '';
-    const mensagem = corpo.error?.message ?? resposta.statusText;
+    // O 401 daqui ecoa a chave recebida — mascarada, ou inteira quando é curta —,
+    // e esta mensagem vai para o log e para o "Último erro" do painel.
+    const mensagem = ocultarChave(corpo.error?.message ?? resposta.statusText, this.apiKey);
     const detalhe = `${resposta.status}${tipo ? ` ${tipo}` : ''}: ${mensagem}`;
+
+    // O 403 de país ou região sem suporte recusa **de onde** vem o pedido, não
+    // a chave — como o 403 da Voyage. A política é a do erro de chave; o `kind`
+    // é outro, para o painel não mandar trocar uma chave que está boa.
+    if (resposta.status === 403 && codigo === 'unsupported_country_region_territory') {
+      throw new RagOriginError(
+        `a OpenAI recusou a origem da requisição (país ou região sem suporte), não a chave (${detalhe})`,
+      );
+    }
 
     if (resposta.status === 401 || resposta.status === 403) {
       throw new RagAuthError(`a OpenAI recusou a chave (${detalhe})`);
@@ -163,8 +182,12 @@ export class OpenAIDriver implements EmbeddingDriver {
     // crédito, e esperar não resolve. Cair no recuo aqui gastaria o ciclo
     // inteiro tentando de novo o que nunca vai passar, e o operador leria
     // "limite de taxa" quando o que falta é pagar.
+    //
+    // É `RagQuotaError`, subclasse de `RagConfigError`: a política de
+    // tentativas fica idêntica, e o painel distingue "sem crédito" de "modelo
+    // inexistente" pelo `kind`, sem ler esta mensagem.
     if (codigo === 'insufficient_quota' || tipo === 'insufficient_quota') {
-      throw new RagConfigError(
+      throw new RagQuotaError(
         `a conta da OpenAI está sem crédito; esperar não resolve (${detalhe})`,
       );
     }
@@ -178,7 +201,10 @@ export class OpenAIDriver implements EmbeddingDriver {
       throw new RagConfigError(`configuração recusada pela OpenAI (${detalhe})`);
     }
 
-    // Outro 400: quase sempre texto longo demais. Quem chamou divide o lote.
+    // Outro 400: quase sempre texto longo demais. Quem chamou divide o lote. O
+    // "quase" é de propósito: este balde também recebe o 400 que é da instalação
+    // (intermediário na URL base, contrato da API), e é por isso que o indexador
+    // confere com o texto-sonda antes de gravar uma recusa permanente.
     if (resposta.status === 400) {
       throw new RagInputTooLongError(`a OpenAI recusou o conteúdo enviado (${detalhe})`);
     }

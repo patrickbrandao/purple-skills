@@ -17,8 +17,28 @@ useDefault = true
 # arquivo: um segredo de verdade colado no .env.example continua sendo
 # apontado.
 #
-# - `${VAR}`: interpolação do compose. As formas `:-` e `:?msg` não entram aqui
-#   por valor — são dispensadas pela *linha*, no allowlist seguinte.
+# - Interpolação, ancorada no fim como os placeholders abaixo e pelo mesmo
+#   motivo: só as formas que comprovadamente não carregam valor. Era `^\$\{`
+#   solto, e `${VAR:-senha de verdade}` passava só por começar com `${` — a
+#   edição de um caractere que se faz para "funcionar sem .env" (`065`).
+#   - `${VAR}` e `${objeto.campo}`: referência pura, do compose ou de um
+#     template literal num log. A classe não aceita `:`, `-`, `?`, `=` nem `+`:
+#     nenhum operador que traga valor embutido cabe ali.
+#   - `${VAR:-}`: valor padrão **vazio**. Com qualquer coisa entre o `-` e o
+#     `}` deixa de casar e é apontado.
+#   - `${VAR:?mensagem}`: a captura para no primeiro espaço, e o `:?` obriga a
+#     variável a vir de fora — o texto é mensagem de erro, nunca vira valor.
+#   - `-}` sozinho: a chave YAML não está na regra, o casamento caiu no nome de
+#     *dentro* das chaves e o valor capturado é o resto. Com valor padrão
+#     embutido o resto é `-valor}`, que não casa aqui. A mesma situação com
+#     `:?` captura `?defina` e é apontada de propósito: o remédio é pôr a chave
+#     na regra, como `PGPASSWORD` — dispensar todo valor que comece por `?`
+#     calaria senha de verdade.
+#   - `$(comando`: substituição de comando em exemplo de documentação (gerar o
+#     token com `openssl rand`, no README); a captura para no primeiro espaço.
+#   Não há mais dispensa pela *linha*: ela valia para todas as regras, inclusive
+#   as padrão, e calava um token de verdade em qualquer linha que só
+#   mencionasse `${VAR:-`.
 # - `CHANGE_ME` e afins: placeholders do .env.example. Ancorados no fim de
 #   propósito, para casar o valor **inteiro**: sem o `$`, uma senha de verdade
 #   como `Exemplo2024!` seria silenciada só por começar com "exemplo". É a mesma
@@ -33,21 +53,14 @@ useDefault = true
 description = "Placeholders, interpolação do compose e DSN local de exemplo"
 regexTarget = "secret"
 regexes = [
-  '''^\$\{''',
+  '''^\$\{[A-Za-z0-9_.]+\}$''',
+  '''^\$\{[A-Za-z0-9_]+:-\}$''',
+  '''^\$\{[A-Za-z0-9_]+:\?[^}]*\}?$''',
+  '''^-\}$''',
+  '''^\$\([A-Za-z0-9_]+$''',
   '''^(?i)(CHANGE_ME|CHANGEME|REDACTED|PLACEHOLDER|EXEMPLO|EXAMPLE|TODO|xxx+|undefined)$''',
   '''^postgres$''',
 ]
-
-# Interpolação do compose com valor padrão ou mensagem de erro: a regra casa o
-# nome da variável de *dentro* das chaves, e o valor capturado é o resto —
-# `-}` em `${SMTP_URL:-}` ou `?defina` em `${POSTGRES_PASSWORD:?defina …}`.
-# Dispensar pela linha é mais estreito do que dispensar todo valor que comece
-# por `-` ou `?`: uma senha de verdade que comece com esses caracteres continua
-# sendo apontada.
-[[allowlists]]
-description = "Interpolação do compose: ${VAR:-} e ${VAR:?mensagem}"
-regexTarget = "line"
-regexes = ['''\$\{[A-Za-z0-9_]+:[?-]''']
 
 # --------------------------------------------------------------------------
 # O commit inicial publicou o .env.example com valores preenchidos em vez de
@@ -67,6 +80,19 @@ condition = "AND"
 commits = ["a01fdaf4d1b7b941ad9ee75761daeb293cdfcfe3"]
 paths = ['''^\.env\.example$''']
 
+# O mesmo commit inicial trazia, no docker-compose.yml, a senha do banco com
+# valor padrão embutido — `postgres`, o mesmo valor que o allowlist do topo já
+# dispensa por extenso —, solto e dentro do DSN. O `7fd36ca` trocou pela forma
+# `:?`, que obriga a variável a vir de fora. O que ficou no histórico passava
+# só por começar com `${` e, com a dispensa ancorada (`065`), voltaria a ser
+# apontado para sempre. Mesma forma da exceção acima: fechada no commit E no
+# arquivo.
+[[allowlists]]
+description = "docker-compose.yml de a01fdaf — histórico imutável; senha do banco com padrão embutido `postgres`"
+condition = "AND"
+commits = ["a01fdaf4d1b7b941ad9ee75761daeb293cdfcfe3"]
+paths = ['''^docker-compose\.yml$''']
+
 # O `b317e0f` trouxe um texto de ajuda do painel em que o nome da variável da
 # senha de bootstrap vinha seguido de dois-pontos e da palavra "saia", que a
 # regra abaixo lê como a senha. Não é segredo; o texto já foi reescrito, mas o
@@ -78,10 +104,16 @@ condition = "AND"
 commits = ["b317e0faf2901a1b982a1d6e604ff6a7cd4ab724"]
 paths = ['''^apps/admin/web/src/components/shell/Layout\.tsx$''']
 
+# `PGPASSWORD` e o prefixo `MCP_` do token do inspector não são variáveis do
+# `.env.example`: são os nomes com que o compose entrega ao container a senha do
+# banco e o token do inspector. Entram para que o casamento comece na chave YAML
+# e capture a interpolação inteira — sem eles cai dentro das chaves e captura só
+# o resto — e porque é com esses nomes que alguém colaria o valor direto no
+# compose. `keywords` é pré-filtro: nome sem keyword não chega a rodar.
 [[rules]]
 id = "purple-skills-env-secret"
 description = "Segredo do Purple Skills com valor preenchido (.env commitado?)"
-regex = '''(?i)\b(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|MCP_ADMIN_TOKEN|MCP_PUBLIC_KEY|POSTGRES_PASSWORD|OIDC_CLIENT_SECRET)\s*[:=]\s*["']?([^\s"'#]+)'''
+regex = '''(?i)\b(ADMIN_PASSWORD|ADMIN_SESSION_SECRET|MCP_ADMIN_TOKEN|MCP_PUBLIC_KEY|POSTGRES_PASSWORD|PGPASSWORD|OIDC_CLIENT_SECRET|(?:MCP_)?INSPECTOR_API_TOKEN)\s*[:=]\s*["']?([^\s"'#]+)'''
 secretGroup = 2
 keywords = [
   "admin_password",
@@ -89,7 +121,9 @@ keywords = [
   "mcp_admin_token",
   "mcp_public_key",
   "postgres_password",
+  "pgpassword",
   "oidc_client_secret",
+  "inspector_api_token",
 ]
 
 # As chaves do RAG ficam numa regra separada, com piso de tamanho, porque os

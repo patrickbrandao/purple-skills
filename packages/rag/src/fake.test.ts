@@ -23,6 +23,7 @@ import {
   VOYAGE_4_LITE,
 } from './models.js';
 import {
+  ragErrorKind,
   RagAuthError,
   RagConfigError,
   RagRateLimitError,
@@ -255,6 +256,50 @@ describe('o servidor falso fala os três protocolos', () => {
     servidor = await subirServidorFalso({ provedor: 'voyage', falha: 'ip-recusado' });
     const voyage = new VoyageDriver({ apiKey: 'k', baseUrl: servidor.baseUrl, maxRetries: 0 });
     await expect(voyage.embedQuery(VOYAGE_4_LITE, 'x')).rejects.toThrow(/a origem da requisição/);
+  });
+
+  /**
+   * O `kind` é o que o indexador publica e o painel lê para resumir a chave.
+   * Conferido aqui, contra o **corpo de erro de verdade** de cada API, porque é
+   * o formato que decide: o `insufficient_quota` e o 403 de região só existem no
+   * corpo, e um driver que lesse o campo errado publicaria `rate-limit` e `auth`.
+   */
+  it.each([
+    ['google', 'chave-invalida-400', 'auth'],
+    ['google', 'chave-invalida-401', 'auth'],
+    ['google', 'sem-permissao-403', 'auth'],
+    ['google', 'pre-condicao', 'config'],
+    ['google', 'modelo-inexistente', 'config'],
+    ['google', 'conteudo-recusado', 'input-too-long'],
+    ['google', 'limite-de-taxa', 'rate-limit'],
+    ['google', 'indisponivel', 'unavailable'],
+    ['openai', 'chave-invalida-401', 'auth'],
+    // País ou região sem suporte: quem foi recusado é a origem, não a chave.
+    ['openai', 'sem-permissao-403', 'origin'],
+    ['openai', 'sem-credito', 'quota'],
+    ['openai', 'modelo-inexistente', 'config'],
+    ['openai', 'conteudo-recusado', 'input-too-long'],
+    ['openai', 'limite-de-taxa', 'rate-limit'],
+    ['openai', 'indisponivel', 'unavailable'],
+    ['voyage', 'chave-invalida-401', 'auth'],
+    ['voyage', 'ip-recusado', 'origin'],
+    ['voyage', 'modelo-inexistente', 'config'],
+    ['voyage', 'conteudo-recusado', 'input-too-long'],
+    ['voyage', 'limite-de-taxa', 'rate-limit'],
+    ['voyage', 'indisponivel', 'unavailable'],
+  ] as const)('%s, "%s" → kind %s', async (provedor, falha, esperado) => {
+    servidor = await subirServidorFalso({ provedor, falha });
+    const opcoes = { apiKey: 'k', baseUrl: servidor.baseUrl, maxRetries: 0 };
+    const pedido =
+      provedor === 'google'
+        ? new GoogleDriver(opcoes).embedQuery(GEMINI_EMBEDDING_2, 'x')
+        : provedor === 'openai'
+          ? new OpenAIDriver(opcoes).embedQuery(TEXT_EMBEDDING_3_SMALL, 'x')
+          : new VoyageDriver(opcoes).embedQuery(VOYAGE_4_LITE, 'x');
+
+    const erro = await pedido.catch((e: unknown) => e);
+    expect(erro).toBeInstanceOf(Error);
+    expect(ragErrorKind(erro)).toBe(esperado);
   });
 
   it('uma falha que a API não tem falha alto, em vez de passar por engano', async () => {

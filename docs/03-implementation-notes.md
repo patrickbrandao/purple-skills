@@ -11,7 +11,7 @@ escolha teve de ser feita, mais os desvios conscientes.
 | Node.js (imagens) | `node:24-alpine` | LTS ativa no momento da implementação |
 | Postgres | `pgvector/pgvector:pg18-trixie` | definido na ideia original; `uuidv7()` nativo |
 | Express | 5.x | rotas com wildcard nomeado (`/files/*path`) |
-| React / Vite / Tailwind | 19 / 7 / 4 | Tailwind 4 via `@tailwindcss/vite`, sem `tailwind.config.js`. O `vite` **8** que aparece em `node_modules/` da raiz é dependência transitiva do Vitest, não a versão dos apps: os três declaram `^7.1.5` e o lock instala 7.3.6 por workspace |
+| React / Vite / Tailwind | 19 / 7 / 4 | Tailwind 4 via `@tailwindcss/vite`, sem `tailwind.config.js`. A raiz declara `vite ^7.1.5` junto do Vitest **de propósito**: sem isso o lock instalava o `vite` **8** do Vitest na raiz e o 7 aninhado por app, e os plugins hasteados na raiz (`@vitejs/plugin-react`, `@tailwindcss/vite`) resolviam `import "vite"` para o 8 — o que ligava o ramo rolldown/oxc do `plugin-react` dentro de um pipeline rollup e derrubava o `vite dev` com *Missing field `moduleType`*. Com a declaração, o lock hasteia um **único** `vite` 7.3.6, sem `rolldown` na árvore, e o Vitest roda sobre ele (relatório 052 da auditoria de 2026-09-19) |
 | MCP SDK | `@modelcontextprotocol/sdk` 1.x | `McpServer` + os três transportes |
 
 ## Workspaces e o `build` da raiz
@@ -39,10 +39,12 @@ mexe em pacote está em
 [Armadilhas medidas na revisão de 2026-09-18](#armadilhas-medidas-na-revisão-de-2026-09-18).
 
 O `indexer` é o membro fácil de esquecer da lista: é o único app **sem porta**
-(`02`, §1 e §12.5), sobe atrás do perfil `rag` do compose e não aparece em
-nenhuma tabela de portas. Ainda assim tem `build` próprio, `Dockerfile` e imagem no CI,
-então entra no `build` da raiz como os outros cinco — quem o omite não vê erro,
-só um `apps/indexer/dist` que nunca existiu.
+(`02`, §1 e §12.5) e não aparece em nenhuma tabela de portas. Ainda assim sobe no
+`up -d` como os outros (`02` §10) e tem `build` próprio, `Dockerfile` e imagem no
+CI, então entra no `build` da raiz como os outros cinco — quem o omite não vê
+erro, só um `apps/indexer/dist` que nunca existiu. **Era**, até a `beta.21`:
+~~"sobe atrás do perfil `rag` do compose"~~ — a linha do perfil está comentada
+no compose desde a `beta.22`.
 
 ## Migrations
 
@@ -94,8 +96,13 @@ O que os apps precisam saber das escritas e das consultas de
   (`listSkills`, `listAuditPage`, `listSkillAccesses`, `lookupUsers`); só os dois
   `%` das pontas seguem curinga — quem digitava `%` de propósito passa a
   procurar o caractere. O teto de 200 caracteres virou `SEARCH_QUERY_MAX_LENGTH`,
-  exportado de `@purple-skills/db`: o site e o mcp-public devem consumi-lo em vez
-  de repetir o número. Escapar **sem** indexar é regressão — as duas metades são
+  exportado de `@purple-skills/db`, e o site e o mcp-public o **consomem** em vez
+  de repetir o número: no corte (`consultaDaBusca`) e na frase "Acima de N
+  caracteres…" da descrição de `search_skills`. Até o relatório 037 da auditoria
+  de 2026-09-19 a exportação existia e ninguém a importava — o número vivia em
+  quatro lugares, e mudá-lo só no banco não teria efeito nenhum. Os testes dos
+  apps mockam o pacote com um teto **diferente** de 200, que é o que prova a
+  derivação. Escapar **sem** indexar é regressão — as duas metades são
   uma só mudança (ver as armadilhas).
 - **Termo de uma ou duas letras não tem índice possível**: o `pg_trgm` não extrai
   trigrama de `%ab%`. Em `audit_log` e `skill_accesses` o planejador acerta e
@@ -131,10 +138,22 @@ O que os apps precisam saber das escritas e das consultas de
   `or`), com **fallback `ILIKE`** em nome/descrição/slug para termos parciais —
   a extensão `pg_trgm` e um índice GIN trigram tornam isso barato de três letras
   para cima; o termo é literal e o caso de uma ou duas letras está em
-  [Banco de dados](#banco-de-dados).
+  [Banco de dados](#banco-de-dados). O `-excluir` vale só nesta perna: na busca
+  híbrida a vetorial não aplica predicado de texto, e a skill excluída pode
+  voltar como vizinha ([`14-rag.md`](14-rag.md) §12, relatório 062 da auditoria
+  de 2026-09-19).
 - O trigger de reindexação **pula** updates que não alteram `name`,
   `description` nem `search_vector` — o caso dos contadores —, evitando
-  recalcular o `tsvector` a cada acesso. Mudanças no `SKILL.md` reindexam
+  **recalcular** o `tsvector` a cada acesso. O que ele **não** evita é a
+  **reinserção no índice GIN**: `skills_score_idx` é por expressão sobre
+  `(view_count + download_count)`, então o incremento nunca é HOT, e toda
+  versão nova da linha entra de novo em todos os índices da tabela — inclusive
+  o GIN do `search_vector`, com o mesmo vetor de antes. Medido nesta rodada
+  (relatório 055 da auditoria de 2026-09-19): ~49 KB de WAL por incremento, 0 %
+  de HOT e um GIN que incha sozinho; os números e o desenho alternativo estão
+  em [`database/README.md`](../database/README.md), "Custo de escrita do
+  contador da skill". O índice ficou de propósito — sem ele a listagem padrão
+  do site e do painel fica de 2 a 3,5 vezes mais lenta. Mudanças no `SKILL.md` reindexam
   explicitamente pelo trigger de `files` (migration `0002`). O atalho original
   se baseava em `updated_at`, mas `now()` é constante dentro da transação, o
   que fazia a criação da skill indexar sem o corpo do SKILL.md.
@@ -147,7 +166,8 @@ desenho inteiro está em [`14-rag.md`](14-rag.md) e o resumo de decisão no `02`
 
 - **A extensão `vector` é criada em toda instalação.** A `020` roda sempre e faz
   `CREATE EXTENSION IF NOT EXISTS vector`; quem não configura driver nenhum fica
-  com as quatro tabelas `rag_*` vazias e a busca de antes. Não há migration
+  com as tabelas `rag_*` vazias (as quatro da `020` mais `rag_text_status`, da
+  `025`) e a busca de antes. Não há migration
   opcional no projeto, e uma extensão sem uso é mais barata que um caminho de
   schema que só metade das instalações tem.
 - **`packages/rag` não importa `@purple-skills/db`.** Ele recebe texto e devolve
@@ -180,13 +200,33 @@ desenho inteiro está em [`14-rag.md`](14-rag.md) e o resumo de decisão no `02`
   então não há `CASE` nem teto, e como `pos` é único não há empate novo entre
   páginas. Para o mesmo termo o número exibido **cresce** (era no máximo 120):
   é a correção, não regressão.
-- **Pendências registradas como pendência, não como decisão:** a marca de texto
-  que o provedor recusa vive **em memória do processo** — a porta
-  `markRagTextRefused` do indexador espera uma função que `@purple-skills/db`
-  ainda não tem, então reiniciar o container tenta o texto recusado uma vez mais;
-  não existe apagar os vetores de um espaço nem limpar texto ou vetor órfão; e
-  não há recorte de escopo da indexação (ligar vale para o acervo inteiro,
-  inclusive skill privada — `14` §4.1 e `02` §13).
+- **Pendências registradas como pendência, não como decisão:** não existe apagar
+  os vetores de um espaço; e não há recorte de escopo da indexação (ligar vale
+  para o acervo inteiro, inclusive skill privada — `14` §4.1 e `02` §13).
+  **Era**, até a `025`: ~~"a marca de texto que o provedor recusa vive em memória
+  do processo — a porta `markRagTextRefused` do indexador espera uma função que
+  `@purple-skills/db` ainda não tem, então reiniciar o container tenta o texto
+  recusado uma vez mais"~~ e ~~"nem limpar texto ou vetor órfão"~~. As duas
+  funções entraram com a `025` e o indexador já as usa: `markRagTextRefused`
+  grava a recusa em `rag_text_status`, e a fila deixa de devolver o texto mesmo
+  depois de um reinício; `collectOrphanRagTexts` apaga, no fim de cada ciclo, o
+  texto sem ocorrência, e a cascata leva os vetores dele.
+- **A fila de textos reserva o que entrega** (`025`): `listPendingRagTexts` com
+  `reserveMs` grava a reserva na mesma statement da leitura, o indexador pede
+  exatamente `TEXT_BATCH` (64) textos com `RESERVA_MS` de dez minutos, e a
+  reserva vence sozinha — indexador morto não estaciona a fila. São **três** as
+  portas que mexem nessa tabela, e todas seguem **opcionais** em `IndexerPorts`:
+  `markRagTextRefused`, `collectOrphanRagTexts` e `releaseRagTextReservations`.
+  É assim que o teste monta o ciclo, e sem elas a recusa morre com o processo,
+  os órfãos ficam e o lote que falhou só volta à fila no vencimento. A terceira
+  entrou depois, **sem migration** (relatório 024 da auditoria de 2026-09-19):
+  o ciclo que desiste — falha do provedor, recusa sem prova, parada pedida —
+  devolve à fila o que reservou e não resolveu, em vez de segurá-lo pelos dez
+  minutos; a etapa que passou de `RESERVA_MS` **não** devolve, porque a reserva
+  não tem dono e já pode ser da réplica vizinha. A memória do processo
+  (`RecusasRag`) deixou
+  de ser o mecanismo e virou rede de segurança, para quando a gravação da marca
+  falha.
 
 ## A consulta da busca é normalizada uma vez, no chamador
 
@@ -217,6 +257,24 @@ A regra "só o SKILL.md conta" foi aplicada de forma literal:
 | MCP `prompts/get` | `view_count` +1 |
 | MCP `get_skill_file` | não conta |
 | MCP `download_skill` | não conta (só devolve a URL; quem seguir o link conta) |
+
+O método importa: **`HEAD` não conta em nenhuma superfície** (relatório 066 da
+auditoria de 2026-09-19). Nenhuma rota registra `head`, e o Express 5 despacha o
+`HEAD` para o handler de `GET` — então as rotas anônimas do site e as de download
+do mcp-public trazem a guarda explícita: `HEAD` devolve os cabeçalhos do `GET` e
+mais nada. Não grava linha em `skill_accesses`, não soma contador e, no pacote,
+nem chega a listar os arquivos. Contar `HEAD` transformava `wget --spider`,
+monitor de disponibilidade e o gerenciador de download que pergunta antes de
+baixar em visita ou download de verdade, e inflava o score que ordena a lista de
+skills por padrão; no pacote, o servidor ainda lia e comprimia a skill inteira
+para jogar fora, sem a contrapressão que só existe quando o cliente recebe corpo.
+
+E a leitura que **não entrega o texto** também não conta: quando o SKILL.md
+passa de `MCP_MAX_FILE_TEXT_BYTES`, `get_skill` responde com os metadados e o
+link, e `prompts/get` e `resources/read`, com erro (relatório 032 da auditoria
+de 2026-09-19). Quem seguir
+o link conta na rota do arquivo — contar nas duas pontas daria duas
+visualizações por leitura.
 
 ## Ferramentas MCP além do contrato da spec
 
@@ -263,9 +321,17 @@ exige que ele exista). `replace: false` desliga a remoção, para o caso de só
 querer adicionar arquivos.
 
 **A remoção exige confirmação numérica (`011`).** Com `replace` ligado, a
-ferramenta calcula antes de gravar o que sairia — `listFiles` mais a mesma régua
-do banco (caixa ignorada, `SKILL.md` nunca sai) — e, se houver algo a remover,
-**recusa a chamada** listando os caminhos. Para gravar de fato, o agente repete
+ferramenta pergunta ao banco, antes de gravar, o que sairia —
+`previewSetFilesDeletions`, o **mesmo predicado** do `DELETE` de `setFiles`, com
+a `lower()` do Postgres dos dois lados e o `SKILL.md` fora da conta — e, se
+houver algo a remover, **recusa a chamada** listando os caminhos. **Era**, até o
+relatório 017 da auditoria de 2026-09-19: ~~"a ferramenta calcula antes de
+gravar o que sairia — `listFiles` mais a mesma régua do banco (caixa ignorada,
+`SKILL.md` nunca sai)"~~ — a régua refeita no JS dobrava a caixa com
+`toLowerCase()`, que discorda do banco em `İ` (dois code points no JS, um no
+libc): um .zip com `I.md` sobre um `İ.md` gravado anunciava uma remoção que não
+acontece, e o `confirm_deletions: 1` que a recusa induzia era 409 para sempre
+(medido contra o banco de teste, antes e depois). Para gravar de fato, o agente repete
 com `confirm_deletions: <n>`, o **número exato** de arquivos a remover, que só
 sai da recusa (ou de `get_skill`). Não é um `confirm: true` porque o acidente a
 evitar é o do agente que não olhou a árvore, e um booleano é justamente o campo
@@ -303,6 +369,18 @@ remover `a.md` levava junto um eventual `A.md`.
 
 - Cookie assinado com HMAC-SHA256, `httpOnly`, `SameSite=Lax`, TTL de 12h
   (configurável por `ADMIN_SESSION_TTL`). Sem session store, como pedido.
+- **A checagem de `Origin` das escritas compara nome e porta** (`csrfGuard`,
+  relatório 006 da auditoria de 2026-09-19). O `Lax` não separa portas do mesmo
+  host — "site" não inclui
+  porta, e cookie não é isolado por porta —, e `multipart/form-data` e POST sem
+  corpo não disparam preflight: nessas rotas a checagem é a barreira, não a
+  reserva. A origem própria é o `Host` (ou o `X-Forwarded-Host` de proxy
+  confiável) **com a porta**, ou a de `ADMIN_PUBLIC_URL`; `ADMIN_ALLOWED_ORIGINS`
+  casa pela origem inteira; o esquema fica com o `Sec-Fetch-Site`, que não
+  depende do `X-Forwarded-Proto`. Era comparação só de nome: uma página em outra
+  porta da mesma máquina escrevia no painel com o cookie da vítima. Proxy que
+  publica o painel numa porta que não repassa no `Host` precisa de
+  `ADMIN_PUBLIC_URL`.
 - O payload passou a ser `{ sub, role, ver, exp }` com a entrega de contas
   (§7.1 das decisões). `role` e `ver` são **opcionais no tipo**: a sessão da
   senha única não os tem, e o middleware trata a ausência como "sessão legada",
@@ -318,7 +396,14 @@ remover `a.md` levava junto um eventual `A.md`.
 - A flag `Secure` **acompanha o protocolo da requisição** (respeitando
   `X-Forwarded-Proto` via `trust proxy`) em vez de `NODE_ENV`. Fixá-la em
   produção quebraria qualquer deploy HTTP interno; `ADMIN_COOKIE_SECURE`
-  permite forçar.
+  permite forçar. A variável é lida por `readBoolEnv` (`@purple-skills/shared`):
+  aceita `true`/`false` (também `1`/`0`, `yes`/`no`, `on`/`off`, em qualquer
+  caixa), vazia é o automático, e qualquer outro valor **derruba o boot**
+  (relatório 056 da auditoria de 2026-09-19). O leitor que havia no painel
+  devolvia `false` para tudo que não fosse
+  `true`/`1`, e como `false ?? req.secure` é `false`, um `TRUE` ou `yes`
+  destravava em silêncio justamente o cookie que o operador quis travar — pior
+  que não configurar nada. `OIDC_AUTO_PROVISION` passa pelo mesmo leitor.
 - **Sair mostra o spinner antes de navegar.** Com o Shell ainda montado,
   `navigate('/')` abria `/mcps`, cuja busca voltava 401 com o cookie já
   apagado. Como os ramos do `App` tinham o mesmo `ToastProvider` na raiz, o
@@ -382,8 +467,18 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
 - **Teto de upload é por requisição, não por arquivo.** `limits.fileSize` do
   multer vale por arquivo; com `upload.array('files', 50)` uma requisição
   bufferizava até 50 × o teto em memória. A recusa vem do `Content-Length`,
-  antes do multer, com folga para o envelope multipart; quem envia sem
-  `Content-Length` ainda esbarra na soma conferida depois do upload.
+  antes do multer, com folga para o envelope multipart; ~~quem envia sem
+  `Content-Length` ainda esbarra na soma conferida depois do upload~~.
+  **Era** assim até o relatório 012 da auditoria de 2026-09-19: a soma
+  conferida depois chega tarde para a
+  memória, porque num envio `chunked` os 50 arquivos já tinham sido
+  bufferizados inteiros (até ~3,2 GB, contra 1,5 GB de `mem_limit`). Agora o
+  storage do upload (`budgetedMemoryStorage`, em `apps/admin/src/uploads.ts`)
+  soma os bytes **a cada pedaço** e devolve 413 no que estoura: o multer desliga
+  o parser, descarta o resto do corpo sem guardar e só então responde. Não é
+  411 de propósito — proxy que reempacota o corpo em `chunked` é envio legítimo.
+  O multer também passou a limitar arquivos (50), campos de texto (20) e partes
+  por requisição: o padrão do busboy é `Infinity`, e cada campo guarda até 1 MB.
 - **Reemissão do cookie na troca de senha.** Trocar a senha incrementa
   `token_version`, o que derrubaria a sessão de quem acabou de trocá-la. A rota
   reemite o cookie com a versão nova.
@@ -396,15 +491,38 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
   do sino, o menu da conta e a paleta fazem as duas coisas num clique e
   abrem o login em `/?setup=1`, já no cadastro. `/account` também fica
   fechada nessa sessão: sem conta, trocar a senha e emitir chave só dariam 400.
+  **O servidor acompanha** (relatório 001 da auditoria de 2026-09-19):
+  `POST /api/users` responde 400 na sessão de bootstrap, com qualquer papel. A
+  guarda era só de interface, e a consequência ia além de a sessão cair: a conta
+  criada ali é a **primeira**, fecha o `/api/setup` e o login pela
+  `ADMIN_PASSWORD`, e se não for `admin` deixa a instalação sem administrador —
+  observado em 16/09/2026. Nem como `admin` a rota aceita: a conta nasceria sem
+  o `onlyIfTableEmpty` do setup (`049`) e sem adotar os órfãos.
 - **O login não abre no cadastro por padrão**, mesmo com `users` vazia. A
-  sessão de bootstrap é o modo de quem não quer contas (§4.1 da spec), e o
-  cadastro esconderia o botão do SSO. Ele abre com `?setup=1` e continua a um
-  clique pelo link "Criar o primeiro administrador".
+  sessão de bootstrap é o modo de quem não quer contas (§4.1 da spec), ~~e o
+  cadastro esconderia o botão do SSO~~. Ele abre com `?setup=1` e continua a um
+  clique pelo link "Criar o primeiro administrador". **Era** também para não
+  esconder o botão do SSO, até o relatório 001 da auditoria de 2026-09-19: com
+  `users` vazia o SSO não entra mais — `resolveOidcUser` recusa o
+  auto-provisionamento enquanto não houver conta, porque um `membro` criado ali
+  trancava a instalação (`05` §2.3). O botão continua na tela: quem clica volta
+  ao login com a mensagem que aponta o link do cadastro, e é assim que quem
+  acabou de configurar o OIDC descobre a ordem certa.
 - **Token de redefinição em SHA-256, não scrypt.** São 32 bytes aleatórios e a
   busca é por igualdade exata do hash; não há entropia baixa a compensar.
 - **`registerFailedLogin`/`registerSuccessfulLogin` não tocam `updated_at`**
   (decisão do DBA): o campo continua significando "última alteração
-  administrativa da conta", não "última tentativa de login".
+  administrativa da conta", não "última tentativa de login". **O "Sair" também
+  não** (relatório 034 da auditoria de 2026-09-19): `endSession` revoga as
+  sessões por `updateUser(uuid, { bumpTokenVersion: true })`, e `updateUser`
+  deixa de carimbar quando o `bumpTokenVersion` é o **único** efeito da chamada
+  — movimento de sessão não é edição da ficha, e a data avançava a cada logout
+  sem linha de auditoria que a explicasse. Com qualquer campo da conta junto
+  (senha, papel, ativação, vínculo OIDC, `clearLoginLock`) o carimbo vale como
+  sempre, e `updateUser(uuid, {})` — o `PATCH` que não mudou nada — continua
+  carimbando, que é o que mantém o `SET` não vazio. Quem mandar outro movimento
+  de sessão por `updateUser` herda a regra; os `updated_at` que os logouts da
+  beta.22 já carimbaram ficam como estão.
 - **O login gasta scrypt mesmo sem conta** (`028`). A mensagem genérica não
   bastava: medido nesta árvore, e-mail sem conta respondia em 1,2 ms e e-mail com
   conta em 69,6 ms (scrypt de `PASSWORD_COST`, ~67 ms num Mac ARM), faixas
@@ -467,16 +585,52 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
   em vez de ser reetiquetado. Apagar a linha foi descartado: o `006` guarda a
   tentativa de propósito, e é por ela que se vê alguém pedindo a redefinição da
   senha de outra pessoa em série.
+- **O vínculo por SSO e a reativação gravam `user.link` e `user.activate`**
+  (relatório 003 da auditoria de 2026-09-19; a lista e o formato de cada linha
+  estão no `05` §2.8). O vínculo que descarta a senha temporária (relatório 002
+  da mesma auditoria) **não** grava `user.password` junto: aquela ação afirma que o próximo acesso
+  exige senha nova, e aqui a senha deixou de existir — a nota vai no
+  `target_label` do próprio `user.link`, que é a única pista de por que a conta
+  ficou sem senha local. `user.activate` segue o padrão direto de
+  `user.deactivate`; `user.link` é melhor esforço, e é isso que mantém o SSO de
+  pé se o painel novo subir contra um banco ainda sem a migration
+  `auditoria-de-vinculo-e-reativacao` (o `CHECK` recusa a ação, o login conclui
+  e a falha vai para o log).
 
 ## Armazenamento de arquivos
 
 - Texto vs. binário é decidido pelo **mime detectado por extensão** mais uma
-  checagem de bytes nulos — um `.md` com bytes nulos vai para `bytea`, não
-  para `text` (Postgres rejeitaria `\0` em `text`).
+  checagem de bytes nulos **e de UTF-8 válido** — um `.md` com bytes nulos vai
+  para `bytea`, não para `text` (Postgres rejeitaria `\0` em `text`), e um
+  `.csv` em Windows-1252 também: `toString('utf8')` não falha com byte
+  inválido, troca cada um por U+FFFD sem erro, e o original não voltava mais
+  (relatório 015 da auditoria de 2026-09-19). A régua é uma só,
+  `isTextualContent` do `shared`, usada pelo `extractZip` e pelo `fileColumns`
+  do banco; o que não passa é guardado byte a byte, com o mime da extensão e
+  `isText: false`. O **`SKILL.md` da raiz não tem essa saída** — binário, a
+  skill ficaria de corpo vazio para o MCP, a busca e o RAG —, então ele é
+  recusado com 400 nas três entradas: o `extractZip` (`ZipContentError`, que
+  cobre a importação, o upload de `.zip` e o `set_files_bulk`), o envio avulso
+  do painel (que decodifica o arquivo **antes** do banco, e por isso confere
+  antes do `toString`) e o próprio banco. O BOM é UTF-8 válido e fica onde está.
 - Caminhos passam por `normalizeRelativePath`, que rejeita `..`, caminhos
   absolutos e prefixos de drive do Windows.
-- Zips com uma **única pasta raiz** (o padrão de `zip -r skill.zip skill/`) têm
-  essa pasta removida; `__MACOSX`, `.DS_Store` e `Thumbs.db` são descartados.
+- Zips com uma **única pasta raiz que contém o `SKILL.md`** (o padrão de
+  `zip -r skill.zip skill/`, e o formato de todo pacote que o painel, o site e o
+  MCP público entregam: `<slug>/SKILL.md`) têm essa pasta removida; `__MACOSX`,
+  `.DS_Store` e `Thumbs.db` são descartados. A condição do `SKILL.md` — em
+  qualquer caixa, logo dentro da pasta — é o que separa **embrulho** de
+  **subpasta**. **Era**, até o relatório 075 da auditoria de 2026-09-19:
+  ~~"Zips com uma **única pasta raiz** (o padrão de `zip -r skill.zip skill/`)
+  têm essa pasta removida"~~, sem condição — um envio parcial
+  (`zip -r scripts.zip scripts/`) numa skill já existente caía achatado na raiz,
+  ao lado dos `scripts/…` antigos, e no `set_files_bulk` com `replace` a recusa
+  por remoção listava justamente os arquivos recém-enviados. O lixo de SO sai
+  **antes** da decisão, então o .zip do Finder continua sendo desembrulhado, e
+  um `SKILL.md` mais fundo (`references/exemplo/SKILL.md`) não faz de
+  `references/` um embrulho. O caso que continua ambíguo, de propósito: uma
+  subpasta enviada **com** um `SKILL.md` direto dentro dela é indistinguível de
+  um embrulho e é desembrulhada.
 - **O teto de descompressão não confia no tamanho declarado no diretório
   central** (`004`). Quando ele é zero — o valor que desliga o `maxOutputLength`
   do zlib dentro do `adm-zip` e deixaria a descompressão sem limite —, a entrada
@@ -530,7 +684,18 @@ A apresentação do projeto vive em `apps/homepage`, um app próprio:
 - **Endereços vêm do ambiente, não do `Host`.** `MCP_PUBLIC_URL`,
   `MCP_ADMIN_URL` e `ADMIN_URL` são devolvidos por `/api/meta`; cada um que
   ficar vazio some da página, em vez de virar um endereço adivinhado que não
-  responde.
+  responde. **O formato das três não é o mesmo** (relatório 084 da auditoria de
+  2026-09-19): `MCP_PUBLIC_URL` é a
+  *base*, sem `/mcp` — o site acrescenta o sufixo ao mostrá-la, porque a mesma
+  variável monta `<base>/virtual/<slug>/mcp` no site e no painel e as URLs de
+  download do mcp-public. `MCP_ADMIN_URL` e `ADMIN_URL` são o endereço
+  *completo* e saem crus: só são exibidos (cartão, rodapé e o `mcp.json`
+  copiável de "Administre pelo agente"), então a do MCP administrativo já vem com
+  o caminho do transporte, normalmente `/mcp`. O site não acrescenta o sufixo de
+  propósito — o mcp-admin tem três transportes (`/mcp`, `/mcp/stateless`,
+  `/sse`), e normalizar adivinharia um deles e duplicaria o `/mcp` de quem já
+  preenche certo. Só com o host, o `mcp.json` copiado faz `POST /` e recebe o 404
+  "Rota não encontrada" do mcp-admin.
 - **CSS.** `chrome.css` (nav + rodapé) saiu do antigo `landing.css` e virou
   cópia idêntica nos dois apps, junto de `tokens.css` e `base.css`. O que
   sobrou de `landing.css` ficou só na homepage; o site levou o cabeçalho, a
@@ -548,6 +713,17 @@ A apresentação do projeto vive em `apps/homepage`, um app próprio:
   referência do redesign, e ignora a preferência do sistema. A paleta do
   painel é a rampa espelhada do [`10`](10-admin-canvas-e-sessoes.md) §3, não a
   do site.
+  No **painel**, que tem três consumidores montados ao mesmo tempo (o menu da
+  conta, a paleta ⌘K e o canvas), o hook vem de `themeStore.ts` — um estado
+  para a página inteira, por `useSyncExternalStore` —, e o `useTheme.ts` dele
+  fica só como par da cópia e dono do tipo `Theme`. Com um estado por
+  consumidor, quem não tinha feito a troca ficava com o rótulo invertido e
+  gastava o primeiro clique reescrevendo o tema que já estava na tela
+  (relatório 045 da auditoria de 2026-09-19). O `themeStore` também reescreve
+  `style.colorScheme` no `<html>`: o valor inline que o script do boot deixa
+  vence o `color-scheme` que o `tokens.css` declara por tema, e sem repeti-lo a
+  barra de rolagem e os controles nativos ficavam no tema do boot — site e
+  homepage, que seguem com o hook copiado, têm o mesmo defeito latente.
 - O frontmatter YAML do `SKILL.md` é **removido antes da renderização**: nome,
   descrição e tags já aparecem no cabeçalho da página.
 - `react-markdown` sem `rehype-raw`: HTML cru no `SKILL.md` não é renderizado,
@@ -677,6 +853,17 @@ validada no boot, com uma mensagem que explica o percent-encoding.
   é ancorado, então a `DATABASE_URL` de exemplo — que carrega `CHANGE_ME` no
   meio — não casa, e `POSTGRES_PASSWORD` não passa por
   `readSecret`/`requireSecret`: o fluxo do dba segue intocado.
+- **Nas chaves do RAG o mesmo placeholder vale como chave ausente** (relatório
+  021 da auditoria de 2026-09-19). Não
+  derrubar o boot respondia só metade da pergunta: o `CHANGE_ME` seguia sendo
+  lido como credencial, e com ele o boot dizia "chave presente para: google,
+  openai, voyage", o aviso de "nenhuma chave" nunca saía e, ligado um driver no
+  painel, o indexador mandava texto de skill ao provedor com `CHANGE_ME` a cada
+  ciclo — com o painel mostrando "recusada" onde o certo é "não configurada".
+  `readApiKeyEnv` (`packages/rag/src/settings.ts`) devolve `undefined` para o
+  placeholder, pelo predicado `isPlaceholder` — a **mesma** lista do
+  `assertNotPlaceholder`, sem lançar. O `readSecret` continua genérico, e o
+  `.env.example` continua com `CHANGE_ME`.
 - **No ramo `<NOME>_FILE` o valor é aparado** com `trim()`, e arquivo em branco
   vale `undefined`, como no ramo da variável (`046`). O motivo não é o header HTTP
   (a normalização do Fetch apara o espaço em branco das pontas sozinha): é a
@@ -693,6 +880,26 @@ validada no boot, com uma mensagem que explica o percent-encoding.
   teste desligaria justamente o caso que se quer pegar. Variável de segredo nova
   no `.env.example` pede entrada na regra. A guarda do CI casa o **nome de
   arquivo** (`(^|/)\.env[^/]*$`), não pathspec com ponto.
+- A dispensa de interpolação do `.gitleaks.toml` é por **valor** e **ancorada no
+  fim**, como a lista de placeholders: passam `${VAR}`, `${VAR:-}` e
+  `${VAR:?mensagem}`, e `${VAR:-valor}` é apontado — era `^\$\{` solto, que
+  dispensava o valor padrão embutido só por começar com `${` (relatório 065 da
+  auditoria de 2026-09-19). Não existe
+  dispensa por *linha*: allowlist de topo sem `targetRules` vale para **todas** as
+  regras, inclusive as padrão, e calava um token de verdade em qualquer linha que
+  só mencionasse `${VAR:-`. O nome com que o compose entrega o segredo ao
+  container entra na regra junto com a variável (`PGPASSWORD`,
+  `MCP_INSPECTOR_API_TOKEN`); sem ele o casamento cai dentro das chaves e captura
+  só o resto (`?defina`), e o remédio para esse achado é pôr a chave na regra, não
+  dispensar o valor.
+- A varredura do CI é sobre o **histórico inteiro**, então apertar um allowlist
+  ressuscita achado de commit antigo e deixa o job vermelho para sempre. Toda
+  mudança no `.gitleaks.toml` se ensaia antes, num clone completo, com o comando
+  do CI (`gitleaks git --redact --no-banner --config=.gitleaks.toml .`): o diff
+  proposto nesse mesmo relatório 065 passava na árvore e reprovava em quatro
+  pontos do histórico.
+  O que é de commit antigo e não é segredo vira exceção fechada no commit **e** no
+  arquivo, como as três que o arquivo já tem.
 - O passo que instala o gitleaks confere o `gitleaks_<versão>_checksums.txt` do
   próprio release (formato `sha256` + dois espaços + nome do arquivo, linha
   escolhida por campo exato com `awk` e conferida com `sha256sum -c -`), então o
@@ -716,6 +923,16 @@ O mesmo vale para strings: `readTextEnv` trata vazio como ausente, porque o
 compose repassa variáveis não preenchidas como string vazia e `??` só cobre
 `undefined`.
 
+Tamanho **com unidade** passa por `readSizeEnv` (relatório 029 da auditoria de
+2026-09-19), e hoje é um só: o `MCP_JSON_LIMIT` dos dois MCPs. O valor vai cru
+para o `express.json({ limit })`, e o `bytes` do body-parser aproveita o começo
+do que não entende — `48m` e `48 megas` valem 48 **bytes**, `1mbb` vale 1 —,
+então o serviço subia e respondia 413 a tudo, sem erro nenhum no boot. Aceita
+`<número><kb|mb|gb>` ou um inteiro de bytes; o resto, e o zero, derrubam o boot
+com o nome da variável na mensagem. No `.env` do compose o nome é por serviço
+(`MCP_PUBLIC_JSON_LIMIT`, `MCP_ADMIN_JSON_LIMIT`): ver
+[`02-architecture-decisions.md`](02-architecture-decisions.md) §10.
+
 Daí a regra de escrita das variáveis (`039`): **variável que o código lê entra no
 `environment` do compose como `${VAR:-}` e no `.env.example` vazia ou
 comentada — nunca com o valor do padrão escrito.** É o que mantém vivo o padrão
@@ -723,11 +940,27 @@ comentada — nunca com o valor do padrão escrito.** É o que mantém vivo o pa
 e um `50` escrito no compose faria os dois pararem de subir juntos. Vale para
 `MCP_JSON_LIMIT`, `MCP_MAX_FILE_TEXT_BYTES`, os tetos de taxa e os de sessão.
 
-Os tetos do limite de taxa (`SITE_RATE_LIMIT_MAX` 240, `MCP_RATE_LIMIT_MAX` 600,
-`MCP_MAX_STATELESS_SESSIONS` 5 000) aceitam **`0` como "desligado"**, para a
-instalação que já limita no proxy (`014`). Os números são por minuto e por IP, e
-são generosos de propósito: o site é navegado por pessoas atrás de NAT e o MCP
-público por agentes que trabalham em rajada.
+Os tetos do limite de taxa (`SITE_RATE_LIMIT_MAX` 240, `MCP_RATE_LIMIT_MAX`
+600~~, `MCP_MAX_STATELESS_SESSIONS` 5 000~~) aceitam **`0` como "desligado"**,
+para a instalação que já limita no proxy (`014`). Os números são por minuto e por
+IP, e são generosos de propósito: o site é navegado por pessoas atrás de NAT e o
+MCP público por agentes que trabalham em rajada. No MCP público a conta é por
+**mensagem**: o lote JSON-RPC paga uma marca por mensagem e tem teto próprio
+(`MCP_MAX_BATCH` 20, mínimo `1`), que vale mesmo com o limite em `0` — o proxy
+também conta requisição, não mensagem (relatório 046 da auditoria de
+2026-09-19).
+
+**Revogado neste ponto pelo relatório 030 da auditoria de 2026-09-19:**
+`MCP_MAX_STATELESS_SESSIONS` nunca
+aceitou `0`, e não é limite de taxa. É o teto de identidades stateless
+contabilizadas **ao mesmo tempo**, no processo inteiro — sem janela de minuto e
+sem recorte por IP (`apps/mcp-public/src/sessions.ts`). O mínimo é `1`, o padrão
+do `readIntEnv`: `0` derruba o boot do mcp-public com a mensagem de faixa, como
+qualquer limite inválido, e há teste fixando isso. Não existe "desligado" para
+ela de propósito — sem teto, um `user-agent` variável volta a encher
+`mcp_sessions`, que nunca é podada (`014`), e um teto `0` faria o oposto do que o
+nome sugere: nenhuma requisição stateless seria contabilizada. Quem já limita no
+proxy deixa a variável vazia.
 
 ## Ordem dos middlewares
 
@@ -747,8 +980,29 @@ O **limite de taxa por IP**, ao contrário, entra **antes** da autenticação
 (`014`): é ele que protege a consulta que o `auth` faz. A isenção de quem tem
 chave vem por devolução da marca (`forgive`) logo depois de o `auth` passar — a
 presença do `Authorization` não serve de sinal, porque num vMCP aberto o cabeçalho
-é ignorado. `/healthz` fica acima do limite nos dois apps: um 429 na sonda
-reiniciaria um container saudável.
+é ignorado. `/healthz` fica acima do limite nos dois apps que o têm — o site e o
+mcp-public: um 429 na sonda reiniciaria um container saudável. O **mcp-admin
+não tem limitador** (`02` §7.7): ali o `auth` é a primeira coisa que toca o
+banco, e quem publica o serviço limita no proxy.
+
+No painel, logo depois da checagem de origem vem a **recusa do caractere nulo
+na URL** (`nulGuard`; achado do relatório 038 da auditoria de 2026-09-19). O
+Postgres não guarda U+0000 em `text`: um `%00` num slug, num caminho de arquivo,
+numa tag ou num e-mail chegava ao driver e voltava como o 22021 cru — 500, com o
+SQL no log. O banco já responde 400 no que passa pelos validadores de texto dele
+e no termo de busca, mas as leituras por identificador são vinte pontos; nenhum
+endereço do painel tem uso legítimo para o caractere, então a recusa é uma só,
+na entrada, antes até das rotas anônimas. Ela olha o endereço **cru**: naquele
+ponto o roteador ainda não casou rota nenhuma (`req.params` está vazio), e todo
+U+0000 que a decodificação do caminho ou da query string pode produzir vem
+escrito `%00` — `%2500` é o texto "%00" e passa. O nulo literal nem chega ao
+Express: o parser HTTP do Node recusa a linha da requisição. O corpo JSON fica de
+fora (o banco o confere campo a campo). O site e o mcp-public têm a mesma recusa
+no roteador deles, depois do limite de taxa (`apps/site/src/api.ts`,
+`apps/mcp-public/src/http.ts`); o mcp-admin não tem slug no caminho. O que **não**
+passa por URL nenhuma — o nulo em **argumento de tool** (`slug`, `tag`) nos dois
+MCPs — continua indo ao banco e volta como erro interno genérico, sem vazar nada
+ao cliente.
 
 Cada app tem um tratador de erros no fim da cadeia. Sem ele, o que os
 middlewares lançam (upload acima do limite, JSON malformado) escapa do
@@ -776,6 +1030,20 @@ injeta um `<style>` em runtime (`react-style-singleton`) para travar o scroll;
 `img-src` libera `http:` e `https:` porque `isValidSkillIcon` aceita URL externa.
 Em desenvolvimento a página vem do Vite e nenhuma dessas respostas é documento,
 então a CSP não atrapalha o HMR.
+
+As rotas que servem **arquivo de skill** trocam a CSP pela delas
+(`default-src 'none'; sandbox`) e o tipo pelo de `safeContentType`. As duas
+defesas — e o `Content-Disposition` — só valem quando o arquivo é aberto **como
+documento**; carregado como sub-recurso por uma página da própria origem, quem
+decide é a CSP **da página**, e `script-src 'self'` aceitaria o endereço cru de
+um `.js` anexado a uma skill. Por isso `safeContentType` rebaixa a `text/plain`
+também os tipos de script e `text/css` (relatório 014 da auditoria de
+2026-09-19): com o `nosniff` que os três serviços já mandam, o navegador recusa
+usá-los — medido no Chromium, não deduzido. Imagem não entra, e a
+pré-visualização do painel (`<img src=…?raw>`) segue igual. O "Abrir cru" do
+painel manda ainda `Cache-Control: private, no-cache`: conteúdo de skill privada
+não fica em cache compartilhado, e a imagem que não mudou volta como 304 pelo
+`ETag`.
 
 ## Slug e concorrência
 
@@ -811,6 +1079,19 @@ Inteiro de query string entra pelo `asInt` (`apps/site/src/api.ts` e
 (`?offset=1&offset=2`) ele chega como array e vira `NaN` (`046`). O **teto**
 continua sendo do banco (`clamp`), como o `033` decidiu.
 
+O teto do banco vale para o **`offset`** também (relatório 086 da auditoria de
+2026-09-19). `OFFSET` é `bigint`, e um `?offset=` de 20 dígitos cabe num double,
+passa pelo `asInt` inteiro e chegava ao driver como texto fora da faixa: 500 na
+lista anônima do site, com a SQL da busca no log. `pageOffset` agora **satura** em
+`Number.MAX_SAFE_INTEGER` — não recusa, como `clamp` não recusa o `limit` — e a
+resposta é a página vazia de quem paginou além do fim, com o `total` certo. Pela
+mesma razão o `offset` das tools MCP segue sem `.max()` no schema: o `.int()` do
+Zod aceita `1e20`, e quem o põe na faixa é o banco. O mesmo relatório fechou o
+resto do `046`: o `/api/audit` do painel ainda lia os dois por `Number(...)`, e
+com ele `?limit=abc` virava `NaN`, que o `clamp` lê como o **mínimo** — a trilha
+voltava uma linha em vez de 50. `?limit=abc` cai no padrão **no app**; um `NaN`
+que chegue ao banco por outro caminho continua valendo o mínimo.
+
 ## MCP virtual
 
 Decisões de implementação que [`08-mcp-virtual.md`](08-mcp-virtual.md) deixou
@@ -826,16 +1107,37 @@ em aberto:
   O mapa e o teto global são do **processo**, mas o orçamento de sessões é por
   **credencial** (`007`): `MCP_MAX_SESSIONS_PER_IDENTITY`, padrão de um décimo de
   `MCP_MAX_SESSIONS` com mínimo de 10, contado nos dois transportes juntos. O
-  `http.ts` do mcp-admin recebeu a mesma mudança — as duas cópias seguem em
-  paralelo.
+  `http.ts` do mcp-admin recebeu a mesma mudança.
+  ~~As duas cópias seguem em paralelo.~~ **Deixou de valer desde o relatório 046
+  da auditoria de 2026-09-19:** só o **público** ganhou o teto de mensagens por
+  lote JSON-RPC. Um array com mais de `MCP_MAX_BATCH` mensagens (padrão 20) sai
+  com 400 `-32600` sem executar nada, e cada mensagem do lote aceito custa uma
+  marca do limitador de taxa — sem isso, um POST de 1 MB com milhares de
+  `tools/call` gastava **uma** marca e executava todas. O mcp-admin não recebeu
+  o guarda porque lá **toda identidade é autenticada** e não existe limite de
+  taxa nenhum: o que o teto protege é o banco contra quem não tem chave. Portar
+  o teto para o admin, sem a parte da cota, continua possível — é decisão do
+  mantenedor, não descuido. `MCP_MAX_BATCH` só é lida pelo serviço
+  `mcp-public`.
 - **Base das URLs de download.** `MCP_PUBLIC_URL` no mcp-public; sem ela, a
   origem da requisição (`req.protocol://host`, respeitando `trust proxy`). O
   painel recebe a mesma variável para o snippet de `mcp.json`.
-- **`setVirtualMcpSkills` trava o MCP** (`SELECT … FOR UPDATE`) dentro da
-  transação: dois salvamentos concorrentes da lista não se sobrescrevem.
+- **`setVirtualMcpSkills` trava o MCP** dentro da transação: dois salvamentos
+  concorrentes da lista não se sobrescrevem. A trava é `SELECT … FOR NO KEY
+  UPDATE` — **era** `FOR UPDATE`, até o relatório 023 da auditoria de
+  2026-09-19: ver a regra da ordem de travas do vMCP em
+  [Armadilhas medidas na revisão de 2026-09-18](#armadilhas-medidas-na-revisão-de-2026-09-18).
 - **Sem `.skill` nem página no site para skill fora do site.** O virtual serve
-  `download` e `download.skill`; a `url` da página só sai quando a skill está
-  em algum vMCP aberto e ligado (`mcps` da própria leitura).
+  `download` e `download.skill`; a `url` da página sai quando a skill é
+  **pública** ou está em algum vMCP aberto e ligado (`mcps` da própria leitura)
+  — é o `noSite` de `apps/mcp-public/src/tools.ts`, a regra do
+  [`12`](12-acesso-granular.md) §7. Skill que só chega ao site por catálogo
+  público segue sem link, porque esse sinal não vem no recorte (ver
+  [Site: skills e catálogos públicos](#site-skills-e-catálogos-públicos)).
+  **Era**, até a `beta.21`: ~~"a `url` da página só sai quando a skill está em
+  algum vMCP aberto e ligado"~~ — a regra do
+  [`09`](09-mcp-padrao-e-skills-flutuantes.md) §4.1, de quando `is_public` não
+  existia; o `12` a revogou e o código a seguiu na `beta.22` (`050`).
 - **Downloads sem cache** (`Cache-Control: no-store`): a resposta depende da
   credencial, e o site continua sendo o único lugar com `max-age`.
 - **O painel enxerga todos os vínculos, inclusive com MCP desligado ou
@@ -853,6 +1155,28 @@ em aberto:
   (`ServerPage.tsx`, texto qualitativo); a tool `update_virtual_mcp` diz o mesmo
   na descrição. Não há **contagem** de skills privadas, e restaurá-la depende de
   `private_skill_count` voltar à consulta do resumo do vMCP.
+- **Nome de vMCP, de catálogo e de chave `psv_` tem teto: 200 caracteres**
+  (relatório 042 da auditoria de 2026-09-19). Não havia teto nenhum — o único
+  freio era o limite do corpo da requisição —, e os três são copiados por extenso
+  em cada linha de `skill_accesses`, que nunca é podada. O banco corta a **cópia**
+  em 512 na gravação do acesso; este teto é o que impede o nome gigante de
+  existir. É `NAME_MAX`, em `apps/admin/src/mcps.ts`, com o gêmeo em
+  `apps/mcp-admin/src/mcps.ts`: **uma constante ajustável, não um contrato** —
+  quem precisar de outro número muda nos dois e o mantém abaixo de 512. Vale para
+  quem **cria ou renomeia**: nome antigo mais longo continua válido até alguém
+  mexer nele, porque o Salvar do painel reenvia o nome e um teto retroativo
+  travaria a edição do objeto por causa do nome que ele já tem (`assertNameFits`
+  recebe o nome atual). A recusa é 400 dizendo o tamanho e o limite. No mcp-admin
+  o teto fica no handler, e não como `.max()` no schema zod da tool: assim a
+  recusa chega ao agente em português, e o schema não conhece o nome atual. O
+  nome da **skill** continua sem teto na entrada (só a cópia é cortada); a chave
+  `psk_` já tinha o seu, de 80.
+- **`name` que não é texto é 400** nas mesmas rotas (achado do relatório 007 da
+  mesma auditoria): `String(valor ?? '')` num objeto cujo `toString` não é função
+  — `{"name":{"toString":1}}` — lançava `TypeError`, devolvido como 500 com linha
+  de "erro inesperado" no log. `nameFrom`, em `apps/admin/src/mcps.ts`, é o gêmeo
+  do `textOf` de `accounts.ts`: ausente ou nulo é vazio, presente e não-texto é
+  `O campo "name" deve ser uma string`.
 
 ## MCP padrão
 
@@ -924,7 +1248,18 @@ deixou em aberto:
 - **Todo handler que decide por caminho de arquivo normaliza antes de decidir**
   (`050`): `get_file` e, agora, `set_file`. `isSkillMd` compara texto exato e
   `normalizeRelativePath` canoniza, então decidir com o caminho cru grava o
-  `SKILL.md` por baixo da regra que o protege.
+  `SKILL.md` por baixo da regra que o protege. A regra estava escrita e ainda
+  tinha dois furos (relatório 016 da auditoria de 2026-09-19): o
+  `PUT /api/skills/:slug/files/*path` do painel — no Express 5 o curinga chega
+  em segmentos já decodificados, e `.%5CSKILL.md`, `./SKILL.md` e `.//SKILL.md`
+  passavam crus, gravando o frontmatter enviado na linha do `SKILL.md` (fora da
+  vista em toda leitura, dentro do `search_vector` e do texto do RAG) — e o
+  `delete_file` do MCP administrativo, inócuo (o banco normaliza e recusa), mas
+  com a recusa sem dizer a saída. Hoje normalizam antes de decidir: `get_file`,
+  `set_file` e `delete_file` no MCP administrativo; o `GET`, o `PUT` e o envio
+  avulso de `…/files` no painel. O `POST` e o `DELETE` de `…/files/*path`
+  passam o caminho cru porque a decisão sobre o `SKILL.md` é tomada **dentro**
+  do banco, depois de normalizar (`createFile`, `deleteFile`).
 
 ## Skills flutuantes
 
@@ -1032,6 +1367,22 @@ O que ficou diferente do que a skill `admin-canvas-ui` prescreve, e por quê:
   liberada no cleanup, para que a resposta atrasada seja descartada em vez de
   sobrescrever a nova — a flag é por requisição, então uma lista com `usePolling`
   não cancela o próprio poll.
+- **Filtro que mora fora do componente que pagina zera o `offset` na
+  renderização** (relatório 051 da auditoria de 2026-09-19). O seletor de
+  servidor da Auditoria não alcança o `setOffset` da `SessionsTable`: o que ele
+  muda é a `load` dela. A tabela compara a prop com um `useState(() => load)` e
+  volta à primeira página **no render**, como o `useSkillFiles` faz na troca de
+  skill — não num efeito, pelo mesmo motivo do item acima: o efeito dispararia
+  uma segunda
+  consulta, e antes disso a primeira iria com o deslocamento velho. Numa lista
+  com `usePolling` a guarda de ordem é um **contador por chamada**, e não a flag
+  `active`, porque o poll roda fora do cleanup do efeito; e quem já busca na
+  montagem passa `{ immediate: false }`, para a mesma consulta não sair duas
+  vezes (o "pular" é variável do ciclo, não um `useRef`, senão o `StrictMode`
+  gastaria o ref na primeira montagem). Total que encolhe sozinho — "Online
+  agora", em que as sessões acabam — recua para a última página que existe
+  (`lastPageOffset`), em vez de deixar o rodapé em "51–40 de 40" com o poll
+  reenviando o mesmo `offset` para sempre.
 - **A lista de Skills é a única que acumula páginas** em vez de trocar de página
   (`033`): `listSkills` do banco faz `clamp(limit, 1, 100)` e os filtros "sem
   vínculo", "no site" e "desligadas", mais a ordenação por nome, são peneira no
@@ -1091,7 +1442,54 @@ implementação decidiu além dele:
 - **Escritas devolvem o objeto sem conhecer o leitor.** Uma escrita não
   recebe `viewer`, então o detalhe que ela devolve traz `access: 'owner'`;
   os handlers reaplicam o `access` de quem chamou antes de responder, e
-  escondem `grants` de quem não tem `manage` (`withGrants`).
+  escondem `grants` de quem não tem `manage` (`withGrants`). O detalhe da
+  escrita é a **visão do admin inteira**, não só no `access` — e três respostas o
+  repassavam além do que o `GET` do mesmo objeto mostra (relatórios 009 e 010 da
+  auditoria de 2026-09-19):
+  - `PUT`/`DELETE /api/skills/:slug/mcps/:mcp` devolviam a ficha sem recorte
+    nenhum — ACL, servidor fechado e catálogo privado de terceiros — a quem só
+    tem `edit` em **algum** vMCP e `view` na skill. Agora releem a skill com o
+    `viewer` da sessão (`skillSeenBy`, em `mcps.ts`). Desfazer o vínculo pode
+    tirar a skill do alcance de quem chamou: a resposta é `200 { "unlinked":
+    true }`, não 404. E o `DELETE` responde "não está vinculada" pelo que já leu
+    do vMCP, sem ir ao banco, que distinguia "skill não encontrada" — quem edita
+    um servidor qualquer confirmaria slug de skill privada alheia;
+  - o `PATCH` da skill e as escritas de catálogo reaproveitam da **leitura
+    prévia** as listas que a escrita não muda: `mcps` e `catalogs` na skill,
+    `mcps` no catálogo (`seenBy`). O banco recorta essas listas por `viewer` na
+    leitura; `mcpCount` e `skillCount` do catálogo seguem globais, de propósito,
+    e a ficha diz "e mais N que você não vê";
+  - no mcp-admin as escritas respondem com texto, e `link_skill`/`unlink_skill`
+    montam o delas da releitura com `viewer`: nomeavam todo servidor em que a
+    skill continuava e davam a contagem global.
+- **Nenhuma conta sai do painel pelo `uuid`** (relatório 011 da mesma auditoria).
+  O `uuid` é o `sub` do cookie de sessão; a busca de contas já não o entregava
+  (item "a conta é o e-mail", abaixo), mas ele continuava ao lado do e-mail em
+  toda ficha e lista: `ownerUserUuid`, os dois uuids de cada concessão, o dono
+  dos contêineres aninhados, quem emitiu cada chave `psv_` e quem leu, na guia
+  Auditoria. Na borda da REST, `ownerByEmail`/`grantByEmail` (em `access.ts`,
+  aplicados por `withGrants` a toda ficha) fazem o campo sair como **apelido do
+  e-mail**, como o `uuid` da busca; o que não tem e-mail ao lado sai omitido
+  (`mcps[].ownerUserUuid` do catálogo, `catalogs[].ownerUserUuid` do vMCP) ou
+  nulo (`createdByUserUuid` de chave alheia). Vale para toda sessão, admin
+  inclusive — quem precisa do uuid de verdade tem `/api/users`, a trilha e a
+  ficha da conta, que são de admin. A **entrada** `ownerUserUuid` do `PATCH`
+  continua aceitando e-mail ou uuid. O campo sai do tipo compartilhado junto com
+  o `uuid` do `UserLookup`: é o mesmo pendente.
+- **Revogar procura a conta na lista de concessões, não em `users`** (relatório
+  039 da mesma auditoria). Os seis `unshare*` resolviam o e-mail por
+  `accountByEmail`, que exige conta ativa — certo para conceder e transferir,
+  errado para revogar: a concessão de quem foi desativado depois de recebê-la não
+  saía por superfície nenhuma, contra a decisão 10 do `12`, e voltava a valer se
+  a conta fosse reativada. `grantOf` acha a linha pelo e-mail na lista que o
+  `manage` já lê e entrega o uuid a `remove*Grant`, que nunca olhou `is_active`.
+  Pela lista, e não por um `accountByEmail` sem a conferência, porque a resposta
+  de quem consulta `users` distinguiria "não existe conta com este e-mail" de
+  "existe, e não tem concessão aqui" — inclusive para conta desativada, que a
+  busca de contas não revela (decisão 13). `Grant.isActive` marca a linha no
+  painel ("conta desativada") e nas três tools de leitura do mcp-admin. Mudar o
+  **nível** de concessão de conta desativada continua recusado nas duas camadas:
+  é a mesma chamada de conceder.
 - **404 para quem não vê, 403 para quem vê pouco.** Um objeto fora do
   escopo da conta não existe para ela (a consulta devolve nulo); um objeto
   visível com nível insuficiente responde 403 dizendo o nível que a conta
@@ -1122,7 +1520,11 @@ implementação decidiu além dele:
   tirá-lo antes do painel faria a transferência de dono virar um `PATCH` sem a
   chave — sucesso sem transferir. Quando o painel passar a ler `email`, o apelido
   sai do tipo, do `withoutUuid` e da projeção do banco, nessa ordem. Comparar um
-  com o outro era o que fazia a busca não esconder ninguém.
+  com o outro era o que fazia a busca não esconder ninguém. O "você" ao lado do
+  dono, que comparava `ownerUserUuid` com o `uuid` da **sessão**, também passou a
+  ser pelo e-mail (`ownedBy`, em `AccessPanel.tsx`) — o campo virou apelido do
+  e-mail no item "Nenhuma conta sai do painel pelo `uuid`", acima, e tinha de
+  mudar no mesmo passo, ou o rótulo sumiria.
 - **`Stats` tem três campos obrigatórios e seis opcionais** (`024`): como
   `/api/stats` recorta por viewer, o tipo do painel traz `totalSkills`,
   `openSkills` e `totalTags` sempre e o resto talvez. Quem lê trata a ausência:
@@ -1171,7 +1573,14 @@ implementação decidiu além dele:
   `getUserByUuid` + `toPublicUser`; as chaves vêm de `listApiKeys`; revogar
   pela ficha usa `revokeApiKey(id, uuidDaConta)` — o escopo pelo dono
   garante que o id é daquela conta — e audita `key.revoke` com
-  `"<e-mail>: <id>"`; a guia Acessos é `listSkillAccesses({ userUuid })`
+  ~~`"<e-mail>: <id>"`~~ `"<e-mail do dono>: <nome> (<prefixo>)"`. **Era** o
+  uuid da chave até o relatório 040 da auditoria de 2026-09-19: ele não aparece
+  em tela nenhuma, então a linha não se casava com a do `key.create`, que rotula
+  `"<nome> (<prefixo>)"`. `revokeApiKey` passou a devolver `{ name, prefix,
+  userUuid, userEmail }` (ou `null`) do próprio `UPDATE`, sem leitura a mais, e
+  "as minhas chaves" (`DELETE /api/me/keys/:id`), que gravava o uuid pelado, usa
+  o mesmo rótulo. Linha antiga da trilha não é reescrita: continua com o uuid.
+  A guia Acessos é `listSkillAccesses({ userUuid })`
   (migration `019`, índice `(user_uuid, created_at DESC)`); a guia
   Atividade é `GET /api/audit?actor=`. `ROLES` e `ROLE_HINT` foram para o
   `api.ts` do painel, porque três telas os usam.
@@ -1256,6 +1665,18 @@ implementação decidiu além deles:
   gravado some sozinho, o que falhou continua — sem contabilidade de quais
   chamadas deram certo. Os rascunhos guardam o uuid da skill; trocar de
   skill na mesma rota os zera.
+- **Releitura que falha não tira do editor** (relatório 049 da auditoria de
+  2026-09-19). Só o **404** — a skill ficou fora de alcance: transferida, ou
+  removida por outra pessoa — leva para a lista (`isNotFound`, em `api.ts`). Em
+  401, 5xx e queda de rede a página **fica**, não poda nada (sem releitura não
+  há como saber o que gravou, e não há contabilidade por chamada) e avisa que o
+  que já foi gravado pode seguir listado como pendente; o Salvar seguinte
+  reenvia, e os `DELETE` já aplicados voltam como 404 no aviso até a releitura
+  limpar. Da resposta do `PATCH` só se aproveita o **slug novo** — as listas
+  dela vêm na visibilidade `'all'`, sem recorte por quem lê. Arquivo que não
+  grava conta como falha: o `save` do `useSkillFiles` devolve se o conteúdo
+  chegou ao servidor, e um pedido feito com a gravação em curso recebe **a
+  promessa** dela, em vez de um "não gravou" para um arquivo que gravou.
 - **A ordem do Salvar evita o slug velho**: os arquivos vão primeiro (o
   editor de arquivos conhece o slug de antes), depois o formulário — que
   pode trocar o slug —, e as demais chamadas usam o slug devolvido. A
@@ -1334,6 +1755,14 @@ separaram:
   padrão fechado responde em `/mcp` com chave), então tudo o que sai por essa rota
   sai para o anônimo; slug e nome são os campos que o `GET /` do mcp-public já
   publica ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §3.2), a descrição não é.
+- **O `/api/meta` leva `corsOpen`, e só o booleano** (relatório 078 da auditoria
+  de 2026-09-19). O cartão "API REST
+  pública" da home dizia "CORS aberto" como literal fixo, e `SITE_CORS_ORIGIN`
+  fecha exatamente isso; agora o rótulo vem da instalação ("CORS aberto" ou
+  "CORS restrito"). Pelo critério de cima o booleano pode sair: qualquer cliente
+  que mande um `Origin` já o lê no `Access-Control-Allow-Origin` da resposta. A
+  **lista** de origens não sai — ela nomeia a intranet de quem fechou. O valor
+  mora no `config.ts` do site (`corsOrigin`), lido pelo `cors()` e pela rota.
 - **A regra "o que está no site" vive copiada em três lugares** (`050`) — `noSite`
   (`apps/mcp-public/src/tools.ts`), `pageUrl` (`apps/mcp-admin/src/tools.ts`) e
   `noSite` (`apps/admin/web/src/components/ui.tsx`). As duas primeiras cobrem
@@ -1360,10 +1789,14 @@ separaram:
 | mcp-admin | 3003 |
 | homepage | 3004 |
 
-O `BIND_ADDR` governa o endereço de publicação do site, do painel, dos dois MCPs,
-da homepage e do Postgres, mas **não** o do `mcp-inspector`, que tem
-`INSPECTOR_BIND_ADDR` com padrão `127.0.0.1` (`012`): o inspector sobe com
-`DANGEROUSLY_OMIT_AUTH` e, de dentro da rede `internal`, alcança o `mcp-admin` —
+O `BIND_ADDR` governa o endereço de publicação do site, do painel, dos dois MCPs e
+da homepage. Duas portas **não** o acompanham. A do Postgres tem
+`POSTGRES_BIND_ADDR`, padrão `127.0.0.1`, em `database/docker-compose.yml`: nenhum
+app a usa — todos falam com o banco pela rede interna — e ela saiu do `BIND_ADDR`
+na `beta.22`, então `BIND_ADDR=0.0.0.0` sozinho **não** publica o banco. E a do
+`mcp-inspector`, que tem `INSPECTOR_BIND_ADDR` com padrão `127.0.0.1` (`012`): o
+inspector sobe com `DANGEROUSLY_OMIT_AUTH` e, de dentro da rede `internal`,
+alcança o `mcp-admin` —
 uma porta publicada nele equivale a acesso administrativo sem credencial. Expor a
 UI exige as duas metades juntas (`INSPECTOR_BIND_ADDR` fora do loopback **e**
 `INSPECTOR_OMIT_AUTH=false` com `INSPECTOR_API_TOKEN`, cujo nome antigo era
@@ -1425,6 +1858,19 @@ acima (`015`). Sob o compose da raiz esse `ENV` não vale: `x-app-env` manda
   preservados, autenticação do painel e do MCP admin.
 - Testes de integração com Postgres real (`TEST_DATABASE_URL`, desligados por
   padrão) cobrindo `users`, `api_keys` e `reset_tokens`.
+- **O `npm run typecheck` cobre os testes; o `build` continua sem eles.** Cada
+  workspace tem um `tsconfig.typecheck.json` (`extends` do de build mais
+  `"exclude": []`) e é ele que o script `typecheck` usa — o `tsconfig.json`
+  segue excluindo `src/**/*.test.ts`, porque o `dist/` das imagens não leva
+  teste. Sem essa separação, os arquivos de teste não passavam por `tsc`
+  nenhum: o Vitest transpila sem checar tipo, e um erro de tipo em teste só
+  aparecia quando alguém abria o arquivo. Ligar a conferência achou sete erros
+  reais, dois deles em asserções que nunca foram verificadas por ficarem sobre
+  um valor `unknown`. `"exclude": []` substitui o padrão do TypeScript
+  (`node_modules`, `dist`) e só é seguro porque o `include` é estreito
+  (`src/**/*.ts`); alargar o `include` quebra a premissa. O `mcp-public` é o
+  único com `rootDir` alargado, porque o teste de integração da busca importa o
+  indexador de outro workspace (relatório 073 da auditoria de 2026-09-19).
 - Smoke test do frontmatter gerado contra um banco de testes: criar/salvar pelo
   painel e pela API com um bloco `---` colado no prompt (descartado nas duas
   pontas), `PUT` direto em `/files/SKILL.md`, importação de `.zip` no padrão
@@ -1443,7 +1889,13 @@ acima (`015`). Sob o compose da raiz esse `ENV` não vale: `x-app-env` manda
   chave, `prompts/list` e `resources/list` obedecendo `as_prompt`/`as_resource`,
   401/404 conforme a `§4.5` de `08`, virtual aberto sem chave, principal sem a
   privada, SSE anunciando o endpoint com prefixo, contadores no vínculo e no
-  global); a API do painel (`/api/mcps*`: papel para criar, alcance por dono,
+  global); a API do painel (`/api/mcps*`: papel para criar, ~~alcance por
+  dono~~ — **Revogado neste ponto por [`12`](12-acesso-granular.md) §3.2**
+  (relatório 083 da auditoria de 2026-09-19): o alcance é **por nível de
+  acesso**, e o `load` de `apps/admin/src/mcps.ts` o exige por ação (`view` lê,
+  `edit` mexe em vínculos, portas e posições, `manage` muda nome, slug, estado,
+  abertura, chaves e concessões, `owner` apaga e transfere), com 404 para quem
+  não vê —,
   `PUT` declarativo, ~~confirmação de abertura nos dois sentidos~~ (saiu no
   PR2 do `09`; o oposto está fixado em `apps/admin/src/mcps.test.ts`, "abrir
   um vMCP"), transferência
@@ -1485,3 +1937,68 @@ aprendizados só aparecem no conjunto — nenhum relatório os tinha sozinho:
   que falha rápido e passa a ser um literal de até 200 caracteres comparado linha a
   linha. As duas mudanças, escapar e indexar, são **uma só** e não devem ser
   separadas num rollback.
+
+A rodada de **2026-09-19** (87 relatórios) acrescentou três, todas medidas em
+banco descartável e em árvore de trabalho:
+
+- **Escrita de arquivo de skill entra numa fila, e a fila é a primeira
+  statement** (relatórios 022 e 023 da auditoria de 2026-09-19). Quem grava
+  arquivo trava `files` e, no fim da mesma statement, pede a linha da skill pelo
+  trigger `files_rag_stale_trg`; quem salva a skill com o `SKILL.md` — ou a
+  apaga — faz o contrário. Medido antes do remédio: **cerca de 40 % dos pares
+  concorrentes** morriam com `40P01` (59 em 150 pares de
+  `updateSkillWithContent` × `setFile('SKILL.md')`, 45 com `setFiles`, 61 com
+  `ownerUserUuid` no mesmo PATCH). Por isso **toda** transação que toca arquivo
+  — `createFile`, `setFile`, `setFiles`, `deleteFile`, `deleteSkill` e o
+  `updateSkillWithContent` que traz `skillMd` — começa pelo advisory lock de
+  `lockSkillFilesTx`, **como primeira statement** e sem nenhum `db()` dentro. É
+  a primeira statement que impede o ciclo: quem espera pela fila não segura
+  linha nenhuma; tomá-la depois de um `UPDATE` ou de um `SELECT … FOR …` recria
+  o deadlock que ela existe para evitar. Nada de `FOR UPDATE` em `skills`.
+- **No recorte do vMCP a ordem é uma só: travar o servidor, mexer nos vínculos,
+  gravar no servidor por último** (relatório 023 da auditoria de 2026-09-19). A
+  trava é `SELECT … FOR NO KEY UPDATE` — `FOR UPDATE` barra o `FOR KEY SHARE`
+  que todo INSERT em tabela filha pede pela FK, e era assim que
+  `recordSkillAccess` morria contra o canvas (9 em 150 pares) e contra o recorte
+  (26 em 150). O remédio "óbvio" — adiantar o `UPDATE virtual_mcps SET
+  updated_at` para o começo de `linkTx` — zera os pares **e abre um ciclo
+  novo**: a checagem de FK não espera um `FOR NO KEY UPDATE`, salvo quando segue
+  a cadeia de versões da linha e esbarra numa versão ainda não commitada
+  (`while rechecking updated tuple` no log do Postgres); aí o registro de acesso
+  segura o vínculo e espera o vMCP, enquanto quem atualizou o vMCP espera o
+  vínculo. Medido: **3 deadlocks em 34 mil operações** mistas, contra zero em
+  57 982 com a ordem correta. Trava pura não cria versão nova da linha, então
+  não há o que esperar — e, quando o `UPDATE` chega, a transação já tem todos os
+  vínculos de que precisa. Vale igual para o `UPDATE … SET layout` de
+  `setVirtualMcpCanvas`, que vai depois das posições.
+- **Byte de controle literal num arquivo-fonte some do diff e da varredura de
+  segredos** (relatório 063 da auditoria de 2026-09-19). Um `\x00` cru dentro de
+  uma classe de regex fazia o `git diff` sair como "Binary files differ", o
+  `git diff --numstat` devolver `-\t-\t` em vez de contar linhas e a varredura
+  de segredos não enxergar o conteúdo do arquivo — o `gitleaks git` lê o
+  histórico por diffs, e um segredo numa linha que o diff não mostra passa
+  batido. E a armadilha que cria o byte é a ferramenta de edição dos agentes:
+  ela converte o escape de U+0000 escrito dentro de uma string **de volta em
+  byte literal**. Por isso a troca não se faz com ela — foi feita por script,
+  que confere o arquivo de partida, exige a sequência exata o número certo de
+  vezes e recusa deixar byte de controle para trás, com prova de equivalência ao
+  lado (mesma linha depois de desfazer a troca, mesmas decisões da regex para os
+  65 536 code units, mesmos literais no AST, mesmo JS transpilado). A forma
+  certa depende de onde o caractere está: **constante montada em código**
+  (`String.fromCharCode(0)`, como o `NUL` de `database/src/queries.ts`) é o
+  padrão, porque é imune à ferramenta; o **escape** (`\x00`, `\x1f`, `\x7f`)
+  fica para onde a constante não cabe, como uma faixa de regex
+  (`[…\x00-\x1f\x7f]`).
+  Três fontes foram consertados assim nesta rodada — `apps/admin/web/src/explorer.ts`
+  (faixa de regex), `database/src/queries.ts` (dois U+0000 numa chave de
+  deduplicação) e `packages/rag/src/chunk.test.ts` (um `0x01` num cabeçalho
+  falso de executável) —, mais dois relatórios de `tasks/` que nasceram
+  binários pelo mesmo motivo. **Não confie no git para achá-los:** a heurística
+  dele procura o nulo só nos primeiros 8 000 bytes, e em `queries.ts` o primeiro
+  estava no byte 274 217 — o arquivo sempre saiu como texto no diff. A guarda
+  que entrou no `ci.yml` (passo "Nenhum byte de controle nos fontes", no job
+  `secrets-scan`, **antes** do gitleaks) olha os **bytes** dos fontes
+  versionados, com TAB, LF e CR de fora. O primeiro commit depois de consertar
+  um arquivo que era binário ainda sai como "Binary files differ", porque o lado
+  antigo é binário; confira pelos comandos (`grep -c '[[:cntrl:]]'`, `file`),
+  não pelo diff.

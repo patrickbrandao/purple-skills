@@ -25,6 +25,7 @@ import {
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
   RagRateLimitError,
   RagUnavailableError,
   type EmbeddingDriver,
@@ -32,7 +33,13 @@ import {
   type UsoDeTokens,
 } from './driver.js';
 import { BASE_URL_VOYAGE, MODELOS_VOYAGE } from './models.js';
-import { embutirEmLotes, retryAfterMs, ClienteHttp, type OpcoesHttp } from './http.js';
+import {
+  embutirEmLotes,
+  ocultarChave,
+  retryAfterMs,
+  ClienteHttp,
+  type OpcoesHttp,
+} from './http.js';
 
 export { BASE_URL_VOYAGE };
 
@@ -164,10 +171,14 @@ export class VoyageDriver implements EmbeddingDriver {
 
   /** Traduz o status HTTP no erro que diz o que fazer. */
   private lancarPeloStatus(resposta: Response, corpo: VoyageErrorBody): never {
-    const mensagem =
+    // A mensagem vai para o log e para o "Último erro" do painel: a chave, se o
+    // provedor a ecoar, fica pelo caminho (`ocultarChave`).
+    const mensagem = ocultarChave(
       (typeof corpo.detail === 'string' ? corpo.detail : undefined) ??
-      corpo.error?.message ??
-      resposta.statusText;
+        corpo.error?.message ??
+        resposta.statusText,
+      this.apiKey,
+    );
     const detalhe = `${resposta.status}: ${mensagem}`;
 
     if (resposta.status === 401) {
@@ -175,8 +186,10 @@ export class VoyageDriver implements EmbeddingDriver {
     }
     // 403 na Voyage é o IP recusado, não a chave. Não adianta insistir, e a
     // mensagem precisa dizer isso: quem lê "chave recusada" troca a chave à toa.
+    // Pelo mesmo motivo é `RagOriginError` — um `RagAuthError` na política, com
+    // outro `kind`: o painel não pode resumir isto como "chave recusada".
     if (resposta.status === 403) {
-      throw new RagAuthError(`a Voyage recusou a origem da requisição, não a chave (${detalhe})`);
+      throw new RagOriginError(`a Voyage recusou a origem da requisição, não a chave (${detalhe})`);
     }
 
     if (resposta.status === 429) {
@@ -189,8 +202,10 @@ export class VoyageDriver implements EmbeddingDriver {
     }
 
     // 400 cobre JSON inválido, lote grande demais e texto acima do limite de
-    // tokens. Tratar como "não cabe" divide o lote, e é a divisão que separa
-    // o texto culpado do resto — o JSON inválido não passaria nem sozinho.
+    // tokens. Tratar como "não cabe" divide o lote, e é a divisão que chega ao
+    // texto culpado — o JSON inválido não passaria nem sozinho. Esse último caso
+    // é o 400 que não é de texto nenhum, e o balde é o mesmo: por isso o
+    // indexador confere com o texto-sonda antes de gravar uma recusa permanente.
     if (resposta.status === 400) {
       throw new RagInputTooLongError(`a Voyage recusou o conteúdo enviado (${detalhe})`);
     }

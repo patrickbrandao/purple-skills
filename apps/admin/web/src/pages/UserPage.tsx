@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, History, KeyRound, ListChecks, Pencil, UserRound } from 'lucide-react';
 import {
@@ -45,19 +45,28 @@ export function UserPage({ me }: { me: SessionUser }) {
         ? 'atividade'
         : 'conta';
 
-  const load = useCallback(async () => {
-    try {
-      setUser(await getUser(uuid));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigate('/users');
-    }
-  }, [uuid, toast, navigate]);
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
+  // dependesse dele, cada troca de guia buscaria a conta de novo e piscaria o
+  // esqueleto da ficha inteira.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
+  // Uma carga por conta. O cleanup descarta a resposta atrasada: trocando de
+  // conta com a ficha montada, a da anterior podia chegar por último.
   useEffect(() => {
+    let active = true;
     setUser(null);
-    void load();
-  }, [load]);
+    getUser(uuid)
+      .then((fresh) => active && setUser(fresh))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/users');
+      });
+    return () => {
+      active = false;
+    };
+  }, [uuid, toast]);
 
   const loadAccesses = useCallback(
     (query: Parameters<typeof getUserAccesses>[1]) => getUserAccesses(uuid, query),

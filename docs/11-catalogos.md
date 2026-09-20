@@ -7,7 +7,13 @@ Migration `016-catalogos.sql`.
 > (só admin transfere) e a decisão 7 e a `§3.4` (vincular exige administrar
 > **os dois** lados) viraram acesso por níveis — vincular é `edit` no vMCP e
 > `view` no catálogo; dono e admin transferem. O item "um catálogo listado
-> no site" da `§9` entrou no escopo do `12` (catálogo público).
+> no site" da `§9` entrou no escopo do `12` (catálogo público). Pelo mesmo
+> motivo estão marcados no ponto a decisão 18 e a `§6.3` (o "alcance por dono"
+> do mcp-admin), o detalhe e o `PATCH` da `§6.2` e o "trabalho do admin,
+> sempre" da `§8`.
+>
+> **E, num ponto, por [`13`](13-fichas-e-acessos.md):** a `§3.3` dizia "sem
+> tabela de eventos" — `skill_accesses` existe desde a migration `018`.
 
 Este documento registra o desenho fechado na entrevista de 13/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra em
@@ -36,7 +42,7 @@ quando o grupo muda. É o catálogo.
 | 4 | Precedência | O vínculo **direto** da skill com o vMCP **sobrescreve** qualquer catálogo: as portas dele valem sozinhas |
 | 5 | Vários catálogos | Sem vínculo direto, as portas são a **união** dos catálogos que chegam ao vMCP com a skill |
 | 6 | Dono | Como o vMCP: quem cria (editor+) é o dono; admin manda em todos; admin transfere |
-| 7 | Permissão do vínculo | ~~Vincular ou desvincular catálogo↔vMCP exige administrar **os dois** — na prática, o dono comum ou um admin~~ — **revogada pela decisão 6 do [`12`](12-acesso-granular.md)**: vincular é `edit` no vMCP + `view` no catálogo; desvincular, só o `edit` do vMCP |
+| 7 | Permissão do vínculo | ~~Vincular ou desvincular catálogo↔vMCP exige administrar **os dois** — na prática, o dono comum ou um admin~~ — **revogada pela decisão 7 do [`12`](12-acesso-granular.md)**: vincular é `edit` no vMCP + `view` no catálogo; desvincular, só o `edit` do vMCP |
 | 8 | Participação | `catalog_skills.is_active`: desativar a skill no catálogo sem removê-la, **reversível** |
 | 9 | Catálogo ligado | `catalogs.is_active`: desligar o catálogo inteiro sem apagar membros nem vínculos, como o vMCP |
 | 10 | Skill desligada | **Global**, campo novo `skills.is_active`: some de todo vMCP (direto ou por catálogo) e do site; o painel continua vendo |
@@ -47,7 +53,7 @@ quando o grupo muda. É o catálogo.
 | 15 | Site | Skill que chega a um vMCP aberto e ligado só por catálogo aparece no site como qualquer outra |
 | 16 | Painel | Item **"Catálogos"** na sidebar; lista, criar, excluir; a página do catálogo é o CRUD de skills (adicionar, remover, desativar/reativar) com alerta de skill desligada |
 | 17 | Página da skill | A exposição indireta aparece na lista "Publicada em" como linha somente-leitura "via catálogo X"; os catálogos de que participa aparecem num painel próprio, só leitura |
-| 18 | mcp-admin | Tools de catálogo com o mesmo alcance por dono do painel |
+| 18 | mcp-admin | Tools de catálogo com o mesmo alcance do painel — ~~por dono~~, **revogado pela `§3.2` do [`12`](12-acesso-granular.md)**: por nível de acesso (dono, concessão ou admin; os públicos, em leitura) |
 | 19 | Auditoria | `catalog.create` / `catalog.update` / `catalog.delete`, `target_label` = slug do catálogo; o vínculo com vMCP é `mcp.update` no servidor |
 
 ## 3. Semântica
@@ -108,9 +114,35 @@ skill, as portas somam (decisão 5). Cada catálogo é só mais um caminho.
 `incrementViewCount(skill, mcp)` / `incrementDownloadCount` continuam somando
 na skill e, quando há vínculo direto, no vínculo. Sem vínculo direto, somam
 na skill e em **cada catálogo** que contribuiu (ativo, com a participação
-ativa e vinculado ao vMCP). O catálogo responde "quanto o que eu agrupo é
-usado"; a skill continua sendo o total real. Sem tabela de eventos, como
-sempre (`02` §13).
+ativa e vinculado ao vMCP **pela porta da superfície lida** — a segunda nota
+abaixo guarda a definição anterior, sem a porta). O catálogo responde "quanto o
+que eu agrupo é usado"; a skill continua sendo o total real. ~~Sem tabela de
+eventos, como sempre~~ (`02` §13).
+
+> **Revogado neste ponto por [`13`](13-fichas-e-acessos.md)** (decisão 13 e
+> `§5`): a tabela de eventos existe desde a migration `018` — `skill_accesses`,
+> uma linha por leitura, com os catálogos por onde a skill chegou ao vMCP. Os
+> apps gravam por `recordSkillAccess`, que soma os contadores na mesma escrita e
+> pela **mesma regra de caminho** descrita acima; `incrementViewCount` e
+> `incrementDownloadCount` continuam no `@purple-skills/db`, só somando, sem
+> chamador nos apps. O que continua valendo é o contador ser inteiro, sem dedup.
+
+> **"Contribuiu" passou a olhar a porta** (relatório 041 da auditoria de
+> 2026-09-19). **Era**, até ali, só o que o parágrafo de cima diz — catálogo
+> ativo, participação ativa e vínculo com o vMCP, **por qualquer porta** —, e o
+> código seguia essa definição: com dois catálogos no mesmo servidor por portas
+> diferentes (A só `as_skill`, B só `as_prompt`), uma leitura pela tool gravava
+> `[A, B]` na linha de `skill_accesses` e somava nos dois, e quem administra B
+> via IP, chave e cliente de uma leitura que B não entregou. Hoje contribui o
+> catálogo vinculado **pela porta da superfície lida**, a regra da `§3.2`
+> (`vc.as_<porta>`): `tool`, `file` e `download` entram pela porta de skill;
+> `prompt` e `resource`, pela de mesmo nome (`accessPort`, em
+> `database/src/queries.ts`). A precedência do vínculo direto continua **sem**
+> porta, como na `§3.2`. Ficam dois regimes na guia Auditoria do catálogo: a
+> linha gravada antes traz todo catálogo vinculado, e o que já foi somado fica
+> somado — a porta do vínculo na hora de cada leitura passada não foi guardada.
+> `incrementViewCount` e `incrementDownloadCount` não recebem a superfície e
+> seguem somando sem olhar a porta; nenhum app as chama.
 
 ### 3.4 Dono nos dois lados
 
@@ -166,7 +198,7 @@ membro ativo, aparece esmaecido com o motivo no rodapé.
 > catálogos que a sessão administra (decisão 7)~~. A paleta é alimentada por
 > `GET /api/catalogs` sem recorte (`CommandPalette` → `getCatalogs()`), que
 > devolve o que a sessão enxerga — os seus, os concedidos e os **públicos**
-> —, porque vincular passou a exigir só `view` no catálogo (decisão 6).
+> —, porque vincular passou a exigir só `view` no catálogo (decisão 7 do `12`).
 
 O número do nó exclui os membros com nó próprio de propósito: no palco, uma
 skill que é nó e também estaria "dentro" do catálogo seria contada duas
@@ -194,8 +226,8 @@ ligada", e a lista de skills, o filtro "desligadas".
 ```
 GET    /api/catalogs                      lista
 POST   /api/catalogs                      cria (editor+)
-GET    /api/catalogs/:slug                detalhe (quem administra)
-PATCH  /api/catalogs/:slug                nome, slug, descrição, isActive, dono (admin)
+GET    /api/catalogs/:slug                detalhe (view)
+PATCH  /api/catalogs/:slug                nome, slug, descrição, isActive, isPublic (manage); dono (dono e admin)
 DELETE /api/catalogs/:slug
 PUT    /api/catalogs/:slug/skills         declarativa: [{ slug, isActive? }]
 PUT    /api/catalogs/:slug/skills/:skill  adiciona (ou { isActive } para ligar/desligar a participação)
@@ -207,21 +239,36 @@ PUT    /api/mcps/:slug/canvas             ganha catalogPositions
 PATCH  /api/skills/:slug                  ganha isActive
 ```
 
-> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisão 6 e
+> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisão 7 e
 > `§5.3`): ~~as rotas de vínculo passam por `loadManaged` do vMCP **e** do
 > catálogo~~. `loadManaged` não existe mais. Vincular é `load(user, mcpSlug,
 > 'edit')` no vMCP **e** `load(user, catalogSlug, 'view')` no catálogo
 > (`apps/admin/src/catalogs.ts`, `linkToMcp` e `setMcpCatalogs`); desvincular
 > exige só o `edit` do vMCP — tirar da lista é mexer no servidor, não no
 > catálogo.
+>
+> **Também revogado aqui** (`12` `§3.2` e decisão 9), e a tabela acima já vai
+> corrigida: o `GET` do detalhe era ~~"detalhe (quem administra)"~~ e hoje é
+> `view` (`catalogs.detail` → `load(user, slug, 'view')`); o `PATCH` era
+> ~~"nome, slug, descrição, isActive, dono (admin)"~~ e hoje exige `manage`,
+> ganhou `isPublic`, e a transferência é de **dono e admin** (`ownerFrom`, em
+> `apps/admin/src/access.ts`) — só deixar o catálogo **sem** dono continua
+> sendo do admin.
 
 ### 6.3 mcp-admin
 
 `list_catalogs`, `get_catalog`, `create_catalog`, `update_catalog`,
 `delete_catalog(confirm)`, `set_catalog_skills` (declarativa),
 `set_virtual_mcp_catalogs` (declarativa, no vMCP). `edit_skill` ganha
-`is_active`. Mesmo alcance por dono do painel; o token global cria catálogos
-órfãos.
+`is_active`. ~~Mesmo alcance por dono do painel~~; o token global cria
+catálogos órfãos.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md) `§3.2`:** o alcance
+> é o do painel, mas por **nível de acesso**, não por dono — o token global e
+> uma chave de admin veem e administram qualquer catálogo; a chave de um
+> usuário, os seus, os concedidos (no nível da concessão) e os públicos, em
+> leitura (`createCatalogHandlers`, em `apps/mcp-admin/src/catalogs.ts`). O
+> `12` acrescentou `share_catalog`, `unshare_catalog` e `transfer_catalog`.
 
 ## 7. Auditoria
 
@@ -240,8 +287,12 @@ que mudou nele. Ligar ou desligar uma skill é `update` na skill.
 - **O contador do catálogo é por caminho.** Um acesso à skill por vínculo
   direto não soma no catálogo mesmo que ela esteja nele: o catálogo não foi
   o caminho.
-- **Sem convite.** Cruzar dono de catálogo com dono de vMCP é trabalho do
-  admin, sempre.
+- **Sem convite.** ~~Cruzar dono de catálogo com dono de vMCP é trabalho do
+  admin, sempre.~~ — **revogado neste ponto pela decisão 7 do
+  [`12`](12-acesso-granular.md)**: quem tem `edit` no vMCP e `view` no
+  catálogo vincula sozinho, sem admin no meio. O "sem convite" continua
+  valendo — convite, pedido de acesso e aprovação seguem fora do escopo (`12`
+  `§11`); o que caiu foi o "trabalho do admin, sempre".
 - **Desligar a skill não avisa ninguém.** Ela some dos vMCPs na requisição
   seguinte, sem confirmação — é reversível, e é o mesmo comportamento de
   desligar um vMCP.

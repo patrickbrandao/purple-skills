@@ -1,5 +1,5 @@
 /**
- * A escolha do driver pela configuração (§4.1 e §6 de `docs/14-rag.md`).
+ * A escolha do driver pela configuração (§5 e §6 de `docs/14-rag.md`).
  *
  * O que estes testes protegem é a reconciliação entre as duas metades da
  * configuração: as **chaves** vivem no ambiente e são lidas no boot; o
@@ -7,6 +7,9 @@
  * com chave, e escolher entre eles na hora do uso, é o que faz a troca valer
  * sem recriar container.
  */
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { criarDriver, criarDriversDoAmbiente, modeloPadrao } from './index.js';
 import { GoogleDriver } from './google.js';
@@ -48,6 +51,52 @@ describe('criarDriversDoAmbiente', () => {
     expect(comChave).toEqual([]);
     expect(problemas).toEqual([]);
     expect(resolver('google')).toBeNull();
+  });
+
+  it('o CHANGE_ME do .env.example é chave ausente, e não derruba nada', () => {
+    // As três variáveis saem do `.env.example` com o placeholder, e o passo a
+    // passo só manda trocar a do driver que se vai usar. Ele não pode derrubar o
+    // boot (a busca é opcional) nem virar credencial: montado como chave, o
+    // boot dizia "chave presente", o indexador mandava texto de skill ao
+    // provedor com `CHANGE_ME` a cada ciclo e o painel mostrava "recusada" onde
+    // o certo é "não configurada".
+    const { resolver, comChave, problemas } = criarDriversDoAmbiente({
+      RAG_GOOGLE_API_KEY: 'CHANGE_ME',
+      RAG_OPENAI_API_KEY: ' change_me ',
+      RAG_VOYAGE_API_KEY: 'k',
+    });
+
+    expect(comChave).toEqual(['voyage']);
+    expect(problemas).toEqual([]);
+    expect(resolver('google')).toBeNull();
+    expect(resolver('openai')).toBeNull();
+    expect(resolver('voyage')).toBeInstanceOf(VoyageDriver);
+  });
+
+  it('com o .env.example copiado como está, nenhum driver é montado', () => {
+    const { comChave, problemas } = criarDriversDoAmbiente({
+      RAG_GOOGLE_API_KEY: 'CHANGE_ME',
+      RAG_OPENAI_API_KEY: 'CHANGE_ME',
+      RAG_VOYAGE_API_KEY: 'CHANGE_ME',
+    });
+    expect(comChave).toEqual([]);
+    expect(problemas).toEqual([]);
+  });
+
+  it('o placeholder dentro do arquivo de `_FILE` também é chave ausente', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ps-rag-key-'));
+    const comPlaceholder = join(dir, 'google');
+    const comChaveDeVerdade = join(dir, 'openai');
+    writeFileSync(comPlaceholder, 'CHANGE_ME\n');
+    writeFileSync(comChaveDeVerdade, 'k\n');
+
+    const { comChave } = criarDriversDoAmbiente({
+      RAG_GOOGLE_API_KEY_FILE: comPlaceholder,
+      // O arquivo tem prioridade: o placeholder que ficou na variável não conta.
+      RAG_OPENAI_API_KEY: 'CHANGE_ME',
+      RAG_OPENAI_API_KEY_FILE: comChaveDeVerdade,
+    });
+    expect(comChave).toEqual(['openai']);
   });
 
   it('a chave de um driver não vale para outro', () => {

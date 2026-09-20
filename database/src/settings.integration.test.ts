@@ -126,6 +126,24 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
 
     // Escolher de novo é idempotente (upsert), e escolher um uuid inexistente é 404.
     expect((await setDefaultVirtualMcp(mcp.uuid, SOURCE, ana)).status).toBe('ok');
+
+    // Maiúsculas são o **mesmo** uuid (`tasks/033`): a validação compara como
+    // `uuid` e acha o servidor, mas toda leitura compara `m.uuid::text = value`,
+    // e `uuid::text` sai sempre em minúsculas. Gravado como veio, o padrão
+    // virava "removido" e a raiz respondia 404 com o servidor lá, ligado — e a
+    // linha `mcp.default` na trilha dizendo que a troca deu certo.
+    const emMaiusculas = mcp.uuid.toUpperCase();
+    // Sem letra nenhuma no uuid o caso passaria por acaso; que falhe alto.
+    expect(emMaiusculas).not.toBe(mcp.uuid);
+    expect(await setDefaultVirtualMcp(emMaiusculas, SOURCE, ana)).toMatchObject({
+      status: 'ok',
+      mcp: { uuid: mcp.uuid, slug: 'time-a' },
+    });
+    const gravado = await raw.query("SELECT value FROM settings WHERE key = 'default_virtual_mcp'");
+    expect(gravado.rows[0]?.value).toBe(mcp.uuid);
+    expect((await listVirtualMcps()).find((m) => m.uuid === mcp.uuid)?.isDefault).toBe(true);
+    expect((await getVirtualMcp('time-a'))?.isDefault).toBe(true);
+
     const fantasma = await capture(
       setDefaultVirtualMcp('00000000-0000-0000-0000-000000000000', SOURCE, ana),
     );
@@ -189,23 +207,12 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     // Um vMCP `public` já existente força o sufixo.
     await raw.query("INSERT INTO virtual_mcps (slug, name) VALUES ('public', 'Public')");
 
-    const NOVAS = [
-      '011-mcp-padrao.sql',
-      '012-skills-flutuantes.sql',
-      '013-skill-icon.sql',
-      '014-canvas-do-vmcp.sql',
-      '015-mcp-sessions.sql',
-      '016-catalogos.sql',
-      '017-acesso-granular.sql',
-      '018-acessos-por-skill.sql',
-      '019-acessos-por-conta.sql',
-      '020-rag.sql',
-      '021-chaves-por-emissor.sql',
-      '022-busca-por-substring.sql',
-      '023-links-de-reset-substituidos.sql',
-      '024-auditoria-de-troca-de-senha.sql',
-      '025-fila-de-textos-do-rag.sql',
-    ];
+    // Tudo o que a pasta traz depois do `010`, lido dela: uma lista escrita à
+    // mão quebra a cada migration nova, de quem quer que seja.
+    const NOVAS = readdirSync(schemaDir())
+      .filter((file) => file.endsWith('.sql') && file.slice(0, 3) > '010')
+      .sort();
+    expect(NOVAS.slice(0, 2)).toEqual(['011-mcp-padrao.sql', '012-skills-flutuantes.sql']);
     expect(await runMigrations(url!)).toEqual(NOVAS);
 
     const resolved = await resolveDefaultVirtualMcp();
@@ -248,11 +255,20 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     // Toda skill que já existia nasce ligada no `016`.
     expect((await listSkills({ visibility: 'all' })).items.every((s) => s.isActive)).toBe(true);
 
-    // Re-executar o SQL de todas não faz nada: o backfill vê a chave e sai
-    // antes de tocar nas colunas que já não existem, o 012 é todo `IF EXISTS`
-    // e 013–016 são `IF NOT EXISTS` (com os CHECKs inline, pulados junto, e
-    // os nomeados em DROP + ADD). Apagar do histórico é o que força o runner
-    // a rodar o arquivo de novo — uma segunda chamada normal só o pularia.
+    // Re-executar o SQL de todas não falha nem muda a **estrutura**: o backfill
+    // vê a chave e sai antes de tocar nas colunas que já não existem, o 012 é
+    // todo `IF EXISTS` e 013–016 são `IF NOT EXISTS` (com os CHECKs inline,
+    // pulados junto, e os nomeados em DROP + ADD). Apagar do histórico é o que
+    // força o runner a rodar o arquivo de novo — uma segunda chamada normal só
+    // o pularia.
+    //
+    // De **dado** isto não prova nada, e não é por acaso que passa: toda skill
+    // daqui é privada (a asserção acima), então o `DROP COLUMN IF EXISTS
+    // is_public` do 012 seguido do `ADD COLUMN … DEFAULT false` do 017 devolve
+    // `false` onde já havia `false`. Com uma skill pública o flag se perde — é
+    // o que `migrate.integration.test.ts` mede, e o motivo de o CLI recusar a
+    // reaplicação retroativa. Aqui ela é de propósito, num banco descartável:
+    // `runMigrations` sem `refuseRetroactive`.
     await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
     expect(await runMigrations(url!)).toEqual(NOVAS);
     expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('public'))).toHaveLength(2);

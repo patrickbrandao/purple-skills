@@ -1,8 +1,20 @@
 # Busca semântica: espaços de embedding e os três drivers
 
 **Status: implementado**, em seis PRs (`feat/rag-*`, depois
-`feat/rag-tres-drivers`). Migration `020-rag.sql`, pacote `packages/rag/`,
-container `apps/indexer/`.
+`feat/rag-tres-drivers`). Migrations `020-rag.sql` e
+`025-fila-de-textos-do-rag.sql`, pacote `packages/rag/`, container
+`apps/indexer/`.
+
+> **Parcialmente revogado pela migration `025` e pela `beta.22`** — não por outro
+> documento, e por isso a marca está aqui e nos pontos. A `025` deu à fila de
+> textos **reserva** e **recusa gravada no banco**, e trouxe a coleta de textos
+> órfãos: deixaram de valer "a fila não tem reserva" (§7 e §7.1), "a marca vive
+> em memória do processo" (§7.1 e §12) e "a função que apaga ainda não existe"
+> (§12). Na mesma entrega o indexador passou a mandar prazo em toda chamada ao
+> provedor, o que desmente o "quem chama sem `signal` é o indexador" da §6. E,
+> desde a `beta.22`, o indexador **sobe no `up -d`**: o "perfil `rag`" da §7
+> deixou de valer. Cada trecho está riscado onde estava, com "**Era**"; o resto
+> do desenho continua em vigor.
 
 Este documento registra o desenho fechado nas entrevistas de 15/09/2026 (o
 driver `google`) e de 16/09/2026 (a generalização para três provedores). Ele é
@@ -144,7 +156,17 @@ indexador, o mcp-public e o site. Se o ambiente valesse sempre, um container com
 a variável diferente divergiria dos outros em silêncio. Então:
 
 1. **o admin semeia no boot**: para cada chave, grava o valor do ambiente só
-   quando o banco ainda não tem linha, com o ator `ambiente` na auditoria;
+   quando o banco ainda não tem linha, com o ator `ambiente` na auditoria. O
+   **modelo** tem uma condição a mais: só vira linha se for do driver que *vai
+   valer* — o do banco, quando o banco já decidiu. `RAG_MODEL` de outro driver
+   é divergência como qualquer outra: aviso no log, nenhuma linha, e segue
+   valendo o padrão do driver gravado. (**Era**, até a beta.22, conferido contra
+   o `RAG_DRIVER` do próprio `.env`, que acabara de ser ignorado: o banco ficava
+   com `google` + `text-embedding-3-large`, o indexador recusava a configuração
+   a cada ciclo e a busca caía para o modo textual.) Um par que **já** esteja
+   gravado assim não é consertado sozinho — semeadura nunca sobrescreve linha:
+   o boot avisa, e o painel abre com um modelo do driver gravado, para que
+   "Salvar" resolva;
 2. **daí em diante quem manda é o banco.** Mudar o `.env` não altera o valor em
    uso; o admin registra um aviso no log e o painel mostra o que está sendo
    ignorado;
@@ -204,16 +226,37 @@ chamador deve fazer com eles**, não pelo código HTTP que os causou:
 `RagInputTooLongError` faz quem chamou dividir o lote. Na busca essa distinção
 não importa — qualquer erro vira modo textual. Ela existe para o indexador.
 
+Cada classe carrega um `kind` — `auth`, `origin`, `quota`, `rate-limit`,
+`config`, `input-too-long`, `unavailable`, `timeout` —, que é a classe em uma
+palavra para quem não pode usar `instanceof`: o estado que o indexador publica é
+JSON, e é por ele que o painel resume a chave (§9). Duas subclasses existem só
+por causa disso, `RagQuotaError` (de `RagConfigError`) e `RagOriginError` (de
+`RagAuthError`): **herdam a política** e mudam o `kind`. O vocabulário é
+publicado no banco e lido por outro container — acrescentar é seguro, renomear
+não. A mensagem continua sendo prosa para o operador, livre para ser reescrita.
+
 A política de tentativas mora uma vez só, em `packages/rag/src/http.ts`: ela
-não vem da API, vem do que o indexador precisa, e é igual nos três.
+não vem da API, vem do que o indexador precisa, e é igual nos três. A falha de
+rede que sobra das tentativas — o `TypeError: fetch failed` do `undici`, conexão
+recusada, DNS, resposta que não dá para ler — sai de lá como
+`RagUnavailableError`, com o erro original em `cause`. (**Era**, até a beta.22,
+entregue crua: saía **sem classe**, e o indexador a publicava com
+`lastErrorKind: null`, que é o que ele reserva para erro que não veio do
+provedor.)
 
 Duas regras de prazo que valem para os três drivers:
 
 - **o `signal` é o orçamento de tempo total da consulta**, não de cada
   tentativa. Ele aborta o `fetch` **e** a espera entre tentativas, que é o que
-  faz `RAG_QUERY_TIMEOUT_MS` ser o teto do ciclo inteiro. Quem chama sem
-  `signal` — hoje só o indexador, em `embedDocuments` — dorme as esperas
-  inteiras, o que é o certo para ele;
+  faz `RAG_QUERY_TIMEOUT_MS` ser o teto do ciclo inteiro. O indexador faz o
+  mesmo com outro orçamento: cada chamada de `embedDocuments` leva o seu
+  `AbortSignal.timeout(RAG_INDEX_TIMEOUT_MS)` (§7), e prazo estourado vira
+  `RagTimeoutError`, sem tentativa nova. Hoje **nenhum** chamador de produção
+  fica sem prazo — até o `runCycle` montado à mão cai em `TIMEOUT_EMBEDDING_MS`;
+  quem chama o driver direto sem `signal`, num teste ou num script, dorme as
+  esperas inteiras, limitadas ao teto abaixo.
+  **Era**, até a `025`: ~~"Quem chama sem `signal` — hoje só o indexador, em
+  `embedDocuments` — dorme as esperas inteiras, o que é o certo para ele"~~;
 - **nenhuma espera passa de 60 segundos**, inclusive a que o provedor pede no
   `Retry-After`. Sem esse teto, seria o provedor a decidir por quanto tempo esta
   instalação fica parada.
@@ -229,7 +272,7 @@ Duas regras de prazo que valem para os três drivers:
 | Teto por requisição | 100 textos, 60 mil caracteres (teto nosso) | 300 mil tokens | 1.000 textos; 1 M, 320 mil e 120 mil tokens |
 | Base padrão | `https://generativelanguage.googleapis.com/v1beta` | `https://api.openai.com/v1` | `https://api.voyageai.com/v1` |
 
-Quatro armadilhas que custaram comentário no código:
+Seis armadilhas que custaram comentário no código:
 
 - **google: um item de `requests[]` por texto, sempre.** Mandar vários textos
   nas `parts` de um mesmo `content` é aceito pela API e devolve **um vetor
@@ -240,10 +283,30 @@ Quatro armadilhas que custaram comentário no código:
   é promessa; confiar nela gravaria o vetor de um texto sob o hash de outro, e
   o estrago só apareceria como busca ruim, meses depois;
 - **openai: `insufficient_quota` é 429 mas não é limite de taxa.** É conta sem
-  crédito: vira `RagConfigError`, que encerra o ciclo, em vez de queimá-lo todo
-  no recuo tentando de novo o que nunca vai passar;
+  crédito: vira `RagQuotaError` — um `RagConfigError`, que encerra o ciclo, em
+  vez de queimá-lo todo no recuo tentando de novo o que nunca vai passar. (**Era**
+  `RagConfigError` puro, e o painel, que lia a mensagem, mostrava a conta sem
+  crédito como "chave aceita"; ver §9);
 - **voyage: 403 é o IP, não a chave.** A mensagem diz isso, senão quem a lê
-  troca a chave à toa.
+  troca a chave à toa — e a classe também: `RagOriginError`, um `RagAuthError`
+  na política e outro `kind` no painel. O 403 de país ou região sem suporte da
+  OpenAI é o mesmo caso;
+- **openai: o 401 ecoa a chave recebida.** Mascarada quando tem cara de chave —
+  o começo, uma fileira de asteriscos e os quatro últimos caracteres —, e como
+  veio quando é curta ou está fora do formato, que é o caso de quem colou o
+  segredo errado na variável. A mensagem do provedor vai para o log do indexador,
+  para `rag.indexer.status` e daí para o "Último erro" do painel, que nunca
+  recebe a chave (§9): por isso ela passa antes por `ocultarChave` (`http.ts`),
+  que troca por `[chave omitida]` a chave literal e qualquer palavra com uma
+  fileira de asteriscos. Os **três** drivers passam por ali, para o corte não
+  depender de quem ecoa hoje;
+- **os três: o 400 residual não é só "texto longo demais".** Todo 400 que o
+  driver não reconhece vira `RagInputTooLongError`, e esse balde também recebe o
+  400 que é da **instalação** — um intermediário na URL base que não entende um
+  campo, contrato de API que mudou, erro de conta devolvido como 400. O driver
+  não tenta separá-los: dependeria do texto de erro de três provedores, que muda
+  sem aviso. Quem confere é o indexador, com o texto-sonda, antes de gravar uma
+  recusa (§7.1).
 
 Duas escolhas de dimensão, que parecem contraditórias e não são. Na OpenAI o
 parâmetro `dimensions` **encurta** o vetor a partir da nativa, então ele não é
@@ -271,8 +334,14 @@ asserção passar sem testar nada.
 
 ## 7. O indexador
 
-Container `apps/indexer`, perfil `rag`, com um modo contínuo e um `--once`. O
-ciclo separa duas coisas de propósito:
+Container `apps/indexer`, com um modo contínuo e um `--once`. Ele **sobe no
+`up -d`** como os demais serviços e, com o driver `off`, só publica o estado: a
+trava do envio de conteúdo é o driver escolhido no painel, com a chave dele no
+ambiente, e nada além disso ([`02`](02-architecture-decisions.md) §10). **Era**,
+até a `beta.21`: ~~"Container `apps/indexer`, perfil `rag`"~~ — subir o
+indexador era um segundo gesto (`docker compose --profile rag up -d indexer`); a
+linha do perfil segue no compose, comentada, para quem quiser esse gesto de
+volta. O ciclo separa duas coisas de propósito:
 
 1. **refatiar** as skills marcadas em `skills.rag_stale` — não custa nada e não
    precisa de chave nenhuma;
@@ -289,39 +358,115 @@ espera, sem chave refatia e avisa, com o driver `off` só publica o estado em
 leva o seu (`RAG_INDEX_TIMEOUT_MS`), senão um provedor que aceita a conexão e
 nunca responde segura a rodada pelos prazos internos do `undici` multiplicados
 pelas tentativas, com o painel mostrando dado velho sem dizer que o ciclo está
-pendurado. O lote cortado não se perde: a rodada seguinte retoma de onde parou.
+pendurado. O lote cortado não se perde: a rodada seguinte retoma de onde parou —
+o que foi gravado ficou gravado, e o que não foi é **devolvido à fila** na hora
+(abaixo).
 
-Mais de uma réplica pode rodar **sem corromper nada** — a reserva de skills usa
-`SKIP LOCKED` e a gravação de vetores ignora conflito. Segura não quer dizer
-econômica: a fila de textos (§7.1) **não tem reserva**, então duas réplicas leem
-a mesma lista e as duas pagam ao provedor pelo mesmo texto; o banco fica certo, a
-fatura dobra. Dar reserva à fila é mudança de `@purple-skills/db` (pedido
-aberto). O que o indexador já não faz é *se enganar* com isso: quem perde a
-corrida recebe zero de `insertRagVectors`, e é pelo número de textos
-**processados** — não pelo de gravados — que o `--once` decide se a fila andou.
-Pelo outro, ele encerraria dizendo "não há mais nada a fazer" logo depois de ter
-pago por um lote inteiro.
+Mais de uma réplica pode rodar **sem corromper nada e sem pagar duas vezes** — a
+reserva de skills usa `SKIP LOCKED`, a gravação de vetores ignora conflito e a
+fila de textos (§7.1) **reserva** o que entrega (`025`): `listPendingRagTexts`
+grava a reserva na mesma statement da leitura, por dez minutos (`RESERVA_MS`),
+então cada texto sai para um indexador só. A reserva vence sozinha — indexador
+morto não estaciona a fila — e `insertRagVectors` a baixa assim que o vetor
+entra. **Era**, até a `025`: ~~"Segura não quer dizer econômica: a fila de textos
+(§7.1) não tem reserva, então duas réplicas leem a mesma lista e as duas pagam
+ao provedor pelo mesmo texto; o banco fica certo, a fatura dobra. Dar reserva à
+fila é mudança de `@purple-skills/db` (pedido aberto)"~~. Onde a reserva não
+alcança — vencida no meio do caminho —, o indexador continua sem *se enganar*:
+quem perde a corrida recebe zero de `insertRagVectors`, e é pelo número de
+textos **processados** — não pelo de gravados — que o `--once` decide se a fila
+andou. Pelo outro, ele encerraria dizendo "não há mais nada a fazer" logo depois
+de ter pago por um lote inteiro.
+
+A reserva tem uma **terceira saída**, além do vetor e do vencimento: o indexador
+**vivo** que desiste do lote a devolve (`releaseRagTextReservations`, porta
+opcional como as outras da `025`). Quando um lote falha por motivo que não é o
+conteúdo — chave, cota, 5xx, prazo estourado, erro ao gravar o vetor —, a etapa
+encerra e devolve o que o ciclo reservou e não resolveu: a fatia que falhou **e**
+os lotes dos mesmos 64 textos que nem chegaram a sair. **Era**, até a beta.22:
+~~o lote ficava reservado por dez minutos por quem já tinha desistido dele~~ — o
+ciclo seguinte reservava os 64 seguintes e falhava de novo, e com a fila inteira
+reservada ela vinha "vazia": o estado publicado dizia `lastError: null`, o painel
+mostrava a chave como aceita com centenas de textos sem vetor, e o `--once`
+reexecutado depois de corrigir a chave saía com 0 sem embutir nada. A devolução
+é sempre **já**, inclusive no limite de taxa: adiar a volta daqueles textos não
+pouparia o provedor (o ciclo seguinte reservaria os textos seguintes) e, com a
+fila toda adiada, o sintoma voltaria — quem espera o `Retry-After` é o
+`ClienteHttp`, dentro do prazo da chamada. Só **não** devolve a etapa que durou
+mais que a própria reserva (provedor segurando as chamadas até o prazo, lote após
+lote): a reserva não tem dono, a dela já venceu sozinha, e o que estiver
+reservado àquela altura pode ser da réplica vizinha — devolver baixaria a reserva
+dela, e as duas pagariam pelo mesmo embedding. Falha ao devolver é engolida com
+linha no log, porque roda dentro do tratamento de outro erro; o prazo da reserva
+continua sendo a rede de segurança. E o caso que a devolução não alcança —
+processo morto no meio do lote, ou a outra réplica trabalhando — deixou de ser
+mudo: fila vazia com texto sem vetor que não é recusa vira uma linha no log
+dizendo quantos estão reservados e fora da fila.
+
+**A parada é educada.** SIGTERM e SIGINT não fecham mais o pool com o ciclo em
+curso: o ciclo consulta o pedido de parada **entre** uma skill e outra e **entre**
+um lote de textos e outro, termina o que está em curso e devolve à fila o que
+reservou e não começou — as skills com `releaseStaleSkill`, os textos com a
+devolução acima. O encerramento espera por isso **com teto** (8 segundos): o
+compose não define `stop_grace_period`, o Docker manda SIGKILL 10 segundos depois
+do SIGTERM, e um lote no provedor pode levar `RAG_INDEX_TIMEOUT_MS`. Estourado o
+teto, nada se perde — as duas reservas têm prazo (a de skills desde a migration
+`reserva-de-skills-com-prazo`) e o que ficou volta sozinho; a parada educada é o
+que troca "volta em até dez minutos" por "volta no ciclo seguinte" no caso de
+todo dia, que é o deploy. O `--once` tem o mesmo tratador, e sai com 128 + o
+número do sinal (143, 130): interrompido não é "não há mais pendência". A
+devolução de skill que falha — o banco caiu no meio do laço — deixou de ser
+engolida em silêncio e vai para o log.
 
 ### 7.1 O texto que o provedor recusa
 
-A fila de pendentes é ordenada por `created_at` e **não tem reserva**: ela
-devolve os textos sem vetor mais antigos, sempre os mesmos, até eles ganharem
-vetor. Um texto que o provedor recusa pelo conteúdo — `RagInputTooLongError`, que
-é onde caem os 400 residuais dos três drivers — nunca ganha vetor. Sem
-tratamento, ele volta em **todo** ciclo, é pago de novo a cada intervalo e nada
-atrás dele chega a ser tentado: basta um texto assim no acervo para a fila parar
-de andar, com a fatura crescendo e a cobertura parada onde estava.
+A fila de pendentes é ordenada por `created_at`: ela devolve os textos sem vetor
+mais antigos — desde a `025`, só os que não estão **reservados** por outro
+indexador nem **recusados** neste espaço (`rag_text_status`). **Era**, até a
+`025`: ~~"e **não tem reserva**: ela devolve os textos sem vetor mais antigos,
+sempre os mesmos, até eles ganharem vetor"~~ — é o comportamento que explica o
+problema abaixo. Um texto que o provedor recusa pelo conteúdo —
+`RagInputTooLongError`, que é onde caem os 400 residuais dos três drivers —
+nunca ganha vetor. Sem tratamento, ele volta em **todo** ciclo, é pago de novo a
+cada intervalo e nada atrás dele chega a ser tentado: basta um texto assim no
+acervo para a fila parar de andar, com a fatura crescendo e a cobertura parada
+onde estava.
 
-Por isso a etapa de embutir faz três coisas:
+Por isso a etapa de embutir faz quatro coisas (**era** "três", até a beta.22: a
+segunda é nova):
 
 1. **grava lote a lote.** Cada lote que volta é gravado antes de o próximo sair;
    um erro adiante não joga fora o que já foi pago;
-2. **isola o culpado.** Lote recusado pelo conteúdo volta um texto por vez —
+2. **confere a recusa antes de acreditar nela.** A marca é permanente, e um 400
+   só prova que o problema é *aquele conteúdo* se o provedor, com a mesma chave,
+   URL, modelo e formato, aceita **outro**. Todo lote recusado passa primeiro pelo
+   **texto-sonda** (`TEXTO_SONDA`): fixo, curto, sem conteúdo de skill, enviado
+   pelo mesmo `embedDocuments` do ciclo e com o vetor descartado. Sonda aceita, o
+   problema é o conteúdo e a caça ao culpado segue. Sonda **também** recusada, o
+   problema é da instalação — intermediário na URL base, contrato da API, conta —:
+   **nada é marcado**, o lote volta à fila (§7), o ciclo registra um
+   `RagConfigError` que cita a resposta do provedor e encerra, o painel mostra o
+   erro e o `--once` sai com 1. Sonda que cai por outro motivo (rede, cota, prazo)
+   é falha do ciclo, e na dúvida também não se marca nada. A prova vem **depois**
+   do 400 e a cada lote recusado, e não de "já aceitou algo neste ciclo": o 400
+   sistêmico pode começar no meio dele. Custa uma requisição de poucos tokens por
+   lote recusado — em regime normal, uma vez por texto venenoso, que depois de
+   marcado não volta;
+3. **isola o culpado.** Lote recusado pelo conteúdo volta um texto por vez —
    texto sozinho não deixa o driver dividir o lote outra vez, e é assim que se
    descobre qual deles o provedor não aceita;
-3. **marca o recusado.** Ele sai da fila: não é reenviado nos ciclos seguintes,
+4. **marca o recusado.** Ele sai da fila: não é reenviado nos ciclos seguintes,
    o log registra o hash curto e o tamanho (nunca o conteúdo, que pode ser de
    skill privada), e `rag.indexer.status` publica `refusedTexts`.
+
+Sem a segunda, um 400 que atingisse **todo** texto marcava o acervo inteiro como
+recusado para sempre, 64 textos a cada ciclo, com `erros === 0`, a chave
+"aceita" no painel e o `--once` saindo com 0 — e nada desfazia a marca: nem
+"Reindexar" (o texto volta sob o mesmo hash e reencontra a mesma linha), nem
+reiniciar o container, nem, no `google`, trocar de modelo. "Lote inteiro recusado
+é erro de configuração" não serve no lugar da sonda: um arquivo grande num
+alfabeto que gasta mais tokens por caractere rende dez partes genuinamente
+recusadas em sequência, e o bloqueio de cabeça de fila voltaria.
 
 Recusa tratada **não** conta como erro do ciclo: o `--once` não pode sair com 1
 por causa de um texto que nunca vai passar. Erro que não é de conteúdo, esse sim,
@@ -329,12 +474,29 @@ encerra a etapa em vez de seguir para os lotes seguintes — a política de
 tentativas de `http.ts` já recuou e tentou de novo antes de ele chegar aqui, e o
 que foi gravado ficou gravado.
 
-A marca vive **em memória do processo**: gravá-la no banco depende de uma função
-de `@purple-skills/db` que ainda não existe (a porta `markRagTextRefused` do
-indexador já espera por ela). O limite disso é estreito e conhecido — reiniciar o
-container tenta o texto recusado uma vez mais, uma vez por vida em vez de uma vez
-por ciclo, e acima de algumas centenas de recusas no mesmo espaço a janela pedida
-à fila bate no teto de 500 linhas e o bloqueio volta.
+A marca é gravada **no banco** (`markRagTextRefused`, `025`): a recusa vira linha
+em `rag_text_status`, por par (espaço, texto) — outro modelo pode aceitar o que
+este recusou —, e é a própria fila que deixa de devolvê-la, inclusive depois de
+reiniciar o container e para a réplica vizinha. Por isso a fila pede exatamente
+o tamanho do lote (`TEXT_BATCH`, 64): inflar a janela para descartar em memória
+deixou de ter motivo, e passaria a **reservar** texto que o ciclo não vai
+embutir. A memória do processo (`RecusasRag`) continua atrás disso como **rede
+de segurança**: a gravação da marca roda dentro do tratamento de um erro e é
+engolida se falhar, e sem a lista o texto voltaria para ser pago de novo. Ela
+guarda **só** a recusa que o banco não guardou (**era**, até a beta.22: ~~toda
+recusa~~) — guardando todas, passava por cima do reparo do painel (§9):
+`clearRagRefusals` apaga as linhas do banco e não alcança o processo do
+indexador, que reservava os textos liberados, os descartava em memória e os
+segurava por dez minutos a cada ciclo, até alguém reiniciar o container. Efeito
+colateral aceito: o texto recusado que fica órfão e é coletado (§12) perde a
+marca, e se o mesmo conteúdo voltar ao acervo o provedor o recusa uma vez mais.
+**Era**, até a `025`: ~~"A marca vive **em memória do processo**: gravá-la no
+banco depende de uma função de `@purple-skills/db` que ainda não existe (a porta
+`markRagTextRefused` do indexador já espera por ela). O limite disso é estreito
+e conhecido — reiniciar o container tenta o texto recusado uma vez mais, uma vez
+por vida em vez de uma vez por ciclo, e acima de algumas centenas de recusas no
+mesmo espaço a janela pedida à fila bate no teto de 500 linhas e o bloqueio
+volta"~~.
 
 ## 8. A busca
 
@@ -367,12 +529,38 @@ Um painel "Busca semântica" em Configurações, só para administrador:
   combinação faria o indexador recusar a configuração no ciclo seguinte;
 - **origem de cada valor**: banco, ambiente ou padrão do código, e o que do
   `.env` está sendo ignorado;
-- **estado da chave** — presente, ausente, recusada, cota esgotada ou
-  desconhecido. O painel **não recebe a chave**: tudo que ele sabe vem de
-  `rag.indexer.status`, e "desconhecido" é o estado honesto de quando o
-  indexador ainda não rodou;
-- **cobertura e pendências** do espaço ativo, e o último erro;
-- **Reindexar**, que marca o acervo e não apaga vetor nenhum.
+- **estado da chave** — presente, ausente, recusada, cota esgotada, sem
+  crédito, não confirmada ou desconhecido. O painel **não recebe a chave**: tudo
+  que ele sabe vem de `rag.indexer.status`, e "desconhecido" é o estado honesto
+  de quando o indexador ainda não rodou. O estado é uma **classificação**, e sai
+  da classe do último erro (`lastErrorKind`, o `kind` da §6), que o indexador
+  publica ao lado da mensagem: `auth` é recusada, `quota` é sem crédito,
+  `rate-limit` é cota esgotada, e todo o resto — provedor fora do ar, prazo,
+  configuração, origem recusada, erro que nem veio do provedor — é **não
+  confirmada**, porque houve erro e ele não fala da chave. Só ciclo sem erro dá
+  "presente". (**Era**, até a beta.22, deduzido por pedaço de texto da mensagem,
+  e o que a busca não reconhecia virava "presente": a conta da OpenAI sem
+  crédito e o IP recusado pela Voyage apareciam como "aceita pelo provedor",
+  logo acima do erro.) Estado gravado por um indexador anterior ao campo cai no
+  recuo por mensagem, que também deixou de concluir "presente" diante de erro;
+- **cobertura e pendências** do espaço ativo, e o último erro. A pendência
+  separa o que o indexador **vai** fazer do que ele não faz sozinho: os textos
+  **recusados** pelo provedor saem da conta de "a embutir" e as skills
+  **travadas** saem da de "a refatiar", cada uma com a sua linha. Travada é a
+  skill cuja leitura começou três vezes e não terminou nenhuma (é a que derruba
+  o indexador; o banco deixa de retomá-la sozinho e a conta em
+  `ragCoverage().stuckSkills`) — editá-la ou "Reindexar" dá uma chance nova;
+- **Reindexar**, que marca o acervo e não apaga vetor nenhum;
+- **Tentar de novo** os textos recusados, que aparece só quando há algum. É o
+  reparo da marca gravada por engano — um 400 que era da instalação —, e hoje
+  também o único jeito de desfazê-la: a recusa é permanente e nenhuma gravação
+  automática a toca. **Não** é o "Reindexar", e não foi embutido nele de
+  propósito: reindexar é de graça por contrato, e isto custa requisições — o que
+  for recusa genuína é recusado uma vez mais e remarcado. Por isso pede
+  confirmação. Vale para o espaço **em uso** (o mesmo de onde sai a contagem ao
+  lado do botão), e o banco o audita como `rag.reindex` com `"<n> recusas"` no
+  alvo. O indexador não precisa ser reiniciado: a memória dele só guarda a recusa
+  que o banco não guardou (§7.1).
 
 O **aviso do nível gratuito é só do Google**. Com esse driver ele é sempre
 exibido, porque o painel não tem como saber se a chave é gratuita ou paga, e a
@@ -412,29 +600,65 @@ couber numa varredura.
   terceiro o texto de **todo** arquivo de texto de **toda** skill indexada,
   privada ou não (§4.1). Quem anexa o arquivo e quem liga o RAG podem ser
   pessoas diferentes, e não há controle de escopo da indexação — a escolha é
-  ligar ou não ligar;
+  ligar ou não ligar. Desde a `beta.22` essa escolha é **um gesto só**: o
+  indexador já está no ar (§7), então escolher o driver no painel, com a chave
+  no ambiente, basta para o envio começar no ciclo seguinte;
 - **dados no nível gratuito do Google:** conteúdo e consultas são usados para
   melhorar produtos, e revisores humanos podem lê-los. No Espaço Econômico
   Europeu, na Suíça e no Reino Unido, só o nível pago é permitido para quem
   oferece o serviço a usuários dessas regiões;
 - **ruído:** sem corte por distância, a perna vetorial acrescenta vizinhos
   pouco relacionados;
+- **a exclusão com hífen não atravessa a perna vetorial** (relatório 062 da
+  auditoria de 2026-09-19): `-termo` é sintaxe do `websearch_to_tsquery`, e só a
+  perna textual o avalia — a CTE `semantica` filtra por visibilidade e tag, não
+  por texto. Na busca híbrida a skill excluída pode voltar entre os 20 vizinhos
+  (volta **sempre** num acervo de até 20 skills com vetor, porque o `LIMIT` não
+  corta nada), empata no RRF com quem só veio do texto e desempata por acessos;
+  e o termo excluído ainda vai inteiro ao provedor, dentro da consulta, puxando
+  por ela. A descrição de `search_skills` diz isso ao cliente, e o campo `mode`
+  é como ele sabe em qual caso está. O conserto de verdade é do banco —
+  aplicar à perna vetorial **só a parte negativa** da consulta, nunca o
+  predicado textual inteiro, que mataria a busca por significado — e, como toda
+  mexida no SQL da híbrida, precisa ser medido antes (o custo estimado das
+  subconsultas de visibilidade já é o que dispara o JIT);
 - **rotação de chave:** exige recriar os containers do indexador, do mcp-public
   e do site;
 - **ambiente ignorado:** depois que o banco tem um valor, mudar o `.env` não
   altera a configuração — só gera aviso;
-- **recusa só em memória:** o texto que o provedor recusa sai da fila enquanto o
-  processo viver (§7.1); reiniciar o indexador o tenta uma vez mais, e nada no
-  painel diz *qual* texto foi recusado — só quantos;
-- **crescimento:** vetores e textos órfãos se acumulam até existir a limpeza.
-  Editar ou apagar uma skill tira as ocorrências e deixa o texto canônico: a FK
-  de `rag_skill_texts` é sem cascata de propósito, e nada apaga o que ficou. O
-  ciclo do indexador já chama a coleta no fim de cada rodada — depois de o
-  refatiamento ter commitado, senão apagaria um texto que a ocorrência seguinte
-  vai referenciar —, mas a função que apaga é de `@purple-skills/db` e ainda não
-  existe (a porta `collectOrphanRagTexts` espera por ela). O custo de hoje é de
-  disco, não de API: a fila de pendentes exige ocorrência e não manda órfão ao
-  provedor;
+- **a recusa não diz qual:** o texto que o provedor recusa sai da fila de vez
+  (§7.1), mas nada no painel diz *qual* texto foi recusado — só quantos; o hash
+  curto e o tamanho ficam no log do indexador, e o motivo, em
+  `rag_text_status.reason`. **Era**, até a `025`: ~~"**recusa só em memória:** o
+  texto que o provedor recusa sai da fila enquanto o processo viver (§7.1);
+  reiniciar o indexador o tenta uma vez mais"~~;
+- **a sonda é curta:** o texto-sonda (§7.1) prova que o provedor aceita *alguma
+  coisa* nas mesmas condições, não que aceitaria aquele texto sem o que está no
+  caminho. Um 400 que dependa do **tamanho** — um intermediário que limita o
+  corpo da requisição — passa pela sonda e marca o texto. É recusa de conteúdo
+  no sentido que importa (aquele texto não passa por ali), e o reparo é o
+  "Tentar de novo" do painel (§9), depois de corrigida a causa. O mesmo vale
+  para o 400 sistêmico que começa **entre** a sonda aceita e o fim da caça ao
+  culpado do mesmo lote: uma janela de segundos, no máximo um lote;
+- **falha persistente bate no provedor a cada ciclo:** com a devolução da
+  reserva (§7), o lote que falhou volta no ciclo seguinte, e uma chave recusada
+  ou um 400 sistêmico custam algumas requisições recusadas a cada intervalo — o
+  comportamento de antes da `025`, e o preço de o erro aparecer em **todo**
+  ciclo em vez de sumir com a fila reservada;
+- **crescimento:** textos órfãos, e os vetores deles, se acumulam **entre uma
+  coleta e outra**. Editar ou apagar uma skill tira as ocorrências e deixa o
+  texto canônico: a FK de `rag_skill_texts` é sem cascata de propósito. Quem
+  apaga o que ficou é `collectOrphanRagTexts` (`025`), que o ciclo do indexador
+  chama no fim de cada rodada — depois de o refatiamento ter commitado, senão
+  apagaria um texto que a ocorrência seguinte vai referenciar —, até
+  `ORPHAN_BATCH` (500) textos por vez, com os vetores indo pela cascata. Sem
+  indexador no ar não há coleta, e os vetores de um **espaço abandonado** não
+  são órfãos: apagar um espaço continua não existindo (§10). O custo é de disco,
+  não de API: a fila de pendentes exige ocorrência e não manda órfão ao
+  provedor. **Era**, até a `025`: ~~"vetores e textos órfãos se acumulam até
+  existir a limpeza […] e nada apaga o que ficou […] mas a função que apaga é de
+  `@purple-skills/db` e ainda não existe (a porta `collectOrphanRagTexts` espera
+  por ela)"~~;
 - **visão do admin:** um erro de chave no mcp-public ou no site aparece no log
   desses containers, não no painel;
 - **limites não publicados:** o tamanho máximo de lote do Google não é

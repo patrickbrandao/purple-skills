@@ -14,6 +14,7 @@ vi.mock('./config.js', () => ({
 }));
 
 const { callerAtual, comCaller, resolveCaller } = await import('./auth.js');
+import type { Caller } from './auth.js';
 
 /** Requisição mínima: `resolveCaller` lê o header Authorization e, para o registro de acessos, o IP e o agente. */
 const request = (authorization?: string) =>
@@ -121,7 +122,10 @@ describe('credencial do MCP administrativo', () => {
  * rebaixar a conta no painel não tira o poder de quem já está conectado.
  */
 describe('credencial da requisição em curso', () => {
-  const doInitialize = {
+  // Anotado como `Caller` de propósito: sem isso o tipo inferido é o do
+  // literal, mais estreito que o que `callerAtual` devolve, e o `visto` abaixo
+  // não aceita o retorno dela.
+  const doInitialize: Caller = {
     actor: { userUuid: 'uuid-do-dono', label: 'maria@exemplo.com' },
     role: 'admin' as const,
     identity: 'key:id-da-chave',

@@ -10,7 +10,11 @@ import { CheckIcon, CopyIcon } from './Icons.js';
    o arquivo inteiro como ele sai do download — frontmatter e
    corpo — para quem quer copiar e colar num SKILL.md próprio.
 
-   Cópia idêntica em `apps/site` e `apps/admin` — ao mexer, copie.
+   Quase cópia entre `apps/site` e `apps/admin`: só as duas linhas
+   dos ícones diferem (`./Icons.js` no site, `lucide-react` no
+   painel). NÃO copie por cima — `Icons.tsx` não existe no painel e
+   o build dele quebra. Leve a mudança à mão para os dois lados
+   (docs/04-design-system.md, "A caixa do prompt").
    ============================================================ */
 
 type Props = {

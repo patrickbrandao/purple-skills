@@ -6,6 +6,7 @@ import {
   normalizeEmail,
   type AccessLevel,
   type EffectiveAccess,
+  type Grant,
   type Role,
   type SkillSummary,
 } from '@purple-skills/shared';
@@ -54,11 +55,33 @@ export function levelFrom(raw: unknown): AccessLevel {
   return raw;
 }
 
-/** A conta alvo de uma concessão ou transferência, pelo e-mail: precisa existir e estar ativa. */
+/**
+ * A conta alvo de uma **concessão ou transferência**, pelo e-mail: precisa
+ * existir e estar ativa. Mudar o nível é a mesma chamada de conceder, e também
+ * passa por aqui. Revogar **não**: ver `grantOf`.
+ */
 export async function accountByEmail(rawEmail: string): Promise<{ uuid: string; email: string }> {
   const email = normalizeEmail(rawEmail);
   if (!email) throw badRequest('Informe o e-mail da conta');
   const user = await getUserByEmail(email);
   if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${email}`);
   return { uuid: user.uuid, email: user.email };
+}
+
+/**
+ * A concessão a revogar, procurada pelo e-mail **na lista do próprio objeto** —
+ * a que quem tem `manage` já lê —, e não em `users`. Gêmea da do painel
+ * (`apps/admin/src/access.ts`), onde está o porquê inteiro: revogar passava por
+ * `accountByEmail`, que exige conta ativa, e a concessão de quem foi desativado
+ * depois de recebê-la não saía por tool nenhuma, contra a decisão 10 do
+ * `docs/12` (relatório 039 da auditoria de 2026-09-19). Pela lista a resposta
+ * também não diz se existe conta com aquele e-mail.
+ */
+export function grantOf(grants: readonly Grant[], rawEmail: string, where: string): Grant {
+  const email = normalizeEmail(rawEmail);
+  if (!email) throw badRequest('Informe o e-mail da conta');
+  const grant = grants.find((item) => item.email.toLowerCase() === email);
+  // `where` é o lugar por extenso — "nesta skill", "neste catálogo".
+  if (!grant) throw notFound(`A conta não tem concessão ${where}`);
+  return grant;
 }

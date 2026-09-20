@@ -586,15 +586,35 @@ export function Modal({
 
 /* ---- onde a skill está ---- */
 
-/** O site mostra a skill quando ela está ligada e em algum vMCP aberto e ligado. */
-export const noSite = (skill: { isActive: boolean; mcps: SkillMcpRef[] }): boolean =>
-  skill.isActive && skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive);
+/**
+ * O site mostra a skill quando ela está ligada **e** é pública, ou está em
+ * algum vMCP aberto e ligado, ou participa de catálogo público e ligado
+ * (`docs/12-acesso-granular.md` §7 — revoga a regra do `09` §4.1, que era só o
+ * vínculo aberto, de quando `is_public` não existia). É a mesma conta do
+ * `pageUrl` dos dois MCPs; o painel tinha ficado com a antiga, e dizia "não é
+ * exibida no site" de uma skill pública recém-desvinculada.
+ *
+ * O terceiro ramo fica sem sinal: `skill.catalogs` traz o estado do catálogo e
+ * o da participação, não o `is_public` dele. Enquanto o banco não expuser um
+ * `onSite` derivado de `OPEN_EXPOSURE`, essa skill segue sem o selo — errar
+ * para menos é melhor que oferecer um "ver no site" que dá 404 —, e os textos
+ * abaixo dizem "salvo por um catálogo público" em vez de negar o que não veem.
+ */
+export const noSite = (skill: { isActive: boolean; isPublic: boolean; mcps: SkillMcpRef[] }): boolean =>
+  skill.isActive && (skill.isPublic || skill.mcps.some((mcp) => mcp.isOpen && mcp.isActive));
 
 /**
  * Onde a skill está, em selos: "desligada", "sem vínculo" (flutuante), "em N
- * servidores" e, quando algum é aberto e ligado, "no site". Só leitura.
+ * servidores" e, quando ela é pública ou algum servidor é aberto e ligado, "no
+ * site". Só leitura.
  */
-export function McpChips({ skill, compact }: { skill: { isActive: boolean; mcps: SkillMcpRef[] }; compact?: boolean }) {
+export function McpChips({
+  skill,
+  compact,
+}: {
+  skill: { isActive: boolean; isPublic: boolean; mcps: SkillMcpRef[] };
+  compact?: boolean;
+}) {
   const desligada = !skill.isActive && (
     <Badge tone="danger" title="Desligada: some de todo servidor e do site até ser religada">
       desligada
@@ -604,9 +624,21 @@ export function McpChips({ skill, compact }: { skill: { isActive: boolean; mcps:
     return (
       <span className="mcp-chips">
         {desligada}
-        <Badge tone="outline" title="Não está em nenhum servidor MCP: não é exibida no site nem em servidor algum">
+        <Badge
+          tone="outline"
+          title={
+            skill.isPublic
+              ? 'Não está em nenhum servidor MCP: nenhum a serve — mas, marcada pública, continua no site'
+              : 'Não está em nenhum servidor MCP: nenhum a serve, e no site ela só aparece por um catálogo público'
+          }
+        >
           sem vínculo
         </Badge>
+        {noSite(skill) && (
+          <Badge tone="ok" title="Marcada pública: aparece no site mesmo sem vínculo">
+            no site
+          </Badge>
+        )}
       </span>
     );
   }
@@ -627,12 +659,22 @@ export function McpChips({ skill, compact }: { skill: { isActive: boolean; mcps:
       <Badge tone="accent" title={`Publicada em: ${names}`}>
         {compact ? skill.mcps.length : `em ${skill.mcps.length} servidor${skill.mcps.length === 1 ? '' : 'es'}`}
       </Badge>
-      {abertos > 0 ? (
-        <Badge tone="ok" title={`${abertos} deles aberto(s) e ligado(s): a skill aparece no site`}>
+      {noSite(skill) ? (
+        <Badge
+          tone="ok"
+          title={
+            abertos > 0
+              ? `${abertos} deles aberto(s) e ligado(s): a skill aparece no site`
+              : 'Marcada pública: aparece no site mesmo sem servidor aberto'
+          }
+        >
           no site
         </Badge>
       ) : (
-        <Badge tone="outline" title="Só em servidores fechados ou desligados: não aparece no site">
+        <Badge
+          tone="outline"
+          title="Não é pública e só está em servidores fechados ou desligados: não aparece no site, salvo por um catálogo público"
+        >
           fora do site
         </Badge>
       )}
@@ -710,30 +752,56 @@ export function useStored<T>(key: string, initial: T): [T, (value: T | ((current
   return [value, set];
 }
 
-/** Repete `fn` a cada `ms` enquanto a aba estiver visível. */
-export function usePolling(fn: () => void | Promise<void>, ms: number, enabled = true) {
+type PollingDocument = Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>;
+
+/**
+ * O ciclo do `usePolling`, fora do React para ter teste: chama `fn` na hora e a
+ * cada `ms` enquanto a aba estiver visível, e devolve o que desliga tudo.
+ * Esconder a aba para o relógio; voltar chama na hora e rearma.
+ *
+ * Com `immediate: false`, **só a primeira** chamada é pulada: é de quem já
+ * busca na montagem e não quer a mesma consulta duas vezes. Voltar à aba
+ * continua atualizando na hora — senão a tela ficaria até `ms` com dado velho.
+ */
+export function startPolling(
+  fn: () => void | Promise<void>,
+  ms: number,
+  { immediate = true, doc = document }: { immediate?: boolean; doc?: PollingDocument } = {},
+): () => void {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let skip = !immediate;
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+  const start = () => {
+    stop();
+    if (skip) skip = false;
+    else void fn();
+    timer = setInterval(() => void fn(), ms);
+  };
+  const visibility = () => (doc.hidden ? stop() : start());
+  start();
+  doc.addEventListener('visibilitychange', visibility);
+  return () => {
+    stop();
+    doc.removeEventListener('visibilitychange', visibility);
+  };
+}
+
+/** Repete `fn` a cada `ms` enquanto a aba estiver visível; as opções são as de `startPolling`. */
+export function usePolling(
+  fn: () => void | Promise<void>,
+  ms: number,
+  enabled = true,
+  { immediate = true }: { immediate?: boolean } = {},
+) {
   const latest = useRef(fn);
   latest.current = fn;
   useEffect(() => {
     if (!enabled) return;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const start = () => {
-      stop();
-      void latest.current();
-      timer = setInterval(() => void latest.current(), ms);
-    };
-    const stop = () => {
-      if (timer) clearInterval(timer);
-      timer = undefined;
-    };
-    const visibility = () => (document.hidden ? stop() : start());
-    start();
-    document.addEventListener('visibilitychange', visibility);
-    return () => {
-      stop();
-      document.removeEventListener('visibilitychange', visibility);
-    };
-  }, [ms, enabled]);
+    return startPolling(() => latest.current(), ms, { immediate });
+  }, [ms, enabled, immediate]);
 }
 
 export const useMounted = () => {

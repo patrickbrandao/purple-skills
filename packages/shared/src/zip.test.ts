@@ -3,6 +3,7 @@ import { crc32, deflateRawSync } from 'node:zlib';
 import AdmZip from 'adm-zip';
 import { describe, expect, it } from 'vitest';
 import {
+  ZipContentError,
   ZipError,
   ZipFormatError,
   ZipLimitError,
@@ -102,6 +103,38 @@ describe('extractZip', () => {
     expect(files.map((f) => f.relativePath).sort()).toEqual(['SKILL.md', 'ref/b.md']);
   });
 
+  it('não remove a pasta raiz quando ela não traz o SKILL.md: é subpasta, não embrulho', () => {
+    // `zip -r scripts.zip scripts/` numa skill que já existe: cortar `scripts/`
+    // gravaria os dois na raiz, ao lado dos originais.
+    const files = extractZip(makeZip({ 'scripts/run.py': 'x', 'scripts/util.py': 'y' }));
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['scripts/run.py', 'scripts/util.py']);
+
+    const unico = extractZip(makeZip({ 'docs/README.md': '# leia' }));
+    expect(unico.map((f) => f.relativePath)).toEqual(['docs/README.md']);
+  });
+
+  it('remove a pasta raiz mesmo com o SKILL.md em caixa baixa', () => {
+    const files = extractZip(makeZip({ 'minha-skill/skill.md': '# a', 'minha-skill/ref/b.md': '# b' }));
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['ref/b.md', 'skill.md']);
+  });
+
+  it('um SKILL.md mais fundo não faz da pasta raiz um embrulho', () => {
+    const files = extractZip(
+      makeZip({ 'references/exemplo/SKILL.md': '# exemplo', 'references/exemplo/a.md': '# a' }),
+    );
+    expect(files.map((f) => f.relativePath).sort()).toEqual([
+      'references/exemplo/SKILL.md',
+      'references/exemplo/a.md',
+    ]);
+  });
+
+  it('o lixo de sistema operacional não decide se há embrulho', () => {
+    const files = extractZip(
+      makeZip({ 'minha-skill/SKILL.md': '# a', 'minha-skill/ref/b.md': '# b', '__MACOSX/minha-skill/._SKILL.md': 'x' }),
+    );
+    expect(files.map((f) => f.relativePath).sort()).toEqual(['SKILL.md', 'ref/b.md']);
+  });
+
   it('preserva a estrutura quando há mais de uma raiz', () => {
     const files = extractZip(makeZip({ 'SKILL.md': '# a', 'ref/b.md': '# b' }));
     expect(files.map((f) => f.relativePath).sort()).toEqual(['SKILL.md', 'ref/b.md']);
@@ -132,6 +165,65 @@ describe('toExtractedFile', () => {
     const file = toExtractedFile('notas.md', Buffer.from([0x61, 0x00, 0x62]));
     expect(file.textContent).toBeNull();
     expect(file.binaryContent).not.toBeNull();
+  });
+
+  it('guarda byte a byte, como binário, o texto que não é UTF-8 válido', () => {
+    // `preço;ação\n` como o Excel exporta um .csv (Windows-1252): 11 bytes.
+    // `toString('utf8')` devolveria `pre�o;a��o` sem erro, e regravado isso
+    // são 17 bytes — o original não volta mais.
+    const cp1252 = Buffer.from([0x70, 0x72, 0x65, 0xe7, 0x6f, 0x3b, 0x61, 0xe7, 0xe3, 0x6f, 0x0a]);
+    const file = toExtractedFile('dados.csv', cp1252);
+
+    expect(file.textContent).toBeNull();
+    expect(file.binaryContent?.equals(cp1252)).toBe(true);
+    expect(file.mimeType).toBe('text/csv');
+    expect(file.sizeBytes).toBe(11);
+  });
+
+  it('continua texto o UTF-8 válido: com acento, vazio e com BOM, que volta inteiro', () => {
+    expect(toExtractedFile('dados.csv', Buffer.from('preço;ação\n', 'utf8')).textContent).toBe('preço;ação\n');
+
+    const vazio = toExtractedFile('vazio.txt', Buffer.alloc(0));
+    expect(vazio.textContent).toBe('');
+    expect(vazio.binaryContent).toBeNull();
+
+    const comBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a;b\n', 'utf8')]);
+    const file = toExtractedFile('dados.csv', comBom);
+    expect(file.binaryContent).toBeNull();
+    expect(Buffer.from(file.textContent ?? '', 'utf8').equals(comBom)).toBe(true);
+  });
+});
+
+describe('extractZip — texto que não é UTF-8', () => {
+  // `# Ação` em Windows-1252.
+  const cp1252 = Buffer.from([0x23, 0x20, 0x41, 0xe7, 0xe3, 0x6f]);
+
+  it('entrega o anexo com os bytes que vieram no .zip', () => {
+    const files = extractZip(makeZip({ 'SKILL.md': '# ok', 'dados/planilha.csv': cp1252 }));
+    const planilha = files.find((f) => f.relativePath === 'dados/planilha.csv')!;
+
+    expect(planilha.textContent).toBeNull();
+    expect(planilha.binaryContent?.equals(cp1252)).toBe(true);
+  });
+
+  it('recusa o SKILL.md que não é texto, em vez de entregá-lo sem conteúdo', () => {
+    // Quem chama lê `textContent ?? ''`: com o principal binário, o upload numa
+    // skill existente gravaria um corpo vazio por cima do prompt.
+    expect(() => extractZip(makeZip({ 'SKILL.md': cp1252, 'a.md': 'x' }))).toThrow(ZipContentError);
+    expect(() => extractZip(makeZip({ 'SKILL.md': Buffer.from([0x61, 0x00, 0x62]) }))).toThrow(ZipContentError);
+    // Vale para o principal depois do desembrulho e em qualquer caixa.
+    expect(() => extractZip(makeZip({ 'pacote/skill.md': cp1252, 'pacote/a.md': 'x' }))).toThrow(ZipContentError);
+    // A borda HTTP e o mcp-admin tratam `ZipError`: 400 e `fail`, nunca 500.
+    expect(() => extractZip(makeZip({ 'SKILL.md': cp1252 }))).toThrow(ZipError);
+    expect(() => extractZip(makeZip({ 'SKILL.md': cp1252 }))).toThrow(/UTF-8/);
+  });
+
+  it('não confunde com o principal um SKILL.md de subpasta', () => {
+    const files = extractZip(makeZip({ 'SKILL.md': '# ok', 'exemplos/SKILL.md': cp1252 }));
+    const exemplo = files.find((f) => f.relativePath === 'exemplos/SKILL.md')!;
+
+    expect(exemplo.textContent).toBeNull();
+    expect(exemplo.binaryContent?.equals(cp1252)).toBe(true);
   });
 });
 

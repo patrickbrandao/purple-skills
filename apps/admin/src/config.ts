@@ -3,6 +3,7 @@ import {
   assertNotPlaceholder,
   isBrandIconUrl,
   parseDomainList,
+  readBoolEnv,
   readIntEnv,
   readPortEnv,
   readSecret,
@@ -56,13 +57,21 @@ export const config = {
   /**
    * Flag `Secure` do cookie de sessão. Por padrão acompanha o protocolo da
    * requisição (funciona tanto atrás de HTTPS quanto em HTTP local); pode ser
-   * forçada com `ADMIN_COOKIE_SECURE=true|false`.
+   * forçada com `ADMIN_COOKIE_SECURE=true|false` (também `1`/`0`, `yes`/`no`,
+   * `on`/`off`, em qualquer caixa). Vazia = automático, e é por isso que o
+   * valor fica `undefined`, e não `false`. Qualquer outro texto **derruba o
+   * boot**: o leitor antigo devolvia `false` para tudo que não fosse `true`/`1`,
+   * e um `TRUE` ou `yes` destravava em silêncio o cookie que o operador quis
+   * travar — pior que não configurar nada, porque o automático teria travado.
    */
-  cookieSecure: parseBoolean(process.env.ADMIN_COOKIE_SECURE),
+  cookieSecure: readBoolEnv('ADMIN_COOKIE_SECURE'),
   /**
    * Origens aceitas nas requisições de escrita do painel, além da própria
-   * (comparada pelo `Host`). Lista separada por vírgula; normalmente vazia,
-   * já que o painel é sempre same-origin.
+   * (comparada pelo `Host`, **com a porta**, e pela `ADMIN_PUBLIC_URL` — ver
+   * `csrfGuard`). Cada entrada é uma origem inteira: esquema, nome e porta,
+   * como `https://portal.exemplo.com:8443`; outra porta ou outro esquema do
+   * mesmo nome não casam. Lista separada por vírgula; normalmente vazia, já
+   * que o painel é sempre same-origin.
    */
   extraAllowedOrigins: (process.env.ADMIN_ALLOWED_ORIGINS ?? '')
     .split(',')
@@ -74,7 +83,9 @@ export const config = {
    * OIDC e o link de redefinição de senha. Sem ele, o `redirect_uri` cai no
    * `Host` da requisição (o provedor ainda confere o valor registrado), e o
    * link de redefinição só aceita o `Host` quando o pedido vem de uma rede
-   * interna — ver `resetLinkBaseUrl`.
+   * interna — ver `resetLinkBaseUrl`. Também conta como origem própria na
+   * checagem anti-CSRF (`csrfGuard`), para o proxy que publica o painel numa
+   * porta que não repassa no `Host`.
    */
   publicUrl: readTextEnv('ADMIN_PUBLIC_URL', '').replace(/\/+$/, ''),
 
@@ -93,23 +104,21 @@ export const config = {
   oidcProviderName: readTextEnv('OIDC_PROVIDER_NAME', 'SSO'),
   oidcScopes: readTextEnv('OIDC_SCOPES', 'openid email profile'),
   /**
-   * Domínios de e-mail autorizados. **Vazia desliga o auto-provisionamento** —
-   * é a falha fechada da §2.4: uma instalação mal configurada não entrega o
-   * catálogo privado a qualquer conta do provedor.
+   * Domínios de e-mail autorizados. **Vazia recusa todo login por SSO**, não só
+   * o auto-provisionamento: `resolveOidcUser` confere a allowlist antes de
+   * procurar a conta, então nem quem já está vinculado entra — sobra o login
+   * local. É a falha fechada da §2.4: sem allowlist, qualquer conta do provedor
+   * viraria `membro` do catálogo. Para SSO sem criar conta nova, o ajuste é
+   * `OIDC_AUTO_PROVISION=false`, com esta lista preenchida.
    */
   oidcAllowedDomains: parseDomainList(process.env.OIDC_ALLOWED_DOMAINS),
-  oidcAutoProvision: parseBoolean(process.env.OIDC_AUTO_PROVISION) ?? true,
+  oidcAutoProvision: readBoolEnv('OIDC_AUTO_PROVISION') ?? true,
 
   // -------------------------------------------------------------- SMTP ----
   smtpFrom: readTextEnv('SMTP_FROM', ''),
   /** Validade do link de redefinição de senha, em segundos (padrão: 1h). */
   resetTtlSeconds: readIntEnv('PASSWORD_RESET_TTL', 3600, { min: 60 }),
 };
-
-function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined || value === '') return undefined;
-  return value === 'true' || value === '1';
-}
 
 export const SESSION_COOKIE = 'ps_admin';
 /** Cookie de estado do OIDC (nonce + PKCE + destino), curto e httpOnly. */

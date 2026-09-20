@@ -8,7 +8,7 @@ import {
   safeContentType,
 } from '@purple-skills/shared';
 import { accessContextOf, registrarAcesso } from './access.js';
-import { streamSkillZip } from './zip.js';
+import { cabecalhosDoPacote, streamSkillZip } from './zip.js';
 
 /**
  * Downloads de um MCP virtual — o `.zip` da skill e os arquivos avulsos —
@@ -65,6 +65,19 @@ const servirZip = (ext: 'zip' | 'skill') =>
       return;
     }
 
+    // `HEAD` não gera pacote nem conta download: devolve os cabeçalhos que o
+    // `GET` escreveria, e mais nada. Nenhuma rota registra `head`, e o Express 5
+    // manda o `HEAD` para o handler de `GET` — num vMCP aberto, de um anônimo.
+    // Sem esta guarda cada `wget --spider` virava um download contado, e o
+    // servidor lia e comprimia a skill inteira para jogar fora, sem o freio que
+    // o `GET` tem: a contrapressão vem de o cliente receber o corpo, e resposta
+    // a `HEAD` não tem corpo (relatório 066 da auditoria de 2026-09-19).
+    if (req.method === 'HEAD') {
+      cabecalhosDoPacote(res, skill.slug, ext);
+      res.end();
+      return;
+    }
+
     // A lista, não o conteúdo: cada arquivo é lido dentro do `streamSkillZip`,
     // na vez de entrar no pacote (e os cabeçalhos saem lá, com o primeiro byte).
     // Ler a skill inteira aqui punha até centenas de MB na memória por download.
@@ -97,7 +110,11 @@ const servirArquivo = asyncRoute(async (req, res) => {
   let buffer = file.buffer;
   if (isSkillMd(file.relativePath)) {
     buffer = Buffer.from(composeSkillMd(skill, file.buffer.toString('utf8')), 'utf8');
-    registrarAcesso({ mcp: req.virtual!.mcp, access: accessContextOf(req) }, skill.uuid, 'view', 'file');
+    // O corpo o `res.send` do Express já corta em `HEAD`; o contador, não — e
+    // quem não recebeu o SKILL.md não o leu.
+    if (req.method !== 'HEAD') {
+      registrarAcesso({ mcp: req.virtual!.mcp, access: accessContextOf(req) }, skill.uuid, 'view', 'file');
+    }
   }
 
   // Conteúdo de terceiros: tipos executáveis descem como texto, e nada é

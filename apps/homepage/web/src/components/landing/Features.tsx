@@ -9,17 +9,17 @@ const CARDS = [
   {
     Icon: SearchIcon,
     title: 'Busca que entende a tarefa',
-    text: 'Full-text nativo do Postgres sobre nome, descrição e o corpo do SKILL.md. O agente procura pelo problema que tem, não pela palavra exata.',
+    text: 'Full-text nativo do Postgres sobre nome, descrição e o corpo do SKILL.md. Com a busca semântica opcional ligada, o agente procura pelo problema que tem, não pela palavra exata.',
   },
   {
     Icon: ShieldIcon,
     title: 'Painel e MCP administrativo',
-    text: 'Crie, edite, importe .zip e alterne visibilidade pelo painel — ou deixe o próprio agente fazer isso pelas doze ferramentas do MCP admin, com auditoria.',
+    text: 'Crie, edite, importe .zip e alterne visibilidade pelo painel — ou deixe o próprio agente fazer isso pelas dezenas de ferramentas do MCP admin, com auditoria.',
   },
   {
     Icon: DatabaseIcon,
     title: 'Seu servidor, seus dados',
-    text: 'Cinco containers, um Postgres e um docker compose. Licença MIT, sem telemetria, sem conta em nuvem nenhuma. Skills privadas ficam privadas.',
+    text: 'Um docker compose e um Postgres, tudo no seu servidor. Licença MIT, sem telemetria, sem conta em nuvem nenhuma. Skills privadas ficam privadas.',
   },
 ];
 

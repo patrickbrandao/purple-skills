@@ -1,3 +1,5 @@
+import { isUtf8 } from 'node:buffer';
+
 export const SKILL_MD = 'SKILL.md';
 
 /**
@@ -73,6 +75,15 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   xml: 'application/xml',
   // Mais código e configuração: fora da tabela, o arquivo seria gravado como
   // binário e não abriria no leitor nem no editor do painel.
+  //
+  // ATENÇÃO — texto × binário é decidido na **gravação** e fica na linha de
+  // `files`; a leitura usa o que está gravado e nunca reavalia. Acrescentar
+  // extensão textual aqui só vale para envios NOVOS: o mesmo arquivo enviado
+  // antes continua binário (não abre no leitor, o MCP responde "é binário", o
+  // RAG não o vê) até uma migration de conversão passar por ele — peça ao dba,
+  // na mesma mudança (`tasks/018`: o bloco abaixo saiu na beta.22 sem ela). E,
+  // com o RAG ligado, todo tipo textual novo que não seja imagem passa a ser
+  // enviado ao provedor de embeddings (`packages/rag/src/chunk.ts`).
   php: 'text/x-php',
   phtml: 'text/x-php',
   mts: 'text/x-typescript',
@@ -187,6 +198,23 @@ export function isTextualMime(mimeType: string): boolean {
 }
 
 /**
+ * A régua de "estes bytes são texto": mime textual, nenhum byte nulo **e UTF-8
+ * válido**. Só o que passa aqui pode ser decodificado com `toString('utf8')`.
+ *
+ * O mime sai do nome, e muito "arquivo de texto" do mundo real não é UTF-8 — o
+ * `.csv` que o Excel exporta é Windows-1252. `toString('utf8')` não falha com
+ * ele: troca cada byte inválido por U+FFFD, sem erro, e o original não volta
+ * mais (`tasks/015`). Esse arquivo é guardado como binário, byte a byte, do
+ * mesmo jeito que o que traz byte nulo. O BOM é UTF-8 válido e fica onde está.
+ *
+ * `isUtf8` só valida, sem alocar a string; um `TextDecoder` com `fatal` faria o
+ * mesmo por exceção e, sem `ignoreBOM`, ainda comeria o BOM.
+ */
+export function isTextualContent(mimeType: string, data: Buffer): boolean {
+  return isTextualMime(mimeType) && !data.includes(0) && isUtf8(data);
+}
+
+/**
  * Tipos que o navegador executa quando renderizados na origem do site.
  * Arquivos anexos a uma skill são conteúdo enviado por terceiros: servi-los
  * com esses `Content-Type` equivale a hospedar um script na própria origem.
@@ -199,16 +227,60 @@ const EXECUTABLE_INLINE_MIME = new Set([
   'text/xml',
 ]);
 
+/**
+ * A essência do tipo: sem parâmetros (`; charset=…`), sem espaços, em
+ * minúsculas — é por ela que o navegador decide. Hoje o `mime_type` gravado sai
+ * sempre de `mimeTypeFor` e já vem assim; a régua de segurança não depende disso.
+ */
+function mimeEssence(mimeType: string): string {
+  return mimeType.split(';', 1)[0].trim().toLowerCase();
+}
+
 export function isExecutableInlineMime(mimeType: string): boolean {
-  return EXECUTABLE_INLINE_MIME.has(mimeType);
+  return EXECUTABLE_INLINE_MIME.has(mimeEssence(mimeType));
 }
 
 /**
- * `Content-Type` seguro para entregar um arquivo de skill: tipos executáveis
- * viram `text/plain`, o resto é preservado.
+ * Tipos que o navegador executa quando carregados como **sub-recurso** por uma
+ * página da própria origem (`<script src>`, `<link rel="stylesheet">`). Nada do
+ * que a resposta do arquivo manda vale nesse caso — nem a CSP com `sandbox`, nem
+ * o `Content-Disposition`: quem decide é a CSP da página que carrega, e
+ * `script-src 'self'` (`headers.ts`) aceita qualquer endereço da origem,
+ * inclusive o de um `.js` anexado a uma skill (`tasks/014`). Como `text/plain`,
+ * o `nosniff` que os três serviços já mandam faz o navegador recusá-los.
+ *
+ * Os de script são os "JavaScript MIME types" do padrão MIME Sniffing, que é a
+ * lista que o `nosniff` deixa rodar; a tabela acima só produz `text/javascript`,
+ * e os outros estão aqui para a régua não depender dela.
+ */
+const EXECUTABLE_SUBRESOURCE_MIME = new Set([
+  'application/ecmascript',
+  'application/javascript',
+  'application/x-ecmascript',
+  'application/x-javascript',
+  'text/ecmascript',
+  'text/javascript',
+  'text/javascript1.0',
+  'text/javascript1.1',
+  'text/javascript1.2',
+  'text/javascript1.3',
+  'text/javascript1.4',
+  'text/javascript1.5',
+  'text/jscript',
+  'text/livescript',
+  'text/x-ecmascript',
+  'text/x-javascript',
+  'text/css',
+]);
+
+/**
+ * `Content-Type` seguro para entregar um arquivo de skill: tipos executáveis —
+ * como documento ou como sub-recurso — viram `text/plain`, o resto é preservado.
  */
 export function safeContentType(mimeType: string, isText: boolean): string {
-  if (isExecutableInlineMime(mimeType)) return 'text/plain; charset=utf-8';
+  if (isExecutableInlineMime(mimeType) || EXECUTABLE_SUBRESOURCE_MIME.has(mimeEssence(mimeType))) {
+    return 'text/plain; charset=utf-8';
+  }
   return isText ? `${mimeType}; charset=utf-8` : mimeType;
 }
 

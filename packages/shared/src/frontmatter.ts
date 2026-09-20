@@ -5,27 +5,137 @@ export type Frontmatter = {
   body: string;
 };
 
-const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/;
+// O `---` só fecha o bloco quando é a linha inteira (até a quebra ou o fim do
+// texto): sem essa âncora, `---abc` e uma régua `----------` fechavam. A
+// abertura tolera espaço à direita, como o fechamento sempre tolerou.
+const FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+
+/** Par `chave: valor`. Em YAML os dois-pontos pedem espaço ou fim de linha depois — `https://…` não é par. */
+const PAIR = /^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]+(.*))?$/;
+const LIST_ITEM = /^-(?:[ \t]|$)/;
+/** `|` ou `>`, com os indicadores de corte e de indentação em qualquer ordem, e comentário opcional. */
+const BLOCK_SCALAR = /^([|>])(?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/;
+
+const indentOf = (line: string): number => line.length - line.trimStart().length;
+
+/**
+ * Diz se o trecho entre os dois `---` tem cara de mapa YAML: a primeira linha
+ * com conteúdo é um par `chave: valor`, e toda linha na indentação dele é
+ * outro par ou um item de lista. Mais indentado que isso pode ser qualquer
+ * coisa (bloco `metadata:`, escalar de bloco, continuação); linha em branco e
+ * comentário não contam.
+ *
+ * É o que separa frontmatter de **régua horizontal**: um corpo que abre com
+ * `---`, tem prosa e outra régua adiante casava com o padrão, e o trecho entre
+ * as duas era descartado como se fosse metadado — em toda leitura e em toda
+ * gravação. O erro que sobra é para o lado seguro: frontmatter escrito de um
+ * jeito que isto não reconhece fica visível no corpo, em vez de sumir.
+ */
+function isFrontmatterBlock(block: string): boolean {
+  let root = -1;
+  for (const line of block.split(/\r?\n/)) {
+    const content = line.trim();
+    if (content === '' || content.startsWith('#')) continue;
+
+    const indent = indentOf(line);
+    if (root < 0) {
+      if (!PAIR.test(content)) return false;
+      root = indent;
+    } else if (indent < root || (indent === root && !PAIR.test(content) && !LIST_ITEM.test(content))) {
+      return false;
+    }
+  }
+  return root >= 0;
+}
+
+/** O bloco do início do texto, quando ele é frontmatter de verdade. */
+function matchFrontmatter(text: string): RegExpExecArray | null {
+  const match = FRONTMATTER.exec(text);
+  return match && isFrontmatterBlock(match[1]) ? match : null;
+}
 
 /**
  * Parser mínimo de frontmatter YAML (`---` … `---`) com pares `chave: valor`.
  * Suficiente para ler `name`/`description` de um SKILL.md — sem dependência
  * de um parser YAML completo. Linhas indentadas (o bloco `metadata:`) entram
  * no mesmo mapa raso: `title` e `tags` são lidos direto, sem hierarquia.
+ *
+ * O valor pode vir nas linhas de baixo, mais indentadas que a chave: escalar
+ * de bloco (`description: >-` ou `|`, como o js-yaml escreve texto longo) e
+ * escalar simples ou entre aspas que continua (como o PyYAML escreve). Essas
+ * linhas são valor, não par — nem quando têm forma de `chave: valor` dentro de
+ * um escalar de bloco. Item de lista e comentário seguem ignorados.
  */
 export function parseFrontmatter(source: string): Frontmatter {
-  const text = source.replace(/^﻿/, '');
-  const match = FRONTMATTER.exec(text);
+  const text = source.replace(/^\uFEFF/, '');
+  const match = matchFrontmatter(text);
   if (!match) return { data: {}, body: text };
 
   const data: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const kv = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line.trim());
-    if (!kv) continue;
-    data[kv[1]] = unquote(kv[2].trim());
+  // Valores que ainda podem continuar na linha de baixo: as aspas só saem no
+  // fim, porque podem abrir numa linha e fechar em outra.
+  const open = new Set<string>();
+  let last: { key: string; indent: number } | null = null;
+
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const content = lines[i].trim();
+    if (content === '' || content.startsWith('#')) continue;
+
+    const indent = indentOf(lines[i]);
+    const kv = PAIR.exec(content);
+    if (!kv) {
+      if (last && open.has(last.key) && indent > last.indent && !LIST_ITEM.test(content)) {
+        data[last.key] = `${data[last.key]} ${content}`.trim();
+      }
+      continue;
+    }
+
+    const [, key, value = ''] = kv;
+    last = { key, indent };
+
+    const block = BLOCK_SCALAR.exec(value);
+    if (!block) {
+      data[key] = value.trim();
+      open.add(key);
+      continue;
+    }
+
+    // Escalar de bloco: o valor são as linhas SEGUINTES, enquanto estiverem em
+    // branco ou mais indentadas que a chave.
+    const scalar: string[] = [];
+    while (i + 1 < lines.length && (lines[i + 1].trim() === '' || indentOf(lines[i + 1]) > indent)) {
+      i += 1;
+      scalar.push(lines[i]);
+    }
+    data[key] = blockScalar(block[1], scalar);
+    open.delete(key);
   }
 
+  for (const key of open) data[key] = unquote(data[key]);
+
   return { data, body: text.slice(match[0].length) };
+}
+
+/**
+ * Junta as linhas de um escalar de bloco: o literal (`|`) preserva as quebras
+ * e a indentação interna; o dobrado (`>`) troca a quebra simples por espaço e
+ * a linha em branco por quebra. O corte (`-`/`+`) não muda nada aqui — quebra
+ * no fim de metadado não interessa a ninguém e sai sempre.
+ */
+function blockScalar(style: string, lines: string[]): string {
+  const filled = lines.filter((line) => line.trim() !== '');
+  const indent = Math.min(...filled.map(indentOf));
+  const text = lines
+    .map((line) => line.slice(indent).trimEnd())
+    .join('\n')
+    .trim();
+
+  if (style === '|') return text;
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, ' '))
+    .join('\n');
 }
 
 function unquote(value: string): string {
@@ -46,9 +156,21 @@ function unquote(value: string): string {
  * gravado no SKILL.md é só o corpo do prompt. Aplicado em toda escrita e em
  * toda leitura, também limpa o frontmatter de skills gravadas antes desta
  * regra — sem precisar de migração de dados.
+ *
+ * "Em toda leitura" só é seguro porque a função é **idempotente**: o texto
+ * passa por até quatro passes num abrir-e-salvar do painel, e o segundo não
+ * pode tirar mais nada. Daí as três regras daqui: só sai o que é frontmatter
+ * de verdade (`isFrontmatterBlock` — régua horizontal e prosa ficam); o espaço
+ * em branco do início sai **antes** de procurar o bloco, e não depois; e
+ * blocos de frontmatter empilhados saem todos de uma vez, porque o que sobrasse
+ * seria comido pelo passe seguinte.
  */
 export function stripFrontmatter(source: string): string {
-  return source.replace(/^﻿/, '').replace(FRONTMATTER, '').replace(/^\s+/, '');
+  let text = source.replace(/^\uFEFF/, '').replace(/^\s+/, '');
+  for (let match = matchFrontmatter(text); match; match = matchFrontmatter(text)) {
+    text = text.slice(match[0].length).replace(/^\s+/, '');
+  }
+  return text;
 }
 
 /** Metadados que viram as primeiras linhas do SKILL.md. */
@@ -135,17 +257,29 @@ export function skillMetaFromMarkdown(source: string): MarkdownSkillMeta {
     firstHeading(body) ||
     frontName;
 
-  const description = data.description ?? data.summary ?? firstParagraph(body);
+  // "Primeiro valor útil", não "primeiro não-nulo": o `??` só pulava a chave
+  // ausente, e uma `description:` presente e vazia vencia o `summary` e o
+  // primeiro parágrafo — a skill nascia sem descrição.
+  const description = firstUseful(data.description, data.summary, firstParagraph(body));
 
   return {
     name: name?.trim() || null,
-    description: description?.trim().slice(0, 500) || null,
+    description: description?.slice(0, 500) || null,
     slug,
     tags: splitTags(data.tags),
     // Nada de publicação vem do frontmatter: onde a skill aparece é decidido
     // pelo vínculo a um vMCP, escolhido por quem importa — um `.zip` de
     // terceiro nunca se publica sozinho.
   };
+}
+
+/** O primeiro candidato com texto, já aparado. */
+function firstUseful(...candidates: (string | null | undefined)[]): string | null {
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (value) return value;
+  }
+  return null;
 }
 
 function splitTags(raw: string | undefined): string[] {
@@ -163,7 +297,13 @@ function firstHeading(body: string): string | null {
 }
 
 function firstParagraph(body: string): string | null {
-  const withoutHeadings = body.replace(/^#.*$/gm, '').trim();
+  // Título e régua horizontal (`---`, `***`, `___`) não são parágrafo. A régua
+  // entrou aqui junto com o `isFrontmatterBlock`: o corpo que abre com `---`
+  // passou a chegar inteiro, e a descrição derivada seria o próprio "---".
+  const withoutHeadings = body
+    .replace(/^#.*$/gm, '')
+    .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t\r]*$/gm, '')
+    .trim();
   const paragraph = withoutHeadings.split(/\r?\n\s*\r?\n/)[0];
   return paragraph ? paragraph.replace(/\s+/g, ' ').trim() : null;
 }

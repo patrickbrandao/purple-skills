@@ -121,6 +121,17 @@ branca no modo escuro. A ordem é: escolha salva em `localStorage`, senão
 O botão de alternar usa o hook `useTheme` (um por app, arquivos idênticos),
 que grava a escolha de volta no `localStorage`.
 
+No **painel** o hook vem de outro arquivo, `apps/admin/web/src/themeStore.ts`:
+lá são três consumidores montados ao mesmo tempo (o menu da conta, a paleta ⌘K
+e o canvas), e o `useState` do hook copiado dava um estado a cada um — o rótulo
+saía invertido e o primeiro clique reescrevia o tema que já estava na tela
+(relatório 045 da auditoria de 2026-09-19). O `themeStore` tem a mesma
+assinatura, com **um** estado para a página, e reescreve também
+`style.colorScheme` no `<html>`, porque o valor inline do script de boot vence o
+`color-scheme` que o `tokens.css` declara por tema. O `useTheme.ts` do painel
+fica só como par da cópia e dono do tipo `Theme`; o site e a homepage seguem com
+o hook copiado entre si.
+
 ## Tipografia
 
 - **Aeonik** (Medium 500 / Bold 700) para títulos — classe `.display`.
@@ -188,9 +199,10 @@ aqui? Acrescente lá também, **à mão** — nunca por `cp`.
 > nele. O `admin.css` não existe mais — virou `base.css`, `shell.css`,
 > `skill.css` e `canvas.css`.
 
-`FileTree.tsx` é o único que diverge de propósito: no site cada arquivo é um
-link de download, no painel ele também escolhe o arquivo a editar e oferece o
-botão de remover.
+`FileTree.tsx` é o único **entre os arquivos da árvore** que diverge de
+propósito: no site cada arquivo é um link de download, no painel ele também
+escolhe o arquivo a editar e oferece o botão de remover. (Na caixa do prompt,
+abaixo, quem diverge é o `SkillDoc.tsx`.)
 
 ### A caixa do prompt
 
@@ -203,9 +215,12 @@ cp apps/site/web/src/frontmatter.ts apps/admin/web/src/
 cp apps/site/web/src/components/{Markdown,FileTypeIcon}.tsx apps/admin/web/src/components/
 ```
 
-`SkillDoc.tsx` **saiu desse comando**: ele diverge numa linha, a dos ícones — o
-site importa `./Icons.js`, o painel importa `lucide-react`, e `Icons.tsx` não
-existe no painel. Copiar por cima **quebra o build do painel**. O CSS
+`SkillDoc.tsx` **saiu desse comando**: ele diverge só nos ícones, em duas linhas
+(o `import` e o uso no botão de copiar) — o site importa `./Icons.js`, o painel
+importa `lucide-react`, e `Icons.tsx` não existe no painel. Copiar por cima
+**quebra o build do painel**; a mudança vai **à mão** para os dois lados, e o
+cabeçalho do próprio arquivo diz isso (o mesmo texto nos dois apps, para o
+`diff` continuar mostrando só os ícones). O CSS
 (`.doc-box`, `.doc-tabs`, `.doc-source`) também não é cópia: o do painel está no
 `skill.css`, com os tokens, os raios e os tamanhos do console.
 

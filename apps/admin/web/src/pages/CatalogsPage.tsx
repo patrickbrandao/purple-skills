@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, Library, Plus, Search } from 'lucide-react';
 import {
@@ -43,18 +43,22 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
   const creating = params.get('novo') === '1';
   const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
 
-  const load = useCallback(async () => {
-    try {
-      setItems((await getCatalogs(scope === 'todos' ? '' : scope)).items);
-    } catch (err) {
-      toast.error((err as Error).message);
-      setItems([]);
-    }
-  }, [toast, scope]);
-
+  // Uma busca por recorte. O cleanup descarta a resposta atrasada: trocando de
+  // recorte depressa, a consulta antiga podia chegar por último e repor a lista
+  // do recorte anterior sob o filtro novo — e aqui nada recarrega sozinho.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let active = true;
+    getCatalogs(scope === 'todos' ? '' : scope)
+      .then((data) => active && setItems(data.items))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        setItems([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [toast, scope]);
 
   useRegisterCommands([], []);
 

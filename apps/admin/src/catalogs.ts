@@ -30,12 +30,15 @@ import {
   accountByEmail,
   assertAccess,
   assertSkillsViewable,
+  grantByEmail,
+  grantOf,
   levelFrom,
+  ownerByEmail,
   ownerFrom,
   withGrants,
 } from './access.js';
 import { actorOf, viewerOf, type AuthUser } from './auth.js';
-import { flagsFrom, load as loadMcp, pointFrom } from './mcps.js';
+import { assertNameFits, flagsFrom, load as loadMcp, nameFrom, pointFrom } from './mcps.js';
 
 const SOURCE = 'web-admin' as const;
 
@@ -43,11 +46,13 @@ const SOURCE = 'web-admin' as const;
  * Os catálogos que a sessão enxerga (`docs/12-acesso-granular.md` §3.1):
  * tudo para admin; para os demais, os seus, os concedidos e os públicos.
  */
-export function listMine(user: AuthUser, rawScope?: unknown): Promise<CatalogSummary[]> {
-  return listCatalogs({
+export async function listMine(user: AuthUser, rawScope?: unknown): Promise<CatalogSummary[]> {
+  const items = await listCatalogs({
     viewer: viewerOf(user),
     ...(isAccessScope(rawScope) ? { scope: rawScope } : {}),
   });
+  // O dono sai pelo e-mail, nunca pelo uuid da conta (`ownerByEmail`).
+  return items.map(ownerByEmail);
 }
 
 /**
@@ -67,17 +72,29 @@ export async function detail(user: AuthUser, slug: string): Promise<CatalogDetai
   return withGrants(await load(user, slug, 'view'));
 }
 
-/** Reaplica o `access` de quem chamou a um detalhe devolvido por uma escrita. */
+/**
+ * O detalhe devolvido por uma escrita, como quem chamou o vê. As escritas do
+ * banco releem **sem** `viewer` — a visão do admin —, então `access` é o da
+ * leitura prévia, e `mcps` também: nenhuma escrita de catálogo mexe em vínculo
+ * com vMCP (isso é feito pelo lado do servidor), e a lista da escrita traria o
+ * servidor fechado de terceiros que o `GET` do mesmo catálogo já não mostra
+ * (relatório 010 da auditoria de 2026-09-19). `skills` não precisa: quem escreve
+ * tem ao menos `edit`, por dono ou concessão, e lê todo membro.
+ */
 const seenBy = (current: CatalogDetail, updated: CatalogDetail): CatalogDetail =>
-  withGrants({ ...updated, access: current.access });
+  withGrants({ ...updated, access: current.access, mcps: current.mcps });
 
 export async function create(
   user: AuthUser,
   body: { name?: unknown; slug?: unknown; description?: unknown; isPublic?: unknown },
 ): Promise<CatalogDetail> {
-  return createCatalog(
+  // Mesmo teto e mesma recusa de tipo do nome de vMCP — ver `mcps.ts`.
+  const name = nameFrom(body.name);
+  assertNameFits(name, 'do catálogo');
+
+  const created = await createCatalog(
     {
-      name: String(body.name ?? '').trim(),
+      name,
       slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined,
       description: typeof body.description === 'string' ? body.description : undefined,
       isPublic: body.isPublic === true,
@@ -88,6 +105,8 @@ export async function create(
     SOURCE,
     actorOf(user),
   );
+  // Quem cria é o dono, e a escrita já devolve `'owner'`: sai como toda ficha.
+  return withGrants(created);
 }
 
 export async function update(
@@ -105,7 +124,11 @@ export async function update(
   const current = await load(user, slug, 'manage');
 
   const patch: Parameters<typeof updateCatalog>[1] = {};
-  if (typeof body.name === 'string') patch.name = body.name.trim();
+  if (typeof body.name === 'string') {
+    patch.name = body.name.trim();
+    // Só para quem renomeia: o nome antigo, mesmo acima do teto, volta no Salvar.
+    assertNameFits(patch.name, 'do catálogo', current.name);
+  }
   if (typeof body.slug === 'string') patch.slug = body.slug.trim();
   if (typeof body.description === 'string') patch.description = body.description;
   if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
@@ -174,13 +197,14 @@ export async function removeSkill(user: AuthUser, slug: string, skillSlug: strin
 export async function share(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
   const current = await load(user, slug, 'manage');
   const target = await accountByEmail(email);
-  return setCatalogGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user));
+  return grantByEmail(await setCatalogGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
 }
 
+/** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
 export async function unshare(user: AuthUser, slug: string, email: string): Promise<void> {
   const current = await load(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  await removeCatalogGrant(current.slug, target.uuid, SOURCE, actorOf(user));
+  const grant = grantOf(current.grants, email, 'neste catálogo');
+  await removeCatalogGrant(current.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 
 // --------------------------------------------------------- no vMCP -----------

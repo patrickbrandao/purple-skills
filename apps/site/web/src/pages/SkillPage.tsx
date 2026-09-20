@@ -21,6 +21,7 @@ import {
   TagIcon,
 } from '../components/Icons.js';
 import { useMeta } from '../useMeta.js';
+import { fraseViaMcp, viaMcp } from '../viaMcp.js';
 
 export function SkillPage() {
   const { slug = '' } = useParams();
@@ -84,6 +85,10 @@ export function SkillPage() {
   const publicUrl = `${meta?.baseUrl ?? window.location.origin}/skills/${skill.slug}`;
   // `mcpUrl` é `<base>/mcp`; os virtuais ficam em `<base>/virtual/<slug>/mcp`.
   const mcpBase = meta?.mcpUrl ? meta.mcpUrl.replace(/\/mcp$/, '') : null;
+  // O exemplo `get_skill("<slug>")` só aparece quando algum servidor listado a
+  // publica pela porta `skill` — sem ela a ferramenta responde "Skill não
+  // encontrada", e sem servidor nenhum a página oferece só o download.
+  const via = viaMcp(skill.mcps);
 
   return (
     <section className="skill-page">
@@ -166,20 +171,18 @@ export function SkillPage() {
                 <PlugIcon /> Via MCP
               </h2>
               <p className="mt-2 text-xs" style={{ color: 'var(--text-faint)' }}>
-                {skill.mcps.length === 0
-                  ? 'Em nenhum servidor MCP aberto: esta skill é pública, mas só chega ao agente pelo download acima.'
-                  : `Publicada em ${skill.mcps.length} servidor${skill.mcps.length === 1 ? '' : 'es'} aberto${
-                      skill.mcps.length === 1 ? '' : 's'
-                    }. Conecte seu agente a um deles e peça pelo slug:`}
+                {fraseViaMcp(via, skill.mcps.length, skill.slug)}
               </p>
-              <div className="code-card" style={{ marginTop: '10px' }}>
-                <div className="code-body" style={{ padding: '12px 14px', fontSize: '.76rem' }}>
-                  <span className="k">get_skill</span>
-                  {'('}
-                  <span className="s">"{skill.slug}"</span>
-                  {')'}
+              {via.caso === 'ferramenta' && (
+                <div className="code-card" style={{ marginTop: '10px' }}>
+                  <div className="code-body" style={{ padding: '12px 14px', fontSize: '.76rem' }}>
+                    <span className="k">get_skill</span>
+                    {'('}
+                    <span className="s">"{skill.slug}"</span>
+                    {')'}
+                  </div>
                 </div>
-              </div>
+              )}
               <ul className="mt-3 grid gap-2 text-xs">
                 {skill.mcps.map((mcp) => {
                   const url = mcpBase

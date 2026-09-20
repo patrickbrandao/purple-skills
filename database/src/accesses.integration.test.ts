@@ -32,7 +32,12 @@ import {
   getVirtualMcpByUuid,
   linkCatalog,
   linkSkill,
+  listAuditPage,
   listSkillAccesses,
+  listSkills,
+  lookupUsers,
+  MCP_SESSION_LABEL_MAX,
+  normalizeSessionLabel,
   recordSkillAccess,
   setCatalogSkillActive,
   setCatalogSkills,
@@ -45,6 +50,12 @@ const SOURCE = 'web-admin' as const;
 const ACTOR = { userUuid: null, label: 'teste' };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NENHUM = '00000000-0000-0000-0000-000000000000';
+/**
+ * U+0000 e ESC montados por código, e não por escape: uma ferramenta que
+ * resolva o escape deixaria o byte literal neste arquivo.
+ */
+const NUL = String.fromCharCode(0);
+const ESC = String.fromCharCode(27);
 
 /**
  * O Vitest roda arquivos de teste em paralelo e as suítes de integração
@@ -453,6 +464,14 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(segunda.items.map((a) => a.id)).toEqual(tudo.items.slice(2, 4).map((a) => a.id));
     expect((await listSkillAccesses({ offset: -3 })).offset).toBe(0);
     expect((await listSkillAccesses({ offset: Number.NaN })).offset).toBe(0);
+    // Além da faixa do `bigint` o offset satura, e a página sai vazia com o
+    // total certo: `?offset=99999999999999999999` chega aqui como 1e20 e era
+    // 22003 no driver; de 1e21 em diante o texto é "1e+21", e era 22P02.
+    for (const offset of [1e20, 1e21, 2 ** 63, Number.MAX_VALUE]) {
+      const alem = await listSkillAccesses({ offset });
+      expect(alem).toMatchObject({ items: [], total: tudo.total, offset: Number.MAX_SAFE_INTEGER });
+    }
+    expect((await listSkillAccesses({ offset: Number.POSITIVE_INFINITY })).offset).toBe(0);
 
     for (const options of [
       { skillUuid: 'torto' },
@@ -574,5 +593,184 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
       raw.query(`INSERT INTO skill_accesses (skill_slug, skill_name, kind, surface, origin, auth, catalog_uuids)
                  VALUES ('x', 'X', 'view', 'page', 'site', 'anonymous', ARRAY[$1]::uuid[])`, [NENHUM]),
     ).rejects.toThrow(/skill_accesses_catalogs_parallel_chk/);
+  });
+
+  // Os quatro testes abaixo criam os próprios objetos (os de cima já foram
+  // apagados) e só gravam com `origin: 'mcp'`/`'mcp-admin'`.
+
+  it('o caminho olha a porta: só o catálogo que serve a superfície lida entra na linha e soma', async () => {
+    const portas = await createVirtualMcp({ name: 'Portas', isOpen: true, ownerUserUuid: null }, SOURCE, ACTOR);
+    const delta = await createSkill({ name: 'Delta', slug: 'delta', skillMd: '# delta' }, SOURCE);
+    const soTools = await createCatalog({ name: 'So Tools', slug: 'so-tools', ownerUserUuid: null }, SOURCE, ACTOR);
+    const soPrompts = await createCatalog({ name: 'So Prompts', slug: 'so-prompts', ownerUserUuid: null }, SOURCE, ACTOR);
+    await setCatalogSkills(soTools.uuid, [{ slug: 'delta' }], SOURCE, ACTOR);
+    await setCatalogSkills(soPrompts.uuid, [{ slug: 'delta' }], SOURCE, ACTOR);
+    await linkCatalog(portas.uuid, soTools.uuid, TOOLS, SOURCE, ACTOR);
+    await linkCatalog(portas.uuid, soPrompts.uuid, { asSkill: false, asPrompt: true, asResource: false }, SOURCE, ACTOR);
+
+    /** Grava uma leitura de `delta` e devolve os catálogos que entraram na linha. */
+    const ler = async (surface: SkillAccessInput['surface'], kind: SkillAccessInput['kind'] = 'view') => {
+      await recordSkillAccess({
+        skillUuid: delta.uuid, kind, surface, origin: 'mcp', auth: 'open', virtualMcpUuid: portas.uuid, ip: '10.41.0.1',
+      });
+      const [item] = (await listSkillAccesses({ skillUuid: delta.uuid })).items;
+      return item!.catalogs.map((c) => c.slug);
+    };
+    const somas = async () => {
+      const [tools, prompts] = await Promise.all([getCatalogByUuid(soTools.uuid), getCatalogByUuid(soPrompts.uuid)]);
+      return { tools: [tools!.viewCount, tools!.downloadCount], prompts: [prompts!.viewCount, prompts!.downloadCount] };
+    };
+
+    // `get_skill`, o SKILL.md avulso e o pacote entram pela porta de skill:
+    // o catálogo vinculado só com Prompts não os entregou.
+    expect(await ler('tool')).toEqual(['so-tools']);
+    expect(await somas()).toEqual({ tools: [1, 0], prompts: [0, 0] });
+    expect(await ler('prompt')).toEqual(['so-prompts']);
+    expect(await somas()).toEqual({ tools: [1, 0], prompts: [1, 0] });
+    // Ninguém serve Resources ali: a linha entra sem caminho e só o global soma.
+    expect(await ler('resource')).toEqual([]);
+    expect(await ler('download', 'download')).toEqual(['so-tools']);
+    expect(await ler('file')).toEqual(['so-tools']);
+    expect(await somas()).toEqual({ tools: [2, 1], prompts: [1, 0] });
+    const resumo = await getSkillSummary('delta', { visibility: 'all' });
+    expect([resumo!.viewCount, resumo!.downloadCount]).toEqual([4, 1]);
+
+    // A guia "Acessos" de cada catálogo só mostra o que passou por ele.
+    const guia = async (catalogUuid: string) =>
+      (await listSkillAccesses({ catalogUuid })).items.map((a) => a.surface);
+    expect(await guia(soPrompts.uuid)).toEqual(['prompt']);
+    expect(await guia(soTools.uuid)).toEqual(['file', 'download', 'tool']);
+
+    // Com a mesma porta nos dois, os dois são caminho — por nome, como sempre.
+    await linkCatalog(portas.uuid, soPrompts.uuid, { asSkill: true, asPrompt: true, asResource: false }, SOURCE, ACTOR);
+    expect(await ler('tool')).toEqual(['so-prompts', 'so-tools']);
+    expect(await somas()).toEqual({ tools: [3, 1], prompts: [2, 0] });
+
+    // A precedência continua sem porta, como em `exposedIn`: havendo vínculo
+    // direto, nenhum catálogo é caminho — mesmo que o vínculo não tenha a porta.
+    await linkSkill('delta', portas.uuid, { asSkill: false, asPrompt: true, asResource: false }, SOURCE, ACTOR);
+    expect(await ler('tool')).toEqual([]);
+    expect(await somas()).toEqual({ tools: [3, 1], prompts: [2, 0] });
+  });
+
+  it('byte nulo e caractere de controle no rótulo são limpos: a linha entra e os contadores sobem', async () => {
+    const mcp = await createVirtualMcp({ name: 'Rotulos', isOpen: true, ownerUserUuid: null }, SOURCE, ACTOR);
+    const skill = await createSkill({ name: 'Epsilon', slug: 'epsilon', skillMd: '# epsilon' }, SOURCE);
+    await linkSkill('epsilon', mcp.uuid, TOOLS, SOURCE, ACTOR);
+    const antes = await linhas();
+
+    // O `text` do Postgres recusa U+0000 (22021): antes, esta leitura não
+    // deixava linha **nem** somava contador — os UPDATEs vão na mesma instrução.
+    await recordSkillAccess({
+      skillUuid: skill.uuid, kind: 'view', surface: 'tool', origin: 'mcp', auth: 'open', virtualMcpUuid: mcp.uuid,
+      sessionId: `s${NUL}1`,
+      ip: `10.38.0.1${NUL}`,
+      userAgent: `node${NUL}\tfetch\n${ESC}[31m`,
+      clientName: `Cla${NUL}ude`,
+      clientVersion: `${NUL}${NUL}`,
+    });
+    expect(await linhas()).toBe(antes + 1);
+    const [item] = (await listSkillAccesses({ skillUuid: skill.uuid })).items;
+    expect(item).toMatchObject({
+      sessionId: 's 1',
+      ip: '10.38.0.1',
+      userAgent: 'node  fetch  [31m',
+      clientName: 'Cla ude',
+      clientVersion: null,
+    });
+    const resumo = await getSkillSummary('epsilon', { visibility: 'all' });
+    expect(resumo!.viewCount).toBe(1);
+    const vinculo = (await getVirtualMcpByUuid(mcp.uuid))!.skills.find((s) => s.slug === 'epsilon');
+    expect(vinculo!.viewCount).toBe(1);
+
+    // A regra, que o mcp-public usa para cortar na memória: controle e
+    // separador de linha viram espaço, vazio é nulo, o teto é o do banco e
+    // aplicar de novo não muda nada.
+    expect(normalizeSessionLabel(`a${NUL}b`)).toBe('a b');
+    expect(normalizeSessionLabel(` ${NUL}\r\n${String.fromCharCode(0x85)}${String.fromCharCode(0x2028)} `)).toBeNull();
+    expect(normalizeSessionLabel('  Claude Code  ')).toBe('Claude Code');
+    expect(normalizeSessionLabel('x'.repeat(2000))).toBe('x'.repeat(MCP_SESSION_LABEL_MAX));
+    const naBorda = normalizeSessionLabel(`${'y'.repeat(MCP_SESSION_LABEL_MAX - 1)} cauda`);
+    expect(naBorda).toBe('y'.repeat(MCP_SESSION_LABEL_MAX - 1));
+    expect(normalizeSessionLabel(naBorda!)).toBe(naBorda);
+    // Um par substituto cortado ao meio não chega ao driver pela metade.
+    const emoji = String.fromCodePoint(0x1f600);
+    const cortado = normalizeSessionLabel(`${'z'.repeat(MCP_SESSION_LABEL_MAX - 1)}${emoji}`);
+    expect(cortado).toBe(`${'z'.repeat(MCP_SESSION_LABEL_MAX - 1)}${String.fromCharCode(0xfffd)}`);
+
+    // Fora dos rótulos o nulo é erro de quem chama (400), não 500 do driver.
+    for (const chamada of [
+      () => listSkillAccesses({ q: `ab${NUL}cd` }),
+      () => listAuditPage({ q: `ab${NUL}cd` }),
+      () => lookupUsers(`ab${NUL}cd`),
+      () => listSkills({ query: `ab${NUL}cd`, visibility: 'all' }),
+      () => createCatalog({ name: `Nu${NUL}lo`, ownerUserUuid: null }, SOURCE, ACTOR),
+    ]) {
+      const erro = await capture(chamada());
+      expect(erro).toBeInstanceOf(AppError);
+      expect(erro.status).toBe(400);
+    }
+  });
+
+  it('as cópias de nome são cortadas no teto dos rótulos, com os arrays de catálogo alinhados', async () => {
+    const MAX = MCP_SESSION_LABEL_MAX;
+    const longo = (letra: string) => letra.repeat(MAX + 88);
+    const mcp = await createVirtualMcp(
+      { name: longo('M'), slug: 'nomes-longos', isOpen: true, ownerUserUuid: null }, SOURCE, ACTOR,
+    );
+    const chave = await createVirtualMcpKey({
+      virtualMcpUuid: mcp.uuid, name: longo('K'), prefix: 'psvlongo', keyHash: 'x', createdByUserUuid: null,
+    });
+    const skill = await createSkill({ name: longo('S'), slug: 'nome-longo', skillMd: '# s' }, SOURCE);
+    const comprido = await createCatalog({ name: longo('C'), slug: 'comprido', ownerUserUuid: null }, SOURCE, ACTOR);
+    const curto = await createCatalog({ name: 'Zeta', slug: 'zeta', ownerUserUuid: null }, SOURCE, ACTOR);
+    for (const catalogo of [comprido, curto]) {
+      await setCatalogSkills(catalogo.uuid, [{ slug: 'nome-longo' }], SOURCE, ACTOR);
+      await linkCatalog(mcp.uuid, catalogo.uuid, TOOLS, SOURCE, ACTOR);
+    }
+
+    await recordSkillAccess({
+      skillUuid: skill.uuid, kind: 'view', surface: 'tool', origin: 'mcp', auth: 'key',
+      virtualMcpUuid: mcp.uuid, keyId: chave.id, ip: '10.42.0.1',
+    });
+    const [item] = (await listSkillAccesses({ skillUuid: skill.uuid })).items;
+    expect(item!.skillName).toBe('S'.repeat(MAX));
+    expect(item!.virtualMcpName).toBe('M'.repeat(MAX));
+    expect(item!.keyName).toBe('K'.repeat(MAX));
+    // Cortado **dentro** do `array_agg`: uuid, slug e nome seguem na mesma posição.
+    expect(item!.catalogs).toEqual([
+      { uuid: comprido.uuid, slug: 'comprido', name: 'C'.repeat(MAX) },
+      { uuid: curto.uuid, slug: 'zeta', name: 'Zeta' },
+    ]);
+    // O objeto continua com o nome inteiro — o corte é só na cópia.
+    expect((await getCatalogByUuid(comprido.uuid))!.name).toHaveLength(MAX + 88);
+
+    const conta = await createUser({ email: 'dora@exemplo.dev', name: 'Dora', role: 'editor' });
+    const psk = await createApiKey({ userUuid: conta.uuid, name: longo('P'), prefix: 'psklongo', keyHash: 'x' });
+    await recordSkillAccess({
+      skillUuid: skill.uuid, kind: 'view', surface: 'admin-tool', origin: 'mcp-admin', auth: 'user',
+      apiKeyId: psk.id, userUuid: conta.uuid, ip: '10.42.0.2',
+    });
+    const [doAdmin] = (await listSkillAccesses({ skillUuid: skill.uuid })).items;
+    expect(doAdmin!.apiKeyName).toBe('P'.repeat(MAX));
+  });
+
+  it('offset além da faixa do bigint satura também na lista de skills e na auditoria', async () => {
+    const skills = await listSkills({ visibility: 'all' });
+    const auditoria = await listAuditPage();
+    expect(skills.total).toBeGreaterThan(0);
+    expect(auditoria.total).toBeGreaterThan(0);
+    for (const offset of [1e20, 1e21]) {
+      expect(await listSkills({ visibility: 'all', offset })).toMatchObject({
+        items: [], total: skills.total, offset: Number.MAX_SAFE_INTEGER,
+      });
+      expect(await listAuditPage({ offset })).toMatchObject({
+        items: [], total: auditoria.total, offset: Number.MAX_SAFE_INTEGER,
+      });
+    }
+    // O maior offset exato continua sendo aceito como veio.
+    expect((await listSkills({ visibility: 'all', offset: Number.MAX_SAFE_INTEGER })).offset).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
   });
 });
