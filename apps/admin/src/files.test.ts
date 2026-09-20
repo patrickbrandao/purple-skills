@@ -1,6 +1,5 @@
 import http, { type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import AdmZip from 'adm-zip';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -179,14 +178,6 @@ function multipart(campo: string, arquivos: [string, Buffer][], campos: Record<s
   };
 }
 
-function zipDe(entradas: Record<string, Buffer | string>): Buffer {
-  const zip = new AdmZip();
-  for (const [nome, conteudo] of Object.entries(entradas)) {
-    zip.addFile(nome, Buffer.isBuffer(conteudo) ? conteudo : Buffer.from(conteudo, 'utf8'));
-  }
-  return zip.toBuffer();
-}
-
 /** `preço;ação\n` como o Excel exporta: Windows-1252, 11 bytes, UTF-8 inválido. */
 const CSV_1252 = Buffer.from([0x70, 0x72, 0x65, 0xe7, 0x6f, 0x3b, 0x61, 0xe7, 0xe3, 0x6f, 0x0a]);
 /** `# Instruções\n` em Windows-1252: o `ç` e o `õ` são um byte cada. */
@@ -316,6 +307,28 @@ describe('PUT /api/skills/:slug/files/*path', () => {
       expect(db.setFile).not.toHaveBeenCalled();
     },
   );
+
+  /*
+   * Esta rota carrega `content: string`, mas quem decide texto × binário na
+   * gravação é a **extensão**. Antes da guarda, `PUT …/ref/logo.png` com
+   * `{"content":"oi"}` respondia 200 e gravava uma linha **binária** com os
+   * bytes do texto: toda leitura devolvia `content: null`, e a imagem que veio
+   * do pacote era sobrescrita por um punhado de bytes, sem aviso.
+   */
+  it.each([['ref/logo.png'], ['manual.pdf'], ['fonte.woff2'], ['pacote.zip']])(
+    'extensão de binário (%s) é 400, e nada é gravado',
+    async (path) => {
+      const res = await gravar(path, 'nao sou binario');
+
+      expect(res.status).toBe(400);
+      expect(json(res)).toMatchObject({ message: expect.stringMatching(/extensão de arquivo binário/) });
+      expect(db.setFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it('o `.svg` continua entrando: é texto pela régua do shared', async () => {
+    expect((await gravar('ref/icone.svg', '<svg/>')).status).toBe(200);
+  });
 });
 
 /**
@@ -324,7 +337,7 @@ describe('PUT /api/skills/:slug/files/*path', () => {
  * U+FFFD, sem erro e sem volta (relatório 015 da auditoria de 2026-09-19). O
  * banco recebia um texto já "consertado" e não tinha como recusar.
  */
-describe('POST /api/skills/:slug/files — envio avulso', () => {
+describe('POST /api/skills/:slug/files — envio avulso, só texto', () => {
   const enviar = (arquivos: [string, Buffer][], campos: Record<string, string> = {}) =>
     pedir('POST', '/api/skills/minha-skill/files', multipart('files', arquivos, campos));
 
@@ -335,7 +348,7 @@ describe('POST /api/skills/:slug/files — envio avulso', () => {
     ]);
 
     expect(res.status).toBe(400);
-    expect(json(res)).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/UTF-8 válido/) });
+    expect(json(res)).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/texto UTF-8/) });
     expect(db.setFiles).not.toHaveBeenCalled();
   });
 
@@ -355,71 +368,49 @@ describe('POST /api/skills/:slug/files — envio avulso', () => {
     expect(gravados()[0]!.content.toString('utf8')).toBe('# Instruções\n');
   });
 
-  it('anexo que não é UTF-8 segue com os bytes que chegaram: texto × binário é do banco', async () => {
+  /*
+   * Era, até a quarentena (`docs/15-quarentena.md`): o anexo que não era UTF-8
+   * entrava byte a byte, e o banco o guardava como binário. Hoje a edição de
+   * uma skill recebe **só texto** — o que não passa em `isTextualContent` é
+   * recusado aqui, com o nome do arquivo na mensagem, e quem precisa de
+   * binário importa o pacote.
+   */
+  it('anexo que não é UTF-8 é recusado, e o lote inteiro fica de fora', async () => {
     const res = await enviar([['dados.csv', CSV_1252]], { prefix: 'ref' });
 
-    expect(res.status).toBe(200);
-    expect(gravados()[0]!.relativePath).toBe('ref/dados.csv');
-    expect(gravados()[0]!.content.equals(CSV_1252)).toBe(true);
-  });
-
-  it('SKILL.md dentro de pasta é arquivo comum: não é decodificado nem recusado', async () => {
-    const res = await enviar([['SKILL.md', SKILL_MD_1252]], { prefix: 'exemplos' });
-
-    expect(res.status).toBe(200);
-    expect(gravados()[0]!.relativePath).toBe('exemplos/SKILL.md');
-    expect(gravados()[0]!.content.equals(SKILL_MD_1252)).toBe(true);
-  });
-});
-
-describe('POST /api/skills/:slug/upload — .zip numa skill existente', () => {
-  const enviar = (zip: Buffer, query = '') =>
-    pedir('POST', `/api/skills/minha-skill/upload${query}`, multipart('file', [['pacote.zip', zip]]));
-
-  // Quem recusa é o `extractZip` (`ZipContentError`): sem isso o `SKILL.md`
-  // chegava sem `textContent` e a rota gravava corpo vazio por cima do prompt.
-  it('SKILL.md do .zip em Windows-1252 é 400, e o prompt gravado não muda', async () => {
-    const res = await enviar(zipDe({ 'SKILL.md': SKILL_MD_1252, 'ref/a.md': '# a' }));
-
     expect(res.status).toBe(400);
-    expect(json(res)).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/UTF-8 válido/) });
+    expect(json(res)).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/dados\.csv/) });
     expect(db.setFiles).not.toHaveBeenCalled();
   });
 
-  it('anexo em Windows-1252 chega ao banco byte a byte igual ao do .zip', async () => {
-    const res = await enviar(zipDe({ 'SKILL.md': '# Corpo\n', 'dados.csv': CSV_1252 }));
+  it('binário de verdade é recusado pelo tipo, mesmo sendo bytes válidos', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const res = await enviar([['icone.png', png]]);
 
-    expect(res.status).toBe(200);
-    const csv = gravados().find((file) => file.relativePath === 'dados.csv');
-    expect(csv?.content.equals(CSV_1252)).toBe(true);
+    expect(res.status).toBe(400);
+    expect(json(res)).toMatchObject({ message: expect.stringMatching(/icone\.png/) });
+    expect(db.setFiles).not.toHaveBeenCalled();
   });
 
-  /**
-   * Relatório 075 da auditoria de 2026-09-19: raiz única **sem** `SKILL.md` é
-   * subpasta, não embrulho. Antes o envio parcial de `scripts/` caía achatado na
-   * raiz da skill, ao lado dos `scripts/…` antigos.
-   */
-  it('envio parcial de uma subpasta preserva a pasta nos caminhos', async () => {
-    const res = await enviar(zipDe({ 'scripts/run.py': 'x', 'scripts/util.py': 'y' }));
+  it('SKILL.md dentro de pasta é arquivo comum: o frontmatter dele não é tirado', async () => {
+    const dentro = Buffer.from('---\nname: exemplo\n---\n# Exemplo\n', 'utf8');
+    const res = await enviar([['SKILL.md', dentro]], { prefix: 'exemplos' });
 
     expect(res.status).toBe(200);
-    expect(gravados().map((file) => file.relativePath).sort()).toEqual(['scripts/run.py', 'scripts/util.py']);
-    // Importar sem "substituir a árvore": nada é removido.
-    expect(db.setFiles.mock.calls[0]![3]).toEqual({ replace: false });
-  });
-
-  it('o pacote baixado (<slug>/SKILL.md) continua entrando sem o embrulho', async () => {
-    const res = await enviar(
-      zipDe({ 'minha-skill/SKILL.md': '---\nname: minha-skill\n---\n# Corpo\n', 'minha-skill/scripts/run.py': 'x' }),
-      '?replace=1',
-    );
-
-    expect(res.status).toBe(200);
-    expect(gravados().map((file) => file.relativePath).sort()).toEqual(['SKILL.md', 'scripts/run.py']);
-    expect(gravados().find((file) => file.relativePath === 'SKILL.md')?.content.toString('utf8')).toBe('# Corpo\n');
-    expect(db.setFiles.mock.calls[0]![3]).toEqual({ replace: true });
+    expect(gravados()[0]!.relativePath).toBe('exemplos/SKILL.md');
+    expect(gravados()[0]!.content.equals(dentro)).toBe(true);
   });
 });
+
+/*
+ * `POST /api/skills/:slug/upload` — o .zip numa skill existente — **saiu**
+ * (`docs/15-quarentena.md`), e com ele os quatro casos que viviam aqui: o
+ * SKILL.md em Windows-1252 recusado pelo `extractZip`, o anexo binário entrando
+ * byte a byte, a subpasta preservada no envio parcial e o embrulho `<slug>/`
+ * desfeito. O que o `extractZip` faz com um pacote continua coberto em
+ * `packages/shared/src/zip.test.ts` e na importação (`import.test.ts`), que é
+ * hoje o único caminho de pacote.
+ */
 
 /**
  * O Postgres não guarda U+0000 em `text`: um `%00` no slug, no caminho ou na

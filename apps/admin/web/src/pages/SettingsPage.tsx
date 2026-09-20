@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Link2, Plug, Server } from 'lucide-react';
+import { Link2, Plug, Server, ShieldQuestion } from 'lucide-react';
 import {
+  QUARANTINE_APPROVERS_LABEL,
   getMcps,
+  getQuarantineSettings,
   getSettings,
   setDefaultMcp,
+  setQuarantineSettings,
+  type QuarantineApprovers,
   type InstallationSettings,
   type Session,
   type VirtualMcpSummary,
@@ -24,6 +28,7 @@ import { useToast } from '../components/Toast.js';
 export const SETTINGS_SECTIONS = [
   { path: 'mcp-padrao', label: 'MCP padrão' },
   { path: 'busca-semantica', label: 'Busca semântica' },
+  { path: 'quarentena', label: 'Quarentena' },
   { path: 'ambiente', label: 'Ambiente' },
   { path: 'conectar', label: 'Conectar ao MCP público' },
 ] as const;
@@ -188,6 +193,92 @@ export function RagSettingsPage() {
     </div>
   );
 }
+
+/**
+ * Quem aprova um envio da quarentena (`docs/15-quarentena.md`).
+ *
+ * Submeter continua exigindo o papel de criar, e o dono continua sendo quem
+ * submeteu; o que esta tela decide é só **promover**. Admin aprova nas três
+ * opções — a escolha é sobre quem mais.
+ */
+export function QuarantineSettingsPage() {
+  const toast = useToast();
+  const [approvers, setApprovers] = useState<QuarantineApprovers | null>(null);
+  const [salvando, setSalvando] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getQuarantineSettings()
+      .then((data) => {
+        if (active) setApprovers(data.approvers);
+      })
+      .catch((err) => {
+        if (active) toast.error((err as Error).message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [toast]);
+
+  async function escolher(value: QuarantineApprovers) {
+    if (value === approvers) return;
+    const anterior = approvers;
+    setApprovers(value);
+    setSalvando(true);
+    try {
+      const data = await setQuarantineSettings(value);
+      setApprovers(data.approvers);
+      toast.success(`Agora quem aprova é: ${QUARANTINE_APPROVERS_LABEL[data.approvers]}.`);
+    } catch (err) {
+      setApprovers(anterior);
+      toast.error((err as Error).message);
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (approvers === null) return <Loading />;
+
+  return (
+    <div className="page">
+      <SettingsHead title="Quarentena" sub="Quem aprova um pacote importado e o transforma em skill." />
+      <Column>
+        <Panel title="Quem aprova" icon={<ShieldQuestion />}>
+          <p className="panel-hint">
+            Um envio na quarentena não é publicado, não é indexado e não aparece no site. Aprovar é o ato que cria a
+            skill no acervo — com quem aprovou como dono, e ainda sem servidor nem catálogo.
+          </p>
+          <div className="destinos">
+            {(Object.keys(QUARANTINE_APPROVERS_LABEL) as QuarantineApprovers[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={`destino${approvers === option ? ' active' : ''}`}
+                aria-pressed={approvers === option}
+                disabled={salvando}
+                onClick={() => void escolher(option)}
+              >
+                <ShieldQuestion />
+                <span className="t">{QUARANTINE_APPROVERS_LABEL[option]}</span>
+                <span className="h">{APPROVERS_HINT[option]}</span>
+              </button>
+            ))}
+          </div>
+          <p className="panel-hint mb-0">
+            Revisar e corrigir os arquivos de um envio continua sendo de quem o enxerga: o dono, os administradores e os
+            editores. Esta escolha vale só para aprovar.
+          </p>
+        </Panel>
+      </Column>
+    </div>
+  );
+}
+
+const APPROVERS_HINT: Record<QuarantineApprovers, string> = {
+  admin: 'O portão mais fechado: nenhum editor aprova o que trouxe, nem o que outro trouxe.',
+  'admin+owner': 'O padrão. Quem já podia criar a skill pelo formulário também aprova o próprio envio.',
+  'admin+editor': 'Qualquer editor aprova qualquer envio da fila, inclusive os de outras pessoas.',
+};
 
 export function EnvironmentSettingsPage({ session }: { session: Session }) {
   return (

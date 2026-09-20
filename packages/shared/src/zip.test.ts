@@ -218,6 +218,27 @@ describe('extractZip — texto que não é UTF-8', () => {
     expect(() => extractZip(makeZip({ 'SKILL.md': cp1252 }))).toThrow(/UTF-8/);
   });
 
+  /*
+   * A saída da regra acima, e só ela: a quarentena (`docs/15-quarentena.md`)
+   * guarda bytes crus que ninguém decodifica, e recusar o pacote ali seria
+   * recusar justamente o que o espaço existe para consertar — o SKILL.md que
+   * saiu de um editor Windows. Quem cobra a codificação lá é a aprovação.
+   */
+  it('com `allowBinarySkillMd`, o principal binário entra como anexo, byte a byte', () => {
+    const files = extractZip(makeZip({ 'SKILL.md': cp1252, 'a.md': 'x' }), { allowBinarySkillMd: true });
+    const principal = files.find((file) => file.relativePath === 'SKILL.md');
+
+    expect(principal?.textContent).toBeNull();
+    expect(principal?.binaryContent?.equals(cp1252)).toBe(true);
+    // O resto do pacote não muda: o desembrulho e os anexos seguem iguais.
+    expect(files.map((file) => file.relativePath).sort()).toEqual(['SKILL.md', 'a.md']);
+  });
+
+  it('a opção não afrouxa nada além disso: o teto e o ZIP ilegível continuam recusando', () => {
+    expect(() => extractZip(makeZip({ 'SKILL.md': '# ok' }), { allowBinarySkillMd: true, maxEntries: 0 })).toThrow(ZipError);
+    expect(() => extractZip(Buffer.from('nao sou zip'), { allowBinarySkillMd: true })).toThrow(ZipError);
+  });
+
   it('não confunde com o principal um SKILL.md de subpasta', () => {
     const files = extractZip(makeZip({ 'SKILL.md': '# ok', 'exemplos/SKILL.md': cp1252 }));
     const exemplo = files.find((f) => f.relativePath === 'exemplos/SKILL.md')!;

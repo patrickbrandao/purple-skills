@@ -170,7 +170,12 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 
 - Painel admin: upload de **.zip** (extraído no servidor, preservando
   `relative_path`) **ou** formulário para adicionar/editar um arquivo por
-  vez. A única exceção à preservação é o **embrulho do pacote baixado**: um
+  vez. **Era**, até a quarentena
+  ([`15-quarentena.md`](15-quarentena.md) §6): o `.zip` entrava também
+  ~~dentro da edição de uma skill já cadastrada~~. Hoje o pacote tem um
+  caminho só — a importação, que escolhe entre produção e quarentena —, e a
+  edição recebe **só arquivo de texto**, um a um. O `set_files_bulk` do MCP
+  administrativo não mudou. A única exceção à preservação é o **embrulho do pacote baixado**: um
   .zip cuja pasta raiz única contém o `SKILL.md` (`<slug>/SKILL.md`,
   `<slug>/ref/…`) entra sem essa pasta, no painel e no `set_files_bulk`. Raiz
   única **sem** `SKILL.md` é subpasta de verdade — o envio parcial de
@@ -867,6 +872,44 @@ textos: reserva e recusa), pacote `packages/rag`, container `apps/indexer`.
   ocorrência e, por cascata, os vetores dele. A mesma migration deu **reserva**
   à fila de textos, então duas réplicas do indexador deixaram de pagar pelo
   mesmo embedding ([`14-rag.md`](14-rag.md) §7 e §7.1).
+
+## 12.6 Quarentena
+
+Desenho em [`15-quarentena.md`](15-quarentena.md). Migration `030`, tabelas
+`quarantine_skills` e `quarantine_files`.
+
+- **Um espaço à parte, e pobre de propósito.** Um envio não tem slug, tag,
+  ícone, `is_active`, `is_public`, contador, vínculo com vMCP ou catálogo,
+  `search_vector` nem `rag_stale`. É uma pasta de arquivos com dono e data.
+  A alternativa — "skill em estado rascunho" — obrigaria cada coluna, trigger e
+  tela do acervo a aprender a conviver com meia skill.
+- **Só a importação alcança a quarentena**, e o destino é escolha de quem
+  importa. O formulário de nova skill continua criando direto em produção.
+- **O arquivo é a única verdade.** Ao contrário da skill de produção, em que os
+  metadados moram em colunas e o `SKILL.md` gravado é só o corpo, aqui o
+  arquivo fica cru, com o frontmatter dentro, e é isso que se edita. Não há
+  dois lugares para o mesmo dado, logo não há como discordarem.
+- **Não há colisão de nome.** Dois envios do mesmo pacote convivem; o nome é
+  rótulo e a identidade é o `uuid`, que também é o endereço no painel.
+- **Aprovar cria a skill com quem aprovou como dono**; a skill nasce
+  **flutuante**, slug ocupado ganha sufixo, e a linha da quarentena some. Sem um
+  `SKILL.md` legível, a promoção é recusada sem apagar nada. **Era**, até a
+  revisão de 20/09/2026: ~~o dono era quem submeteu~~ — e aí o editor que
+  aprovava envio alheio deixava de enxergar a skill que acabara de criar (404),
+  o que a validação mediu ([`15-quarentena.md`](15-quarentena.md) decisão 7).
+- **Pacote torto entra na fila**: sem `SKILL.md` **ou** com um que não é UTF-8.
+  A cobrança das duas coisas é da aprovação — é para isso que o espaço existe.
+- **A edição de uma skill recebe só texto nas duas portas**, multipart e JSON, e
+  o envio tem **teto de arquivos** igual ao do pacote.
+- **Quem aprova é configuração da instalação** (`quarantine.approvers`:
+  `admin`, `admin+owner` — o padrão — ou `admin+editor`). Revisar é de quem
+  enxerga a fila (dono, admin e editor); a política decide só o ato de criar a
+  skill. Auditoria: `quarantine.create/update/delete/promote/settings`.
+- **A edição de uma skill passou a receber só texto**, e o `.zip` saiu dela
+  (revoga a §4 no ponto marcado ali). Pacote tem um caminho só: a importação.
+- **O que a entrega não trouxe**: varredura do conteúdo, prazo ou cota da fila,
+  notificação de envio pendente, rascunho sem importação e promoção que já
+  publica num servidor.
 
 ## 13. Riscos aceitos conscientemente (v1)
 

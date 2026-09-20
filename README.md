@@ -525,6 +525,45 @@ O que fica gravado é só o corpo do prompt: qualquer frontmatter enviado no
 conteúdo é descartado na escrita, e o formulário do painel é a fonte da
 verdade. Renomear a skill atualiza o arquivo sozinho, sem reescrever o texto.
 
+## Quarentena: aprovar antes de publicar
+
+Um pacote que veio de fora não precisa virar skill na hora. Ao importar um
+`.zip`/`.skill` no painel, quem importa escolhe o destino:
+
+- **Direto para produção** — o comportamento de sempre: a skill nasce com nome,
+  slug e tags do `SKILL.md`, e com os servidores que a tela oferecer.
+- **Para a quarentena** — os arquivos ficam guardados como chegaram, esperando
+  aprovação. Nada é publicado, indexado pela busca semântica nem aparece no
+  site; nenhum agente alcança o conteúdo.
+
+A quarentena é deliberadamente simples: um envio não tem slug, tag, ícone nem
+vínculo, e o `SKILL.md` fica com o **frontmatter dentro dele** — é o arquivo
+cru que se lê e se edita, até alguém aprovar. Dois envios podem ter o mesmo
+nome; o que os distingue é o identificador e a data.
+
+**Aprovar** cria a skill no acervo, com **quem aprovou** como dono, ainda sem
+servidor nem catálogo (publicar é um passo à parte, depois), e tira o envio da
+fila. Quem submeteu fica registrado na trilha de auditoria. Quem
+pode aprovar é escolha da instalação, em **Configurações → Quarentena**:
+
+| Opção | Quem aprova |
+|-------|-------------|
+| `admin` | só administradores |
+| `admin+owner` (padrão) | administradores e quem submeteu o envio |
+| `admin+editor` | administradores e editores |
+
+Revisar e corrigir os arquivos de um envio é de quem o enxerga — o dono, os
+administradores e os editores —, independente de quem aprova. Aprovar exige
+também o papel de **criar no acervo** (editor para cima): aprovar é criar uma
+skill. Criar uma skill **pelo formulário** continua indo direto para produção: o
+portão existe para o pacote de terceiro.
+
+Dentro da edição de uma skill já cadastrada entra **só arquivo de texto**, um a
+um. Imagens e outros binários chegam pelo pacote, na importação — e **trocar a
+árvore de uma skill que já existe** deixou de ter caminho no painel; quem
+precisa disso usa o `set_files_bulk` do MCP administrativo. O desenho está em
+[`docs/15-quarentena.md`](docs/15-quarentena.md).
+
 ## Contadores e ranking
 
 Cada skill tem `view_count` e `download_count`. O ranking do site é a **soma

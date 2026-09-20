@@ -44,6 +44,13 @@ export const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   // boot grava com o ator `ambiente`) e a quantidade de skills em `rag.reindex`.
   'rag.settings': 'alterou a busca semântica',
   'rag.reindex': 'mandou reindexar',
+  // Quarentena: o alvo é o nome do envio; em `quarantine.promote` ele vem com
+  // o slug da skill que nasceu (`<nome> -> <slug>`).
+  'quarantine.create': 'enviou para a quarentena',
+  'quarantine.update': 'editou um envio da quarentena',
+  'quarantine.delete': 'descartou um envio da quarentena',
+  'quarantine.promote': 'aprovou um envio da quarentena',
+  'quarantine.settings': 'alterou quem aprova a quarentena',
   // Chaves psp_ do antigo MCP principal: nada mais as emite, a trilha ainda as mostra.
   'public.key.create': 'emitiu chave do MCP principal',
   'public.key.revoke': 'revogou chave do MCP principal',
@@ -85,6 +92,14 @@ export const ACTION_TONE: Record<AuditEntry['action'], 'ok' | 'accent' | 'danger
   // marca o acervo para refatiar (`docs/14-rag.md` §9).
   'rag.settings': 'accent',
   'rag.reindex': 'accent',
+  'quarantine.create': 'ok',
+  'quarantine.update': 'accent',
+  // Descartar apaga os arquivos do envio sem deixar nada no lugar. Aprovar
+  // também tira o envio da fila, mas o que ele vira aparece logo abaixo, como
+  // o `create` da skill: é ganho, não perda.
+  'quarantine.delete': 'danger',
+  'quarantine.promote': 'ok',
+  'quarantine.settings': 'accent',
   'public.key.create': 'ok',
   'public.key.revoke': 'danger',
 };

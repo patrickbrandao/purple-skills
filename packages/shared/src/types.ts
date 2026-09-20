@@ -234,6 +234,16 @@ export type AuditAction =
   // regravado a cada ciclo e inundaria a trilha.
   | 'rag.settings'
   | 'rag.reindex'
+  // Quarentena (`docs/15-quarentena.md`). `target_label` é o nome do envio;
+  // em `quarantine.promote` é `<nome> -> <slug>`, o slug com que a skill
+  // nasceu em produção. Editar um arquivo do envio é `quarantine.update`.
+  | 'quarantine.create'
+  | 'quarantine.update'
+  | 'quarantine.delete'
+  | 'quarantine.promote'
+  // Quem pode aprovar um envio (`quarantine.approvers`); `target_label` leva
+  // `chave=valor`, como `rag.settings`.
+  | 'quarantine.settings'
   // Chaves `psp_` do antigo MCP principal. Nada mais as produz desde o `011`;
   // ficam no tipo porque a trilha ainda carrega linhas com elas.
   | 'public.key.create'
@@ -715,3 +725,57 @@ export type AdminLinks = { docs: string | null; support: string | null; chat: st
 
 /** A marca do painel: o nome e o ícone da sidebar, do login e da aba do navegador. */
 export type AdminBrand = { name: string; iconUrl: string };
+
+// ---------------------------------------------------------- quarentena -----
+
+/**
+ * Um envio esperando aprovação (`docs/15-quarentena.md`).
+ *
+ * A quarentena é deliberadamente pobre: não tem slug, tag, ícone, vínculo com
+ * vMCP nem catálogo, não entra na busca e não é fatiada pelo RAG. O que existe
+ * é uma pasta de arquivos com dono, e quem aprova a transforma numa skill de
+ * verdade. Por isso **não** há colisão de nome: dois envios do mesmo pacote
+ * convivem, e é o `uuid` que os distingue.
+ */
+export type QuarantineSummary = {
+  uuid: string;
+  /** Lido do `name:` do SKILL.md, ou do nome do arquivo enviado. Só rótulo. */
+  name: string;
+  /** Lida do `description:` do SKILL.md; vazia quando ele não traz uma. */
+  description: string;
+  /** O arquivo que originou o envio (`pacote.zip`), informativo. */
+  sourceFilename: string | null;
+  /** Nulo quando o dono foi removido: o envio fica órfão, só do admin. */
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  fileCount: number;
+  /** A soma dos bytes gravados, como eles chegaram. */
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type QuarantineDetail = QuarantineSummary & {
+  files: SkillFileMeta[];
+};
+
+/**
+ * O envio **como o painel o recebe**: a ficha mais o que a sessão pode fazer
+ * com ela.
+ *
+ * `canPromote` não é dado do banco — é a política da instalação
+ * (`quarantine.approvers`) aplicada a quem pediu. Ele mora aqui, e não solto
+ * nas duas pontas, porque é o contrato que decide se o botão "Aprovar"
+ * aparece: declarado em separado de cada lado, um lado pode mudar sem o outro
+ * perceber. A decisão que **vale** continua sendo a da rota de promover.
+ */
+export type QuarantineSheet = QuarantineDetail & {
+  canPromote: boolean;
+};
+
+export type QuarantinePage = {
+  items: QuarantineSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};

@@ -30,6 +30,9 @@ function crumbsFor(pathname: string): Crumb[] {
         : [{ label: 'Skills' }];
     case 'catalogos':
       return second ? [{ label: 'Catálogos', to: '/catalogos' }, { label: second }] : [{ label: 'Catálogos' }];
+    // O segundo nível é o uuid do envio: não há slug legível para pôr na trilha.
+    case 'quarentena':
+      return second ? [{ label: 'Quarentena', to: '/quarentena' }, { label: 'envio' }] : [{ label: 'Quarentena' }];
     case 'auditoria':
       return [{ label: 'Auditoria', to: '/auditoria' }, ...(second ? [{ label: 'sessões MCP' }] : [{ label: 'trilha' }])];
     case 'users':

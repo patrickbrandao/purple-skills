@@ -16,8 +16,15 @@
  */
 export const NEW_SKILL_PATH = '/nova-skill';
 
-/** O mesmo formulário, já na importação de .zip (`NewSkillPage` lê o `modo`). */
+/** O mesmo formulário, já na importação de pacote (`NewSkillPage` lê o `modo`). */
 export const IMPORT_SKILL_PATH = `${NEW_SKILL_PATH}?modo=zip`;
+
+/**
+ * A importação já apontada para a quarentena (`docs/15-quarentena.md`). Mesma
+ * tela: importar é o **único** caminho para a quarentena, e o destino é uma
+ * escolha de quem importa, não uma tela à parte.
+ */
+export const QUARANTINE_IMPORT_PATH = `${IMPORT_SKILL_PATH}&destino=quarentena`;
 
 /** A tela é a de criação? Para a trilha e a sidebar; a barra no fim não conta, como no roteador. */
 export const isNewSkillPath = (pathname: string): boolean => pathname.replace(/\/+$/, '') === NEW_SKILL_PATH;

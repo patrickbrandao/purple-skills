@@ -153,7 +153,44 @@ export function checkNewName(
 
   if (dirs.has(key(path))) return { ok: false, error: `Já existe a pasta ${dirs.get(key(path))}.` };
 
+  // Arquivo criado aqui nasce **vazio e de texto**: o que se digita na árvore
+  // vira `content: ''` numa rota JSON. Com extensão de binário o servidor
+  // recusa (ele decide texto × binário pelo nome), e antes desta guarda a
+  // linha era gravada como binária — a árvore mostrava o arquivo e o editor
+  // dizia "não abre no editor de texto", sem saída a não ser removê-lo.
+  if (kind === 'file' && isBinaryName(path)) {
+    return {
+      ok: false,
+      error: 'Aqui só entra arquivo de texto. Imagem e outros binários vêm pelo pacote .zip/.skill, na importação.',
+    };
+  }
+
   return { ok: true, path };
+}
+
+/**
+ * As extensões que o servidor guarda como **binário** por natureza.
+ *
+ * É uma cópia curta e estável de `MIME_BY_EXTENSION` (`@purple-skills/shared`,
+ * `paths.ts`) — só o lado binário, que são 17 formatos de imagem, fonte,
+ * arquivo compactado e mídia. Este bundle não importa o pacote, e copiar as
+ * **102** extensões textuais seria uma lista que apodrece a cada formato novo.
+ *
+ * A regra que vale é a do servidor (`isTextualMime`), e ela é mais estreita
+ * que esta: extensão desconhecida também é recusada lá. Aqui só está o caso
+ * comum, para o erro aparecer enquanto se digita em vez de depois da ida e
+ * volta; o resto chega como mensagem da rota.
+ */
+const BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'pdf',
+  'zip', 'gz', 'tar', 'woff', 'woff2', 'ttf', 'mp3', 'mp4', 'wasm',
+]);
+
+function isBinaryName(path: string): boolean {
+  const name = path.split('/').pop() ?? '';
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return BINARY_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
 /** Insere a pasta na posição da ordem da árvore: SKILL.md, pastas, arquivos. */

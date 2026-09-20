@@ -4,13 +4,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { criar, lerMcp } = vi.hoisted(() => ({ criar: vi.fn(), lerMcp: vi.fn() }));
+const { criar, criarEnvio, lerMcp } = vi.hoisted(() => ({
+  criar: vi.fn(),
+  criarEnvio: vi.fn(),
+  lerMcp: vi.fn(),
+}));
 
-// Só `createSkill` e `getVirtualMcp` são trocados: o resto do pacote entra de
-// verdade, e nada nele abre conexão em tempo de import.
+// Só `createSkill`, `createQuarantine` e `getVirtualMcp` são trocados: o resto
+// do pacote entra de verdade, e nada nele abre conexão em tempo de import.
 vi.mock('@purple-skills/db', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   createSkill: criar,
+  createQuarantine: criarEnvio,
   getVirtualMcp: lerMcp,
 }));
 
@@ -31,6 +36,14 @@ function rota(method: string, path: string): RequestHandler {
 function zipCom(skillMd: string | Buffer): Buffer {
   const zip = new AdmZip();
   zip.addFile('SKILL.md', Buffer.isBuffer(skillMd) ? skillMd : Buffer.from(skillMd, 'utf8'));
+  return zip.toBuffer();
+}
+
+function zipDe(entradas: Record<string, Buffer | string>): Buffer {
+  const zip = new AdmZip();
+  for (const [nome, conteudo] of Object.entries(entradas)) {
+    zip.addFile(nome, Buffer.isBuffer(conteudo) ? conteudo : Buffer.from(conteudo, 'utf8'));
+  }
   return zip.toBuffer();
 }
 
@@ -65,7 +78,16 @@ const timeA = {
 };
 
 async function importar(skillMd: string | Buffer, campos: Record<string, string> = {}, user = admin) {
-  const req = { file: { buffer: zipCom(skillMd), originalname: 'pacote.zip' }, body: campos, user };
+  return importarPacote(zipCom(skillMd), campos, user);
+}
+
+async function importarPacote(
+  pacote: Buffer,
+  campos: Record<string, string> = {},
+  user = admin,
+  originalname = 'pacote.zip',
+) {
+  const req = { file: { buffer: pacote, originalname }, body: campos, user };
   const res = {
     statusCode: 200,
     body: undefined as unknown,
@@ -92,6 +114,7 @@ beforeEach(() => {
   // `skillMd` entra porque a rota passa o retorno por `bodyOnly` antes de
   // responder: sem ele cada importação despeja um TypeError no stderr do teste.
   criar.mockResolvedValue({ slug: 'minha-skill', skillMd: '', files: [] });
+  criarEnvio.mockResolvedValue({ uuid: 'envio-1', name: 'Revisor', ownerUserUuid: 'uuid-admin', ownerEmail: 'admin@exemplo.dev' });
   lerMcp.mockResolvedValue(timeA);
 });
 
@@ -224,5 +247,152 @@ describe('POST /api/skills/import', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toMatchObject({ error: 'bad_request', message: expect.stringMatching(/UTF-8 válido/) });
     expect(criar).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * O destino do pacote (`docs/15-quarentena.md`). Importar é o **único** caminho
+ * para a quarentena — o formulário de nova skill vai sempre para produção — e a
+ * escolha é de quem importa, nunca de algo dentro do pacote.
+ */
+describe('POST /api/skills/import — destino', () => {
+  const PACOTE = {
+    'SKILL.md': '---\nname: revisor-de-pr\ndescription: Revisa PRs.\n---\n# Revisor de PR\n',
+    'ref/notas.md': '# Notas\n',
+    'ref/logo.png': Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+  };
+
+  it('sem o campo, o pacote vai para produção, como sempre foi', async () => {
+    await importarPacote(zipDe(PACOTE));
+
+    expect(criar).toHaveBeenCalledTimes(1);
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  it('"production" é o mesmo caminho', async () => {
+    await importarPacote(zipDe(PACOTE), { destination: 'production' });
+
+    expect(criar).toHaveBeenCalledTimes(1);
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  it('destino desconhecido é 400, e nada é gravado em lugar nenhum', async () => {
+    const { res } = await importarPacote(zipDe(PACOTE), { destination: 'producao' });
+
+    expect(res.statusCode).toBe(400);
+    expect(criar).not.toHaveBeenCalled();
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  describe('quarantine', () => {
+    it('grava o envio em vez da skill, com o nome e a descrição do SKILL.md', async () => {
+      const { res } = await importarPacote(zipDe(PACOTE), { destination: 'quarantine' });
+
+      expect(res.statusCode).toBe(201);
+      expect(criar).not.toHaveBeenCalled();
+      expect(criarEnvio.mock.calls[0]![0]).toMatchObject({
+        // O rótulo é o nome **legível** do SKILL.md (`skillMetaFromMarkdown`):
+        // com `name:` já em forma de slug, quem dá o título é o heading.
+        name: 'Revisor de PR',
+        description: 'Revisa PRs.',
+        sourceFilename: 'pacote.zip',
+      });
+    });
+
+    /*
+     * A diferença que define a quarentena: em produção o SKILL.md entra sem o
+     * frontmatter (os metadados vão para colunas) e ele sai da lista de anexos.
+     * Aqui os arquivos entram como chegaram, o principal junto com os demais.
+     */
+    it('os arquivos entram crus, com o SKILL.md e o frontmatter dentro dele', async () => {
+      await importarPacote(zipDe(PACOTE), { destination: 'quarantine' });
+
+      const arquivos = criarEnvio.mock.calls[0]![0].files as { relativePath: string; content: Buffer }[];
+      expect(arquivos.map((file) => file.relativePath).sort()).toEqual(['SKILL.md', 'ref/logo.png', 'ref/notas.md']);
+      const principal = arquivos.find((file) => file.relativePath === 'SKILL.md')!;
+      expect(principal.content.toString('utf8')).toBe(PACOTE['SKILL.md']);
+    });
+
+    it('o binário chega byte a byte: a quarentena não peneira tipo', async () => {
+      await importarPacote(zipDe(PACOTE), { destination: 'quarantine' });
+
+      const arquivos = criarEnvio.mock.calls[0]![0].files as { relativePath: string; content: Buffer }[];
+      const png = arquivos.find((file) => file.relativePath === 'ref/logo.png')!;
+      expect(png.content.equals(PACOTE['ref/logo.png'] as Buffer)).toBe(true);
+    });
+
+    /*
+     * Ao contrário da importação para produção, aqui a falta do SKILL.md não
+     * barra: consertar o pacote torto é justamente o que a quarentena serve.
+     * Quem cobra o arquivo é a aprovação, que sem ele não sabe que skill criar.
+     */
+    it('pacote sem SKILL.md entra, e o nome sai do arquivo enviado', async () => {
+      const { res } = await importarPacote(
+        zipDe({ 'ref/notas.md': '# Notas\n' }),
+        { destination: 'quarantine' },
+        admin,
+        'revisor.skill',
+      );
+
+      expect(res.statusCode).toBe(201);
+      expect(criarEnvio.mock.calls[0]![0]).toMatchObject({ name: 'revisor', description: '' });
+    });
+
+    it('pacote vazio é 400', async () => {
+      const { res } = await importarPacote(zipDe({}), { destination: 'quarantine' });
+
+      expect(res.statusCode).toBe(400);
+      expect(criarEnvio).not.toHaveBeenCalled();
+    });
+
+    // Na quarentena não há metadado separado do arquivo: o formulário não tem
+    // onde encostar, e o painel nem o mostra nesse destino.
+    it('nome e descrição do formulário são ignorados', async () => {
+      await importarPacote(zipDe(PACOTE), {
+        destination: 'quarantine',
+        name: 'Do formulário',
+        description: 'Do formulário',
+      });
+
+      expect(criarEnvio.mock.calls[0]![0]).toMatchObject({ name: 'Revisor de PR', description: 'Revisa PRs.' });
+    });
+
+    /*
+     * O pacote que a quarentena mais precisa receber: `SKILL.md` em
+     * Windows-1252 ou UTF-16, o que sai de um editor Windows. Antes ele era
+     * recusado nos **dois** destinos pelo `extractZip`, e o espaço criado para
+     * consertar pacote torto era justamente o que não o aceitava. A cobrança da
+     * codificação passou para a aprovação.
+     */
+    it('SKILL.md fora de UTF-8 entra, byte a byte', async () => {
+      // `# Instruções` em Windows-1252: o `ç` e o `õ` são um byte cada.
+      const windows1252 = Buffer.from([0x23, 0x20, 0x49, 0x6e, 0x73, 0x74, 0x72, 0x75, 0xe7, 0xf5, 0x65, 0x73, 0x0a]);
+      const { res } = await importarPacote(
+        zipDe({ 'SKILL.md': windows1252, 'ref/notas.md': '# Notas\n' }),
+        { destination: 'quarantine' },
+      );
+
+      expect(res.statusCode).toBe(201);
+      const arquivos = criarEnvio.mock.calls[0]![0].files as { relativePath: string; content: Buffer }[];
+      expect(arquivos.find((file) => file.relativePath === 'SKILL.md')!.content.equals(windows1252)).toBe(true);
+      // Sem metadados legíveis, o rótulo cai para o nome do arquivo enviado.
+      expect(criarEnvio.mock.calls[0]![0]).toMatchObject({ name: 'pacote', description: '' });
+    });
+
+    it('o mesmo pacote continua recusado quando o destino é produção', async () => {
+      const windows1252 = Buffer.from([0x23, 0x20, 0x49, 0x6e, 0x73, 0x74, 0x72, 0x75, 0xe7, 0xf5, 0x65, 0x73, 0x0a]);
+      const { res } = await importarPacote(zipDe({ 'SKILL.md': windows1252 }), { destination: 'production' });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toMatchObject({ message: expect.stringMatching(/UTF-8 válido/) });
+      expect(criar).not.toHaveBeenCalled();
+      expect(criarEnvio).not.toHaveBeenCalled();
+    });
+
+    it('o uuid do dono não sai na resposta — sai o e-mail, como em toda ficha', async () => {
+      const { res } = await importarPacote(zipDe(PACOTE), { destination: 'quarantine' });
+
+      expect(res.body).toMatchObject({ ownerUserUuid: 'admin@exemplo.dev' });
+    });
   });
 });

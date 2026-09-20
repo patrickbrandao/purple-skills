@@ -4,6 +4,11 @@ Complementa `02-architecture-decisions.md` registrando **as decisões tomadas
 durante a implementação** — pontos em que a especificação era omissa e uma
 escolha teve de ser feita, mais os desvios conscientes.
 
+> **Parcialmente revogado pelo [`15`](15-quarentena.md)** — o `.zip` dentro da
+> edição de uma skill não existe mais, e o envio avulso daquela tela passou a
+> aceitar só texto. Os trechos estão riscados onde estavam; o resto continua em
+> vigor.
+
 ## Versões fixadas
 
 | Item | Versão | Motivo |
@@ -341,10 +346,17 @@ tranca a skill (`SELECT … FOR UPDATE` em `skills` daria deadlock com
 `files_rag_stale_trg`). O padrão de `replace` continua `true`: quem manda a
 árvore completa e nada perde não vê diferença.
 
-No painel web o upload de `.zip` faz o oposto — **adiciona/sobrescreve por
+~~No painel web o upload de `.zip` faz o oposto — **adiciona/sobrescreve por
 padrão**, com um checkbox explícito para substituir a árvore inteira. É uma
 superfície diferente (um humano clicando, sem descrição de ferramenta para
-ler antes), e o comportamento destrutivo fica visível na tela.
+ler antes), e o comportamento destrutivo fica visível na tela.~~
+
+> **Revogado neste ponto pelo [`15`](15-quarentena.md)** (§6): o painel não
+> importa `.zip` dentro da edição de uma skill, e a rota que o fazia
+> (`POST /api/skills/:slug/upload`) saiu. O parágrafo acima descrevia uma tela
+> que não existe mais. O `set_files_bulk` do MCP administrativo — o assunto do
+> resto desta seção — **não mudou**, e hoje é o único caminho que troca a
+> árvore de uma skill que já existe.
 
 ## Caminho de arquivo é único sem diferenciar caixa
 
@@ -1601,9 +1613,10 @@ a 20. O que a implementação decidiu além dele:
   enviar trocam só `skill.files` (`onFiles`); antes, cada uma chamava o
   `reload`, que repovoava o formulário e jogava fora a descrição, o SKILL.md
   e as propriedades ainda não salvos. Pelo mesmo motivo, "Publicada em" e
-  "Acesso" (Propriedades) passaram a trocar só a skill. Recarregam tudo, com
-  confirmação quando há algo pendente, só o `.zip` e o envio de um `SKILL.md`
-  na raiz — os dois trocam o corpo do prompt.
+  "Acesso" (Propriedades) passaram a trocar só a skill. Recarrega tudo, com
+  confirmação quando há algo pendente, só o envio de um `SKILL.md` na raiz —
+  ele troca o corpo do prompt (~~e o `.zip`~~, **revogado neste ponto pelo
+  [`15`](15-quarentena.md)**: não há mais `.zip` nesta tela).
 - **`reload` não depende de `navigate`.** Com `BrowserRouter`, o `navigate`
   do React Router muda de identidade a cada troca de caminho; como o
   `reload` dependia dele, cada clique numa guia refazia o GET e repovoava o

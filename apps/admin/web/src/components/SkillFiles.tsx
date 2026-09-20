@@ -452,7 +452,7 @@ function GoneFile({ ws, path }: { ws: SkillFiles; path: string }) {
         <EmptyState
           icon={<FileQuestion />}
           title="Este arquivo não está mais na skill"
-          description="Ele pode ter sido removido ou substituído por um .zip. Recarregue a árvore para ver o estado atual."
+          description="Ele pode ter sido removido por outra pessoa. Recarregue a árvore para ver o estado atual."
           action={
             <Button variant="ghost" size="sm" onClick={() => void ws.refresh()}>
               <RotateCcw /> Recarregar a árvore
@@ -594,20 +594,33 @@ function EditorSkeleton() {
   );
 }
 
-/** Os seletores de arquivo ocultos. Ficam na página, para a paleta os abrir de qualquer guia. */
+/**
+ * O seletor de arquivo oculto. Fica na página, para a paleta o abrir de
+ * qualquer guia.
+ *
+ * O seletor de `.zip` saiu (`docs/15-quarentena.md`): na edição de uma skill
+ * entra só arquivo de texto. O `accept` é uma peneira do diálogo do sistema, e
+ * não uma garantia — quem manda um binário mesmo assim é recusado pelo
+ * servidor, com o nome do arquivo na mensagem.
+ */
 export function FilePickers({ ws }: { ws: SkillFiles }) {
   return (
-    <>
-      <input ref={ws.uploadInput} type="file" multiple className="hidden" tabIndex={-1} aria-hidden="true" onChange={ws.onUploadPicked} />
-      <input
-        ref={ws.zipInput}
-        type="file"
-        accept=".zip,application/zip"
-        className="hidden"
-        tabIndex={-1}
-        aria-hidden="true"
-        onChange={ws.onZipPicked}
-      />
-    </>
+    <input
+      ref={ws.uploadInput}
+      type="file"
+      multiple
+      accept={TEXT_ACCEPT}
+      className="hidden"
+      tabIndex={-1}
+      aria-hidden="true"
+      onChange={ws.onUploadPicked}
+    />
   );
 }
+
+/**
+ * O que o diálogo do sistema oferece: os mesmos tipos que `isTextualMime`
+ * aceita em `packages/shared/src/paths.ts`, mais `text/*` para o que não tem
+ * extensão conhecida.
+ */
+const TEXT_ACCEPT = 'text/*,.md,.markdown,.txt,.json,.yaml,.yml,.toml,.sql,.xml,.csv,.svg';

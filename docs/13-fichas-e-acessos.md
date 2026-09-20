@@ -8,6 +8,11 @@ Revisão de 17/09/2026: **Acesso** vira guia própria nas três fichas,
 **Catálogos** e o Salvar da edição da skill fica sempre ativo e grava tudo
 (decisões 21 a 24).
 
+> **Parcialmente revogado pelo [`15`](15-quarentena.md)** — a guia **Arquivos**
+> da §3.2 perdeu o "importar `.zip`" e o "substituir a árvore por um `.zip`", e
+> o envio avulso dela passou a aceitar **só texto**. Os trechos estão riscados
+> onde estavam; o resto da guia continua em vigor.
+
 Este documento registra o desenho fechado na entrevista de 14/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
 em [`02-architecture-decisions.md`](02-architecture-decisions.md) e os
@@ -140,8 +145,9 @@ a faixa acima das guias lista as pendências, com Descartar:
   um arquivo o abre na guia Arquivos.
 - **Arquivos** — a árvore à esquerda e o arquivo aberto no resto (decisão
   18). Na barra da árvore: novo arquivo, nova pasta e enviar, na pasta
-  escolhida (a do arquivo aberto, a última pasta clicada ou a raiz), e o
-  menu com importar `.zip`, "substituir a árvore por um .zip", recolher as
+  escolhida (a do arquivo aberto, a última pasta clicada ou a raiz) — hoje
+  **só arquivo de texto** —, ~~e o menu com importar `.zip`, "substituir a
+  árvore por um .zip",~~ e o menu com recolher as
   pastas e recarregar a árvore; ao pé, `.zip` e `.skill`. Cada pasta — e a
   raiz — tem as mesmas três ações ao passar o mouse, e a pasta vazia, a de
   tirá-la; cada arquivo, a de remover. O nome do que se cria é digitado na
@@ -151,6 +157,9 @@ a faixa acima das guias lista as pendências, com Descartar:
   ⌘S; "Descartar" relê o que está gravado. Trocar de arquivo ou de guia não
   perde rascunho — a árvore marca os pendentes —, e recarregar ou fechar a
   aba com algo pendente pede confirmação ao navegador.
+  **Revogado nos dois pontos riscados pelo [`15`](15-quarentena.md)** (§6):
+  pacote entra pela importação, que escolhe entre produção e quarentena, e o
+  envio avulso recusa binário. Baixar `.zip`/`.skill` continua igual.
 - **Catálogos** — a tabela da leitura como CRUD da participação (decisão
   23), em pendências.
 - **Propriedades** — o formulário de metadados (slug, nome, tags, ícone) e a
@@ -164,8 +173,10 @@ a faixa acima das guias lista as pendências, com Descartar:
 
 O ⌘S grava o que está à frente: na guia Arquivos, o arquivo aberto; no
 resto — e com o SKILL.md aberto em Arquivos —, o mesmo que o Salvar. Os comandos da
-paleta acompanham: salvar, novo arquivo, nova pasta, enviar, importar
-`.zip`, remover o arquivo aberto e "Arquivos da skill".
+paleta acompanham: salvar, novo arquivo, nova pasta, enviar, ~~importar
+`.zip`,~~ remover o arquivo aberto e "Arquivos da skill" (o comando de
+importar `.zip` saiu com o menu — **revogado neste ponto pelo
+[`15`](15-quarentena.md)**).
 
 Permissões (`12` §3.2): conteúdo, descrição e metadados são `edit`; slug e
 "ligada" são `manage`; apagar é do dono; as portas de cada servidor são

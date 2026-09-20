@@ -124,9 +124,38 @@ describe('parseFrontmatter', () => {
     });
   });
 
-  it('item de lista e comentário não entram no valor da chave de cima', () => {
-    const { data } = parseFrontmatter('---\ntags:\n  - a\n  # nota\n  - b\ndescription: y\n---\n');
-    expect(data).toEqual({ tags: '', description: 'y' });
+  /*
+   * **Era**, até a quarentena: a lista de bloco era descartada e `tags:` ficava
+   * com o valor vazio. O pacote que a especificação Agent Skills escreve com
+   * mais frequência perdia as tags inteiras, sem aviso — e a promoção de um
+   * envio promete, na caixa de confirmação, que as tags saem do SKILL.md.
+   */
+  it('lê a lista de bloco nas duas indentações que o YAML aceita', () => {
+    expect(parseFrontmatter('---\ntags:\n  - a\n  - b\ndescription: y\n---\n').data).toEqual({
+      tags: 'a, b',
+      description: 'y',
+    });
+    // Item na coluna da própria chave é a outra grafia válida.
+    expect(parseFrontmatter('---\ntags:\n- a\n- b\n---\n').data).toEqual({ tags: 'a, b' });
+    // As aspas saem item a item, como saem do escalar.
+    expect(parseFrontmatter('---\ntags:\n  - "a"\n  - \'b\'\n---\n').data).toEqual({ tags: 'a, b' });
+  });
+
+  it('comentário não entra no valor, e o item solto depois de um valor continua ignorado', () => {
+    expect(parseFrontmatter('---\ntags:\n  - a\n  # nota\n  - b\n---\n').data).toEqual({ tags: 'a, b' });
+    // `chave: x` seguida de `- y` é YAML inválido: juntar os dois inventaria
+    // um valor que ninguém escreveu, então o item segue descartado.
+    expect(parseFrontmatter('---\ntags: a\n- lixo\n---\n').data).toEqual({ tags: 'a' });
+  });
+
+  /*
+   * O `-` dentro de um escalar de bloco é texto, não item: o escalar consome as
+   * linhas dele antes de o laço as ver, e é isso que este caso guarda.
+   */
+  it('hífen dentro de escalar de bloco continua sendo texto', () => {
+    const { data } = parseFrontmatter('---\ndescription: |\n  - não é lista\n  - nem isto\ntags:\n  - a\n---\n');
+    expect(data.description).toBe('- não é lista\n- nem isto');
+    expect(data.tags).toBe('a');
   });
 });
 
