@@ -212,6 +212,13 @@ export type AuditAction =
   // `rag.settings` e a quantidade de skills marcadas em `rag.reindex`.
   | 'rag.settings'
   | 'rag.reindex'
+  // Quarentena (`docs/15-quarentena.md`): o alvo é o nome do envio, e em
+  // `quarantine.promote` é `<nome> -> <slug>` da skill criada.
+  | 'quarantine.create'
+  | 'quarantine.update'
+  | 'quarantine.delete'
+  | 'quarantine.promote'
+  | 'quarantine.settings'
   | 'public.key.create'
   | 'public.key.revoke';
 
@@ -244,6 +251,11 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'mcp.unshare',
   'rag.settings',
   'rag.reindex',
+  'quarantine.create',
+  'quarantine.update',
+  'quarantine.delete',
+  'quarantine.promote',
+  'quarantine.settings',
   'public.key.create',
   'public.key.revoke',
 ];
@@ -908,35 +920,58 @@ export const skillDownloadUrl = (slug: string) =>
 export const skillPackageUrl = (slug: string) =>
   `/api/skills/${encodeURIComponent(slug)}/download.skill`;
 
-export function importZip(
-  file: File,
-  fields: {
-    name?: string;
-    description?: string;
-    icon?: string;
-    tags?: string[];
-    mcps?: SkillLinkInput[];
-  },
-) {
+/** Onde um pacote importado cai (`docs/15-quarentena.md`). */
+export type ImportDestination = 'production' | 'quarantine';
+
+type ImportFields = {
+  name?: string;
+  description?: string;
+  icon?: string;
+  tags?: string[];
+  mcps?: SkillLinkInput[];
+};
+
+/**
+ * Importa um pacote `.zip`/`.skill` direto para o acervo. Os campos do
+ * formulário completam o que o frontmatter do SKILL.md não trouxer.
+ */
+export function importZip(file: File, fields: ImportFields) {
+  return request<SkillDetail>('/api/skills/import', {
+    method: 'POST',
+    body: importForm(file, fields, 'production'),
+  });
+}
+
+/**
+ * O mesmo pacote, para a quarentena: nada é interpretado, os arquivos entram
+ * crus e ninguém publica nada até alguém aprovar. Nome e descrição saem do
+ * SKILL.md quando ele existe — os campos do formulário não valem aqui, porque
+ * na quarentena não há metadado separado do arquivo.
+ */
+export function importToQuarantine(file: File) {
+  return request<QuarantineDetail>('/api/skills/import', {
+    method: 'POST',
+    body: importForm(file, {}, 'quarantine'),
+  });
+}
+
+function importForm(file: File, fields: ImportFields, destination: ImportDestination): FormData {
   const form = new FormData();
   form.append('file', file);
+  form.append('destination', destination);
   if (fields.name) form.append('name', fields.name);
   if (fields.description) form.append('description', fields.description);
   if (fields.icon) form.append('icon', fields.icon);
   if (fields.tags?.length) form.append('tags', JSON.stringify(fields.tags));
   if (fields.mcps?.length) form.append('mcps', JSON.stringify(fields.mcps));
-  return request<SkillDetail>('/api/skills/import', { method: 'POST', body: form });
+  return form;
 }
 
-export function uploadZip(slug: string, file: File, replace: boolean) {
-  const form = new FormData();
-  form.append('file', file);
-  return request<{ files: SkillFileMeta[] }>(
-    `/api/skills/${encodeURIComponent(slug)}/upload?replace=${replace ? 1 : 0}`,
-    { method: 'POST', body: form },
-  );
-}
-
+/**
+ * Envio de arquivos avulsos para uma skill: **só texto**
+ * (`docs/15-quarentena.md`). Binário é recusado pelo servidor com o nome do
+ * arquivo na mensagem; quem precisa dele importa o pacote.
+ */
 export function uploadFiles(slug: string, files: FileList | File[], prefix = '') {
   const form = new FormData();
   for (const file of Array.from(files)) form.append('files', file);
@@ -946,6 +981,102 @@ export function uploadFiles(slug: string, files: FileList | File[], prefix = '')
     body: form,
   });
 }
+
+// ------------------------------------------------------------ quarentena ---
+
+/**
+ * Um envio esperando aprovação (`docs/15-quarentena.md`). Cópia manual de
+ * `QuarantineSummary` de `@purple-skills/shared`.
+ *
+ * Note o que **não** existe aqui: slug, tags, ícone, `isActive`, `isPublic`,
+ * vínculo com vMCP ou catálogo, contadores e concessões. A quarentena é uma
+ * pasta de arquivos com dono — e como não há slug, o endereço é o `uuid`.
+ */
+export type QuarantineSummary = {
+  uuid: string;
+  name: string;
+  description: string;
+  sourceFilename: string | null;
+  /** Sai pelo e-mail, como em toda ficha do painel; nulo é envio órfão. */
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+  fileCount: number;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type QuarantineDetail = QuarantineSummary & {
+  files: SkillFileMeta[];
+};
+
+/**
+ * O envio como a **ficha** o entrega: cópia manual de `QuarantineSheet` de
+ * `@purple-skills/shared`. `canPromote` não é dado do banco — é a política da
+ * instalação aplicada a quem pediu — e é obrigatório de propósito: opcional,
+ * um `undefined` vindo de um servidor velho desenharia o botão "Aprovar" para
+ * quem não pode. A decisão que vale continua sendo a da rota de promover.
+ */
+export type QuarantineSheet = QuarantineDetail & {
+  canPromote: boolean;
+};
+
+const quarantinePath = (uuid: string) => `/api/quarantine/${encodeURIComponent(uuid)}`;
+
+export const getQuarantineList = (query = '', limit = 50, offset = 0) =>
+  request<{ items: QuarantineSummary[]; total: number; limit: number; offset: number }>(
+    `/api/quarantine${qs({ q: query, limit, offset })}`,
+  );
+
+export const getQuarantineItem = (uuid: string) => request<QuarantineSheet>(quarantinePath(uuid));
+
+export const deleteQuarantineItem = (uuid: string) =>
+  request<unknown>(quarantinePath(uuid), { method: 'DELETE' });
+
+/** Aprova: cria a skill em produção e apaga o envio. Devolve a skill criada. */
+export const promoteQuarantineItem = (uuid: string) =>
+  request<SkillDetail>(`${quarantinePath(uuid)}/promote`, { method: 'POST' });
+
+export const quarantineDownloadUrl = (uuid: string) => `${quarantinePath(uuid)}/download`;
+
+const quarantineFilePath = (uuid: string, path: string) =>
+  `${quarantinePath(uuid)}/files/${path.split('/').map(encodeURIComponent).join('/')}`;
+
+export const getQuarantineFile = (uuid: string, path: string) =>
+  request<{ relativePath: string; mimeType: string; sizeBytes: number; isText: boolean; content: string | null }>(
+    quarantineFilePath(uuid, path),
+  );
+
+/** Grava o arquivo como está sendo editado — inclusive o frontmatter do SKILL.md. */
+export const setQuarantineFile = (uuid: string, path: string, content: string) =>
+  request<SkillFileMeta>(quarantineFilePath(uuid, path), { method: 'PUT', body: json({ content }) });
+
+export const createQuarantineFile = (uuid: string, path: string, content = '') =>
+  request<SkillFileMeta>(quarantineFilePath(uuid, path), { method: 'POST', body: json({ content }) });
+
+export const deleteQuarantineFile = (uuid: string, path: string) =>
+  request<unknown>(quarantineFilePath(uuid, path), { method: 'DELETE' });
+
+export const rawQuarantineFileUrl = (uuid: string, path: string) =>
+  `${quarantineFilePath(uuid, path)}?raw`;
+
+/** Quem aprova, nesta instalação. Cópia de `QuarantineApprovers` de shared. */
+export type QuarantineApprovers = 'admin' | 'admin+owner' | 'admin+editor';
+
+export const QUARANTINE_APPROVERS_LABEL: Record<QuarantineApprovers, string> = {
+  admin: 'somente administradores',
+  'admin+owner': 'administradores e o dono do envio',
+  'admin+editor': 'administradores e editores',
+};
+
+export const getQuarantineSettings = () =>
+  request<{ approvers: QuarantineApprovers; options: QuarantineApprovers[] }>('/api/settings/quarantine');
+
+export const setQuarantineSettings = (approvers: QuarantineApprovers) =>
+  request<{ approvers: QuarantineApprovers; options: QuarantineApprovers[] }>('/api/settings/quarantine', {
+    method: 'PUT',
+    body: json({ approvers }),
+  });
 
 // ----------------------------------------------------------- MCP virtual ---
 

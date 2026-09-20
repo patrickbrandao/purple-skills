@@ -98,6 +98,8 @@ describe('papéis exigidos pelas rotas', () => {
     ['put', '/api/settings/rag'],
     ['post', '/api/settings/rag/reindex'],
     ['post', '/api/settings/rag/refusals/clear'],
+    ['get', '/api/settings/quarantine'],
+    ['put', '/api/settings/quarantine'],
   ])('%s %s exige admin', (method, path) => {
     expect(handlers(method, path)).toContain(requireSettingsAdmin);
   });
@@ -125,7 +127,6 @@ describe('papéis exigidos pelas rotas', () => {
     ['put', '/api/skills/:slug/files/*path'],
     ['post', '/api/skills/:slug/files/*path'],
     ['delete', '/api/skills/:slug/files/*path'],
-    ['post', '/api/skills/:slug/upload'],
     ['post', '/api/skills/:slug/files'],
     ['put', '/api/skills/:slug/access/:email'],
     ['delete', '/api/skills/:slug/access/:email'],
@@ -153,6 +154,19 @@ describe('papéis exigidos pelas rotas', () => {
     ['put', '/api/mcps/:slug/catalogs/:catalog'],
     ['delete', '/api/mcps/:slug/catalogs/:catalog'],
     ['get', '/api/users/lookup'],
+    // A quarentena (`docs/15-quarentena.md`) não tem guarda de papel na
+    // frente: quem enxerga um envio é decidido dentro do handler (dono, admin
+    // e editor), e promover passa pela política da instalação. Submeter é que
+    // exige `requireCreate` — mas isso acontece em `/api/skills/import`.
+    ['get', '/api/quarantine'],
+    ['get', '/api/quarantine/:uuid'],
+    ['delete', '/api/quarantine/:uuid'],
+    ['get', '/api/quarantine/:uuid/download'],
+    ['post', '/api/quarantine/:uuid/promote'],
+    ['get', '/api/quarantine/:uuid/files/*path'],
+    ['put', '/api/quarantine/:uuid/files/*path'],
+    ['post', '/api/quarantine/:uuid/files/*path'],
+    ['delete', '/api/quarantine/:uuid/files/*path'],
   ])('%s %s é decidido pelo acesso ao objeto, não pelo papel', (method, path) => {
     expect(handlers(method, path)).not.toContain(requireCreate);
     expect(handlers(method, path)).not.toContain(requireAdmin);

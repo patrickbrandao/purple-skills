@@ -49,6 +49,8 @@ const SOMENTE_SQL: Record<string, string> = {
   mcp_sessions_open_session_id_idx: 'parcial: (session_id) WHERE ended_at IS NULL — `015`',
   skills_score_idx: 'por expressão: ((view_count + download_count) DESC) — `012`',
   skills_rag_stale_idx: 'parcial: (updated_at, uuid) WHERE rag_stale — `020`',
+  quarantine_files_path_lower_uniq:
+    'por expressão: UNIQUE (quarantine_uuid, lower(path)) — `030`',
 };
 
 /** Tabelas que existem no banco e de propósito não têm tipagem. */

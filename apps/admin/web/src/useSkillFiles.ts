@@ -7,7 +7,6 @@ import {
   getSkill,
   setFile as putFile,
   uploadFiles,
-  uploadZip,
   type SkillDetail,
   type SkillFileMeta,
 } from './api.js';
@@ -459,39 +458,13 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
     [canWrite, formDirty, confirm, slug, onFiles, reveal, toast, onReloadAll, follow],
   );
 
-  const importZip = useCallback(
-    async (file: File, replace: boolean) => {
-      if (!canWrite) return;
-      const pending = [...latest.current.docs.values()].some((doc) => isDirtyDoc(doc));
-      if (replace || pending || formDirty) {
-        const notes = [
-          replace
-            ? 'Os arquivos que não estiverem no .zip são removidos. O SKILL.md fica — com o corpo do .zip, se ele trouxer um.'
-            : 'Os arquivos do .zip sobrescrevem os de mesmo caminho, e um SKILL.md no .zip troca o corpo do prompt.',
-        ];
-        if (pending || formDirty) {
-          notes.push('A skill é recarregada em seguida: as alterações não salvas, nos arquivos e no formulário, se perdem.');
-        }
-        const ok = await confirm({
-          title: replace ? `Substituir toda a árvore por ${file.name}?` : `Importar ${file.name}?`,
-          description: notes.join(' '),
-          confirmLabel: replace ? 'Substituir a árvore' : 'Importar',
-          danger: true,
-        });
-        if (!ok) return;
-      }
-      try {
-        await uploadZip(slug, file, replace);
-        setDocs(new Map());
-        setSelected((current) => (current && isSkillMdPath(current) ? current : null));
-        await onReloadAll();
-        toast.success(replace ? 'Árvore de arquivos substituída pelo .zip.' : 'Arquivos importados do .zip.');
-      } catch (err) {
-        toast.error((err as Error).message);
-      }
-    },
-    [canWrite, formDirty, confirm, slug, onReloadAll, toast],
-  );
+  /*
+   * `importZip` — o .zip dentro da edição — **saiu** (`docs/15-quarentena.md`).
+   * A tela de edição de uma skill passou a receber só arquivo de texto, um a
+   * um; pacote entra pela importação, que escolhe entre produção e quarentena.
+   * A rota que este código chamava (`POST /api/skills/:slug/upload`) também
+   * não existe mais.
+   */
 
   /** Relê a lista de arquivos do servidor, sem mexer no formulário nem nos rascunhos. */
   const refresh = useCallback(async () => {
@@ -508,9 +481,7 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
   // --------------------------------------------- seletores de arquivo (ocultos) ---
 
   const uploadInput = useRef<HTMLInputElement>(null);
-  const zipInput = useRef<HTMLInputElement>(null);
   const uploadTarget = useRef('');
-  const zipReplace = useRef(false);
 
   const pickUpload = useCallback(
     (dir?: string) => {
@@ -520,11 +491,6 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
     [targetDir],
   );
 
-  const pickZip = useCallback((replace: boolean) => {
-    zipReplace.current = replace;
-    zipInput.current?.click();
-  }, []);
-
   const onUploadPicked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const list = Array.from(event.target.files ?? []);
@@ -532,15 +498,6 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
       void upload(list, uploadTarget.current);
     },
     [upload],
-  );
-
-  const onZipPicked = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      event.target.value = '';
-      if (file) void importZip(file, zipReplace.current);
-    },
-    [importZip],
   );
 
   return {
@@ -571,14 +528,10 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
     remove,
     removeDir,
     upload,
-    importZip,
     refresh,
     pickUpload,
-    pickZip,
     uploadInput,
-    zipInput,
     onUploadPicked,
-    onZipPicked,
   };
 }
 

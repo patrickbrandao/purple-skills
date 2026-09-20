@@ -39,8 +39,8 @@ app.use(cookieParser());
 
 // Painel é sempre same-origin: nada de CORS aberto aqui. A CSP acompanha os
 // três cabeçalhos que já existiam — é o painel autenticado, onde um XSS faria o
-// estrago maior. As rotas de arquivo de skill sobrescrevem a CSP com a sua,
-// mais fechada.
+// estrago maior. As rotas de arquivo — da skill e da quarentena — sobrescrevem
+// a CSP com a sua, mais fechada; o `nosniff` daqui vale para as duas.
 const pageHeaders = securityHeaders({
   html: indexHtml,
   referrerPolicy: REFERRER_POLICY_PRIVATE,

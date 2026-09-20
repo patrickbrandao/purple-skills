@@ -13,6 +13,8 @@ const FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 /** Par `chave: valor`. Em YAML os dois-pontos pedem espaço ou fim de linha depois — `https://…` não é par. */
 const PAIR = /^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]+(.*))?$/;
 const LIST_ITEM = /^-(?:[ \t]|$)/;
+/** O mesmo item, com o valor: `- alfa` em lista de bloco. */
+const LIST_VALUE = /^-(?:[ \t]+(.*))?$/;
 /** `|` ou `>`, com os indicadores de corte e de indentação em qualquer ordem, e comentário opcional. */
 const BLOCK_SCALAR = /^([|>])(?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/;
 
@@ -64,7 +66,13 @@ function matchFrontmatter(text: string): RegExpExecArray | null {
  * de bloco (`description: >-` ou `|`, como o js-yaml escreve texto longo) e
  * escalar simples ou entre aspas que continua (como o PyYAML escreve). Essas
  * linhas são valor, não par — nem quando têm forma de `chave: valor` dentro de
- * um escalar de bloco. Item de lista e comentário seguem ignorados.
+ * um escalar de bloco. Comentário segue ignorado.
+ *
+ * **Lista de bloco** (`tags:` e os itens abaixo, nas duas indentações que o
+ * YAML aceita) vira o mesmo texto separado por vírgula que a lista em linha
+ * (`[a, b]`) deixaria — o mapa continua raso. **Era**, até a quarentena: os
+ * itens eram descartados, e o pacote escrito na forma mais comum da
+ * especificação Agent Skills chegava sem tag nenhuma.
  */
 export function parseFrontmatter(source: string): Frontmatter {
   const text = source.replace(/^\uFEFF/, '');
@@ -75,7 +83,10 @@ export function parseFrontmatter(source: string): Frontmatter {
   // Valores que ainda podem continuar na linha de baixo: as aspas só saem no
   // fim, porque podem abrir numa linha e fechar em outra.
   const open = new Set<string>();
-  let last: { key: string; indent: number } | null = null;
+  // Itens da lista de bloco de cada chave (`tags:` seguida de `- alfa`). Ficam
+  // à parte até o fim porque viram um valor só, separado por vírgula.
+  const lists = new Map<string, string[]>();
+  let last: { key: string; indent: number; empty: boolean } | null = null;
 
   const lines = match[1].split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
@@ -85,14 +96,27 @@ export function parseFrontmatter(source: string): Frontmatter {
     const indent = indentOf(lines[i]);
     const kv = PAIR.exec(content);
     if (!kv) {
-      if (last && open.has(last.key) && indent > last.indent && !LIST_ITEM.test(content)) {
-        data[last.key] = `${data[last.key]} ${content}`.trim();
+      if (!last || !open.has(last.key)) continue;
+
+      const item = LIST_VALUE.exec(content);
+      if (item) {
+        // Lista de bloco do YAML. Só conta quando a chave veio **sem valor na
+        // linha dela** (`tags:` e os itens abaixo) e quando os itens estão na
+        // indentação da chave ou mais fundo — as duas grafias que o YAML
+        // aceita. `chave: x` seguida de `- y` é YAML inválido; juntar os dois
+        // inventaria um valor, então ali o item continua ignorado, como era.
+        if (!last.empty || indent < last.indent) continue;
+        const parsed = unquote((item[1] ?? '').trim());
+        if (parsed) lists.set(last.key, [...(lists.get(last.key) ?? []), parsed]);
+        continue;
       }
+
+      if (indent > last.indent) data[last.key] = `${data[last.key]} ${content}`.trim();
       continue;
     }
 
     const [, key, value = ''] = kv;
-    last = { key, indent };
+    last = { key, indent, empty: value.trim() === '' };
 
     const block = BLOCK_SCALAR.exec(value);
     if (!block) {
@@ -113,6 +137,11 @@ export function parseFrontmatter(source: string): Frontmatter {
   }
 
   for (const key of open) data[key] = unquote(data[key]);
+
+  // A lista de bloco vira o mesmo texto que a lista em linha (`[alfa, beta]`)
+  // deixaria: o mapa é raso de propósito, e quem lê `tags` já separa por
+  // vírgula. Só sobrescreve chave que ficou vazia — é a condição que a coletou.
+  for (const [key, items] of lists) if (!data[key]) data[key] = items.join(', ');
 
   return { data, body: text.slice(match[0].length) };
 }

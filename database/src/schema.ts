@@ -874,6 +874,70 @@ export const ragSkillClaims = pgTable('rag_skill_claims', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// -------------------------------------------------------------- quarentena ---
+
+/**
+ * Um envio esperando aprovação (`schema/030-quarentena.sql`,
+ * `docs/15-quarentena.md`). Deliberadamente pobre: sem slug, tag, ícone,
+ * `is_active`, `is_public`, vínculo com vMCP ou catálogo, contador, concessão e
+ * `search_vector` — é uma pasta de arquivos com dono. `name` é rótulo e **não**
+ * é único: dois envios do mesmo pacote convivem, e quem os distingue é o
+ * `uuid`. Nada de RAG passa por aqui; os triggers do `020` estão presos a
+ * `files`, `skills` e `skill_tags`.
+ */
+export const quarantineSkills = pgTable(
+  'quarantine_skills',
+  {
+    uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+    /** Lido do `name:` do SKILL.md ou do nome do arquivo enviado. Só rótulo. */
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    /** O `pacote.zip` de origem, informativo. */
+    sourceFilename: text('source_filename'),
+    /** Quem submeteu; nulo = órfão, só do admin, como `skills.owner_user_uuid`. */
+    ownerUserUuid: uuid('owner_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    createdByUserUuid: uuid('created_by_user_uuid').references(() => users.uuid, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // "Os envios desta conta", e o índice do `SET NULL` da remoção dela.
+    index('quarantine_skills_owner_user_uuid_idx').on(table.ownerUserUuid),
+    // A listagem é "mais recentes primeiro", sem outra ordenação possível.
+    index('quarantine_skills_created_at_idx').on(table.createdAt.desc()),
+  ],
+);
+
+/**
+ * Os arquivos do envio: a mesma modelagem de `files` — texto **ou** binário,
+ * nunca os dois (`quarantine_files_one_content_chk`) — **sem**
+ * `content_sha256`, que existe para o RAG reaproveitar vetor e aqui seria uma
+ * coluna que ninguém lê. A unicidade de caminho é por envio e sem diferenciar
+ * caixa: fica na migration `030`, no índice funcional
+ * `quarantine_files_path_lower_uniq`.
+ */
+export const quarantineFiles = pgTable(
+  'quarantine_files',
+  {
+    id: uuid('id').primaryKey().default(sql`uuidv7()`),
+    quarantineUuid: uuid('quarantine_uuid')
+      .notNull()
+      .references(() => quarantineSkills.uuid, { onDelete: 'cascade' }),
+    relativePath: text('relative_path').notNull(),
+    textContent: text('text_content'),
+    binaryContent: bytea('binary_content'),
+    mimeType: text('mime_type').notNull().default('application/octet-stream'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('quarantine_files_quarantine_uuid_idx').on(table.quarantineUuid)],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -899,3 +963,5 @@ export type RagTextRow = typeof ragTexts.$inferSelect;
 export type RagSkillTextRow = typeof ragSkillTexts.$inferSelect;
 export type RagVectorRow = typeof ragVectors.$inferSelect;
 export type RagSkillClaimRow = typeof ragSkillClaims.$inferSelect;
+export type QuarantineSkillRow = typeof quarantineSkills.$inferSelect;
+export type QuarantineFileRow = typeof quarantineFiles.$inferSelect;

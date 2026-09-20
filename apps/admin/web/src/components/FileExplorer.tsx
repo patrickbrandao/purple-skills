@@ -3,12 +3,10 @@ import {
   ChevronRight,
   ChevronsDownUp,
   Download,
-  FileArchive,
   FilePlus,
   FolderPlus,
   MoreHorizontal,
   RefreshCw,
-  Replace,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -27,13 +25,14 @@ import {
 import type { Creating, SkillFiles } from '../useSkillFiles.js';
 import { FileTypeIcon, FolderIcon } from './FileTypeIcon.js';
 import { useToast } from './Toast.js';
-import { Menu, MenuItem, MenuSeparator, cx } from './ui.js';
+import { Menu, MenuItem, cx } from './ui.js';
 
 /* ============================================================
    EXPLORADOR DA GUIA ARQUIVOS
    A árvore da skill com as ações de quem edita: arquivo vazio e
    pasta nova (na raiz ou numa pasta), envio de arquivos (pelo
-   botão ou arrastando para a pasta), importar .zip e remover.
+   botão ou arrastando para a pasta) e remover. Pacote .zip não
+   entra por aqui: a edição recebe só texto (`docs/15-quarentena.md`).
    O nome do que se cria é digitado na própria árvore, como no
    VS Code: Enter cria, Esc desiste.
    ============================================================ */
@@ -95,7 +94,7 @@ export function FileExplorer({ ws, slug, canWrite, skillMdDirty }: {
       const file = item.getAsFile();
       if (file) picked.push(file);
     }
-    if (folders > 0) toast.error('Pastas não vão pelo arrastar: arraste os arquivos, ou importe um .zip.');
+    if (folders > 0) toast.error('Pastas não vão pelo arrastar: arraste os arquivos, um a um ou de uma vez.');
     if (picked.length > 0) void ws.upload(picked, dir);
   }
 
@@ -127,17 +126,6 @@ export function FileExplorer({ ws, slug, canWrite, skillMdDirty }: {
               </button>
             )}
           >
-            {canWrite && (
-              <>
-                <MenuItem icon={<FileArchive />} onSelect={() => ws.pickZip(false)}>
-                  Importar .zip
-                </MenuItem>
-                <MenuItem icon={<Replace />} danger onSelect={() => ws.pickZip(true)}>
-                  Substituir a árvore por um .zip…
-                </MenuItem>
-                <MenuSeparator />
-              </>
-            )}
             <MenuItem icon={<ChevronsDownUp />} onSelect={() => ws.collapseAll(dirs)} disabled={dirs.length === 0}>
               Recolher as pastas
             </MenuItem>

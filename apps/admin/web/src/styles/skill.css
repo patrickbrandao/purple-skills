@@ -1129,6 +1129,51 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   max-width: 34em;
 }
 
+/* ---- destino da importação: produção ou quarentena ---- */
+.destinos {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-bottom: 18px;
+}
+.destino {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-surface);
+  background: var(--bg-elev);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.destino:hover {
+  border-color: var(--accent-soft);
+}
+.destino.active {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+.destino svg {
+  width: 18px;
+  height: 18px;
+  color: var(--accent-soft);
+}
+.destino.active svg {
+  color: var(--accent);
+}
+.destino .t {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.destino .h {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ---- publicação: selos de onde a skill está ---- */
 .mcp-chips {
   display: flex;
@@ -1255,4 +1300,22 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
+}
+
+/* A bancada da quarentena usa a mesma grade da edição de skill, sem a
+   divisória arrastável: lá o explorador se redimensiona, aqui o fio é só um
+   fio. Sem isto ele apareceria com o cursor de arrastar e não arrastaria nada.
+
+   O modificador **não** pode se chamar `fixed`, `static` nem outro nome de
+   utilitário do Tailwind, que está ligado neste bundle: `.fixed` é
+   `position: fixed`, e com ele a bancada saiu do fluxo, encolheu para o
+   conteúdo e passou a flutuar por cima da página. */
+.files-ws.no-resizer .files-resizer {
+  cursor: default;
+}
+.files-ws.no-resizer .files-resizer::before {
+  content: none;
+}
+.files-ws.no-resizer .files-resizer:hover {
+  background: var(--surface-3);
 }

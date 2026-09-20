@@ -17,13 +17,14 @@ import {
   Plug,
   Server,
   Settings,
+  ShieldQuestion,
   SlidersHorizontal,
   Sparkles,
   SquareUser,
   UserRound,
   Users,
 } from 'lucide-react';
-import { ROLE_LABEL, canManageUsers, type Session, type SessionUser } from '../../api.js';
+import { ROLE_LABEL, canCreate, canManageUsers, type Session, type SessionUser } from '../../api.js';
 import { initials } from '../SkillIcon.js';
 import { isNewSkillPath } from './routes.js';
 import { UserMenu, type OnLogout } from './UserMenu.js';
@@ -32,6 +33,7 @@ import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 const SETTINGS_ICON: Record<(typeof SETTINGS_SECTIONS)[number]['path'], ReactNode> = {
   'mcp-padrao': <Server />,
   'busca-semantica': <Sparkles />,
+  quarentena: <ShieldQuestion />,
   ambiente: <SlidersHorizontal />,
   conectar: <Plug />,
 };
@@ -130,6 +132,14 @@ export function Sidebar({
           <NavLink to="/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
             <Library /> Catálogos
           </NavLink>
+          {/* A quarentena fica ao lado do acervo, não dentro dele: o que está
+              ali ainda não é skill (`docs/15-quarentena.md`). Só quem pode
+              criar chega a submeter ou aprovar algo. */}
+          {canCreate(user.role) && (
+            <NavLink to="/quarentena" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <ShieldQuestion /> Quarentena
+            </NavLink>
+          )}
           <button
             type="button"
             className={`nav-item${inMine ? ' active' : ''}`}

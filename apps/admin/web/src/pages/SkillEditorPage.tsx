@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ExternalLink,
   Eye,
-  FileArchive,
   FilePlus,
   FileText,
   FolderPlus,
@@ -253,7 +252,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   const changes = useMemo(() => (skill ? planChanges(skill, drafts) : []), [skill, drafts]);
 
   const files = useSkillFiles({ skill, canWrite: podeEscrever, onFiles, onReloadAll: reload, formDirty });
-  const { save: saveFile, remove: removeFile, startCreate, pickUpload, pickZip, dirtyPaths } = files;
+  const { save: saveFile, remove: removeFile, startCreate, pickUpload, dirtyPaths } = files;
   useOpenFileFromState(files, skill?.uuid);
   // O SKILL.md aberto em Arquivos é o formulário, não um arquivo à parte.
   const dirtyFiles = useMemo(() => [...dirtyPaths].filter((path) => !isSkillMdPath(path)), [dirtyPaths]);
@@ -476,7 +475,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       { id: 'file-new', label: 'Novo arquivo', group: 'Recurso', icon: <FilePlus />, keywords: ['criar', 'arquivo', 'vazio'], run: () => { toFiles(); startCreate('file'); } },
       { id: 'dir-new', label: 'Nova pasta', group: 'Recurso', icon: <FolderPlus />, keywords: ['criar', 'pasta', 'diretório'], run: () => { toFiles(); startCreate('dir'); } },
       { id: 'files-upload', label: 'Enviar arquivos', group: 'Recurso', icon: <Upload />, keywords: ['upload', 'anexar'], run: () => { toFiles(); pickUpload(); } },
-      { id: 'files-zip', label: 'Importar .zip', group: 'Recurso', icon: <FileArchive />, keywords: ['zip', 'importar'], run: () => { toFiles(); pickZip(false); } },
     );
     if (openFile) {
       commands.push({ id: 'file-delete', label: `Remover ${openFile}`, group: 'Perigo', icon: <Trash2 />, danger: true, run: () => removeFile(openFile) });
@@ -504,7 +502,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     removeFile,
     startCreate,
     pickUpload,
-    pickZip,
     filesPath,
     editBase,
   ]);
@@ -833,7 +830,7 @@ function SkillTab({
           />
           <p className="panel-hint mt-3 mb-0">
             Clique num arquivo para abri-lo na guia <Link to={filesPath} className="link">Arquivos</Link>, onde também se
-            criam arquivos e pastas, se enviam anexos e se importa um .zip.
+            criam arquivos e pastas e se enviam arquivos de texto.
           </p>
         </Panel>
       </div>

@@ -14,6 +14,135 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## Não lançado
+
+### Adicionado
+
+- **Quarentena de skills** — um espaço de espera para pacotes importados que
+  precisam de aprovação antes de virar skill
+  ([`docs/15-quarentena.md`](docs/15-quarentena.md), migration `030`,
+  tabelas `quarantine_skills` e `quarantine_files`). Ao importar um
+  `.zip`/`.skill` no painel, quem importa escolhe o destino: **produção** (o
+  comportamento de sempre) ou **quarentena**. Um envio na quarentena não é
+  publicado, não entra na busca, não é fatiado pelo RAG e não aparece no site:
+  são arquivos crus com dono e data, endereçados pelo `uuid`.
+- O espaço é pobre **de propósito**: sem slug, tag, ícone, `is_active`,
+  `is_public`, contador, vínculo com vMCP ou catálogo, `search_vector`,
+  `rag_stale` nem concessões por objeto. **Não há colisão de nome** — dois
+  envios do mesmo pacote convivem. E não há metadado separado do arquivo: o
+  `SKILL.md` fica com o frontmatter dentro dele, e é esse arquivo cru que a
+  tela mostra e grava. A alternativa considerada, "skill em estado rascunho",
+  obrigaria cada coluna, trigger e tela do acervo a conviver com meia skill.
+- **Aprovar** cria a skill no acervo com os arquivos do envio, com o **dono do
+  envio** (quem aprovou fica em `created_by_user_uuid`), flutuante — sem
+  servidor, sem catálogo e não pública —, e apaga a linha da quarentena. Slug
+  ocupado ganha sufixo (`-2`), como já acontece quando o slug vem do nome.
+  Pacote **sem** `SKILL.md` entra na fila (consertar o que veio torto é para o
+  que a quarentena serve), mas a aprovação dele é recusada sem apagar nada.
+- **Quem aprova é configuração da instalação**, em Configurações → Quarentena
+  (`quarantine.approvers`): `admin`, `admin+owner` (o padrão) ou
+  `admin+editor`. Revisar e corrigir os arquivos continua sendo de quem
+  enxerga a fila — o dono, os administradores e os editores —, e quem não
+  enxerga um envio recebe 404, não 403. Auditoria: `quarantine.create`,
+  `quarantine.update`, `quarantine.delete`, `quarantine.promote` e
+  `quarantine.settings`.
+- Rotas novas sob `/api/quarantine` (lista, ficha, descarte, download do
+  pacote, promoção e CRUD de arquivo com `?raw`), mais
+  `GET`/`PUT /api/settings/quarantine`. `POST /api/skills/import` ganhou o
+  campo `destination` (`production`, o padrão, ou `quarantine`).
+
+### Mudanças incompatíveis
+
+- **`POST /api/skills/:slug/upload` foi removida** — o `.zip` numa skill já
+  cadastrada. O pacote passou a ter um caminho só, a importação, que decide
+  entre produção e quarentena. Quem chamava a rota recebe 404. No painel
+  sumiram o "Importar .zip", o "Substituir a árvore por um .zip" e o comando
+  correspondente da paleta. O que não tem substituto direto é a **troca da
+  árvore inteira de uma vez**: quem precisa dela importa o pacote de novo e
+  trabalha na skill nova. O `set_files_bulk` do MCP administrativo **não
+  mudou**.
+- **`POST /api/skills/:slug/files` aceita só texto.** A régua é a mesma do
+  banco e do `extractZip` (`isTextualContent`: mime textual pelo nome, sem
+  byte nulo e UTF-8 válido). Um `.png`, um `.pdf` ou um `.csv` em
+  Windows-1252 é recusado com 400, com o nome do arquivo na mensagem, e o
+  lote inteiro fica de fora — antes o binário entrava e o banco o guardava em
+  `bytea`. Binário continua chegando ao acervo pela importação do pacote.
+  Isso revoga, nos pontos marcados lá, a §3.2 do
+  [`docs/13-fichas-e-acessos.md`](docs/13-fichas-e-acessos.md) e a §4 do
+  [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md).
+
+### Corrigido — validação da quarentena (2026-09-20)
+
+Uma validação multiagente conferiu a entrega contra o checklist de requisitos,
+sem receber a descrição do que havia sido implementado: seis validadores
+independentes, refutação adversarial de cada achado e um crítico de completude.
+Dos 21 problemas apontados, 12 caíram na refutação. O que sobrou, e o que o
+crítico achou fora do checklist, está abaixo. **Cada item foi medido.**
+
+- **Quem aprovava um envio alheio perdia a skill que acabara de criar.** Com a
+  política `admin+editor`, o editor promovia, a skill nascia com o dono do
+  **envio**, privada, flutuante e sem concessão — e `skillVisibleTo` deixava de
+  alcançá-lo no mesmo instante, com `loadSkill` virando **404**. O painel ainda
+  o mandava para essa página. Três saídas eram possíveis (conceder acesso a quem
+  aprova, não navegar, inverter o dono) e o mantenedor escolheu a terceira: **a
+  skill promovida nasce com quem aprovou como dono**, e quem submeteu fica
+  registrado em `quarantine.promote`. Revisa a decisão 7 do
+  [`docs/15`](docs/15-quarentena.md), marcada lá.
+- **As rotas de arquivo por JSON gravavam binário ilegível.**
+  `PUT /api/skills/:slug/files/ref/logo.png` com `{"content":"oi"}` respondia
+  **200** e gravava uma linha binária com os bytes do texto — toda leitura
+  devolvia `content: null`, e uma imagem vinda do pacote era sobrescrita sem
+  aviso. As quatro rotas JSON (skill e envio, `PUT` e `POST`) passaram a recusar
+  extensão de binário com 400. Comportamento antigo, exposto pela regra nova de
+  "só texto na edição"; o explorador do painel também barra o nome antes do
+  envio.
+- **A quarentena recusava justamente o pacote que ela existe para receber.** Um
+  `SKILL.md` em Windows-1252 ou UTF-16 era barrado pelo `extractZip` **antes** de
+  o destino ser lido, nos dois destinos. `extractZip` ganhou
+  `allowBinarySkillMd`, que só a importação para a quarentena liga; produção
+  continua recusando, e a cobrança da codificação passou para a aprovação.
+- **Tag em lista YAML de bloco era descartada.** `tags:` seguida de `- alfa` — a
+  forma mais comum da especificação Agent Skills — resultava em skill **sem tag
+  nenhuma**, contra o que a caixa de confirmação da aprovação promete. O parser
+  de frontmatter passou a ler a lista nas duas indentações válidas; `chave: x`
+  seguida de `- y`, que é YAML inválido, continua ignorada.
+- **Envio sem teto de arquivos:** medido, 600 chamadas gravaram 602 arquivos num
+  envio, enquanto o mesmo conteúdo em `.zip` teria parado em 512. O envio passou
+  a ter o teto do pacote (`DEFAULT_MAX_ZIP_ENTRIES`).
+- **A nota que prometia um substituto inexistente.** O comentário da rota
+  removida e a §6 do `docs/15` diziam que quem precisasse trocar a árvore de uma
+  skill "importa o pacote de novo e promove". Medido: importar para produção dá
+  **409** (o import manda o slug do frontmatter explicitamente) e importar para a
+  quarentena e aprovar cria uma **segunda** skill. O texto passou a dizer o que é
+  verdade — não há substituto no painel, e o caminho que resta é o
+  `set_files_bulk` do MCP administrativo.
+- **Escalada de privilégio pela quarentena.** Uma conta rebaixada a `membro`
+  depois de enviar continuava aprovando o próprio envio na política padrão e,
+  como dona da skill que nascia, podia marcá-la como pública — enquanto
+  `POST /api/skills` e `POST /api/skills/import` lhe devolviam **403**. Promover
+  passou a exigir também `canCreate`, porque promover *é* criar no acervo
+  (`docs/12` decisão 12). O envio dela continua visível e editável.
+- **`canPromote` ficou no tipo compartilhado** (`QuarantineSheet`), em vez de
+  declarado solto nas duas pontas, e deixou de ser opcional: um `undefined` de um
+  servidor antigo desenharia o botão "Aprovar" para quem não pode.
+- **`docs/03-implementation-notes.md` ficou sem as marcas de revogação** que o
+  `AGENTS.md` exige, com dois trechos descrevendo como vigentes o `.zip` do
+  painel e o checkbox de substituir a árvore. Marcados, mais a nota no topo; o
+  cabeçalho do `docs/15` passou a enumerar os três documentos que ele revoga.
+
+### Decidido e não mudado
+
+- **A quarentena não varre o conteúdo do pacote.** Ela atrasa a publicação
+  para que uma pessoa leia; não há análise automática, e não haverá por ora.
+- **Sem prazo, cota ou notificação.** Envio esquecido fica na fila. Podar por
+  idade exigiria decidir o que é "velho" sem saber o que a instalação faz, e
+  apagar trabalho alheio por relógio é pior que uma lista comprida; avisar
+  alguém depende de saber a quem, o que só a política de aprovação em uso
+  responde.
+- **O envio não tem concessão por objeto** (`*_grants`). Quem enxerga também
+  edita e descarta. Um nível intermediário traria de volta exatamente a
+  complexidade que o espaço foi desenhado para evitar.
+
 ## [1.0.0-beta.23] — 2026-09-20
 
 Auditoria de 2026-09-19 (segunda rodada). 87 relatórios, reverificados **no

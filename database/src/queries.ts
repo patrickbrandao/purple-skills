@@ -1,9 +1,13 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
+  QUARANTINE_APPROVERS,
+  QUARANTINE_APPROVERS_DEFAULT,
+  QUARANTINE_APPROVERS_SETTING,
   SKILL_MD,
   VIRTUAL_MCP_PREVIEW_SIZE,
   isAccessLevel,
   isAccessScope,
+  isQuarantineApprovers,
   isRole,
   isSkillMd,
   isTextualContent,
@@ -11,8 +15,10 @@ import {
   mimeTypeFor,
   normalizeRelativePath,
   normalizeSkillIcon,
+  skillMetaFromMarkdown,
   skillScore,
   slugify,
+  stripFrontmatter,
   uniqueSlug,
   type AccessLevel,
   type AccessScope,
@@ -39,6 +45,10 @@ import {
   type PublicCatalog,
   type PublicCatalogDetail,
   type PublicVirtualMcp,
+  type QuarantineApprovers,
+  type QuarantineDetail,
+  type QuarantinePage,
+  type QuarantineSummary,
   type Role,
   type SkillCatalogRef,
   type SkillDetail,
@@ -1004,15 +1014,7 @@ async function readFileFrom(
 
   const row = (result.rows as Row[])[0];
   if (!row) return null;
-
-  const isText = row.text_content !== null;
-  return {
-    relativePath: row.relative_path,
-    mimeType: row.mime_type,
-    sizeBytes: Number(row.size_bytes),
-    isText,
-    buffer: isText ? Buffer.from(row.text_content, 'utf8') : Buffer.from(row.binary_content),
-  };
+  return toFileContent(row);
 }
 
 export async function readTextFile(skillUuid: string, relativePath: string): Promise<string | null> {
@@ -1029,16 +1031,7 @@ export async function readAllFiles(skillUuid: string): Promise<FileContent[]> {
     ORDER BY (lower(relative_path) = 'skill.md') DESC, relative_path ASC
   `);
 
-  return (result.rows as Row[]).map((row) => {
-    const isText = row.text_content !== null;
-    return {
-      relativePath: row.relative_path,
-      mimeType: row.mime_type,
-      sizeBytes: Number(row.size_bytes),
-      isText,
-      buffer: isText ? Buffer.from(row.text_content, 'utf8') : Buffer.from(row.binary_content),
-    };
-  });
+  return (result.rows as Row[]).map(toFileContent);
 }
 
 // ------------------------------------------------------------- contadores ---
@@ -2928,6 +2921,11 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'public.key.revoke',
   'rag.settings',
   'rag.reindex',
+  'quarantine.create',
+  'quarantine.update',
+  'quarantine.delete',
+  'quarantine.promote',
+  'quarantine.settings',
 ];
 
 export type ListAuditOptions = {
@@ -7475,6 +7473,829 @@ function sessionLabel(value: unknown, field: string): string | null {
   return normalizeSessionLabel(value);
 }
 
+// ------------------------------------------------------------- quarentena ---
+
+/**
+ * A quarentena (`docs/15-quarentena.md`, `schema/030-quarentena.sql`) é o
+ * espaço de espera entre o pacote que alguém enviou e o acervo: um envio é uma
+ * **pasta de arquivos com dono**, fora de `skills`, que a promoção transforma
+ * numa skill de verdade.
+ *
+ * O que ela deliberadamente não tem: slug, tag, ícone, `is_active`,
+ * `is_public`, vínculo com vMCP ou catálogo, contador, concessão,
+ * `search_vector` e RAG. Duas consequências para quem chama:
+ *
+ * - **o envio é endereçado pelo `uuid`**, nunca por nome — nome não é único
+ *   aqui, e dois envios do mesmo pacote convivem de propósito;
+ * - **a permissão é do app** (`canViewQuarantine`, `canEditQuarantine` e
+ *   `canPromoteQuarantine` de shared, com a política de
+ *   `getQuarantineApprovers`). O banco não recorta por papel: `listQuarantine`
+ *   recebe `ownerUserUuid` quando o app quer só os de uma conta.
+ */
+
+/** As colunas de `QuarantineSummary`: o envio, o dono e os números da pasta. */
+const QUARANTINE_COLUMNS = sql`
+  q.uuid, q.name, q.description, q.source_filename, q.owner_user_uuid,
+  u.email AS owner_email, n.total AS file_count, n.bytes AS size_bytes,
+  q.created_at, q.updated_at
+`;
+
+/**
+ * O `FROM` das leituras do envio. A contagem e a soma dos bytes saem de uma
+ * lateral só — duas subconsultas escalares varreriam o mesmo índice duas
+ * vezes por linha —, e ela sempre devolve uma linha: `file_count` e
+ * `size_bytes` nunca vêm nulos, nem num envio vazio.
+ */
+const QUARANTINE_FROM = sql`
+  FROM quarantine_skills q
+  LEFT JOIN users u ON u.uuid = q.owner_user_uuid
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int AS total, coalesce(sum(f.size_bytes), 0)::bigint AS bytes
+      FROM quarantine_files f
+     WHERE f.quarantine_uuid = q.uuid
+  ) n ON true
+`;
+
+function toQuarantineSummary(row: Row): QuarantineSummary {
+  return {
+    uuid: row.uuid,
+    name: row.name,
+    description: row.description ?? '',
+    sourceFilename: row.source_filename ?? null,
+    ownerUserUuid: row.owner_user_uuid ?? null,
+    ownerEmail: row.owner_email ?? null,
+    fileCount: Number(row.file_count ?? 0),
+    sizeBytes: Number(row.size_bytes ?? 0),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+export type ListQuarantineOptions = {
+  /** Clamp 1..200; padrão 50. */
+  limit?: number;
+  offset?: number;
+  /**
+   * Sem ele, a fila inteira. Com um uuid, só os envios daquela conta — é o
+   * recorte de quem perdeu o papel de editor e continua vendo o que
+   * submeteu. `null` é "nenhum dono possível" (a sessão de bootstrap, que não
+   * é conta) e devolve lista vazia em vez de vazar os órfãos, que são só do
+   * admin: a mesma semântica de `listVirtualMcps` e `listCatalogs`.
+   */
+  ownerUserUuid?: string | null;
+  /** `ILIKE %q%` em `name` e `description`, com o termo **literal**. */
+  search?: string;
+};
+
+/**
+ * A fila, **mais recentes primeiro** (`quarantine_skills_created_at_idx`), com
+ * o desempate por `uuid` — que é `uuidv7()` e, portanto, cresce com o tempo:
+ * dois envios do mesmo instante nunca trocam de lugar entre duas páginas.
+ */
+export async function listQuarantine(
+  options: ListQuarantineOptions = {},
+): Promise<QuarantinePage> {
+  const limit = clamp(options.limit ?? 50, 1, 200);
+  const offset = pageOffset(options.offset);
+
+  const owner = options.ownerUserUuid;
+  if (owner === null) return { items: [], total: 0, limit, offset };
+  if (owner !== undefined && !isUuid(owner)) return { items: [], total: 0, limit, offset };
+
+  const conditions: SQL[] = [];
+  if (owner !== undefined) conditions.push(sql`q.owner_user_uuid = ${owner}`);
+
+  const search = normalizeQuery(optionalText(options.search, 'search'));
+  if (search) {
+    const pattern = likePattern(search);
+    conditions.push(sql`(q.name ILIKE ${pattern} OR q.description ILIKE ${pattern})`);
+  }
+
+  const where = conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+
+  const counted = await db().execute(sql`
+    SELECT count(*)::int AS total FROM quarantine_skills q ${where}
+  `);
+  const total = Number((counted.rows as Row[])[0]?.total ?? 0);
+
+  const result = await db().execute(sql`
+    SELECT ${QUARANTINE_COLUMNS} ${QUARANTINE_FROM}
+    ${where}
+    ORDER BY q.created_at DESC, q.uuid DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `);
+
+  return { items: (result.rows as Row[]).map(toQuarantineSummary), total, limit, offset };
+}
+
+/**
+ * A ficha do envio, com a árvore de arquivos. **Uuid torto é `null`**, não
+ * erro: o painel endereça o envio pelo que veio na URL, e um texto que não é
+ * uuid tem de virar o 404 da tela — não o 22P02 do driver (500).
+ */
+export async function getQuarantine(uuid: string): Promise<QuarantineDetail | null> {
+  if (!isUuid(uuid)) return null;
+
+  const result = await db().execute(sql`
+    SELECT ${QUARANTINE_COLUMNS} ${QUARANTINE_FROM} WHERE q.uuid = ${uuid}
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  return { ...toQuarantineSummary(row), files: await listQuarantineFilesFrom(db(), uuid) };
+}
+
+export type CreateQuarantineInput = {
+  /** O rótulo: o `name:` do SKILL.md, ou o nome do arquivo enviado. */
+  name: string;
+  description?: string;
+  /** O `pacote.zip` de origem, informativo. */
+  sourceFilename?: string | null;
+  /**
+   * Os arquivos como chegaram — **o SKILL.md vai cru, com o frontmatter
+   * dentro**. Lista vazia é um envio vazio, e é um estado legítimo: o
+   * arquivo que falta pode ser acrescentado depois, antes de aprovar.
+   */
+  files?: readonly FileInput[];
+};
+
+/**
+ * Grava o envio e os arquivos numa transação só: gravá-los depois deixaria o
+ * envio existindo sem o pacote quando o segundo passo falhasse — a mesma razão
+ * dos anexos de `createSkill`.
+ *
+ * O dono é quem submeteu (`actor`), como em `createSkill`; sem conta (token
+ * global, bootstrap) o envio nasce órfão, só do admin. Audita
+ * `quarantine.create` com o nome do envio em `target_label`.
+ */
+export async function createQuarantine(
+  input: CreateQuarantineInput,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<QuarantineDetail> {
+  const name = (optionalText(input.name, 'name') ?? '').trim();
+  if (!name) throw badRequest('O campo "name" é obrigatório');
+  const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const sourceFilename = optionalText(input.sourceFilename, 'sourceFilename')?.trim() || null;
+  // Validados antes de abrir a transação: um caminho recusado no meio da
+  // gravação deixaria o envio criado sem parte dos arquivos.
+  const files = quarantineFileInputs(input.files ?? []);
+
+  const uuid = await db().transaction(async (tx) => {
+    const inserted = await tx.execute(sql`
+      INSERT INTO quarantine_skills
+        (name, description, source_filename, owner_user_uuid, created_by_user_uuid)
+      VALUES (${name}, ${description}, ${sourceFilename},
+              ${actor?.userUuid ?? null}, ${actor?.userUuid ?? null})
+      RETURNING uuid
+    `);
+    const novo = (inserted.rows as Row[])[0].uuid as string;
+    // Sem travar nada: ninguém mais conhece este uuid ainda.
+    await upsertQuarantineFilesTx(tx, novo, files);
+    await auditTx(tx, quarantineAudit('quarantine.create', name, source, actor));
+    return novo;
+  });
+
+  const detail = await getQuarantine(uuid);
+  if (!detail) throw new Error('Envio criado mas não encontrado');
+  return detail;
+}
+
+/** Um arquivo do envio, com os bytes — a mesma forma de `readFile`. */
+export async function readQuarantineFile(
+  uuid: string,
+  relativePath: string,
+): Promise<FileContent | null> {
+  if (!isUuid(uuid)) return null;
+  return readQuarantineFileFrom(db(), uuid, relativePath);
+}
+
+/** Todos os arquivos do envio, com bytes — é o `.zip` que o painel baixa. */
+export async function readAllQuarantineFiles(uuid: string): Promise<FileContent[]> {
+  if (!isUuid(uuid)) return [];
+  return readAllQuarantineFilesFrom(db(), uuid);
+}
+
+/**
+ * Cria um arquivo do envio **só se o caminho está livre**, com as mesmas
+ * recusas de `createFile` (o mesmo caminho, um prefixo que é arquivo, algo
+ * abaixo de um caminho que já é pasta) e as mesmas mensagens.
+ *
+ * **Uma diferença, e é de propósito:** aqui o `SKILL.md` é um caminho como
+ * outro qualquer. Numa skill ele sempre existe e criá-lo é 409; num envio ele
+ * pode faltar — e criá-lo é justamente o que conserta o envio que a promoção
+ * recusou.
+ *
+ * **Sem o `ON CONFLICT DO NOTHING` de `createFile`**: lá ele é a garantia
+ * contra quem grava sem a trava, e aqui não há esse "quem". A trava é a linha
+ * do envio em `FOR UPDATE` (`lockQuarantineTx`, a primeira statement), e ela
+ * barra **até o INSERT de quem não a pediu** — a FK de `quarantine_files` pede
+ * `FOR KEY SHARE` na linha do envio, que conflita com `FOR UPDATE`. Medido:
+ * com uma transação segurando o `FOR UPDATE`, um `INSERT` cru na outra fica
+ * esperando e só entra depois do `ROLLBACK` dela. Entre a conferência e o
+ * INSERT não cabe ninguém.
+ */
+export async function createQuarantineFile(
+  uuid: string,
+  relativePath: string,
+  content: Buffer | string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillFileMeta> {
+  assertQuarantineUuid(uuid);
+  const path = normalizeRelativePath(relativePath);
+  if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
+  if (typeof content !== 'string' && !Buffer.isBuffer(content)) {
+    throw badRequest('O conteúdo do arquivo precisa ser texto ou bytes');
+  }
+
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+  // `quarantine_files`: aqui o `SKILL.md` binário entra, e é a promoção que o
+  // cobra em texto — ver `fileColumns`.
+  const file = fileColumns(path, buffer, 'quarantine_files');
+  const depth = path.split('/').length;
+
+  await db().transaction(async (tx) => {
+    const envio = await lockQuarantineTx(tx, uuid);
+
+    // Uma consulta para as três ocupações, como em `createFile`: `conflito` é a
+    // ordem das mensagens e, dentro de cada uma, vence o caminho mais curto.
+    const found = await tx.execute(sql`
+      WITH pedido AS (SELECT lower(${path}) AS caminho)
+      SELECT f.relative_path,
+             CASE
+               WHEN lower(f.relative_path) = p.caminho THEN 1
+               WHEN starts_with(p.caminho, lower(f.relative_path) || '/') THEN 2
+               ELSE 3
+             END AS conflito
+        FROM quarantine_files f
+       CROSS JOIN pedido p
+       WHERE f.quarantine_uuid = ${uuid}
+         AND (lower(f.relative_path) = p.caminho
+              OR starts_with(p.caminho, lower(f.relative_path) || '/')
+              OR starts_with(lower(f.relative_path), p.caminho || '/'))
+       ORDER BY conflito, char_length(f.relative_path), f.relative_path
+       LIMIT 1
+    `);
+    const row = (found.rows as Row[])[0];
+    const taken = row ? (row.relative_path as string) : null;
+    const kind = row ? Number(row.conflito) : 0;
+
+    if (kind === 1) throw conflict(`Já existe um arquivo em ${taken}`);
+    if (kind === 2) throw conflict(`${taken} é um arquivo, não uma pasta`);
+    if (kind === 3) {
+      // `lower()` não cria nem tira `/`: os primeiros segmentos da linha são a pasta.
+      const folder = taken!.split('/').slice(0, depth).join('/');
+      throw conflict(`Já existe uma pasta ${folder}`);
+    }
+
+    await tx.execute(insertQuarantineFileSql(uuid, path, file));
+    await auditTx(tx, quarantineAudit('quarantine.update', envio.name, source, actor, path));
+  });
+
+  return {
+    relativePath: path,
+    mimeType: file.mimeType,
+    sizeBytes: file.sizeBytes,
+    isText: file.isText,
+  };
+}
+
+/**
+ * Cria ou sobrescreve um arquivo do envio (upsert, em qualquer caixa). Audita
+ * `quarantine.update` com o caminho em `file_path` e o conteúdo anterior —
+ * `quarantine.create` é o envio que apareceu, não o arquivo.
+ */
+export async function setQuarantineFile(
+  uuid: string,
+  relativePath: string,
+  content: Buffer | string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillFileMeta> {
+  assertQuarantineUuid(uuid);
+  const path = normalizeRelativePath(relativePath);
+  if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
+
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+  // Fora da transação, como na skill — só que aqui o `SKILL.md` binário passa:
+  // salvá-lo como veio é parte do conserto que a quarentena permite.
+  const { mimeType, sizeBytes, isText } = fileColumns(path, buffer, 'quarantine_files');
+
+  await db().transaction(async (tx) => {
+    const envio = await lockQuarantineTx(tx, uuid);
+    const previous = await readQuarantineFileFrom(tx, uuid, path);
+    await upsertQuarantineFilesTx(tx, uuid, [{ path, buffer }]);
+    await auditTx(
+      tx,
+      quarantineAudit(
+        'quarantine.update',
+        envio.name,
+        source,
+        actor,
+        path,
+        previous?.isText ? previous.buffer.toString('utf8') : null,
+      ),
+    );
+  });
+
+  return { relativePath: path, mimeType, sizeBytes, isText };
+}
+
+/**
+ * Vários arquivos de uma vez — o envio de um `.zip` inteiro sobre um envio que
+ * já existe. Upsert, **sem `replace`**: o que não veio fica. Uma statement por
+ * lote (`upsertQuarantineFilesTx`) e uma linha de auditoria só, sem
+ * `file_path`; devolve a árvore inteira depois da gravação, como `setFiles`.
+ */
+export async function setQuarantineFiles(
+  uuid: string,
+  files: readonly FileInput[],
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillFileMeta[]> {
+  assertQuarantineUuid(uuid);
+  const normalized = quarantineFileInputs(files);
+  if (normalized.length === 0) throw badRequest('Nenhum arquivo informado');
+
+  await db().transaction(async (tx) => {
+    const envio = await lockQuarantineTx(tx, uuid);
+    await upsertQuarantineFilesTx(tx, uuid, normalized);
+    await auditTx(tx, quarantineAudit('quarantine.update', envio.name, source, actor));
+  });
+
+  return listQuarantineFilesFrom(db(), uuid);
+}
+
+/**
+ * Apaga um arquivo do envio; caminho que não existe é 404. **O `SKILL.md` pode
+ * sair** — ao contrário de `deleteFile`: um envio sem ele é um estado legítimo
+ * (só não é promovível), e a quarentena é uma pasta, não uma skill.
+ */
+export async function deleteQuarantineFile(
+  uuid: string,
+  relativePath: string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<void> {
+  assertQuarantineUuid(uuid);
+  const path = normalizeRelativePath(relativePath);
+  if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
+
+  await db().transaction(async (tx) => {
+    const envio = await lockQuarantineTx(tx, uuid);
+    const previous = await readQuarantineFileFrom(tx, uuid, path);
+    if (!previous) throw notFound(`Arquivo não encontrado: ${path}`);
+
+    // Pelo caminho exato da linha lida, não por `lower(...)`: um filtro
+    // insensível a caixa apagaria de uma vez todas as variantes do nome.
+    await tx.execute(sql`
+      DELETE FROM quarantine_files
+      WHERE quarantine_uuid = ${uuid} AND relative_path = ${previous.relativePath}
+    `);
+    await auditTx(
+      tx,
+      quarantineAudit(
+        'quarantine.update',
+        envio.name,
+        source,
+        actor,
+        path,
+        previous.isText ? previous.buffer.toString('utf8') : null,
+      ),
+    );
+  });
+}
+
+/**
+ * Descarta o envio. Os arquivos vão junto pela cascata
+ * (`quarantine_files_quarantine_uuid_fkey`); audita `quarantine.delete` com o
+ * nome do envio. Envio inexistente — ou uuid torto — é 404.
+ */
+export async function deleteQuarantine(
+  uuid: string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<void> {
+  assertQuarantineUuid(uuid);
+
+  await db().transaction(async (tx) => {
+    const envio = await lockQuarantineTx(tx, uuid);
+    await tx.execute(sql`DELETE FROM quarantine_skills WHERE uuid = ${uuid}`);
+    await auditTx(tx, quarantineAudit('quarantine.delete', envio.name, source, actor));
+  });
+}
+
+/**
+ * A aprovação: o envio vira skill e **some da quarentena**, numa transação só —
+ * senão restaria uma skill pela metade ou um envio apagado sem skill.
+ *
+ * O que ela decide, em ordem:
+ *
+ * 1. **sem `SKILL.md` legível não há promoção** (`isSkillMd`, como nas demais):
+ *    é 400 quando ele **falta** e 400 quando ele está lá mas **não é texto
+ *    UTF-8 válido**, os dois com o nome do envio na mensagem e **sem apagar
+ *    nada** — o envio fica onde está, para receber ou consertar o arquivo. A
+ *    segunda recusa é a contrapartida de a quarentena aceitar o `SKILL.md`
+ *    binário (ver `fileColumns`): guardar o pacote torto é para o que o espaço
+ *    serve, e é aqui, na porta do acervo, que a exigência de `files` volta a
+ *    valer — daqui em diante esse arquivo é lido como texto
+ *    (`skillMetaFromMarkdown`, `stripFrontmatter`, o `search_vector`, o RAG);
+ * 2. **os metadados saem do SKILL.md cru** (`skillMetaFromMarkdown`): nome,
+ *    descrição e tags. Nome vazio cai para o nome do envio, descrição vazia
+ *    para a do envio. O corpo gravado é o `stripFrontmatter` dele — daqui em
+ *    diante os metadados moram em colunas, como em toda skill. Um SKILL.md só
+ *    de frontmatter vira uma skill de corpo **vazio**, e isso passa: o envio é
+ *    a verdade, e barrar a aprovação por uma linha em branco seria mandar quem
+ *    revisou editar o pacote para nada — `createSkill` recusa porque lá o
+ *    corpo é o que o chamador digitou;
+ * 3. **o slug é derivado, com sufixo automático** (`-2`, `-3`…): o mesmo
+ *    caminho de quem cria uma skill sem pedir slug. Vale tanto para o `name:`
+ *    do frontmatter quanto para o nome do envio — colisão aqui não é erro de
+ *    ninguém, e devolver 409 a quem aprova seria um beco sem saída;
+ * 4. **o dono é quem aprova**, nas duas colunas: `owner_user_uuid` e
+ *    `created_by_user_uuid` recebem o ator, como em `createSkill` — promover
+ *    **é** criar a skill. Ator sem conta (token global, bootstrap) gera skill
+ *    órfã, como em qualquer criação, e o dono do envio não entra em lugar
+ *    nenhum da skill. A regra anterior — dono = quem submeteu — era deliberada
+ *    (`docs/15` decisão 7) e escondia um defeito medido: com a política
+ *    `quarantine.approvers = admin+editor`, o editor que aprovava o envio de
+ *    outra conta criava uma skill privada, flutuante e sem concessão nenhuma —
+ *    que `skillVisibleTo` não alcança — e **deixava de enxergá-la no mesmo
+ *    instante**: o aviso de sucesso caía numa tela de "Skill não encontrada".
+ *    Devolver a skill a quem a trouxe é transferir ou conceder, que são atos
+ *    com trilha;
+ * 5. **a skill nasce flutuante:** sem vMCP, sem catálogo, sem ícone,
+ *    `is_public` falso e ligada. Publicar é um ato à parte, depois;
+ * 6. **os demais arquivos viram anexos**, com o caminho intacto;
+ * 7. a linha da quarentena e os arquivos dela **somem** (a cascata cuida dos
+ *    arquivos).
+ *
+ * A skill promovida é skill normal: os triggers do `020` a marcam pendente
+ * para o RAG (`rag_stale`) e o `search_vector` é montado como em qualquer
+ * criação. Audita a `create` da skill, como toda criação, e
+ * `quarantine.promote` com `<nome do envio> -> <slug criado>`.
+ */
+export async function promoteQuarantine(
+  uuid: string,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<SkillDetail> {
+  assertQuarantineUuid(uuid);
+
+  let slug = '';
+
+  // O slug é escolhido lendo os ocupados e gravado depois: duas promoções (ou
+  // uma promoção e uma criação) simultâneas podem escolher o mesmo. Como ele é
+  // **derivado**, a intenção é "qualquer slug livre" e vale tentar de novo — a
+  // transação inteira, porque a violação de UNIQUE aborta tudo. O envio segue
+  // intacto no banco até o COMMIT que o apaga, então repetir é seguro.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await db().transaction(async (tx) => {
+        const envio = await lockQuarantineTx(tx, uuid);
+        const files = await readAllQuarantineFilesFrom(tx, uuid);
+
+        const main = files.find((file) => isSkillMd(file.relativePath));
+        if (!main) {
+          throw badRequest(
+            `O envio "${envio.name}" não tem SKILL.md e não pode ser aprovado: ` +
+              'acrescente o arquivo e tente de novo',
+          );
+        }
+        // `isText` é o que está gravado: no envio, o `SKILL.md` que não é UTF-8
+        // válido (ou tem byte nulo) entrou como binário, de propósito. Ele é
+        // recusado aqui, antes de qualquer escrita — `toString('utf8')` não
+        // falharia, trocaria cada byte inválido por U+FFFD e a skill nasceria
+        // com o corpo corrompido para sempre.
+        if (!main.isText) {
+          throw badRequest(
+            `O SKILL.md do envio "${envio.name}" não é um texto UTF-8 válido e não ` +
+              'pode ser aprovado: converta o arquivo para UTF-8 e salve-o aqui na ' +
+              'quarentena antes de tentar de novo',
+          );
+        }
+
+        const raw = main.buffer.toString('utf8');
+        const meta = skillMetaFromMarkdown(raw);
+        const name = meta.name?.trim() || envio.name;
+        const description = meta.description?.trim() || envio.description;
+        slug = await freeSkillSlugTx(tx, meta.slug || name);
+
+        // Quem aprova vira dono, nas duas colunas, como em `createSkill`: quem
+        // promove precisa enxergar a skill que acabou de criar (ver a nota 4).
+        const inserted = await tx.execute(sql`
+          INSERT INTO skills
+            (slug, name, description, is_active, is_public,
+             created_by_user_uuid, owner_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, true, false,
+                  ${actor?.userUuid ?? null}, ${actor?.userUuid ?? null})
+          RETURNING uuid
+        `);
+        const skillUuid = (inserted.rows as Row[])[0].uuid as string;
+
+        await upsertFilesTx(tx, skillUuid, [
+          { path: SKILL_MD, buffer: Buffer.from(stripFrontmatter(raw), 'utf8') },
+          ...files
+            .filter((file) => !isSkillMd(file.relativePath))
+            .map((file) => ({ path: file.relativePath, buffer: file.buffer })),
+        ]);
+        await replaceTagsTx(tx, skillUuid, meta.tags);
+
+        await auditTx(tx, {
+          skillUuid,
+          skillSlug: slug,
+          filePath: null,
+          action: 'create',
+          source,
+          actor,
+          previousContent: null,
+        });
+        await auditTx(
+          tx,
+          quarantineAudit('quarantine.promote', `${envio.name} -> ${slug}`, source, actor),
+        );
+
+        // Por último: o envio só some depois de a skill existir inteira.
+        await tx.execute(sql`DELETE FROM quarantine_skills WHERE uuid = ${uuid}`);
+      });
+      break;
+    } catch (err) {
+      if (!isUniqueViolation(err, 'skills_slug_key')) throw err;
+      if (attempt >= SLUG_ATTEMPTS) throw conflict(`Já existe uma skill com o slug "${slug}"`);
+    }
+  }
+
+  const detail = await getSkillDetail(slug, { visibility: 'all' });
+  if (!detail) throw new Error('Skill promovida mas não encontrada');
+  return detail;
+}
+
+/**
+ * Quem pode aprovar um envio, pela política da instalação
+ * (`quarantine.approvers`, semeada pela `030` com `admin+owner`). Chave
+ * ausente ou com valor que não é um dos três cai no padrão de shared — a
+ * política nunca fica indefinida, e um valor escrito à mão no banco não
+ * escancara nem tranca o portão por acidente.
+ */
+export async function getQuarantineApprovers(): Promise<QuarantineApprovers> {
+  const result = await db().execute(sql`
+    SELECT value FROM settings WHERE key = ${QUARANTINE_APPROVERS_SETTING}
+  `);
+  const value = (result.rows as Row[])[0]?.value ?? null;
+  return isQuarantineApprovers(value) ? value : QUARANTINE_APPROVERS_DEFAULT;
+}
+
+/**
+ * Grava a política e audita `quarantine.settings` com `chave=valor`, como
+ * `rag.settings`. O valor chega como `unknown` — ele vem do corpo da
+ * requisição, sem passar por schema —, e o que não é um dos três de
+ * `QUARANTINE_APPROVERS` é 400.
+ */
+export async function setQuarantineApprovers(
+  value: unknown,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<QuarantineApprovers> {
+  if (!isQuarantineApprovers(value)) {
+    throw badRequest(`Quem aprova precisa ser um de: ${QUARANTINE_APPROVERS.join(', ')}`);
+  }
+
+  await db().transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO settings (key, value) VALUES (${QUARANTINE_APPROVERS_SETTING}, ${value})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `);
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'quarantine.settings',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: `${QUARANTINE_APPROVERS_SETTING}=${value}`,
+    });
+  });
+
+  return value;
+}
+
+/**
+ * Uuid torto é 404, não o 22P02 do driver (500): as escritas recebem o uuid
+ * que veio da URL do painel. `getQuarantine` é a exceção — ela devolve `null`,
+ * que é o mesmo 404 pelo lado de quem lê.
+ */
+function assertQuarantineUuid(uuid: string): void {
+  if (!isUuid(uuid)) throw notFound(`Envio não encontrado: ${String(uuid)}`);
+}
+
+/** A linha de auditoria de um evento da quarentena — o envio não tem slug. */
+function quarantineAudit(
+  action: AuditAction,
+  label: string,
+  source: AuditSource,
+  actor: AuditActor | null | undefined,
+  filePath: string | null = null,
+  previousContent: string | null = null,
+): AuditInput {
+  return {
+    skillUuid: null,
+    skillSlug: null,
+    filePath,
+    action,
+    source,
+    previousContent,
+    actor,
+    targetLabel: label,
+  };
+}
+
+/**
+ * A fila das escritas de um envio, e a **primeira statement** de todas elas —
+ * `createQuarantineFile`, `setQuarantineFile`, `setQuarantineFiles`,
+ * `deleteQuarantineFile`, `deleteQuarantine` e `promoteQuarantine`: trava a
+ * linha do envio (`FOR UPDATE`) e devolve o que a escrita precisa. É o 404 de
+ * quem não existe (mais), impede o envio de ser apagado — ou promovido — no
+ * meio de uma escrita de arquivo, e garante que o conteúdo anterior lido para
+ * a auditoria é o que esta escrita de fato substituiu.
+ *
+ * **Sem o advisory lock de `lockSkillFilesTx`**, de propósito: o ciclo que
+ * existe lá não existe aqui. Em `files`/`skills` há dois caminhos que pedem as
+ * duas tabelas em ordens opostas — quem grava arquivo trava a linha de `files`
+ * e pede a de `skills` pelos triggers; quem salva a skill com `skillMd` trava
+ * `skills` e depois o `SKILL.md`. Aqui **toda** escrita começa pela linha do
+ * envio e só então toca `quarantine_files`, sempre nessa ordem, e o trigger
+ * `quarantine_files_touch_trg` não fecha ciclo: o `UPDATE … SET updated_at`
+ * pede `FOR NO KEY UPDATE`, que **não** conflita com o `FOR KEY SHARE` da FK —
+ * medido, com duas transações segurando o `FOR KEY SHARE` da mesma linha, o
+ * primeiro `UPDATE` passa e o segundo apenas espera.
+ */
+async function lockQuarantineTx(
+  tx: Tx,
+  uuid: string,
+): Promise<{ name: string; description: string }> {
+  const locked = await tx.execute(sql`
+    SELECT name, description
+    FROM quarantine_skills WHERE uuid = ${uuid} FOR UPDATE
+  `);
+  const row = (locked.rows as Row[])[0];
+  if (!row) throw notFound(`Envio não encontrado: ${uuid}`);
+  return {
+    name: row.name as string,
+    description: (row.description ?? '') as string,
+  };
+}
+
+/**
+ * Os arquivos recebidos, validados **antes** da transação: caminho por
+ * `normalizeRelativePath` (400 no que não serve) e o conteúdo como bytes. Ao
+ * contrário de `createSkill`, o `SKILL.md` **não** é filtrado: aqui ele é um
+ * arquivo do pacote como os outros, e vai cru.
+ */
+function quarantineFileInputs(
+  files: readonly FileInput[],
+): { path: string; buffer: Buffer }[] {
+  return files.map((file) => {
+    const path = normalizeRelativePath(file.relativePath);
+    if (!path) throw badRequest(`Caminho inválido: ${file.relativePath}`);
+    const buffer = Buffer.isBuffer(file.content)
+      ? file.content
+      : Buffer.from(file.content, 'utf8');
+    return { path, buffer };
+  });
+}
+
+/** As colunas do INSERT de arquivo do envio — a de uma linha e a de lote usam a mesma. */
+const QUARANTINE_FILE_COLUMNS = sql`(quarantine_uuid, relative_path, text_content, binary_content, mime_type, size_bytes)`;
+
+function insertQuarantineFileSql(uuid: string, path: string, file: FileColumns): SQL {
+  return sql`
+    INSERT INTO quarantine_files ${QUARANTINE_FILE_COLUMNS}
+    VALUES (${uuid}, ${path}, ${file.text}, ${file.binary}, ${file.mimeType}, ${file.sizeBytes})
+  `;
+}
+
+/** O `DO UPDATE` das gravações, pelo índice `quarantine_files_path_lower_uniq`. */
+const QUARANTINE_FILE_UPSERT = sql`
+  ON CONFLICT (quarantine_uuid, lower(relative_path)) DO UPDATE SET
+    relative_path = EXCLUDED.relative_path,
+    text_content = EXCLUDED.text_content,
+    binary_content = EXCLUDED.binary_content,
+    mime_type = EXCLUDED.mime_type,
+    size_bytes = EXCLUDED.size_bytes,
+    updated_at = now()
+`;
+
+/**
+ * Upsert de vários arquivos do mesmo envio em poucas statements, com as duas
+ * exigências da forma em lote de `upsertFilesTx`: deduplicar por
+ * `lower(relative_path)` — **o do Postgres**, por `foldPathsTx`, senão `İ.md` e
+ * `I.md` caem na mesma chave do índice e a statement inteira morre com 21000 —
+ * e fatiar o lote por linha e por byte, com os mesmos tetos.
+ */
+async function upsertQuarantineFilesTx(
+  tx: Tx,
+  uuid: string,
+  files: readonly { path: string; buffer: Buffer }[],
+): Promise<void> {
+  const keys = await foldPathsTx(tx, files.map((file) => file.path));
+  const unique = new Map<string, { path: string; buffer: Buffer }>();
+  files.forEach((file, index) => unique.set(keys[index]!, file));
+
+  let rows: SQL[] = [];
+  let bytes = 0;
+
+  const flush = async () => {
+    if (rows.length === 0) return;
+    await tx.execute(sql`
+      INSERT INTO quarantine_files ${QUARANTINE_FILE_COLUMNS}
+      VALUES ${sql.join(rows, sql`, `)}
+      ${QUARANTINE_FILE_UPSERT}
+    `);
+    rows = [];
+    bytes = 0;
+  };
+
+  for (const { path, buffer } of unique.values()) {
+    const file = fileColumns(path, buffer, 'quarantine_files');
+    rows.push(
+      sql`(${uuid}, ${path}, ${file.text}, ${file.binary}, ${file.mimeType}, ${file.sizeBytes})`,
+    );
+    bytes += buffer.byteLength;
+    if (rows.length >= FILE_BATCH_ROWS || bytes >= FILE_BATCH_BYTES) await flush();
+  }
+  await flush();
+}
+
+/** A árvore do envio, SKILL.md primeiro — a mesma ordem de `listFiles`. */
+async function listQuarantineFilesFrom(
+  executor: Pick<Tx, 'execute'>,
+  uuid: string,
+): Promise<SkillFileMeta[]> {
+  const result = await executor.execute(sql`
+    SELECT relative_path, mime_type, size_bytes, (text_content IS NOT NULL) AS is_text
+    FROM quarantine_files WHERE quarantine_uuid = ${uuid}
+    ORDER BY (lower(relative_path) = 'skill.md') DESC, relative_path ASC
+  `);
+
+  return (result.rows as Row[]).map((row) => ({
+    relativePath: row.relative_path,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes),
+    isText: Boolean(row.is_text),
+  }));
+}
+
+/**
+ * `readQuarantineFile` sobre a conexão de quem chama — o pool numa leitura
+ * avulsa, a transação numa escrita. Quem grava lê o conteúdo anterior pela
+ * própria transação, nunca por `db()`: pedir uma segunda conexão ao pool
+ * segurando a primeira é o jeito de travar o processo quando a fila enche o
+ * pool (ver `readFileFrom`).
+ */
+async function readQuarantineFileFrom(
+  executor: Pick<Tx, 'execute'>,
+  uuid: string,
+  relativePath: string,
+): Promise<FileContent | null> {
+  const result = await executor.execute(sql`
+    SELECT relative_path, mime_type, size_bytes, text_content, binary_content
+    FROM quarantine_files
+    WHERE quarantine_uuid = ${uuid} AND lower(relative_path) = lower(${relativePath})
+    ORDER BY relative_path
+    LIMIT 1
+  `);
+
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+  return toFileContent(row);
+}
+
+async function readAllQuarantineFilesFrom(
+  executor: Pick<Tx, 'execute'>,
+  uuid: string,
+): Promise<FileContent[]> {
+  const result = await executor.execute(sql`
+    SELECT relative_path, mime_type, size_bytes, text_content, binary_content
+    FROM quarantine_files WHERE quarantine_uuid = ${uuid}
+    ORDER BY (lower(relative_path) = 'skill.md') DESC, relative_path ASC
+  `);
+  return (result.rows as Row[]).map(toFileContent);
+}
+
+/** Uma linha de arquivo (de `files` ou de `quarantine_files`) com os bytes. */
+function toFileContent(row: Row): FileContent {
+  const isText = row.text_content !== null;
+  return {
+    relativePath: row.relative_path,
+    mimeType: row.mime_type,
+    sizeBytes: Number(row.size_bytes),
+    isText,
+    buffer: isText ? Buffer.from(row.text_content, 'utf8') : Buffer.from(row.binary_content),
+  };
+}
+
 // --------------------------------------------------------------- internos ---
 
 async function requireSkill(slug: string): Promise<SkillSummary> {
@@ -7546,17 +8367,35 @@ const SLUG_SCAN_PREFIX = 90;
  * ver "O termo de busca" no README). `desired` sai do `slugify`, só `[a-z0-9-]`:
  * não há `%` nem `_` a escapar. O nome da tabela é um dos três literais nossos,
  * nunca texto do chamador — como em `resolveSlugsTx`.
+ *
+ * `executor` é o pool na criação comum e a **transação** em `freeSkillSlugTx`
+ * (a promoção de um envio escolhe o slug com a linha do envio já travada):
+ * dentro de uma transação, pedir uma segunda conexão ao pool é o jeito de
+ * travar o processo quando a fila o enche — ver `readFileFrom`.
  */
 async function takenSlugs(
   table: 'skills' | 'virtual_mcps' | 'catalogs',
   desired: string,
+  executor: Pick<Tx, 'execute'> = db(),
 ): Promise<string[]> {
   const where =
     desired.length > SLUG_SCAN_PREFIX
       ? sql`slug LIKE ${desired.slice(0, SLUG_SCAN_PREFIX) + '%'}`
       : sql`slug = ${desired} OR slug LIKE ${desired + '-%'}`;
-  const result = await db().execute(sql`SELECT slug FROM ${sql.raw(table)} WHERE ${where}`);
+  const result = await executor.execute(sql`SELECT slug FROM ${sql.raw(table)} WHERE ${where}`);
   return (result.rows as Row[]).map((row) => row.slug as string);
+}
+
+/**
+ * Slug de skill livre a partir de um nome, **na transação de quem chama** — é
+ * o que `promoteQuarantine` usa. Mesma escolha de `freeCatalogSlug` e
+ * `freeVirtualMcpSlug`: o caminho **derivado**, com sufixo automático (`-2`,
+ * `-3`…), que nunca devolve 409. Dentro da transação nada de `db()`: a segunda
+ * conexão do pool pode não vir (ver `readFileFrom`).
+ */
+async function freeSkillSlugTx(tx: Tx, name: string): Promise<string> {
+  const desired = slugify(name) || 'skill';
+  return uniqueSlug(desired, await takenSlugs('skills', desired, tx));
 }
 
 /**
@@ -7595,6 +8434,13 @@ type FileColumns = {
 };
 
 /**
+ * Para qual das duas tabelas o arquivo vai. A régua de texto × binário é a
+ * mesma nas duas; o que muda é só a exigência sobre o `SKILL.md` — ver
+ * `fileColumns`.
+ */
+type FileDestination = 'files' | 'quarantine_files';
+
+/**
  * A regra única de gravação de arquivo: o mime pela extensão; texto quando o
  * mime é textual, não há byte nulo **e os bytes são UTF-8 válido**, binário no
  * resto (`files_one_content_chk` exige exatamente um dos dois); o tamanho em
@@ -7609,15 +8455,26 @@ type FileColumns = {
  * `pre�o` para sempre, com `size_bytes` do original e conteúdo de outro tamanho.
  * Esse arquivo é binário: guardado byte a byte e baixado igual ao que chegou.
  *
- * O `SKILL.md` é o único caminho que **tem** de ser texto: é ele que
+ * Em `files`, o `SKILL.md` é o único caminho que **tem** de ser texto: é ele que
  * `readTextFile`, o `search_vector` e o RAG leem. Gravado como binário, a skill
  * ficaria com o corpo vazio para todo leitor, sem erro — por isso é 400 aqui, em
  * vez de trocar uma corrupção silenciosa por um sumiço silencioso.
+ *
+ * Em `quarantine_files` a mesma exigência seria um defeito: ninguém decodifica
+ * o arquivo de um envio (ele é bytes crus, do upload ao download), e o pacote
+ * cujo `SKILL.md` veio em Windows-1252 ou UTF-16 é exatamente o que a
+ * quarentena existe para receber e consertar. Recusá-lo na porta trancava o
+ * envio fora dos **dois** destinos. Lá ele entra como qualquer anexo binário, e
+ * quem cobra o texto é `promoteQuarantine`, na hora de virar skill.
  */
-function fileColumns(path: string, buffer: Buffer): FileColumns {
+function fileColumns(
+  path: string,
+  buffer: Buffer,
+  destination: FileDestination = 'files',
+): FileColumns {
   const mimeType = mimeTypeFor(path);
   const isText = isTextualContent(mimeType, buffer);
-  if (!isText && isSkillMd(path)) {
+  if (!isText && isSkillMd(path) && destination === 'files') {
     throw badRequest('O SKILL.md precisa ser um texto UTF-8 válido, sem byte nulo');
   }
   return {

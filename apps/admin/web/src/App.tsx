@@ -13,6 +13,7 @@ import {
   Plug,
   Plus,
   Server,
+  ShieldQuestion,
   SlidersHorizontal,
   Sparkles,
   Sun,
@@ -40,6 +41,7 @@ import { Layout } from './components/shell/Layout.js';
 import {
   IMPORT_SKILL_PATH,
   NEW_SKILL_PATH,
+  QUARANTINE_IMPORT_PATH,
   SKILL_EDIT_ROUTE,
   SKILL_VIEW_ROUTE,
   isLegacyNewSkillPath,
@@ -57,6 +59,8 @@ import { SkillsPage } from './pages/SkillsPage.js';
 import { SkillViewPage } from './pages/SkillViewPage.js';
 import { SkillEditorPage } from './pages/SkillEditorPage.js';
 import { NewSkillPage } from './pages/NewSkillPage.js';
+import { QuarantinePage } from './pages/QuarantinePage.js';
+import { QuarantineItemPage } from './pages/QuarantineItemPage.js';
 import { ServersPage } from './pages/ServersPage.js';
 import { CatalogsPage } from './pages/CatalogsPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
@@ -65,6 +69,7 @@ import {
   ConnectSettingsPage,
   DefaultMcpSettingsPage,
   EnvironmentSettingsPage,
+  QuarantineSettingsPage,
   RagSettingsPage,
 } from './pages/SettingsPage.js';
 import { AdminKeysPage } from './pages/AdminKeysPage.js';
@@ -252,6 +257,10 @@ function Shell({
         {/* Sem trava de papel: o editor já trava o que o acesso não permite. */}
         <Route path={SKILL_EDIT_ROUTE} element={<SkillEditorPage session={session} user={user} />} />
         <Route path={SKILL_VIEW_ROUTE} element={<SkillRoute session={session} user={user} />} />
+        {/* A quarentena (`docs/15-quarentena.md`). O endereço é o uuid: envio não
+            tem slug, e dois envios podem ter o mesmo nome. */}
+        <Route path="/quarentena" element={<QuarantinePage user={user} />} />
+        <Route path="/quarentena/:uuid" element={<QuarantineItemPage />} />
         <Route path="/catalogos" element={<CatalogsPage key="all" user={user} />} />
         <Route path="/catalogos/:slug/editar/*" element={<CatalogEditorPage user={user} />} />
         <Route path="/catalogos/:slug/*" element={<CatalogPage session={session} user={user} />} />
@@ -299,6 +308,10 @@ function Shell({
         <Route
           path="/configuracoes/busca-semantica"
           element={admin ? <RagSettingsPage /> : <Navigate to="/mcps" replace />}
+        />
+        <Route
+          path="/configuracoes/quarentena"
+          element={admin ? <QuarantineSettingsPage /> : <Navigate to="/mcps" replace />}
         />
         <Route
           path="/configuracoes/ambiente"
@@ -408,11 +421,19 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
             },
             {
               id: 'import-skill',
-              label: 'Importar skill (.zip)',
+              label: 'Importar pacote para produção',
               group: 'Criar' as const,
               icon: <Upload />,
-              keywords: ['zip', 'importar', 'upload'],
+              keywords: ['zip', 'skill', 'importar', 'upload', 'pacote'],
               run: () => navigate(IMPORT_SKILL_PATH),
+            },
+            {
+              id: 'import-quarantine',
+              label: 'Importar pacote para a quarentena',
+              group: 'Criar' as const,
+              icon: <ShieldQuestion />,
+              keywords: ['zip', 'skill', 'importar', 'quarentena', 'aprovar', 'pacote'],
+              run: () => navigate(QUARANTINE_IMPORT_PATH),
             },
           ]
         : []),
@@ -422,6 +443,11 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
       { id: 'go-my-catalogs', label: 'Meus catálogos', group: 'Ir para', icon: <Library />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/catalogos') },
       { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeySquare />, keywords: ['configurações', 'api', 'psk', 'psv'], run: () => navigate('/account/chaves-emitidas') },
       { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogos') },
+      ...(canCreate(user.role)
+        ? [
+            { id: 'go-quarantine', label: 'Quarentena', group: 'Ir para' as const, icon: <ShieldQuestion />, keywords: ['aprovar', 'envio', 'importado'], run: () => navigate('/quarentena') },
+          ]
+        : []),
       ...(admin
         ? [
             { id: 'go-audit', label: 'Auditoria', group: 'Ir para' as const, icon: <ListChecks />, shortcut: 'g a', run: () => navigate('/auditoria') },

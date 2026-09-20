@@ -4,23 +4,33 @@ import {
   badRequest,
   countUsers,
   createFile,
+  createQuarantine,
+  createQuarantineFile,
   createSkill,
   deleteFile,
+  deleteQuarantine,
+  deleteQuarantineFile,
   deleteSkill,
+  getQuarantineApprovers,
   getUserByUuid,
   healthCheck,
   listAuditPage,
   listSkills,
   listTags,
+  promoteQuarantine,
   readAllFiles,
+  readAllQuarantineFiles,
   readFile,
+  readQuarantineFile,
   setFile,
   setFiles,
+  setQuarantineApprovers,
+  setQuarantineFile,
   stats,
   updateSkillWithContent,
 } from '@purple-skills/db';
 import {
-  SKILL_MD,
+  QUARANTINE_APPROVERS,
   ZipError,
   composeSkillMd,
   createRateLimiter,
@@ -29,12 +39,14 @@ import {
   extractZip,
   isSkillMd,
   isTextualContent,
+  isTextualMime,
   mimeTypeFor,
   normalizeRelativePath,
   rateLimitKey,
   safeContentType,
   skillMetaFromMarkdown,
   stripFrontmatter,
+  type QuarantineSheet,
 } from '@purple-skills/shared';
 import {
   actorFrom,
@@ -54,6 +66,7 @@ import {
 import * as access from './access.js';
 import { gravarRag, lerPainelRag, limparRecusasRag, reindexarRag } from './rag.js';
 import * as accesses from './accesses.js';
+import * as quarantine from './quarantine.js';
 import * as mcps from './mcps.js';
 import * as catalogs from './catalogs.js';
 import {
@@ -153,6 +166,25 @@ function textField(fields: unknown, name: string): string | undefined {
   const value = (fields as Record<string, unknown> | undefined)?.[name];
   if (value === undefined || typeof value === 'string') return value;
   throw badRequest(`O campo "${name}" deve ser um texto simples, enviado uma única vez`);
+}
+
+/**
+ * As rotas de arquivo por JSON carregam **texto** — o corpo é um `content:
+ * string`. O caminho, porém, é quem decide texto × binário na gravação:
+ * `fileColumns` (e o `toExtractedFile` do shared) tiram o mime da extensão.
+ *
+ * Sem esta guarda, `PUT …/files/foto.png` com `{"content":"oi"}` era gravado
+ * como **binário** com os bytes do texto: a escrita respondia 200, e toda
+ * leitura devolvia `content: null`. Pior no `PUT` sobre um binário que já
+ * existe — a imagem vinda do pacote era sobrescrita por um punhado de bytes de
+ * texto, sem aviso. Binário entra pelo pacote, na importação.
+ */
+function assertTextPath(path: string): void {
+  if (isTextualMime(mimeTypeFor(path))) return;
+  throw badRequest(
+    `"${path}" tem extensão de arquivo binário, e esta rota grava texto. ` +
+      'Escolha outra extensão, ou traga o arquivo pelo pacote .zip/.skill na importação.',
+  );
 }
 
 function fail(res: Response, err: unknown) {
@@ -1053,6 +1085,31 @@ api.put(
 );
 
 /**
+ * Quem aprova um envio da quarentena (`docs/15-quarentena.md`). Ajuste da
+ * instalação inteira, como as demais rotas de configuração: só admin.
+ */
+api.get(
+  '/api/settings/quarantine',
+  requireSettingsAdmin,
+  route(async (_req, res) => {
+    res.json({ approvers: await getQuarantineApprovers(), options: QUARANTINE_APPROVERS });
+  }),
+);
+
+api.put(
+  '/api/settings/quarantine',
+  requireSettingsAdmin,
+  route(async (req, res) => {
+    const approvers = await setQuarantineApprovers(
+      (req.body as { approvers?: unknown } | undefined)?.approvers,
+      SOURCE,
+      actorFrom(req),
+    );
+    res.json({ approvers, options: QUARANTINE_APPROVERS });
+  }),
+);
+
+/**
  * Busca semântica (`docs/14-rag.md` §9). Mesmo papel das
  * demais rotas de configuração: é ajuste da instalação inteira.
  */
@@ -1254,7 +1311,16 @@ api.post(
   }),
 );
 
-/** Cria uma skill inteira a partir de um .zip contendo SKILL.md. */
+/**
+ * Cria uma skill inteira a partir de um pacote (`.zip` ou `.skill` — é o mesmo
+ * ZIP, ver `streamSkillZip`).
+ *
+ * `destination` escolhe onde o pacote cai (`docs/15-quarentena.md`):
+ * `production` (o padrão) cria a skill direto, como sempre; `quarantine`
+ * guarda os arquivos **crus** num envio à espera de aprovação. Importar é o
+ * único caminho para a quarentena — o formulário de nova skill vai sempre para
+ * produção.
+ */
 api.post(
   '/api/skills/import',
   requireCreate,
@@ -1262,14 +1328,7 @@ api.post(
   upload.single('file'),
   route(async (req, res) => {
     if (!req.file) {
-      res.status(400).json({ error: 'bad_request', message: 'Envie um arquivo .zip no campo "file"' });
-      return;
-    }
-
-    const files = extractZip(req.file.buffer);
-    const skillMd = files.find((file) => file.relativePath.toLowerCase() === 'skill.md');
-    if (!skillMd?.textContent) {
-      res.status(400).json({ error: 'bad_request', message: 'O .zip precisa conter um SKILL.md' });
+      res.status(400).json({ error: 'bad_request', message: 'Envie um arquivo .zip ou .skill no campo "file"' });
       return;
     }
 
@@ -1282,9 +1341,65 @@ api.post(
       icon: textField(req.body, 'icon'),
       /** JSON: `[{ slug, asSkill, asPrompt, asResource }]`. */
       mcps: textField(req.body, 'mcps'),
+      /** `production` (padrão) ou `quarantine`. */
+      destination: textField(req.body, 'destination'),
     };
+    if (body.destination !== undefined && body.destination !== 'production' && body.destination !== 'quarantine') {
+      res.status(400).json({
+        error: 'bad_request',
+        message: 'O campo "destination" aceita "production" ou "quarantine"',
+      });
+      return;
+    }
+
+    const paraQuarentena = body.destination === 'quarantine';
+    // `allowBinarySkillMd` só na quarentena: lá o arquivo é bytes crus que
+    // ninguém decodifica, e recusar o pacote seria recusar justamente o que o
+    // espaço existe para consertar — o SKILL.md em Windows-1252 ou UTF-16 que
+    // sai de um editor Windows. Quem cobra a codificação é a aprovação.
+    const files = extractZip(req.file.buffer, paraQuarentena ? { allowBinarySkillMd: true } : {});
+    // `.zip` e `.skill` carregam o mesmo ZIP; os dois saem do nome de reserva.
+    const fallbackName = req.file.originalname.replace(/\.(zip|skill)$/i, '');
+    const skillMd = files.find((file) => file.relativePath.toLowerCase() === 'skill.md');
+
+    if (paraQuarentena) {
+      if (files.length === 0) {
+        res.status(400).json({ error: 'bad_request', message: 'O pacote está vazio' });
+        return;
+      }
+
+      // Sem SKILL.md o pacote **entra** na quarentena: é justamente o lugar de
+      // consertar o que veio torto. Quem cobra o arquivo é a promoção, que sem
+      // ele não sabe que skill criar.
+      const meta = skillMd?.textContent ? skillMetaFromMarkdown(skillMd.textContent) : null;
+      const detail = await createQuarantine(
+        {
+          // O nome do envio é só rótulo, mas não pode ser vazio: sem
+          // SKILL.md e com um arquivo chamado ".zip", os dois candidatos saem
+          // em branco.
+          name: meta?.name?.trim() || fallbackName.trim() || 'pacote sem nome',
+          description: meta?.description?.trim() ?? '',
+          sourceFilename: req.file.originalname,
+          // Crus, como chegaram: na quarentena o SKILL.md guarda o próprio
+          // frontmatter, e não há metadado em coluna para contradizê-lo.
+          files: files.map((file) => ({
+            relativePath: file.relativePath,
+            content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+          })),
+        },
+        SOURCE,
+        actorFrom(req),
+      );
+      res.status(201).json(access.ownerByEmail(detail));
+      return;
+    }
+
+    if (!skillMd?.textContent) {
+      res.status(400).json({ error: 'bad_request', message: 'O pacote precisa conter um SKILL.md' });
+      return;
+    }
+
     const meta = skillMetaFromMarkdown(skillMd.textContent);
-    const fallbackName = req.file.originalname.replace(/\.zip$/i, '');
     const tags = parseTags(body.tags);
     const attachments = files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
 
@@ -1532,6 +1647,7 @@ api.put(
       res.status(400).json({ error: 'bad_request', message: `Caminho inválido: ${raw}` });
       return;
     }
+    assertTextPath(path);
     const stored = isSkillMd(path) ? stripFrontmatter(content) : content;
     res.json(await setFile(param(req, 'slug'), path, stored, SOURCE, actorFrom(req)));
   }),
@@ -1553,6 +1669,7 @@ api.post(
       res.status(400).json({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
       return;
     }
+    assertTextPath(normalizeRelativePath(param(req, 'path')) ?? param(req, 'path'));
     await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
     res.status(201).json(await createFile(param(req, 'slug'), param(req, 'path'), content, SOURCE, actorFrom(req)));
   }),
@@ -1567,44 +1684,34 @@ api.delete(
   }),
 );
 
-/** Upload de .zip para uma skill existente. `replace=1` remove os omitidos. */
-api.post(
-  '/api/skills/:slug/upload',
-  access.requireSkillAccess('edit'),
-  limitRequestBytes,
-  upload.single('file'),
-  route(async (req, res) => {
-    if (!req.file) {
-      res.status(400).json({ error: 'bad_request', message: 'Envie um arquivo .zip no campo "file"' });
-      return;
-    }
+/*
+ * `POST /api/skills/:slug/upload` — o .zip numa skill já cadastrada — **saiu**
+ * (`docs/15-quarentena.md`). O pacote passou a ter um caminho só, a importação,
+ * que decide entre produção e quarentena; dentro da edição de uma skill entra
+ * arquivo de texto, um a um, pela rota abaixo.
+ *
+ * O que a rota fazia e que **não tem substituto no painel** é trocar a árvore
+ * de uma skill que já existe — inclusive trazer binário para ela. Reimportar o
+ * pacote não serve, e a primeira versão deste comentário dizia que servia:
+ * importar para produção bate no slug ocupado (409, porque o import manda o
+ * slug do frontmatter explicitamente), e importar para a quarentena e aprovar
+ * cria uma **segunda** skill, deixando a original com a árvore velha, o uuid,
+ * as concessões e os vínculos. Quem precisa disso hoje usa o `set_files_bulk`
+ * do MCP administrativo, que continua aceitando ZIP com binário e `replace`.
+ */
 
-    const extracted = extractZip(req.file.buffer);
-    if (extracted.length === 0) {
-      res.status(400).json({ error: 'bad_request', message: 'O .zip está vazio' });
-      return;
-    }
-
-    const files = await setFiles(
-      param(req, 'slug'),
-      extracted.map((file) => ({
-        relativePath: file.relativePath,
-        // Um SKILL.md vindo do .zip entra só com o corpo: os metadados da
-        // skill já cadastrada mandam.
-        content: isSkillMd(file.relativePath)
-          ? Buffer.from(stripFrontmatter(file.textContent ?? ''), 'utf8')
-          : (file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8')),
-      })),
-      SOURCE,
-      { replace: req.query.replace === '1' },
-      actorFrom(req),
-    );
-
-    res.json({ files });
-  }),
-);
-
-/** Upload de arquivos avulsos (não-zip) para uma skill existente. */
+/**
+ * Envio de arquivos avulsos para uma skill existente — **só texto**
+ * (`docs/15-quarentena.md`).
+ *
+ * A régua é a mesma do banco e do `extractZip` (`isTextualContent`): mime
+ * textual pelo nome, sem byte nulo e UTF-8 válido. Um `.png`, um `.pdf` ou um
+ * `.csv` em Windows-1252 é recusado aqui, com o nome do arquivo na mensagem.
+ *
+ * Era, até esta versão: qualquer arquivo entrava, e o binário ia para o
+ * `bytea`. A edição de uma skill ficou sendo o lugar de escrever texto; pacote
+ * com binário entra pela importação, que decide entre produção e quarentena.
+ */
 api.post(
   '/api/skills/:slug/files',
   access.requireSkillAccess('edit'),
@@ -1628,25 +1735,25 @@ api.post(
       param(req, 'slug'),
       uploaded.map((file) => {
         const relativePath = prefix ? `${prefix}/${file.originalname}` : file.originalname;
-        if (!isSkillMd(normalizeRelativePath(relativePath) ?? '')) return { relativePath, content: file.buffer };
+        const path = normalizeRelativePath(relativePath) ?? relativePath;
 
-        // Este é o único caminho que decodifica o SKILL.md **antes** do banco, e
-        // `toString('utf8')` não falha com byte inválido: troca cada um por
-        // U+FFFD, sem erro e sem volta — o banco receberia um texto já
-        // "consertado" e não teria como recusar. A régua é a dele e a do
-        // `extractZip` (`isTextualContent`), e a recusa acontece enquanto a
-        // lista é montada, antes de o lote chegar a `setFiles` (relatório 015
-        // da auditoria de 2026-09-19).
-        if (!isTextualContent(mimeTypeFor(SKILL_MD), file.buffer)) {
+        // A recusa acontece enquanto a lista é montada, antes de o lote chegar
+        // a `setFiles`: meio lote gravado é pior que lote nenhum. E vem antes
+        // de qualquer `toString('utf8')`, que não falha com byte inválido —
+        // troca cada um por U+FFFD, sem erro e sem volta (relatório 015 da
+        // auditoria de 2026-09-19).
+        if (!isTextualContent(mimeTypeFor(path), file.buffer)) {
           throw badRequest(
-            'O SKILL.md enviado não é um texto UTF-8 válido (tem byte nulo ou está em outra ' +
-              'codificação, como Windows-1252). Converta-o para UTF-8 e envie de novo.',
+            `"${file.originalname}" não é um arquivo de texto UTF-8. Na edição de uma skill entra ` +
+              'só texto; para trazer imagens e outros binários, importe o pacote .zip ou .skill da skill.',
           );
         }
+
+        if (!isSkillMd(path)) return { relativePath, content: file.buffer };
         return {
           relativePath,
-          // Um SKILL.md avulso entra só com o corpo, como o do .zip: os
-          // metadados da skill já cadastrada mandam.
+          // Um SKILL.md avulso entra só com o corpo: os metadados da skill já
+          // cadastrada mandam.
           content: Buffer.from(stripFrontmatter(file.buffer.toString('utf8')), 'utf8'),
         };
       }),
@@ -1656,6 +1763,175 @@ api.post(
     );
 
     res.json({ files });
+  }),
+);
+
+// ------------------------------------------------------------ quarentena ---
+
+/**
+ * A quarentena (`docs/15-quarentena.md`): envios esperando aprovação.
+ *
+ * O espaço é pobre de propósito — arquivos crus com dono, sem slug, tag,
+ * vínculo, busca nem RAG. Não há concessão por objeto: quem enxerga um envio
+ * (dono, admin e editor) também o edita e o descarta. Só promover passa pela
+ * política da instalação.
+ *
+ * O endereço é o `uuid` porque não há slug, e **não há colisão de nome**: dois
+ * envios do mesmo pacote convivem.
+ */
+api.get(
+  '/api/quarantine',
+  route(async (req, res) => {
+    const page = await quarantine.list(req.user!, {
+      limit: asInt(req.query.limit, 50),
+      offset: asInt(req.query.offset, 0),
+      search: typeof req.query.q === 'string' ? req.query.q : null,
+    });
+    // O dono sai pelo e-mail, nunca pelo uuid da conta (`access.ownerByEmail`).
+    res.json({ ...page, items: page.items.map(access.ownerByEmail) });
+  }),
+);
+
+/**
+ * Quem pode promover, segundo a política da instalação e o que esta sessão é.
+ * O painel usa o campo para decidir se mostra o botão; a rota de promover
+ * confere de novo, que é onde a decisão vale.
+ */
+api.get(
+  '/api/quarantine/:uuid',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    // `QuarantineSheet` é o contrato do painel: a ficha mais o `canPromote`.
+    const sheet: QuarantineSheet = {
+      ...access.ownerByEmail(found),
+      canPromote: await quarantine.mayPromote(req.user!, found),
+    };
+    res.json(sheet);
+  }),
+);
+
+api.delete(
+  '/api/quarantine/:uuid',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    await deleteQuarantine(found.uuid, SOURCE, actorFrom(req));
+    res.json({ deleted: true });
+  }),
+);
+
+/** O pacote do envio, como ele está — nada é remontado (ver `quarantine.streamZip`). */
+api.get(
+  '/api/quarantine/:uuid/download',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    await quarantine.streamZip(res, found, await readAllQuarantineFiles(found.uuid));
+  }),
+);
+
+/**
+ * Aprova o envio: cria a skill em produção e **apaga** a linha da quarentena.
+ *
+ * A skill nasce flutuante e com o dono do envio — quem aprova não toma para si
+ * o que outro trouxe. Slug ocupado ganha sufixo (`-2`), e sem SKILL.md a
+ * promoção é recusada sem apagar nada; as duas coisas são do banco.
+ */
+api.post(
+  '/api/quarantine/:uuid/promote',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    await quarantine.assertCanPromote(req.user!, found);
+    const detail = await promoteQuarantine(found.uuid, SOURCE, actorFrom(req));
+    res.status(201).json(bodyOnly(access.withGrants(detail)));
+  }),
+);
+
+/**
+ * Um arquivo do envio, **cru**: o SKILL.md daqui não passa por `composeSkillMd`
+ * nem por `stripFrontmatter`. Na quarentena não existe metadado em coluna, logo
+ * não existe nada a remontar — o que foi enviado é o que se lê e o que se edita.
+ *
+ * Com `?raw`, os mesmos cuidados da rota da skill: conteúdo de terceiro servido
+ * na origem do painel desce como texto, sob CSP de `sandbox`, para que um
+ * `.html` ou `.svg` anexado não rode JavaScript autenticado como o operador.
+ */
+api.get(
+  '/api/quarantine/:uuid/files/*path',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+
+    const path = normalizeRelativePath(param(req, 'path'));
+    const file = path ? await readQuarantineFile(found.uuid, path) : null;
+    if (!file) {
+      res.status(404).json({ error: 'not_found', message: 'Arquivo não encontrado' });
+      return;
+    }
+
+    if (req.query.raw !== undefined) {
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.setHeader('Content-Type', safeContentType(file.mimeType, file.isText));
+      res.setHeader('Content-Disposition', contentDisposition(file.relativePath, 'inline'));
+      res.setHeader('Cache-Control', 'private, no-cache');
+      res.send(file.buffer);
+      return;
+    }
+
+    res.json({
+      relativePath: file.relativePath,
+      mimeType: file.mimeType,
+      sizeBytes: file.buffer.byteLength,
+      isText: file.isText,
+      content: file.isText ? file.buffer.toString('utf8') : null,
+    });
+  }),
+);
+
+/** Grava o arquivo do envio como veio, frontmatter incluído. */
+api.put(
+  '/api/quarantine/:uuid/files/*path',
+  route(async (req, res) => {
+    const content = (req.body as { content?: unknown })?.content;
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'O campo "content" é obrigatório' });
+      return;
+    }
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    const raw = param(req, 'path');
+    const path = normalizeRelativePath(raw);
+    if (!path) {
+      res.status(400).json({ error: 'bad_request', message: `Caminho inválido: ${raw}` });
+      return;
+    }
+    assertTextPath(path);
+    res.json(await setQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req)));
+  }),
+);
+
+/** Cria o arquivo só se o caminho está livre; ocupado é 409, como na skill. */
+api.post(
+  '/api/quarantine/:uuid/files/*path',
+  route(async (req, res) => {
+    const raw = (req.body as { content?: unknown } | undefined)?.content;
+    const content = raw === undefined ? '' : raw;
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
+      return;
+    }
+    const path = normalizeRelativePath(param(req, 'path')) ?? param(req, 'path');
+    assertTextPath(path);
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    quarantine.assertHasRoom(found);
+    res.status(201).json(
+      await createQuarantineFile(found.uuid, param(req, 'path'), content, SOURCE, actorFrom(req)),
+    );
+  }),
+);
+
+api.delete(
+  '/api/quarantine/:uuid/files/*path',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    await deleteQuarantineFile(found.uuid, param(req, 'path'), SOURCE, actorFrom(req));
+    res.json({ deleted: true });
   }),
 );
 

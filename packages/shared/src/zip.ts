@@ -104,6 +104,19 @@ export type ExtractZipOptions = {
   maxUncompressedBytes?: number;
   /** Teto do número de entradas do ZIP. */
   maxEntries?: number;
+  /**
+   * Deixa passar um `SKILL.md` que não é texto UTF-8, como binário e byte a
+   * byte, em vez de recusar o pacote inteiro (`ZipContentError`).
+   *
+   * Desligado por padrão, e continua assim em tudo que cria skill: lá quem lê
+   * o arquivo faz `textContent ?? ''`, e um SKILL.md binário viraria prompt
+   * vazio gravado por cima. Quem liga é a **quarentena**
+   * (`docs/15-quarentena.md`), onde o arquivo é bytes crus que ninguém
+   * decodifica — e onde recusar o pacote seria recusar justamente o que o
+   * espaço existe para consertar: o SKILL.md em Windows-1252 ou UTF-16 que sai
+   * de um editor Windows. Quem cobra a codificação lá é a **aprovação**.
+   */
+  allowBinarySkillMd?: boolean;
 };
 
 /** Base dos erros de ZIP causados pelo arquivo enviado — sempre 400, nunca 500. */
@@ -155,6 +168,7 @@ export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): Ext
     stripSingleRootDir = true,
     maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
     maxEntries = DEFAULT_MAX_ZIP_ENTRIES,
+    allowBinarySkillMd = false,
   } = options;
   // `adm-zip` lança um Error genérico ("Invalid or unsupported zip format")
   // para qualquer coisa que não seja um ZIP; sem este `catch` isso viraria 500.
@@ -235,8 +249,9 @@ export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): Ext
     const file = toExtractedFile(path, entry.data);
     // Um anexo que não é texto segue como binário, intacto. O arquivo principal
     // não tem essa saída: quem chama lê `textContent ?? ''`, e um SKILL.md
-    // binário viraria corpo vazio gravado por cima do prompt da skill.
-    if (isSkillMd(path) && file.textContent === null) {
+    // binário viraria corpo vazio gravado por cima do prompt da skill — a não
+    // ser com `allowBinarySkillMd`, que só a quarentena liga (ver a opção).
+    if (isSkillMd(path) && file.textContent === null && !allowBinarySkillMd) {
       throw new ZipContentError(
         'O SKILL.md do .zip não é um texto UTF-8 válido (tem byte nulo ou está em outra ' +
           'codificação, como Windows-1252). Converta-o para UTF-8 e envie de novo.',
