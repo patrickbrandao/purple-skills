@@ -190,7 +190,7 @@ describe('a validação do ambiente', () => {
   });
 });
 
-describe('a semeadura (§4.1)', () => {
+describe('a semeadura (§5)', () => {
   it('banco vazio e ambiente definido: grava', () => {
     const d = decideSeed({ key: 'rag.driver', envValue: 'google', dbValue: null });
     expect(d).toEqual({ action: 'gravar', key: 'rag.driver', value: 'google' });

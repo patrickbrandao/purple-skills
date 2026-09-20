@@ -39,8 +39,9 @@ export function Trinity() {
             <span className="kicker">Banco de dados PostgreSQL</span>
             <h3>O catálogo</h3>
             <p>
-              PostgreSQL 18 com <b>tsvector</b> e índice GIN para a busca full-text. O{' '}
-              <b>pgvector</b> já vem instalado, esperando a busca semântica de uma versão futura.
+              PostgreSQL 18 com <b>tsvector</b> e índice GIN para a busca full-text. A{' '}
+              <b>busca semântica</b> é opcional: com a chave de um provedor de embeddings, o{' '}
+              <b>pgvector</b> entra e as duas buscas se fundem por RRF.
             </p>
             <span className="chip">Backup Atômico</span>
           </article>

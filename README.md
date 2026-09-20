@@ -81,6 +81,13 @@ O script mostra versão, tags, plataformas e commit — e avisa se a árvore est
 suja — antes de pedir a única confirmação; a versão e o commit ficam gravados na
 própria imagem, em labels OCI (`docker image inspect`).
 
+A `latest` só é movida **no fim**: o build publica cada imagem com a tag de
+versão e, depois que todas as pedidas estão no Hub, o script aponta `latest` para
+elas de uma vez, começando pela `db` (a do `migrate`). Build que falha no meio
+deixa `latest` inteira na versão anterior; aí repita o **mesmo** comando — o que
+já foi construído sai do cache —, porque rodar só as que faltam moveria a `latest`
+só delas. Se for a promoção que parar, o script imprime os comandos que faltam.
+
 O compose usa a tag de `TAG` no `.env` (padrão `latest`); se a imagem não
 existir no Hub, ele a gera a partir do código, como o `docker compose build`
 faz sempre. A tag de versão é o caminho de volta quando uma release quebra,
@@ -187,7 +194,7 @@ apps/
   admin/         painel admin      — Express + React/Vite + Tailwind
   mcp-public/    MCP público       — @modelcontextprotocol/sdk
   mcp-admin/     MCP administrativo
-  indexer/       indexador do RAG  — worker de embeddings, perfil rag
+  indexer/       indexador do RAG  — worker de embeddings, sem porta; parado com o driver off
 packages/
   shared/        slug, rating, mime, zip, frontmatter, segredos, senha, chave de
                  API, e-mail, papéis, sessão, ícone, cabeçalhos de segurança,
@@ -221,8 +228,13 @@ escuro, tipografia Aeonik + JetBrains Mono e os diagramas em SVG da homepage.
 
 Onde mexer em cada peça está em
 [`docs/04-design-system.md`](docs/04-design-system.md). Resumo do que importa:
-`tokens.css`, `base.css`, `chrome.css` e `markdown.css` são **idênticos** entre
-os apps que os usam e precisam ser copiados juntos ao mudar um deles.
+cada arquivo copiado tem **o seu par**, e nenhum é igual nos três apps.
+`tokens.css`, `base.css` e `chrome.css` são cópia byte a byte entre a
+**homepage e o site**, e só entre esses dois; `markdown.css`, entre o **site e
+o painel**. Ao mudar um, copie para o par no mesmo commit — o `npm test`
+reprova o par pela metade. O painel é um console com paleta e primitivos
+próprios ([`docs/10`](docs/10-admin-canvas-e-sessoes.md)) e nunca é destino
+dos três primeiros: sobrescrevê-los com os do site apaga o console.
 
 ## Conectando um agente ao MCP
 
@@ -249,11 +261,14 @@ Exemplo de configuração em um cliente MCP:
 
 ### Onde uma skill é exibida
 
-Uma skill é **flutuante**: existe no catálogo e só é exibida — no site e nos
-servidores MCP — onde estiver **vinculada a um MCP virtual**. Não há mais
-"pública" ou "privada": o site lista o que está em ao menos um MCP virtual
-**aberto e ligado**, e uma skill sem vínculo fica visível só no painel. Cada
-vínculo escolhe por quais portas a skill sai **naquele servidor**:
+Uma skill é **flutuante**: existe no catálogo, e um servidor MCP só a serve
+onde ela estiver **vinculada a um MCP virtual**. No **site** a regra é outra
+([`docs/12`](docs/12-acesso-granular.md) §7): ele lista a skill **ligada** que
+seja **marcada pública**, ou esteja em ao menos um MCP virtual **aberto e
+ligado**, ou participe de um **catálogo público** e ligado. Desvincular uma
+skill pública a tira dos servidores, não do site; sem nenhum dos três, ela fica
+visível só no painel. Cada vínculo escolhe por quais portas a skill sai
+**naquele servidor**:
 
 | Porta | O que faz |
 |-------|-----------|
@@ -339,15 +354,19 @@ Um **MCP virtual** é um recorte do catálogo servido pelo mesmo mcp-public em
 `/virtual/<slug>/mcp` (e `/mcp/stateless`, `/sse` + `/messages`), com
 endereço, chaves e dono próprios. Serve para um time ou projeto conectar o
 agente só às skills que lhe interessam — inclusive skills que não estão em
-nenhum servidor aberto, e por isso não aparecem no site. Um deles é o
-**padrão**, e responde também em `/mcp`.
+nenhum servidor aberto, e que só aparecem no site se forem marcadas públicas
+ou participarem de um catálogo público. Um deles é o **padrão**, e responde
+também em `/mcp`.
 
 - Cria quem é `editor` ou `admin`, no painel (Servidores MCP) ou pelo
-  MCP administrativo. Quem cria é o dono; o dono e os administradores mexem
-  nele, ninguém mais. Admin transfere o dono.
+  MCP administrativo. Quem cria é o dono; mexem nele o dono, os
+  administradores e quem recebeu `edit` (vínculos, portas e canvas) ou
+  `manage` (nome, slug, aberto, chaves e concessões) no servidor. Apagar e
+  transferir são do dono e do admin.
 - Para cada skill vinculada escolhem-se as **três superfícies** (ferramentas,
   prompt, resource) **naquele servidor**. Vincular é o único jeito de uma
-  skill ser exibida.
+  skill ser **servida por um MCP**; no site ela entra também marcada pública
+  ou por um catálogo público.
 - O acesso é por chave `psv_…`, emitida por MCP e sem expiração; a chave de
   um virtual não abre outro.
   Um MCP pode ser marcado **aberto** (sem chave): aberto é público — o site o
@@ -384,11 +403,11 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 |-----------|-----------|
 | `list_skills(query?, tag?, limit?, offset?, scope?)` | Lista o que a credencial enxerga, inclusive skills sem vínculo, cada uma com o dono, o acesso e `mcps`; `scope` = `mine` / `shared` / `public` |
 | `get_skill(slug)` / `get_file(slug, path)` | Leitura |
-| `create_skill(name, description?, skill_md_content, tags?, slug?, mcps?, is_public?)` | Cria a skill (quem cria é o dono) e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial edita). `skill_md_content` é só o **corpo** |
-| `edit_skill(slug, {name?, description?, tags?, new_slug?, is_active?, is_public?})` | Edita metadados — é por aqui que muda o frontmatter. Nome, descrição, ícone e tags exigem `edit`; slug, `is_active` e `is_public`, `manage` |
+| `create_skill(name, description?, icon?, skill_md_content, tags?, slug?, mcps?, is_public?)` | Cria a skill (quem cria é o dono) e o SKILL.md na mesma transação, já publicada nos MCPs de `mcps` (só os que a credencial edita). `skill_md_content` é só o **corpo**. Sem `mcps` nenhum MCP a serve; com `is_public: true` ela aparece no site mesmo assim |
+| `edit_skill(slug, {name?, description?, icon?, tags?, new_slug?, is_active?, is_public?})` | Edita metadados — é por aqui que muda o frontmatter. Nome, descrição, ícone e tags exigem `edit`; slug, `is_active` e `is_public`, `manage` |
 | `link_skill(skill, mcp, asSkill, asPrompt, asResource)` / `unlink_skill(skill, mcp)` | Publica e despublica pelo lado da skill: `edit` no MCP virtual e `view` na skill |
 | `set_file(slug, path, content)` | Cria ou sobrescreve um arquivo. Em `SKILL.md`, grava só o corpo |
-| `set_files_bulk(slug, zip_base64, replace?, confirm_deletions?)` | Importa uma árvore inteira de um `.zip` — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado). Se algo sairia, a chamada é **recusada** com a lista: repita com `confirm_deletions` igual ao **número exato** de arquivos a remover, ou com `replace: false` para só acrescentar e sobrescrever |
+| `set_files_bulk(slug, zip_base64, replace?, confirm_deletions?)` | Importa uma árvore inteira de um `.zip`, preservando os caminhos (só a pasta raiz única que contém o `SKILL.md` — o formato do pacote baixado — é desembrulhada; uma subpasta enviada sozinha fica como veio) — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado). Se algo sairia, a chamada é **recusada** com a lista: repita com `confirm_deletions` igual ao **número exato** de arquivos a remover, ou com `replace: false` para só acrescentar e sobrescrever |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`; só o dono ou um admin) |
 | `share_skill(slug, email, level)` / `unshare_skill(slug, email)` / `transfer_skill(slug, email)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp` |
@@ -423,9 +442,19 @@ Três provedores, um modelo por vez:
 Para ligar:
 
 ```bash
-docker compose run --rm migrate                 # a 020 cria as tabelas rag_*
-docker compose --profile rag up -d indexer      # o indexador fica fora do up -d normal
+docker compose run --rm migrate   # a 020 e a 025 criam as tabelas rag_*
+docker compose up -d              # o indexador sobe junto com os demais serviços
 ```
+
+O indexador faz parte do `up -d` comum e fica **parado** enquanto o driver for
+`off`: só publica o próprio estado e não fala com provedor nenhum. A trava do
+envio é, portanto, **uma só** — o driver escolhido (no painel, ou semeado por
+`RAG_DRIVER` no primeiro boot), com a chave dele no `.env` — e ligá-la vale para
+o acervo inteiro, **inclusive as skills privadas**, a partir do ciclo seguinte.
+Quem prefere que subir o indexador seja um gesto à parte descomenta
+`profiles: [rag]` no serviço `indexer` do
+[`docker-compose.yml`](docker-compose.yml) e passa a subi-lo com
+`docker compose --profile rag up -d indexer`.
 
 Depois, no painel, em **Configurações → Busca semântica**, escolha o driver e o
 modelo. O `.env` só semeia esses dois valores no primeiro boot: dali em diante
@@ -589,8 +618,10 @@ O desenho completo, com as decisões e o que ficou de fora, está em
 ## Configuração
 
 As variáveis estão documentadas em [`.env.example`](.env.example) — ele é a
-lista, e quem passa a ler uma variável nova a acrescenta lá no mesmo commit. Todo
-segredo aceita `<NOME>` ou `<NOME>_FILE`:
+lista, e quem passa a ler uma variável nova a acrescenta lá no mesmo commit. Os
+segredos marcados com `/ _FILE` na tabela aceitam `<NOME>` ou `<NOME>_FILE`; os
+do banco (`POSTGRES_PASSWORD`, `DATABASE_URL`, `PGPASSWORD`) e o
+`INSPECTOR_API_TOKEN` só aceitam o valor direto:
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
@@ -599,11 +630,13 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_DOCS_URL`, `ADMIN_SUPPORT_URL`, `ADMIN_CHAT_URL` | não | Links externos da sidebar do painel; vazio some do menu (a documentação aponta para este README por padrão) |
 | `ADMIN_BRAND_NAME`, `ADMIN_BRAND_ICON_URL` | não | Marca do painel: nome e ícone da sidebar, do login e da aba. O nome cai em `SITE_NAME`; o ícone aceita URL http(s) ou caminho do painel, e valor inválido derruba o boot |
 | `MCP_SESSION_ONLINE_WINDOW_MS` | não | Janela em que um cliente do MCP público conta como online no painel (padrão 2 min); agrupa as requisições stateless de um mesmo cliente numa sessão |
-| `MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_IDENTITY` | não | Sessões MCP em memória: teto do processo (padrão 500) e teto por credencial. Deixe o segundo **vazio** — o padrão dele é um décimo do primeiro (mínimo 10), e um número fixo desfaz essa relação. Estourar o teto da credencial fecha a sessão mais parada dela, e o cliente reabre |
+| `MCP_MAX_SESSIONS`, `MCP_MAX_SESSIONS_PER_IDENTITY` | não | Sessões MCP em memória: teto do processo (padrão 500) e teto por credencial. Deixe o segundo **vazio** — o padrão dele é um décimo do primeiro (mínimo 10), e um número fixo desfaz essa relação. Estourar o teto da credencial fecha a sessão mais parada dela, e o cliente reabre. Num MCP virtual **aberto** todos os clientes sem chave são a mesma credencial e dividem esse teto (50 no padrão): para dar mais vagas a eles, suba o primeiro — o transporte sem sessão (`/mcp/stateless`) não ocupa vaga |
 | `SITE_RATE_LIMIT_MAX`, `MCP_RATE_LIMIT_MAX` | não | Requisições por minuto por IP no site (240) e no MCP público (600); `0` desliga, para quem já limita no proxy. Quem chega com chave `psv_` não gasta a cota do endereço |
-| `MCP_MAX_STATELESS_SESSIONS` | não | Identidades stateless contabilizadas ao mesmo tempo (padrão 5000); atingido o teto, a requisição é atendida sem virar linha em `mcp_sessions` |
-| `MCP_JSON_LIMIT`, `MCP_MAX_FILE_TEXT_BYTES` | não | Teto do corpo JSON dos MCPs (1mb no público, 48mb no admin, de propósito) e do texto que `get_skill_file` devolve dentro do resultado (4 MiB; acima dele a resposta é a URL de download) |
-| `SITE_CORS_ORIGIN` | não | Origens aceitas na API pública do site (padrão `*`); feche numa instalação que só deve ser lida de dentro |
+| `MCP_MAX_BATCH` | não | Mensagens aceitas num lote JSON-RPC (um POST cujo corpo é um array) no MCP público (padrão 20; `1` recusa todo lote de mais de uma mensagem). Acima disso a resposta é 400, e cada mensagem do lote gasta uma marca de `MCP_RATE_LIMIT_MAX`. Vale mesmo com o limite de taxa em `0`: o proxy também conta requisição, não mensagem |
+| `MCP_MAX_STATELESS_SESSIONS` | não | Identidades stateless contabilizadas ao mesmo tempo (padrão 5000, mínimo 1 — aqui `0` não desliga, derruba o boot); atingido o teto, a requisição é atendida sem virar linha em `mcp_sessions` |
+| `MCP_PUBLIC_JSON_LIMIT`, `MCP_ADMIN_JSON_LIMIT` | não | Teto do corpo JSON de cada MCP (1mb no público, 48mb no admin, de propósito). São duas para um valor só não levar o teto do admin à superfície anônima; `MCP_JSON_LIMIT`, o nome antigo, ainda vale como queda do admin e não chega mais ao público. Formato `64mb`, `512kb` ou inteiro de bytes — fora disso o serviço não sobe |
+| `MCP_MAX_FILE_TEXT_BYTES`, `MCP_ADMIN_MAX_FILE_TEXT_BYTES` | não | Teto do texto que as leituras MCP devolvem **dentro** da resposta (4 MiB), nos dois MCPs; a segunda vale só para o admin e, vazia, acompanha a primeira. No público (`get_skill`, `get_skill_file`, `prompts/get`, `resources/read`) a resposta acima do teto é a URL de download — em `prompts/get` e `resources/read`, um erro que traz a URL, ou só o tamanho quando a skill não está nas ferramentas daquele servidor. No admin (`get_skill`, `get_file`), que não tem rota de download, `get_file` recusa com tamanho e tipo e `get_skill` omite o corpo e informa o tamanho |
+| `SITE_CORS_ORIGIN` | não | Origens aceitas na API pública do site (padrão `*`); feche numa instalação que só deve ser lida de dentro. O cartão "API REST pública" da home acompanha ("CORS aberto" ou "CORS restrito"); a lista de origens não é publicada |
 | `TRUST_PROXY` | não | Em quais proxies confiar no `X-Forwarded-*`. Vazio: um salto, e só quando quem abre a conexão é loopback ou faixa privada. Dois proxies internos em cadeia precisam declarar o valor |
 | `MCP_PUBLIC_SERVER_NAME`, `MCP_ADMIN_SERVER_NAME` | não | Nome de cada MCP no handshake (`purple-skills` e `purple-skills-admin`); são duas para os dois servidores não aparecerem com o mesmo nome no `mcp.json` de quem conecta |
 | `TAG`, `APP_VERSION` | não | Tag das imagens que o compose usa (padrão `latest`) e versão que os MCPs anunciam no handshake; preencha as duas com o mesmo valor |
@@ -614,8 +647,8 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `ADMIN_SESSION_SECRET` / `_FILE` | recomendada | Chave do cookie de sessão (derivada da senha com scrypt se ausente). Gere com `openssl rand -hex 32` |
 | `MCP_ADMIN_TOKEN` / `_FILE` | sim (mcp-admin) | Bearer token administrativo |
 | `SITE_BASE_URL` | recomendada | Base da URL da página de uma skill pública, devolvida pelo MCP |
-| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP público, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public |
-| `ADMIN_PUBLIC_URL` | recomendada (SSO e SMTP) | Base do `redirect_uri` do OIDC e do link de redefinição de senha. Sem ela o link só é montado para pedido vindo de rede interna; numa instalação exposta, `POST /api/password-reset/request` responde 503 e a redefinição passa a ser feita por um administrador |
+| `MCP_PUBLIC_URL`, `MCP_ADMIN_URL`, `ADMIN_URL` | não | Endereços mostrados na seção "Endereços de acesso" do site; vazio = o cartão some. `MCP_PUBLIC_URL` é a **base**, sem `/mcp` — o site acrescenta o sufixo ao mostrar o MCP público, e a mesma base monta os MCPs virtuais no painel e as URLs de download do mcp-public. `MCP_ADMIN_URL` e `ADMIN_URL` são o contrário: o endereço **completo**, mostrado como está — a do MCP administrativo já vem com o caminho do transporte (`https://mcp-admin.example.com/mcp`), porque é ela que vai para o `mcp.json` copiável do site; só com o host, o agente recebe 404 |
+| `ADMIN_PUBLIC_URL` | recomendada (SSO e SMTP) | Base do `redirect_uri` do OIDC e do link de redefinição de senha. Sem ela o link só é montado para pedido vindo de rede interna; numa instalação exposta, `POST /api/password-reset/request` responde 503 e a redefinição passa a ser feita por um administrador. Também é a origem do próprio painel na checagem anti-CSRF das escritas, que confere nome **e porta**: necessária quando o proxy publica o painel numa porta que não repassa no `Host` |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` / `_FILE` | não | Ligam o login por SSO (os três juntos) |
 | `OIDC_ALLOWED_DOMAINS` | sim, com SSO | Domínios de e-mail autorizados; **vazia recusa todo login por SSO**, inclusive de contas que já existem e já estão vinculadas |
 | `SMTP_URL` / `_FILE`, `SMTP_FROM` | não | Ligam a redefinição de senha por e-mail |
@@ -623,7 +656,7 @@ segredo aceita `<NOME>` ou `<NOME>_FILE`:
 | `RAG_DRIVER`, `RAG_MODEL` | não | Ligam a [busca semântica](#busca-semântica-opcional): `google`, `openai`, `voyage` ou `off`. Lidas **só pelo admin**, que as semeia no banco no primeiro boot — depois quem manda é o painel. Sem `RAG_MODEL`, vale o padrão do driver |
 | `RAG_GOOGLE_API_KEY`, `RAG_OPENAI_API_KEY`, `RAG_VOYAGE_API_KEY` / `_FILE` | sim, com o driver ligado | A chave de cada provedor. Vão para o indexer, o mcp-public e o site; **nunca** para o painel. Mais de uma configurada permite trocar de driver sem recriar container |
 | `RAG_GOOGLE_BASE_URL`, `RAG_OPENAI_BASE_URL`, `RAG_VOYAGE_BASE_URL` | não | URL base de cada provedor, já com a versão da API. Usada como está |
-| `RAG_QUERY_TIMEOUT_MS`, `RAG_INDEX_INTERVAL_SECONDS` | não | Prazo do embedding da consulta (padrão 2000 ms) e intervalo do indexador (padrão 30 s) |
+| `RAG_QUERY_TIMEOUT_MS`, `RAG_INDEX_INTERVAL_SECONDS`, `RAG_INDEX_TIMEOUT_MS` | não | Prazo do embedding da consulta (padrão 2000 ms), intervalo do indexador (padrão 30 s) e prazo de cada chamada ao provedor durante a indexação, tentativas incluídas (padrão 120000 ms) — nenhuma chamada ao provedor fica sem prazo |
 
 Só o [`.env.example`](.env.example) é versionado, e com `CHANGE_ME` no lugar de
 cada segredo — o CI reprova qualquer outro `.env*` que entre no índice. Como o
@@ -652,7 +685,9 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 - **Busca semântica sem índice vetorial.** A perna vetorial é varredura exata: o
   HNSW do `pgvector` para em 2000 dimensões e o modelo do Google tem 3072. Ligar
   a busca vale para o acervo inteiro (não há recorte de escopo), e não há como
-  apagar os vetores de um espaço nem limpar texto ou vetor órfão — ver a §12.5 de
+  apagar os vetores de um espaço — o texto que fica órfão, esse sim, é coletado
+  pelo indexador no fim de cada ciclo, com os vetores dele (migration `025`).
+  Ver a §12.5 de
   [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md).
 - Com SSO ligado, a vinculação a uma conta local é sempre pelo e-mail: confie
   no provedor que você configurar e restrinja `OIDC_ALLOWED_DOMAINS`.

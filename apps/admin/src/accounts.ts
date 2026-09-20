@@ -41,6 +41,22 @@ import type { AuthUser } from './auth.js';
 
 const SOURCE = 'web-admin' as const;
 
+/**
+ * Campo de texto de um corpo JSON. Era `String(valor ?? '')`, que estourava
+ * `TypeError` no objeto cujo `toString` não é função — `{"name":{"toString":1}}`
+ * —, devolvido pela rota como 500 com linha de "erro inesperado" no log, e
+ * aceitava o resto em silêncio: `{"name":{}}` criava a conta "[object Object]"
+ * e `{"name":null}`, no PATCH, rebatizava a conta de "null" (achado do relatório
+ * 007 da auditoria de 2026-09-19). Ausente ou nulo é `''`, e quem chama responde
+ * com a validação que já tinha; presente e não-texto é 400, com a frase que as
+ * rotas de skill usam para `skillMd` e `content` de tipo errado.
+ */
+function textOf(value: unknown, field: string): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') throw badRequest(`O campo "${field}" deve ser uma string`);
+  return value;
+}
+
 /** O que o painel mostra de uma conta. Nunca inclui hash nem token. */
 export function toPublicUser(user: UserRecord | UserSummary): UserSummary {
   const {
@@ -104,7 +120,7 @@ export async function bootstrapAdmin(input: {
   const email = normalizeEmail(input.email);
   if (!email) throw badRequest('Informe um e-mail válido');
 
-  const name = String(input.name ?? '').trim();
+  const name = textOf(input.name, 'name').trim();
   if (!name) throw badRequest('Informe o nome do administrador');
 
   const problem = passwordProblem(input.password);
@@ -252,7 +268,7 @@ export async function createAccount(
   const email = normalizeEmail(input.email);
   if (!email) throw badRequest('Informe um e-mail válido');
 
-  const name = String(input.name ?? '').trim();
+  const name = textOf(input.name, 'name').trim();
   if (!name) throw badRequest('Informe o nome');
 
   if (!isRole(input.role)) throw badRequest('Papel inválido: use admin, editor ou membro');
@@ -308,7 +324,7 @@ export async function updateAccount(
   } = {};
 
   if (patch.name !== undefined) {
-    const name = String(patch.name).trim();
+    const name = textOf(patch.name, 'name').trim();
     if (!name) throw badRequest('O nome não pode ficar vazio');
     changes.name = name;
   }
@@ -363,6 +379,19 @@ export async function updateAccount(
   if (changes.isActive === false) {
     await recordAccountAudit({
       action: 'user.deactivate',
+      source: SOURCE,
+      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
+      targetLabel: target.email,
+    });
+  }
+  // O par do de cima, que faltava (relatório 003 da auditoria de 2026-09-19):
+  // reativar devolve de uma vez o login, as concessões e as chaves `psk_` da
+  // conta, e a trilha mostrava duas desativações seguidas sem dizer quem a
+  // religou no meio. Só entra quando o estado mudou de fato — `isActive: true`
+  // numa conta já ativa não chega a `changes`.
+  if (changes.isActive === true) {
+    await recordAccountAudit({
+      action: 'user.activate',
       source: SOURCE,
       actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
       targetLabel: target.email,
@@ -429,6 +458,14 @@ export async function resetAccountPassword(
     passwordHash: hashPassword(password),
     mustChangePassword: true,
     bumpTokenVersion: true,
+    // A ficha da conta promete que gerar a senha temporária "destrava na hora"
+    // (`UserAlerts`, em `web/src/pages/UserPage.tsx`). Sem isto a temporária
+    // certa era recusada com 429 até `locked_until` vencer, porque o login
+    // confere a trava **antes** da senha (relatório 005 da auditoria de
+    // 2026-09-19). `changeOwnPassword` não passa o campo — quem está logado não
+    // está trancado do lado de fora —, e no link de e-mail
+    // (`confirmPasswordReset`) destravar é decisão do mantenedor, ainda aberta.
+    clearLoginLock: true,
   });
 
   // Trocar a senha de outra conta é assumi-la: é a ação mais forte da tela de
@@ -448,6 +485,9 @@ export async function changeOwnPassword(
 ): Promise<void> {
   if (!user.uuid) throw badRequest('A sessão de bootstrap não tem senha para trocar');
 
+  // Ausente vale `''` e cai no "Senha atual incorreta" de sempre.
+  const currentPassword = textOf(input.currentPassword, 'currentPassword');
+
   const record = await getUserByUuid(user.uuid);
   if (!record) throw notFound('Conta não encontrada');
 
@@ -455,7 +495,7 @@ export async function changeOwnPassword(
   if (problem) throw badRequest(problem);
 
   // Conta só-OIDC ainda não tem senha: definir a primeira não exige a anterior.
-  if (record.passwordHash && !verifyPassword(String(input.currentPassword ?? ''), record.passwordHash)) {
+  if (record.passwordHash && !verifyPassword(currentPassword, record.passwordHash)) {
     throw unauthorized('Senha atual incorreta');
   }
 
@@ -477,7 +517,7 @@ export async function issueKey(
 ): Promise<{ key: ApiKeySummary; token: string }> {
   if (!user.uuid) throw badRequest('A sessão de bootstrap não pode emitir chaves — crie sua conta');
 
-  const name = String(rawName ?? '').trim();
+  const name = textOf(rawName, 'name').trim();
   if (!name) throw badRequest('Dê um nome à chave (ex.: "notebook do trabalho")');
   if (name.length > 80) throw badRequest('O nome da chave é longo demais');
 
@@ -514,6 +554,18 @@ export async function listAccountKeys(uuid: string): Promise<ApiKeySummary[]> {
 }
 
 /**
+ * O rótulo de um `key.revoke` na trilha: `<e-mail do dono>: <nome> (<prefixo>)`.
+ * A emissão já rotulava `<nome> (<prefixo>)`; a revogação gravava o **uuid** da
+ * chave, que não aparece em tela nenhuma — a linha não se casava com a da
+ * emissão, e quem lê a trilha não sabia que chave era (relatório 040 da
+ * auditoria de 2026-09-19). O nome, o prefixo e o e-mail do dono vêm do próprio
+ * `UPDATE` da revogação, sem leitura a mais nem corrida com ela. Linha antiga
+ * não é reescrita: continua com o uuid.
+ */
+const revokedKeyLabel = (revoked: { name: string; prefix: string; userEmail: string }): string =>
+  `${revoked.userEmail}: ${revoked.name} (${revoked.prefix})`;
+
+/**
  * O admin revoga uma chave de outra conta pela ficha dela. O escopo pelo dono
  * garante que o id pertence àquela conta — uma chave de terceiro é 404.
  */
@@ -526,7 +578,7 @@ export async function revokeAccountKey(actor: AuthUser, uuid: string, id: string
     action: 'key.revoke',
     source: SOURCE,
     actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
-    targetLabel: `${target.email}: ${id}`,
+    targetLabel: revokedKeyLabel(revoked),
   });
 }
 
@@ -536,11 +588,13 @@ export async function revokeKey(user: AuthUser, id: string): Promise<void> {
   const revoked = await revokeApiKey(id, scope);
   if (!revoked) throw notFound('Chave não encontrada ou já revogada');
 
+  // Com `scope` nulo o dono pode não ser quem revogou (um admin, pela API, com a
+  // chave de outra conta): o rótulo diz de quem ela era, como o da ficha.
   await recordAccountAudit({
     action: 'key.revoke',
     source: SOURCE,
     actor: { userUuid: user.uuid, label: user.legacy ? 'bootstrap' : user.email },
-    targetLabel: id,
+    targetLabel: revokedKeyLabel(revoked),
   });
 }
 
@@ -554,6 +608,12 @@ const hashToken = (token: string): string => createHash('sha256').update(token).
  * O token vai por e-mail; o banco guarda só o SHA-256 dele. Não é scrypt de
  * propósito: são 32 bytes aleatórios, sem entropia a compensar, e a busca é
  * exatamente por igualdade do hash.
+ *
+ * A rota **não espera** esta função (`POST /api/password-reset/request`): o
+ * tempo daqui depende de haver conta — um SELECT contra gravação mais conversa
+ * SMTP —, e esperar faria do relógio um verificador de cadastro. Quem chama só
+ * registra a rejeição no log; por isso a falha de envio é tratada aqui, onde
+ * ainda se sabe de qual conta era.
  */
 export async function requestPasswordReset(
   rawEmail: unknown,
@@ -574,7 +634,19 @@ export async function requestPasswordReset(
 
   const { sendMail, passwordResetMessage } = await import('./mailer.js');
   const message = passwordResetMessage(user.name, linkFor(token), config.resetTtlSeconds);
-  await sendMail({ to: user.email, ...message });
+  try {
+    await sendMail({ to: user.email, ...message });
+  } catch (err) {
+    // `createResetToken` já fechou o link anterior desta conta (um link vivo por
+    // vez) e o novo não saiu: a pessoa ficou sem link nenhum. Quem pediu não
+    // pode saber — o anônimo receberia um 500 só para e-mail com conta —, então
+    // o log é o único lugar onde o administrador descobre que precisa agir.
+    console.error(
+      `[admin] o link de redefinição de ${user.email} foi gravado, mas o envio falhou; ` +
+        'o link anterior da conta já não vale — redefina a senha pelo painel ou peça novo envio:',
+      err,
+    );
+  }
 }
 
 export async function confirmPasswordReset(
@@ -616,6 +688,40 @@ export type OidcClaims = {
 };
 
 /**
+ * A trilha do vínculo: uma identidade do provedor passou a abrir uma conta local
+ * que já existia (relatório 003 da auditoria de 2026-09-19). Acontece uma vez
+ * por conta — é evento de conta, não login, que segue fora da trilha (§2.8) —,
+ * e por isso só o ramo de vinculação chama isto: a identidade já vinculada entra
+ * sem deixar linha. O ator é o **caminho**, como no link de redefinição e no
+ * `user.create` por SSO: quem chegou é uma identidade do provedor, e é o
+ * `subject`, no alvo, que diz qual. Se o vínculo levou junto a senha temporária
+ * (relatório 002), a linha diz — é a única pista de por que a conta ficou sem
+ * senha local.
+ *
+ * Melhor esforço, como `registrarTrocaDeSenha`: quando a linha é escrita o
+ * vínculo já foi gravado, e derrubar o login aqui deixaria a conta vinculada, a
+ * pessoa com erro na tela e a trilha igualmente sem a linha. É também o que
+ * mantém o SSO de pé se o painel novo subir contra um banco ainda sem a
+ * migration `auditoria-de-vinculo-e-reativacao`, em que o `CHECK` recusa a ação.
+ */
+async function registrarVinculo(
+  claims: OidcClaims,
+  email: string,
+  descartouTemporaria: boolean,
+): Promise<void> {
+  try {
+    await recordAccountAudit({
+      action: 'user.link',
+      source: SOURCE,
+      actor: { userUuid: null, label: `oidc:${claims.issuer}` },
+      targetLabel: `${email} (sub ${claims.subject}${descartouTemporaria ? '; senha temporária descartada' : ''})`,
+    });
+  } catch (err) {
+    console.error(`[admin] falha ao auditar o vínculo OIDC de ${email}:`, err);
+  }
+}
+
+/**
  * Resolve um login OIDC em uma conta local.
  *
  * A allowlist vale nos **três** caminhos — autenticar, provisionar e vincular
@@ -634,6 +740,12 @@ export type OidcClaims = {
  *   `membro`, que depois do `12` vê apenas o público, o seu e o concedido, e
  *   exigir o claim aqui trancaria instalação legítima cujo provedor não o
  *   emite.
+ *
+ * Criar conta nova exige ainda que **já exista conta**: a primeira é sempre o
+ * admin do `/api/setup`, e com a tabela vazia o SSO não provisiona ninguém.
+ * Vincular grava `user.link` na trilha (`registrarVinculo`) e, se a conta ainda
+ * estava com senha temporária, leva a temporária junto. Os porquês estão no
+ * ponto de cada um.
  */
 export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
   const email = normalizeEmail(claims.email);
@@ -685,13 +797,46 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
           'administrador uma senha para entrar por ela.',
       );
     }
+    // Conta cuja senha temporária nunca foi trocada — a pré-criada em "Nova
+    // conta", que é o "convite" de quem usa `OIDC_AUTO_PROVISION=false`. Quem
+    // chegou aqui provou a posse do e-mail pelo provedor, a mesma força do link
+    // de redefinição, e a tela de troca cobraria uma senha que só o administrador
+    // viu (relatório 002 da auditoria de 2026-09-19). Desligar só a flag deixaria
+    // a temporária valendo para sempre (ver `requirePasswordChanged`), então ela
+    // morre junto: a conta vira só-SSO, as sessões abertas com a temporária caem
+    // — o cookie novo sai com a versão que volta daqui — e a pessoa define uma
+    // senha depois, em Minha conta, sem precisar da anterior
+    // (`changeOwnPassword`). Senha escolhida pela própria pessoa
+    // (`mustChangePassword` desligado) não é tocada.
+    const descartarTemporaria = byEmail.mustChangePassword;
     const linked = await updateUser(byEmail.uuid, {
       oidcIssuer: claims.issuer,
       oidcSubject: claims.subject,
+      ...(descartarTemporaria
+        ? { passwordHash: null, mustChangePassword: false, bumpTokenVersion: true }
+        : {}),
     });
+    await registrarVinculo(claims, linked.email, descartarTemporaria);
     await registerSuccessfulLogin(linked.uuid);
     await adoptOrphansFor(linked);
     return linked;
+  }
+
+  // A primeira conta tem de ser o admin do `/api/setup` (§2.3). O setup (404) e
+  // o login pela `ADMIN_PASSWORD` (401) fecham quando aparece **qualquer** conta:
+  // um `membro` criado aqui com a tabela vazia deixava a instalação com conta,
+  // sem administrador e sem caminho para criar um — a volta era SQL à mão
+  // (relatório 001 da auditoria de 2026-09-19). Vem antes do
+  // `OIDC_AUTO_PROVISION`: com a tabela vazia não existe administrador a quem
+  // pedir convite. A leitura e o INSERT são transações distintas, mas conta
+  // nenhuma é apagada pelo produto: se esta leitura viu uma, a tabela não volta a
+  // ficar vazia — não há corrida a fechar, nem lock a pagar. Autenticar e
+  // vincular, acima, exigem conta que já existe e não passam por aqui.
+  if ((await countUsers()) === 0) {
+    throw unauthorized(
+      'Este painel ainda não tem administrador. Use "Criar o primeiro administrador", ' +
+        'na tela de login, com a ADMIN_PASSWORD; o SSO passa a valer depois disso.',
+    );
   }
 
   if (!config.oidcAutoProvision) {
@@ -710,7 +855,10 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
 
   const created = await createUser({
     email,
-    name: String(claims.name ?? '').trim() || email,
+    // O claim vem do provedor, não de quem está entrando: o que não é texto vale
+    // como ausente (o nome cai no e-mail) em vez de derrubar o login — `String()`
+    // de um objeto sem `toString` lança.
+    name: (typeof claims.name === 'string' ? claims.name.trim() : '') || email,
     role: 'membro',
     passwordHash: null,
     oidcIssuer: claims.issuer,

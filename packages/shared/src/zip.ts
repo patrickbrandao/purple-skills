@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import AdmZip from 'adm-zip';
 import archiver from 'archiver';
 import { readIntEnv } from './env.js';
-import { isTextualMime, mimeTypeFor, normalizeRelativePath } from './paths.js';
+import { isSkillMd, isTextualContent, mimeTypeFor, normalizeRelativePath } from './paths.js';
 
 export type ZipEntryInput = {
   relativePath: string;
@@ -90,8 +90,14 @@ const MAX_EXPANSAO_DEFLATE = 1032;
 
 export type ExtractZipOptions = {
   /**
-   * Quando o ZIP tem uma única pasta raiz (padrão de `zip -r skill.zip skill/`),
-   * essa pasta é removida dos caminhos. Ligado por padrão.
+   * Quando o ZIP tem uma única pasta raiz **que contém o `SKILL.md`** — o padrão
+   * de `zip -r skill.zip skill/` e o formato do pacote que o painel, o site e o
+   * MCP público entregam (`<slug>/SKILL.md`) —, essa pasta é removida dos
+   * caminhos. Ligado por padrão.
+   *
+   * O `SKILL.md` é o que separa embrulho de subpasta: sem essa condição, um
+   * envio parcial (`zip -r scripts.zip scripts/`) a uma skill que já existe
+   * perdia a pasta e era gravado na raiz, ao lado dos originais (`tasks/075`).
    */
   stripSingleRootDir?: boolean;
   /** Teto do total descomprimido. Acima disso, `extractZip` lança. */
@@ -122,6 +128,13 @@ export class ZipFormatError extends ZipError {
   }
 }
 
+/** ZIP legível, com conteúdo que não dá para gravar: o `SKILL.md` que não é texto. */
+export class ZipContentError extends ZipError {
+  constructor(message: string) {
+    super(message, 'ZipContentError');
+  }
+}
+
 /**
  * Extrai um ZIP em memória para a representação usada na tabela `files`.
  * Ignora diretórios, arquivos de metadados de SO e caminhos inseguros.
@@ -133,6 +146,9 @@ export class ZipFormatError extends ZipError {
  * declarar qualquer coisa. Quando o cabeçalho declara zero — o valor que
  * desligava o teto do zlib dentro do `adm-zip` —, a entrada só é aberta se os
  * bytes comprimidos não puderem inflar além do que resta do limite.
+ *
+ * Todo erro causado pelo arquivo enviado é um `ZipError`: limite estourado,
+ * ZIP ilegível e o `SKILL.md` que não é texto (`ZipContentError`).
  */
 export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): ExtractedFile[] {
   const {
@@ -215,16 +231,33 @@ export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): Ext
     const path = prefix ? entry.path.slice(prefix.length + 1) : entry.path;
     if (!path || seen.has(path)) continue;
     seen.add(path);
-    files.push(toExtractedFile(path, entry.data));
+
+    const file = toExtractedFile(path, entry.data);
+    // Um anexo que não é texto segue como binário, intacto. O arquivo principal
+    // não tem essa saída: quem chama lê `textContent ?? ''`, e um SKILL.md
+    // binário viraria corpo vazio gravado por cima do prompt da skill.
+    if (isSkillMd(path) && file.textContent === null) {
+      throw new ZipContentError(
+        'O SKILL.md do .zip não é um texto UTF-8 válido (tem byte nulo ou está em outra ' +
+          'codificação, como Windows-1252). Converta-o para UTF-8 e envie de novo.',
+      );
+    }
+    files.push(file);
   }
 
   return files;
 }
 
-/** Monta a linha de `files` a partir de um caminho + bytes crus. */
+/**
+ * Monta a linha de `files` a partir de um caminho + bytes crus.
+ *
+ * Texto × binário sai de `isTextualContent` (`paths.ts`): o que não é UTF-8
+ * válido vai como binário, com os bytes que chegaram. `fileColumns`, no banco,
+ * tem a sua cópia da régua — as duas precisam dizer o mesmo.
+ */
 export function toExtractedFile(relativePath: string, data: Buffer): ExtractedFile {
   const mimeType = mimeTypeFor(relativePath);
-  const textual = isTextualMime(mimeType) && !data.includes(0);
+  const textual = isTextualContent(mimeType, data);
 
   return {
     relativePath,
@@ -242,11 +275,20 @@ function isJunkPath(path: string): boolean {
   );
 }
 
-/** Retorna a pasta raiz comum a todos os caminhos, ou `null` se não houver. */
+/**
+ * Retorna a pasta raiz comum a todos os caminhos quando ela é um **embrulho** —
+ * o `SKILL.md` está logo dentro dela, em qualquer caixa —, ou `null`.
+ *
+ * É assim que sai todo pacote exportado (`<slug>/SKILL.md`, ver
+ * `apps/site/src/zip.ts`), e toda skill tem um `SKILL.md`: baixar e reenviar
+ * continua desembrulhando. Uma raiz única sem ele é subpasta de verdade
+ * (`scripts/run.py`, `scripts/util.py`) e fica nos caminhos.
+ */
 function commonRootDir(paths: readonly string[]): string | null {
   if (paths.length === 0) return null;
   const first = paths[0].split('/');
   if (first.length < 2) return null;
   const root = first[0];
-  return paths.every((p) => p.startsWith(`${root}/`)) ? root : null;
+  if (!paths.every((p) => p.startsWith(`${root}/`))) return null;
+  return paths.some((p) => isSkillMd(p.slice(root.length + 1))) ? root : null;
 }

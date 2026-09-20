@@ -1,8 +1,16 @@
 import type { Request } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@purple-skills/db', () => ({}));
+// Do pacote só entra a regra do rótulo, e entra **de verdade**: é ela que os
+// testes de `clientInfoOf` conferem (teto, controle, cópia), e um dublê aqui
+// testaria o dublê. As queries seguem de fora — o rastreador recebe o `store`
+// falso — e nada no pacote abre conexão em tempo de import.
+vi.mock('@purple-skills/db', async (original) => {
+  const real = await original<typeof import('@purple-skills/db')>();
+  return { normalizeSessionLabel: real.normalizeSessionLabel };
+});
 
+const { MCP_SESSION_LABEL_MAX } = await vi.importActual<typeof import('@purple-skills/db')>('@purple-skills/db');
 const { clientInfoOf, createSessionTracker, statelessSessionId } = await import('./sessions.js');
 type Store = NonNullable<Parameters<typeof createSessionTracker>[0]['store']>;
 
@@ -72,6 +80,47 @@ describe('clientInfoOf', () => {
     expect(clientInfoOf('lixo')).toBeNull();
     expect(clientInfoOf({ method: 'initialize', params: {} })).toBeNull();
   });
+
+  /**
+   * O `clientInfo` é texto livre de quem chama e fica na memória do rastreador
+   * por entrada. A regra que o limpa é a do banco (`normalizeSessionLabel`), e é
+   * a de verdade que roda aqui — relatórios 047 e 038 da auditoria de 2026-09-19.
+   */
+  const initializeCom = (clientInfo: unknown) => ({ method: 'initialize', params: { clientInfo } });
+
+  it('corta o rótulo no teto do banco: o nome de 1 MB não fica na memória', () => {
+    const info = clientInfoOf(initializeCom({ name: 'n'.repeat(1024 * 1024), version: 'v'.repeat(10_000) }));
+
+    expect(MCP_SESSION_LABEL_MAX).toBe(512);
+    expect(info?.name).toBe('n'.repeat(MCP_SESSION_LABEL_MAX));
+    expect(info?.version).toBe('v'.repeat(MCP_SESSION_LABEL_MAX));
+  });
+
+  it('caractere de controle vira espaço — o nulo inclusive, que o `text` do Postgres recusa', () => {
+    // Montados com `fromCharCode`: o escape do nulo escrito no fonte vira byte
+    // literal na ferramenta de edição, e o arquivo passa a ser binário para o git.
+    const NUL = String.fromCharCode(0);
+    const ESC = String.fromCharCode(0x1b);
+
+    expect(clientInfoOf(initializeCom({ name: `claude${NUL}code`, version: `2.1${ESC}0\n` }))).toEqual({
+      name: 'claude code',
+      version: '2.1 0',
+    });
+  });
+
+  it('nome só de controles ou de espaços vira null, e o que não é string também', () => {
+    const NUL = String.fromCharCode(0);
+
+    expect(clientInfoOf(initializeCom({ name: `${NUL}${NUL}`, version: '   ' }))).toEqual({ name: null, version: null });
+    expect(clientInfoOf(initializeCom({ name: 42, version: { major: 2 } }))).toEqual({ name: null, version: null });
+  });
+
+  it('rótulo curto e limpo passa idêntico', () => {
+    expect(clientInfoOf(initializeCom({ name: 'Claude Code — ação', version: '2.1.0-β' }))).toEqual({
+      name: 'Claude Code — ação',
+      version: '2.1.0-β',
+    });
+  });
 });
 
 describe('sessões com id', () => {
@@ -130,6 +179,25 @@ describe('sessões com id', () => {
       requests: 1,
       clientName: 'claude-code',
       clientVersion: '2.1.0',
+    });
+  });
+
+  // No SSE o `clientInfo` chega depois da abertura e fica guardado na entrada
+  // até o toque seguinte: o que sai dela para o banco é o que estava na memória.
+  it('o clientInfo guardado na entrada já é o rótulo limpo e cortado', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const NUL = String.fromCharCode(0);
+    const sujo = { ...INITIALIZE, params: { ...INITIALIZE.params, clientInfo: { name: `a${NUL}${'b'.repeat(1024 * 1024)}`, version: `1${NUL}0` } } };
+
+    t.opened('sse', 'sse-1', request());
+    t.seen('sse', 'sse-1', request({ body: sujo }));
+    await t.flush();
+
+    expect(store.calls.touchMcpSession).toHaveBeenCalledWith('row-1', {
+      requests: 1,
+      clientName: `a ${'b'.repeat(510)}`,
+      clientVersion: '1 0',
     });
   });
 
@@ -203,6 +271,19 @@ describe('stateless', () => {
     expect(store.calls.openMcpSession).toHaveBeenCalledTimes(2);
     expect(store.calls.openMcpSession.mock.calls[0][0]).toMatchObject({ transport: 'stateless', mount: 'root', clientName: 'claude-code' });
     expect(store.calls.touchMcpSession).toHaveBeenCalledWith('row-1', { requests: 1 });
+  });
+
+  // O caminho do relatório 047: cada `user-agent` novo é uma identidade nova, e
+  // cada identidade guardava o `clientInfo.name` do tamanho que viesse.
+  it('identidade nova com nome gigante abre a linha com o rótulo de 512 caracteres', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const gigante = { ...INITIALIZE, params: { ...INITIALIZE.params, clientInfo: { name: 'x'.repeat(1024 * 1024), version: '1.0' } } };
+
+    t.stateless(request({ body: gigante, agent: 'variavel/1' }));
+    await flushMicrotasks();
+
+    expect(store.calls.openMcpSession.mock.calls[0][0]).toMatchObject({ clientName: 'x'.repeat(512), clientVersion: '1.0' });
   });
 
   it('passada a janela, a próxima requisição abre outra linha', async () => {
@@ -298,5 +379,30 @@ describe('varredura e desligamento', () => {
     t.closed('streamable', 'a', 'closed');
     await flushMicrotasks();
     expect(store.calls.closeMcpSession).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `MCP_MAX_STATELESS_SESSIONS` não é limite de taxa e não tem "desligado": com
+ * `0` o mapa nasceria cheio e nenhum cliente stateless seria contabilizado. A
+ * variável é lida na carga do módulo — daí o `resetModules` e o `import()`.
+ */
+describe('MCP_MAX_STATELESS_SESSIONS', () => {
+  const carregarCom = async (valor: string) => {
+    vi.resetModules();
+    vi.stubEnv('MCP_MAX_STATELESS_SESSIONS', valor);
+    try {
+      return await import('./sessions.js');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it('`0` derruba o boot com a mensagem de faixa, em vez de virar "sem teto"', async () => {
+    await expect(carregarCom('0')).rejects.toThrow(/MCP_MAX_STATELESS_SESSIONS inválida: esperado um inteiro entre 1 e/);
+  });
+
+  it('o mínimo aceito é `1`', async () => {
+    await expect(carregarCom('1')).resolves.toHaveProperty('createSessionTracker');
   });
 });

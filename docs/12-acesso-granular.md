@@ -81,7 +81,14 @@ Fechadas por derivação:
 - **Conta desativada** mantém as linhas de concessão, inertes; reativar
   devolve o acesso. Remover a conta apaga as linhas (`CASCADE`) e deixa os
   objetos dela órfãos (`SET NULL`, como hoje). Transferir para conta
-  desativada é recusado.
+  desativada é recusado. **Revogar não é**: a decisão 10 diz "qualquer
+  concessão", e a de conta desativada é justamente a que alguém vai querer tirar
+  antes de uma reativação. A guia Acesso marca a linha ("conta desativada") e as
+  tools de leitura do mcp-admin trazem `isActive` em cada concessão; conceder e
+  mudar o **nível** — a mesma chamada — continuam exigindo conta ativa. Até o
+  relatório 039 da auditoria de 2026-09-19 a revogação era recusada também, por
+  arrasto: as seis superfícies resolviam o e-mail pelo funil de conceder, que
+  exige conta ativa, e a linha não tinha por onde sair.
 - **Transferir para quem já tem concessão** apaga a linha dele: o dono é
   implícito.
 - **OIDC** auto-provisiona como `membro`.
@@ -109,6 +116,17 @@ de `listSkills` e a contagem de tags não têm conserto depois. `@purple-skills/
 ganha uma opção de leitura `viewer: { role, userUuid }` ao lado de
 `visibility`; `'all'` fica reservada ao admin, ao token global e ao bootstrap,
 e o site continua com `'open'`, agora ampliada pelas duas linhas de "público".
+
+**As listas dentro de uma ficha seguem a mesma regra.** "Publicada em" e os
+catálogos, na ficha da skill, e "Vinculado em" e os membros, na ficha do
+catálogo, trazem só o que a conta vê — o servidor fechado de terceiros não é
+nomeado em nenhuma das duas, nem para o dono do objeto. Vale também para a
+**resposta de uma escrita**: o banco relê sem `viewer`, na visão do admin, e o
+app responde com o recorte de quem chamou (relatórios 009 e 010 da auditoria de
+2026-09-19). Os contadores do catálogo (`mcpCount`, `skillCount`) são a exceção
+registrada ao parágrafo seguinte: continuam globais, porque são o número que a
+confirmação de exclusão mostra ao dono — ali subestimar é pior —, e a ficha diz
+"e mais N que você não vê" em vez de anunciar 3 e listar 1.
 
 **Número agregado também é alcance.** `stats()` é a última leitura sem `viewer`, e
 o app a recorta até o banco recortar (`023`): admin recebe os totais da instalação,
@@ -256,10 +274,37 @@ PATCH  /api/skills/:slug                   ganha isPublic e ownerUserUuid
 GET    /api/skills, /api/catalogs, /api/mcps   ganham ?scope=mine|shared|public
 ```
 
+> **Na resposta, a conta é o e-mail** (relatório 011 da auditoria de
+> 2026-09-19). O `uuid` de uma conta é o `sub` do cookie de sessão, e a busca de
+> contas já não o entregava; em toda ficha e lista ele continuava ao lado do
+> e-mail. `ownerUserUuid`, `grants[].userUuid` e `grants[].grantedByUserUuid`
+> saem como **apelido do e-mail** (nulo continua nulo); o `ownerUserUuid` dos
+> contêineres aninhados sai omitido; `createdByUserUuid` de chave `psv_` emitida
+> por outra conta, nulo; e o `userUuid` de quem leu, na guia Auditoria de skill e
+> de catálogo, é o e-mail. Vale para toda sessão, admin inclusive — o uuid de
+> verdade está em `/api/users`. A **entrada** `ownerUserUuid` do `PATCH` não
+> mudou: e-mail ou uuid. *Quem integra pela REST e lia esses campos esperando um
+> uuid passa a receber o e-mail* — a mesma quebra do `GET /api/users/lookup`.
+>
+> `PUT` e `DELETE /api/skills/:slug/mcps/:mcp` respondem com a ficha da skill
+> **como quem chamou a vê** — o mesmo corpo do `GET` —, e não mais com a visão
+> do admin (relatório 009 da mesma auditoria). O `DELETE` pode responder `200
+> { "unlinked": true }`: desfeito o vínculo, a skill privada que só chegava à
+> sessão por aquele servidor deixa de ser visível para ela.
+
 `loadManaged(user, slug)` dos vMCPs e catálogos vira `loadWithLevel(user,
 slug, minimo)`, e as rotas de skill — que hoje só têm `requireWrite` /
 `requireDelete` — passam a carregar a skill com o nível exigido. `requireWrite`
 fica só em `POST` (criar, importar).
+
+> **Na implementação os nomes ficaram outros** — quem procurar os de cima não
+> acha. `loadWithLevel` é `load(user, slug, minimum)`, em
+> `apps/admin/src/mcps.ts` e `catalogs.ts`, e `loadSkill` / `loadSkillSummary`,
+> em `access.ts`; `requireWrite` é `requireCreate` (`auth.ts`), nos quatro
+> `POST` que criam — `/api/skills`, `/api/skills/import`, `/api/catalogs` e
+> `/api/mcps`; `requireDelete` deixou de existir, porque apagar é do dono
+> (`'owner'`). O mcp-admin tem os equivalentes: `loadSkill` (`access.ts`) e
+> `managed` (`mcps.ts`, `catalogs.ts`).
 
 ## 6. O mcp-admin
 
@@ -275,7 +320,10 @@ no vMCP e `view` no catálogo. O token global continua admin.
 
 - A lista de skills e a busca passam a incluir as públicas sem vMCP aberto; a
   página da skill diz onde ela está e, quando não está em nenhum, oferece só
-  o download.
+  o download. O exemplo `get_skill("<slug>")` da seção "Via MCP" só aparece
+  quando algum vMCP aberto a publica pela porta `skill` — a única que as
+  ferramentas do mcp-public enxergam; publicada só como prompt ou resource, a
+  página diz por qual porta ela sai (`viaMcp.ts`, no site).
 - Seção nova **"Catálogos"**: os públicos e ligados, com nome, descrição e
   membros ativos; a página do catálogo lista os membros — todos os ativos,
   pela decisão 5 — com link para a página de cada um. Revoga o item "um

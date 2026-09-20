@@ -78,6 +78,17 @@ export function accessSentence(access: EffectiveAccess): string {
   return `seu acesso: ${ACCESS_LABEL[access]}`;
 }
 
+/**
+ * A sessão é a dona do objeto? Pelo **e-mail**: o uuid de conta não sai mais do
+ * servidor — `ownerUserUuid` chega como apelido do e-mail (relatório 011 da
+ * auditoria de 2026-09-19) —, e comparar com `user.uuid` nunca casaria: o "você"
+ * sumiria. A sessão de bootstrap não é conta (`uuid` nulo, e-mail vazio) e não é
+ * dona de nada.
+ */
+export function ownedBy(object: Pick<Accessible, 'ownerEmail'>, user: Pick<SessionUser, 'uuid' | 'email'>): boolean {
+  return object.ownerEmail !== null && user.uuid !== null && object.ownerEmail.toLowerCase() === user.email.toLowerCase();
+}
+
 // -------------------------------------------------------------- busca ------
 
 /**
@@ -238,6 +249,18 @@ function rowsOf(grants: Grant[], draft: AccessDraft | null): Row[] {
   return rows;
 }
 
+/**
+ * A linha é de uma conta **desativada**? A concessão dela continua na lista,
+ * inerte, e volta a valer se a conta for reativada (`docs/12` §2) — quem
+ * administra precisa ver isso para decidir revogar (relatório 039 da auditoria
+ * de 2026-09-19). Só concessão gravada pode ser: a busca só oferece conta ativa.
+ */
+export const isInactiveGrant = (row: { saved: Pick<Grant, 'isActive'> | null }): boolean => row.saved?.isActive === false;
+
+const INACTIVE_HINT =
+  'Conta desativada: a concessão não vale enquanto a conta não entra, e volta a valer se ela for reativada. ' +
+  'Revogar tira a linha de vez; o nível só muda com a conta ativa.';
+
 const PENDING_LABEL: Record<Exclude<RowState, 'saved'>, string> = {
   new: 'nova, ao salvar',
   changed: 'nível muda ao salvar',
@@ -373,7 +396,8 @@ export function AccessTab<T extends AccessObject>({
     if (how.mode !== 'live') return;
     const saved = await live(() => share(kind, object.slug, target.email, level));
     if (!saved) return;
-    how.onChanged({ ...object, grants: [...object.grants.filter((item) => item.userUuid !== saved.userUuid), saved] });
+    // A conta é o e-mail: o uuid dela não sai mais do servidor (ver `ownedBy`).
+    how.onChanged({ ...object, grants: [...object.grants.filter((item) => item.email !== saved.email), saved] });
     toast.success(`${saved.email} agora pode ${ACCESS_LABEL[saved.level]}.`);
     setTarget(null);
     setLevel('view');
@@ -387,7 +411,7 @@ export function AccessTab<T extends AccessObject>({
     if (how.mode !== 'live' || next === row.level) return;
     const saved = await live(() => share(kind, object.slug, row.email, next));
     if (!saved) return;
-    how.onChanged({ ...object, grants: object.grants.map((current) => (current.userUuid === saved.userUuid ? saved : current)) });
+    how.onChanged({ ...object, grants: object.grants.map((current) => (current.email === saved.email ? saved : current)) });
   }
 
   async function revoke(row: Row) {
@@ -472,9 +496,9 @@ export function AccessTab<T extends AccessObject>({
                     <span className="min-w-0">
                       <span className="row-title truncate">{object.ownerEmail ?? 'Sem dono'}</span>
                       <span className="row-sub truncate">
-                        {object.ownerUserUuid === null
+                        {object.ownerEmail === null
                           ? 'só os administradores mandam aqui'
-                          : object.ownerUserUuid === user.uuid
+                          : ownedBy(object, user)
                             ? 'você'
                             : 'o dono faz tudo, inclusive apagar e transferir'}
                       </span>
@@ -497,14 +521,26 @@ export function AccessTab<T extends AccessObject>({
                         <UserRound style={{ width: 14, height: 14, color: 'var(--text-faint)' }} />
                         <span className="min-w-0">
                           <span className="row-title truncate">{row.name}</span>
-                          <span className="row-sub truncate">
-                            {row.email} · {ROLE_LABEL[row.role]}
-                          </span>
+                          {isInactiveGrant(row) ? (
+                            <span className="row-sub flex flex-wrap items-center gap-1.5">
+                              {row.email} · {ROLE_LABEL[row.role]}
+                              <Badge tone="warn" title={INACTIVE_HINT}>
+                                conta desativada
+                              </Badge>
+                            </span>
+                          ) : (
+                            <span className="row-sub truncate">
+                              {row.email} · {ROLE_LABEL[row.role]}
+                            </span>
+                          )}
                         </span>
                       </span>
                     </td>
                     <td>
-                      {!edits || row.state === 'revoked' ? (
+                      {/* O nível de conta desativada não muda: conceder e mudar o nível são a mesma
+                          chamada, que exige conta ativa — um seletor aqui só renderia um erro (e, no
+                          rascunho da skill, uma pendência que nenhum Salvar resolve). */}
+                      {!edits || row.state === 'revoked' || isInactiveGrant(row) ? (
                         <Badge tone="info" title={ACCESS_HINT[row.level]}>
                           {ACCESS_LABEL[row.level]}
                         </Badge>
@@ -568,7 +604,7 @@ export function AccessTab<T extends AccessObject>({
             <dt>Dono</dt>
             <dd>
               {object.ownerEmail ?? 'nenhum (só administradores)'}
-              {object.ownerUserUuid !== null && object.ownerUserUuid === user.uuid && ' — você'}
+              {ownedBy(object, user) && ' — você'}
             </dd>
             <dt>Seu acesso</dt>
             <dd>{isAdminView ? 'administrador: tudo' : object.access ? ACCESS_LABEL[object.access] : '—'}</dd>

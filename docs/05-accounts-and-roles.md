@@ -9,15 +9,23 @@ referência de *por que* cada peça é assim.
 > matriz da `§2.1` deixaram de valer: skills, catálogos e vMCPs têm dono e
 > concessões por objeto, o papel `leitor` virou `membro` e só a criação e a
 > administração da instalação continuam sendo decididas pelo papel. O resto —
-> contas locais e OIDC, sessão com `token_version`, bootstrap, chaves `psk_`,
-> recuperação de senha, rate limiting e auditoria — continua como está aqui.
+> contas locais e OIDC, sessão com `token_version`, bootstrap, recuperação de
+> senha, rate limiting e auditoria — continua como está aqui. Das chaves `psk_`
+> continuam como aqui a **emissão, o formato e a resolução pelo prefixo**; o
+> **alcance** delas é o do `12` — a frase da `§2.5` ("chave de `leitor` só
+> executa as tools de leitura") e os ecos dela na tabela da `§4` estão marcados
+> no ponto. O item "ownership por skill" da `§5` entrou no escopo do `12` (dono
+> e concessões por skill).
 >
 > **A troca do nome do papel não isenta o OIDC.** Onde este documento escreve
 > `leitor` — a decisão 5, a decisão 9, a matriz da `§2.1`, a `§2.4`, a `§2.5`,
 > o `CHECK` da `§3` e a tabela da `§4` —, leia **`membro`**: o `017` fez
 > `UPDATE users SET role = 'membro' WHERE role = 'leitor'` e trocou o `CHECK`,
 > e `ROLES` em `packages/shared/src/roles.ts` é `['admin', 'editor',
-> 'membro']`. Gravar `leitor` hoje é recusado pelo banco.
+> 'membro']`. Gravar `leitor` hoje é recusado pelo banco. **Trocar o nome não
+> ressuscita a regra:** o que a matriz da `§2.1`, a `§2.5` e a tabela da `§4`
+> dizem que o `leitor` *não faz* caiu com o `12` — um `membro` edita,
+> compartilha, apaga e transfere o que é seu ou lhe foi concedido; só não cria.
 
 O resumo do que está no ar está na `§7.1` de
 [`02-architecture-decisions.md`](02-architecture-decisions.md); os desvios e as
@@ -59,8 +67,15 @@ administrativo um token único (`MCP_ADMIN_TOKEN`). Consequências práticas:
 
 ### 2.1 Papéis
 
-Papéis são **globais**, não por skill. Não há ownership: um editor mexe em
-qualquer skill. O que separa os três é a ação permitida.
+> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisões 1, 8 e
+> 12): o papel continua global, mas **há ownership** — skill, catálogo e vMCP
+> têm dono e concessões por objeto —, e a matriz abaixo deixou de valer. A que
+> vale é a da `§3.3` do `12`: o papel decide só **criar** (`editor`+) e
+> administrar a instalação (`admin`); ver, editar, publicar e apagar são do
+> acesso a cada objeto. O que segue é o texto de antes.
+
+Papéis são **globais**, não por skill. ~~Não há ownership: um editor mexe em
+qualquer skill.~~ O que separa os três é a ação permitida.
 
 | Ação | admin | editor | leitor |
 |------|:-----:|:------:|:------:|
@@ -77,8 +92,12 @@ A ausência de ownership é o que mantém a mudança barata: sem
 dono" quando alguém sai. `skills.created_by_user_uuid` existe, mas é
 **informativo** — não autoriza nada.
 
-> **Leitor enxerga skills privadas.** É o propósito do papel: dar visibilidade
-> a quem não edita. Isso torna crítica a allowlist da `§2.4`.
+> ~~**Leitor enxerga skills privadas.** É o propósito do papel: dar visibilidade
+> a quem não edita.~~ Isso torna crítica a allowlist da `§2.4`.
+>
+> **Revogado neste ponto pela decisão 1 do [`12`](12-acesso-granular.md):** o
+> `membro` vê o que é dele, o que lhe foi concedido e o que é público ou está
+> em contêiner aberto ou público. A allowlist da `§2.4` continua obrigatória.
 
 ### 2.2 Sessão e revogação
 
@@ -118,6 +137,21 @@ Enquanto a tabela `users` estiver **vazia**, a rota `/setup` aceita a
 
 - `/setup` responde 404;
 - o login por `ADMIN_PASSWORD` é **recusado** no painel.
+
+**A primeira conta é sempre o `admin` do `/setup`** (relatório 001 da auditoria
+de 2026-09-19). As duas regras acima fecham com **qualquer** conta, não com o
+primeiro administrador, então o painel não deixa a primeira nascer por outro
+caminho: com `users` vazia o SSO **não auto-provisiona** ninguém — o login volta
+à tela de entrada apontando "Criar o primeiro administrador" — e a sessão de
+bootstrap **não cria contas** por `POST /api/users` (400; a tela de contas já não
+aparecia nela). Sem isso, um `membro` criado antes do setup deixava a instalação
+com conta, sem administrador e sem caminho para criar um. Nenhuma das duas
+conferências precisa de lock: conta nunca é apagada, então "já existe conta" não
+deixa de ser verdade entre a leitura e a escrita. O portão continua sendo "tabela
+vazia", e não "nenhum admin ativo" — trocá-lo reabriria a `ADMIN_PASSWORD` com
+contas já existentes, e é decisão de produto ainda aberta. A instalação que já
+caiu nesse estado sai dele pela receita de
+[`database/README.md`](../database/README.md), "Instalação sem administrador".
 
 Escolhido em vez de CLI (exige shell no host — ruim em PaaS, e um entrypoint
 novo na imagem) e em vez de env vars aplicadas no `migrate` (colocaria senha de
@@ -159,7 +193,23 @@ Opcional, ligado por `OIDC_ISSUER`. Fluxo authorization code + PKCE via
 - A allowlist vale nos **três** caminhos: autenticar, provisionar e **vincular**.
   E-mail fora dos domínios autorizados não faz nenhum dos três.
 - **Vinculação é sempre pelo e-mail.** Um login OIDC cujo e-mail bate com uma
-  conta local assume aquela conta, com o papel que ela já tem.
+  conta local assume aquela conta, com o papel que ela já tem. O vínculo entra
+  na trilha como `user.link` (`§2.8`).
+- **O primeiro acesso por SSO descarta a senha temporária** (relatório 002 da
+  auditoria de 2026-09-19). Conta criada em "Nova conta" nasce com senha
+  temporária e `must_change_password` — é o "convite" de quem usa
+  `OIDC_AUTO_PROVISION=false`. Ao vincular, se a flag ainda está ligada, a
+  temporária **morre junto**: `password_hash` vira nulo (a conta passa a ser
+  só-SSO), a flag cai e `token_version` sobe. Quem chegou ali provou a posse do
+  e-mail pelo provedor (`email_verified`), a mesma força do link de redefinição;
+  a tela de troca cobrava um segredo que só o administrador viu, e desligar só a
+  flag deixaria a temporária valendo para sempre. A pessoa define uma senha
+  depois, em Minha conta, sem precisar da anterior. Senha escolhida pela própria
+  pessoa não é tocada. A identidade **já vinculada** cujo administrador gera uma
+  temporária continua devendo a troca: ali houve um ato explícito de quem
+  administra, e a temporária foi entregue a quem a pediu.
+- **Com `users` vazia o SSO não cria a primeira conta** (`§2.3`): autenticar e
+  vincular exigem conta que já existe, e provisionar espera o `/setup`.
 - O papel **nunca** vem de claim ou grupo do provedor; é sempre definido no
   painel.
 
@@ -189,9 +239,23 @@ aceitar dois formatos:
 | `psk_<prefixo>_<segredo>` | o usuário dono | o papel do dono |
 
 A chave é resolvida pelo **prefixo** (indexado) e conferida por hash do segredo.
-Chave de usuário `leitor` só executa as tools de leitura; chave de usuário
+~~Chave de usuário `leitor` só executa as tools de leitura~~; chave de usuário
 desativado não autentica. As tools de `tools.ts` passam a receber o ator para
 gravá-lo no `audit_log`.
+
+> **Revogado neste ponto por [`12`](12-acesso-granular.md)** (decisão 12, a
+> derivação "chave `psk_`" da `§2` e a tabela da `§3.3`): a chave carrega o
+> papel **e as concessões** do dono, e "faz o que o membro faz no painel". O
+> papel barra só **criar** — `create_skill`, `create_catalog` e
+> `create_virtual_mcp` exigem `editor`+ (`canCreate`, em
+> `packages/shared/src/roles.ts`) — e escolher o MCP padrão, que é do `admin`.
+> Todo o resto é o nível de acesso **ao objeto**: `set_file`, `set_files_bulk`
+> e `delete_file` pedem `edit`; `share_*`, `unshare_*` e as chaves `psv_` de um
+> vMCP, `manage`; `delete_*` e `transfer_*`, ser o dono (`loadSkill` e
+> `assertAccess`, em `apps/mcp-admin/src/access.ts`). Uma chave de `membro` que
+> é dono ou tem concessão **escreve, compartilha, apaga e transfere**; sem
+> posse nem concessão, não vê nem o que tentaria escrever (404 antes de 403).
+> Quem entrega uma `psk_` a um agente entrega o alcance inteiro da conta.
 
 O texto completo da chave aparece **uma vez**, no momento da emissão. O banco
 guarda só o hash e o prefixo.
@@ -203,7 +267,8 @@ SMTP é **opcional**:
 - Configurado → "esqueci a senha" envia link de uso único (`reset_tokens`,
   com expiração).
 - Ausente → o botão explica que o admin precisa resetar. O admin gera senha
-  temporária no painel e a conta entra com `must_change_password`.
+  temporária no painel e a conta entra com `must_change_password` — e sem a
+  trava de login, se havia uma (`§2.7`).
 
 Assim o `docker compose up` continua funcionando sem infraestrutura de e-mail,
 e quem configurar SMTP ganha a experiência completa.
@@ -222,12 +287,26 @@ fora, a rota responde `503 public_url_required` e manda procurar o administrador
 
 Duas camadas, porque nenhuma sozinha resolve:
 
-- **Janela em memória por IP** — absorve o ruído sem tocar o banco.
+- **Janela em memória por IP** — absorve o ruído sem tocar o banco. IPv6 conta
+  por **/64**, não por endereço — quem tem um prefixo roteado trocaria de origem
+  a cada tentativa —, e `::ffff:a.b.c.d` divide o balde com o IPv4: é o limitador
+  de `@purple-skills/shared`, o mesmo do site e do MCP público (relatório 008 da
+  auditoria de 2026-09-19).
 - **`users.locked_until`** — sobrevive a restart e vale para múltiplos
   containers do painel.
 
 Fecha o risco "login sem rate limiting" da `§13` justamente quando ele cresce:
 com contas nomeadas, o atacante passa a conhecer o usuário.
+
+A trava da conta vence sozinha (`LOGIN_LOCK_SECONDS`) ou sai junto com a **senha
+temporária gerada por um administrador**: a redefinição zera `failed_attempts` e
+`locked_until` no mesmo `UPDATE` da senha (relatório 005 da auditoria de
+2026-09-19). O login confere a trava **antes** da senha, então sem isso a
+temporária certa era recusada com 429 até o prazo vencer — e a ficha da conta
+prometia o contrário. A troca pelo próprio dono não mexe na trava. No **link de
+redefinição por e-mail** a trava continua como está: destravar ali devolve oito
+tentativas contra uma senha que acabou de mudar, e é decisão do mantenedor, ainda
+aberta.
 
 ### 2.8 Auditoria
 
@@ -236,6 +315,21 @@ o bootstrap), e o `CHECK` de `action` é ampliado para incluir `user.create`,
 `user.role`, `user.deactivate`, `key.create`, `key.revoke` e — desde o `030` —
 `user.password`, a troca da senha de uma conta por quem não é ela. Essas linhas não
 têm `skill_uuid` — a coluna já é nula.
+
+Desde o relatório 003 da auditoria de 2026-09-19 entram também os outros dois
+eventos que mudam **quem consegue entrar** numa conta:
+
+- `user.activate`, o par de `user.deactivate`: reativar devolve de uma vez o
+  login, as concessões e as chaves `psk_` da conta. Ator = quem reativou;
+  `target_label` = e-mail da conta. Só grava quando o estado mudou de fato.
+- `user.link`, a identidade OIDC que passa a abrir uma conta local que já existia
+  (`§2.4`). O ator é o **caminho** — `oidc:<issuer>`, sem conta, o mesmo rótulo
+  do `user.create` por SSO —, e `target_label` leva o e-mail da conta e o
+  `subject` que a assumiu, mais a nota "senha temporária descartada" quando o
+  vínculo a levou junto. Acontece **uma vez por conta**: não é login, e a entrada
+  seguinte pela identidade já vinculada não grava nada. É melhor esforço, como
+  `user.password` — quando a linha é escrita o vínculo já foi gravado, e derrubar
+  o login ali deixaria a conta vinculada e a trilha igualmente sem a linha.
 
 Login e falha de login **não** são auditados: o rate limiting já os trata, e
 incluí-los faria o log crescer numa ordem de grandeza diferente da atual, o que
@@ -311,14 +405,14 @@ ele, um evento de conta não registra sobre **quem** foi.
 |------|---------|
 | `database/` | `004-contas.sql`; queries novas em `@purple-skills/db` (`getUserByEmail`, `getUserByUuid`, `createUser`, `setRole`, `deactivate`, `bumpTokenVersion`, `resolveApiKey`, `createApiKey`, `revokeApiKey`, `consumeResetToken`). **Todas de responsabilidade do dba** — nenhum app escreve SQL |
 | `packages/shared` | Payload de sessão com `role`/`ver`; hash de senha; geração e hash de chave `psk_`; normalização de e-mail |
-| `apps/admin` | `requireAuth` carrega o usuário; novo `requireRole()` nas ~19 rotas de `api.ts`; rotas `/api/setup`, `/api/users*`, `/api/me/password`, `/api/me/keys`, `/api/auth/oidc/{start,callback}`, `/api/password-reset/*` |
-| `apps/admin/web` | Telas de setup, usuários e chaves; troca de senha; badge de papel; botão OIDC condicional; UI de leitor sem ações de escrita |
-| `apps/mcp-admin` | `requireBearer` com dois formatos; ator propagado até o `audit_log`; tools de escrita recusam `leitor` |
+| `apps/admin` | `requireAuth` carrega o usuário; **era**, até o [`12`](12-acesso-granular.md): novo `requireRole()` nas ~19 rotas de `api.ts` — hoje `requireRole` não existe: o guarda de papel é `requireCreate`, só nos `POST` que criam, mais `requireAdmin` e `requireSettingsAdmin`, e o resto é o acesso ao objeto; rotas `/api/setup`, `/api/users*`, `/api/me/password`, `/api/me/keys`, `/api/auth/oidc/{start,callback}`, `/api/password-reset/*` |
+| `apps/admin/web` | Telas de setup, usuários e chaves; troca de senha; badge de papel; botão OIDC condicional; **era**, até o [`12`](12-acesso-granular.md): UI de leitor sem ações de escrita — hoje o papel esconde só o "criar", e o resto da tela segue o acesso a cada objeto |
+| `apps/mcp-admin` | `requireBearer` com dois formatos; ator propagado até o `audit_log`; **era**, até o [`12`](12-acesso-granular.md): tools de escrita recusam `leitor` — hoje só as `create_*` (e `set_default_virtual_mcp`, do admin) olham o papel (`§2.5`) |
 | `apps/mcp-public`, `apps/site`, `apps/homepage` | **Não mudam** |
 | Dependências | `openid-client` e `nodemailer` — as duas primeiras dependências externas de peso do projeto |
 | `.env.example` | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET(_FILE)`, `OIDC_ALLOWED_DOMAINS`, `OIDC_AUTO_PROVISION`, `SMTP_URL(_FILE)`, `SMTP_FROM`, `ADMIN_PUBLIC_URL`, `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS` |
 | Docs | `§7.1`/`§7.2` reescritas, `§7.6` registrando o que foi revogado, `§13` revisada; desvios em `03-implementation-notes.md`; README com seção de contas |
-| Testes | `shared`: hash, chaves, payload. `admin`: middleware de papel, `/setup` fechado com `users` não vazia, `token_version` derrubando sessão. `mcp-admin`: chave resolve ator, leitor não escreve. Integração dba: `users` e `api_keys` |
+| Testes | `shared`: hash, chaves, payload. `admin`: middleware de papel, `/setup` fechado com `users` não vazia, `token_version` derrubando sessão. `mcp-admin`: chave resolve ator e — **era**, até o [`12`](12-acesso-granular.md) — leitor não escreve; hoje `tools.test.ts` fixa o contrário: "membro edita e apaga o que é seu; view só lê". Integração dba: `users` e `api_keys` |
 
 ### 4.1 Quebra de compatibilidade
 

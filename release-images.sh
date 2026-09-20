@@ -15,6 +15,16 @@
 # release ruim não tem para onde voltar. O caminho de volta é
 # `TAG=1.0.0-beta.20 docker compose up -d`.
 #
+# A `latest` só anda no fim, e de uma vez. O laço de build publica apenas a tag
+# de versão; só depois que TODAS as imagens pedidas estão no Hub um segundo
+# laço, curto, aponta `latest` para elas (`docker buildx imagetools create`:
+# cópia do manifesto dentro do registry, sem rebuild nem download). Antes as
+# duas tags saíam juntas, imagem por imagem: durante os muitos minutos do build
+# — ou para sempre, se um build falhasse no meio — o Hub ficava com `latest`
+# repartida entre duas versões, e a do `db`, que aplica as migrations, era a
+# última da fila. Agora build que falha deixa `latest` inteira na versão
+# anterior, e o script diz em que estado o Hub ficou e o que rodar em seguida.
+#
 # Build multi-plataforma, de propósito. Até aqui o script rodava `docker build`
 # sem `--platform`: publicando de um Mac ARM, as sete imagens do Hub ficaram só
 # em `linux/arm64` (conferido com `docker buildx imagetools inspect`), e todo
@@ -58,15 +68,20 @@ PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 REVISION="$(git rev-parse --short HEAD 2>/dev/null || echo desconhecido)"
 [ -z "$(git status --porcelain 2>/dev/null)" ] || REVISION="$REVISION-sujo"
 
-# app:Dockerfile — mesma matriz que ci.yml usa para o build sem push.
+# app:Dockerfile — os mesmos sete de ci.yml, mas a ORDEM aqui é de publicação e
+# não a da matriz: lá os jobs rodam em paralelo e sem push, e ordem não quer
+# dizer nada. `db` (a imagem do `migrate`) vem primeiro para que a promoção de
+# `latest`, se parar no meio, deixe o schema à frente dos apps e nunca atrás — o
+# lado seguro para migration aditiva, que é a regra aqui. Não "conserte" de
+# volta para a ordem do ci.yml.
 APPS="
+    db:database/Dockerfile
     homepage:apps/homepage/Dockerfile
     site:apps/site/Dockerfile
     admin:apps/admin/Dockerfile
     mcp-public:apps/mcp-public/Dockerfile
     mcp-admin:apps/mcp-admin/Dockerfile
     indexer:apps/indexer/Dockerfile
-    db:database/Dockerfile
 ";
 
 WANTED="$*"
@@ -134,6 +149,45 @@ case "$RESPOSTA" in
     *) echo "== cancelado."; exit 1 ;;
 esac
 
+# Falha no meio não pode ser silenciosa: o `set -e` derruba o script no primeiro
+# comando que falha, e quem publica precisa saber em que estado o Hub ficou e o
+# que rodar em seguida. O trap só entra aqui, depois da confirmação, para não
+# falar nas saídas de antes (nome errado, builder ausente, "cancelado").
+FASE="build"
+PUBLICADAS=""
+PROMOVIDAS=""
+
+ao_sair() {
+    status=$?
+    case "$FASE" in
+        build)
+            echo "!! interrompido no build (status $status). Nenhuma :latest foi movida: o Hub" >&2
+            echo "!! continua inteiro na versão anterior. Já no Hub só como :$VERSION:${PUBLICADAS:- nenhuma}." >&2
+            echo "!! Corrija e repita o MESMO comando — o que já foi construído sai do cache do" >&2
+            echo "!! builder. Rodar só as que faltam moveria a :latest só delas: é a mistura" >&2
+            echo "!! que este script existe para evitar." >&2
+            ;;
+        promocao)
+            echo "!! interrompido na promoção (status $status). Todas as :$VERSION estão no Hub, mas" >&2
+            echo "!! a :latest só foi movida em:${PROMOVIDAS:- nenhuma}. Falta mover, nesta ordem:" >&2
+            for entry in $SELECIONADAS; do
+                app="${entry%%:*}"
+                image="$NAMESPACE/purple-skills-$app"
+                case " $PROMOVIDAS " in
+                    *" $app "*) ;;
+                    *) echo "!!   docker buildx imagetools create -t $image:latest $image:$VERSION" >&2 ;;
+                esac
+            done
+            echo "!! Para voltar atrás em vez de completar: TAG=<versão anterior> docker compose up -d" >&2
+            ;;
+    esac
+}
+trap ao_sair EXIT
+# Ctrl-C e `kill` viram `exit` para passarem pelo trap acima: no dash, morte por
+# sinal não dispara o trap de EXIT.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 for entry in $SELECIONADAS; do
     app="${entry%%:*}"
     dockerfile="${entry#*:}"
@@ -146,9 +200,10 @@ for entry in $SELECIONADAS; do
         *)                          VERSAO_ARG="" ;;
     esac
 
-    echo "== $image:$VERSION + :latest ($PLATFORMS, Dockerfile: $dockerfile)"
+    echo "== build: $image:$VERSION ($PLATFORMS, Dockerfile: $dockerfile)"
     # Build e push num passo só: a imagem multi-plataforma não cabe no store
     # local do Docker, então não há o que empurrar depois com `docker push`.
+    # Só a tag de versão sai daqui — a `latest` é do laço seguinte.
     # $VERSAO_ARG sem aspas de propósito: vazio tem de desaparecer da linha.
     # shellcheck disable=SC2086
     docker buildx build \
@@ -159,9 +214,24 @@ for entry in $SELECIONADAS; do
         --label "org.opencontainers.image.revision=$REVISION" \
         --label "org.opencontainers.image.source=$REPO_URL" \
         -t "$image:$VERSION" \
-        -t "$image:latest" \
         --push .
+    PUBLICADAS="$PUBLICADAS $app"
 done
+
+# Só agora `latest` anda. Com uma origem só, que já é um manifest list,
+# `imagetools create` faz cópia fiel dentro do registry — mesmo digest, logo as
+# mesmas plataformas e os mesmos labels da tag de versão —, sem rebuild e sem
+# download. A janela em que `latest` fica repartida entre duas versões cai dos
+# muitos minutos do build para os segundos deste laço.
+FASE="promocao"
+for entry in $SELECIONADAS; do
+    app="${entry%%:*}"
+    image="$NAMESPACE/purple-skills-$app"
+    echo "== latest: $image:latest -> :$VERSION"
+    docker buildx imagetools create -t "$image:latest" "$image:$VERSION"
+    PROMOVIDAS="$PROMOVIDAS $app"
+done
+FASE="fim"
 
 echo "== Publicado $VERSION (e latest) em $PLATFORMS."
 echo "== Para voltar atrás: TAG=<versão anterior> docker compose up -d"

@@ -13,7 +13,9 @@
  * código HTTP que os causou:
  *
  *   * `RagAuthError` e `RagConfigError` — não adianta tentar de novo neste
- *     ciclo; falta chave, permissão ou pré-condição. O indexador encerra;
+ *     ciclo; falta chave, permissão ou pré-condição. O indexador encerra. As
+ *     subclasses `RagOriginError` e `RagQuotaError` herdam essa política e só
+ *     mudam o `kind` — o que o painel mostra, não o que o chamador faz;
  *   * `RagRateLimitError` — tentar de novo depois, com recuo;
  *   * `RagUnavailableError` e `RagTimeoutError` — tentar de novo, com recuo
  *     exponencial;
@@ -76,24 +78,84 @@ export interface EmbeddingDriver {
   embedQuery(model: EmbeddingModel, text: string, signal?: AbortSignal): Promise<number[]>;
 }
 
+/**
+ * A classe do erro em uma palavra, para quem não pode usar `instanceof`: o
+ * estado que o indexador publica em `rag.indexer.status` é JSON, e o painel só
+ * recebe ele.
+ *
+ * A **mensagem** é prosa para o operador ler, e pode ser reescrita à vontade.
+ * Quem decide estado lê este campo: deduzir por pedaço de texto acoplava o
+ * painel à redação de cada driver, e o que ele não reconhecia virava "chave
+ * aceita" — inclusive a conta sem crédito e o IP recusado.
+ *
+ * É um vocabulário **fechado e publicado**: renomear um valor quebra o painel
+ * de quem atualizou só um dos dois lados. Acrescentar é seguro — o painel trata
+ * o que não conhece como "não confirmada".
+ */
+export type RagErrorKind =
+  | 'auth'
+  | 'origin'
+  | 'quota'
+  | 'rate-limit'
+  | 'config'
+  | 'input-too-long'
+  | 'unavailable'
+  | 'timeout';
+
 /** Chave ausente, inválida ou sem permissão. Encerra o ciclo do indexador. */
 export class RagAuthError extends Error {
+  readonly kind: RagErrorKind = 'auth';
   constructor(message: string) {
     super(message);
     this.name = 'RagAuthError';
   }
 }
 
+/**
+ * O provedor recusou a **origem** da requisição — o IP, na Voyage —, não a
+ * chave.
+ *
+ * Estende `RagAuthError` de propósito: a política é a mesma (insistir não muda
+ * nada, o ciclo encerra, não há tentativa nova), e só o **estado exibido**
+ * precisa ser outro. Dizer "chave recusada" aqui faz o operador trocar uma chave
+ * que está boa.
+ */
+export class RagOriginError extends RagAuthError {
+  override readonly kind: RagErrorKind = 'origin';
+  constructor(message: string) {
+    super(message);
+    this.name = 'RagOriginError';
+  }
+}
+
 /** Pré-condição não atendida ou modelo inexistente. Encerra o ciclo. */
 export class RagConfigError extends Error {
+  readonly kind: RagErrorKind = 'config';
   constructor(message: string) {
     super(message);
     this.name = 'RagConfigError';
   }
 }
 
+/**
+ * Conta sem crédito: o `insufficient_quota` da OpenAI.
+ *
+ * Estende `RagConfigError` de propósito, pelo mesmo motivo de `RagOriginError`:
+ * esperar não resolve, então vale a política de quem não se tenta de novo — em
+ * `http.ts` e no `continuar` do indexador, sem uma linha de mudança lá. Trocar a
+ * base para `Error` faria o 429 sem crédito cair no recuo e queimar o ciclo.
+ */
+export class RagQuotaError extends RagConfigError {
+  override readonly kind: RagErrorKind = 'quota';
+  constructor(message: string) {
+    super(message);
+    this.name = 'RagQuotaError';
+  }
+}
+
 /** Limite de taxa. `retryAfterMs` é nulo quando o provedor não o informa. */
 export class RagRateLimitError extends Error {
+  readonly kind: RagErrorKind = 'rate-limit';
   constructor(
     message: string,
     readonly retryAfterMs: number | null,
@@ -105,26 +167,57 @@ export class RagRateLimitError extends Error {
 
 /** O texto passou do limite de tokens do modelo. */
 export class RagInputTooLongError extends Error {
+  readonly kind: RagErrorKind = 'input-too-long';
   constructor(message: string) {
     super(message);
     this.name = 'RagInputTooLongError';
   }
 }
 
-/** Indisponibilidade temporária: 408, 5xx ou falha de rede. */
+/**
+ * Indisponibilidade temporária: 408, 5xx ou falha de rede. Na falha de rede, o
+ * erro do `fetch` que sobrou das tentativas vai em `cause`.
+ */
 export class RagUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly kind: RagErrorKind = 'unavailable';
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'RagUnavailableError';
   }
 }
 
 /** O prazo estourou antes da resposta. */
 export class RagTimeoutError extends Error {
+  readonly kind: RagErrorKind = 'timeout';
   constructor(message: string) {
     super(message);
     this.name = 'RagTimeoutError';
   }
+}
+
+/** As classes-base. As subclasses entram por `instanceof` e trazem o `kind` delas. */
+const ERROS_DO_RAG = [
+  RagAuthError,
+  RagConfigError,
+  RagRateLimitError,
+  RagInputTooLongError,
+  RagUnavailableError,
+  RagTimeoutError,
+] as const;
+
+/**
+ * A classe de um erro qualquer, ou `null` quando ele não é do pacote — falha do
+ * banco, erro de quem chamou. A falha de rede que sobra das tentativas **é** do
+ * pacote: o `ClienteHttp` a entrega como `RagUnavailableError`.
+ *
+ * `null` quer dizer "este erro não diz nada sobre o provedor", e é diferente de
+ * não haver erro: quem publica estado manda os dois campos.
+ */
+export function ragErrorKind(erro: unknown): RagErrorKind | null {
+  for (const classe of ERROS_DO_RAG) {
+    if (erro instanceof classe) return erro.kind;
+  }
+  return null;
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   listOpenVirtualMcps,
   listPublicCatalogs,
   resolveDefaultVirtualMcp,
+  SEARCH_QUERY_MAX_LENGTH,
 } from '@purple-skills/db';
 import {
   composeSkillMd,
@@ -27,7 +28,7 @@ import {
 } from '@purple-skills/shared';
 import { config } from './config.js';
 import { buscaSemantica } from './rag.js';
-import { streamSkillZip } from './zip.js';
+import { cabecalhosDoPacote, streamSkillZip } from './zip.js';
 
 /** Junta os segmentos capturados por um wildcard do Express 5. */
 function splat(value: unknown): string {
@@ -47,14 +48,15 @@ function asInt(value: unknown, fallback: number): number {
 }
 
 /**
- * O teto da consulta de busca, em caracteres. É o mesmo do `normalizeQuery` do
- * `@purple-skills/db`, que corta a perna textual; enquanto o `db` não exportar
- * o número, ele vive aqui e em `apps/mcp-public/src/tools.ts`.
- */
-const MAX_QUERY_CHARS = 200;
-
-/**
  * A consulta como as **duas** pernas da busca vão lê-la.
+ *
+ * O teto é o `SEARCH_QUERY_MAX_LENGTH` do `@purple-skills/db` — o mesmo número
+ * em que o `normalizeQuery` de lá corta a perna textual, importado e não
+ * repetido: uma cópia local aqui e outra no mcp-public deixavam quem mudasse o
+ * número no banco sem efeito nenhum, e quem o mudasse só nos apps com as duas
+ * pernas lendo perguntas diferentes (relatório 037 da auditoria de 2026-09-19).
+ * O que os apps **não** compartilham com o banco é o algoritmo: o corte daqui é
+ * mais cuidadoso (fronteira de palavra, par surrogate) e vem antes.
  *
  * `listSkills` já cortava em 200 caracteres, mas o embedding era resolvido
  * antes, com o texto cru: a perna vetorial embutia uma pergunta que a textual
@@ -74,17 +76,17 @@ function consultaDaBusca(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const texto = raw.trim();
   if (texto === '') return null;
-  if (texto.length <= MAX_QUERY_CHARS) return texto;
+  if (texto.length <= SEARCH_QUERY_MAX_LENGTH) return texto;
 
   // O caractere a mais revela se o limite cai dentro de uma palavra; `\S*$`
   // tira a palavra partida e o `trimEnd`, o espaço que sobra.
-  const naFronteira = texto.slice(0, MAX_QUERY_CHARS + 1).replace(/\S*$/, '').trimEnd();
+  const naFronteira = texto.slice(0, SEARCH_QUERY_MAX_LENGTH + 1).replace(/\S*$/, '').trimEnd();
   if (naFronteira !== '') return naFronteira;
 
   // Consulta sem espaço nenhum (um blob colado): corta no limite, sem deixar
   // sozinha a metade alta de um par surrogate — ela viraria U+FFFD no JSON do
   // provedor.
-  const duro = texto.slice(0, MAX_QUERY_CHARS);
+  const duro = texto.slice(0, SEARCH_QUERY_MAX_LENGTH);
   const ultimo = duro.charCodeAt(duro.length - 1);
   return ultimo >= 0xd800 && ultimo <= 0xdbff ? duro.slice(0, -1) : duro;
 }
@@ -171,6 +173,25 @@ const asyncRoute =
 
 export const api = Router();
 
+/**
+ * O caractere nulo não tem uso legítimo em URL nenhuma daqui, e o `text` do
+ * Postgres o recusa com 22021: `GET /api/skills/a%00b`, o download de um slug
+ * assim e `?tag=%00` chegavam à consulta e voltavam 500, com a SQL no log a cada
+ * tentativa — na superfície anônima (achado do relatório 038 da auditoria de
+ * 2026-09-19). Uma guarda só, na entrada do roteador, cobre o caminho e a query
+ * string de todas as rotas: `%00` é a única forma de o nulo chegar pela URL (o
+ * parser HTTP do Node recusa o byte cru, e UTF-8 inválido já é 400 do próprio
+ * Express). O limite de taxa do `index.ts` vem antes, então a sondagem gasta a
+ * cota de quem sonda.
+ */
+api.use((req, res, next) => {
+  if (!req.originalUrl.includes('%00')) {
+    next();
+    return;
+  }
+  res.status(400).json({ error: 'bad_request', message: 'O endereço não pode conter o caractere nulo (%00)' });
+});
+
 api.get(
   '/healthz',
   asyncRoute(async (_req, res) => {
@@ -222,6 +243,12 @@ api.get(
       mcp: await mcpPublico(),
       mcpAdminUrl: config.mcpAdminUrl || null,
       adminUrl: config.adminUrl || null,
+      // Só o booleano, nunca a lista de `SITE_CORS_ORIGIN`: as origens aceitas
+      // nomeiam a intranet de quem fechou. Aberto ou restrito já é público —
+      // qualquer cliente que mande um `Origin` lê isso no
+      // `Access-Control-Allow-Origin` da resposta —, e é o que o cartão "API REST
+      // pública" da home precisa para dizer o estado desta instalação.
+      corsOpen: config.corsOrigin === '*',
     });
   }),
 );
@@ -316,8 +343,17 @@ api.get(
  * O registro por leitura (`docs/13-fichas-e-acessos.md`): o site é anônimo,
  * então a linha leva só o IP e o agente. Melhor esforço, como os contadores
  * sempre foram — o banco soma `view_count`/`download_count` na mesma escrita.
+ *
+ * **`HEAD` não conta.** Nenhuma rota registra `head`, e o Express 5 despacha o
+ * `HEAD` para o handler de `GET`: o `wget --spider`, o monitor de disponibilidade
+ * e o gerenciador de download que pergunta antes de baixar viravam visita ou
+ * download de verdade — linha permanente em `skill_accesses` e +1 no score que
+ * ordena a vitrine (relatório 066 da auditoria de 2026-09-19). Quem não recebe
+ * corpo não leu nada. O teste é `=== 'HEAD'`, e não `!== 'GET'`, de propósito: a
+ * forma negativa desligaria a contagem para qualquer `req` sem `method`.
  */
 function registrarAcesso(req: Request, skillUuid: string, kind: 'view' | 'download', surface: 'page' | 'file' | 'download'): void {
+  if (req.method === 'HEAD') return;
   Promise.resolve()
     .then(() =>
       recordSkillAccess({
@@ -417,6 +453,17 @@ const serveZip = (ext: 'zip' | 'skill') =>
     const skill = await getSkillSummary(param(req, 'slug'), { visibility: 'open' });
     if (!skill) {
       res.status(404).json({ error: 'not_found', message: 'Skill não encontrada' });
+      return;
+    }
+
+    // `HEAD`: os cabeçalhos que o `GET` escreveria, e mais nada. Sem esta guarda
+    // o servidor lia e comprimia a skill inteira para jogar fora — medido no
+    // teste, todos os arquivos eram lidos —, e sem o freio que o `streamSkillZip`
+    // tem no `GET`: a contrapressão vem de o cliente receber o corpo, e resposta
+    // a `HEAD` não tem corpo (relatório 066 da auditoria de 2026-09-19).
+    if (req.method === 'HEAD') {
+      cabecalhosDoPacote(res, skill.slug, ext);
+      res.end();
       return;
     }
 

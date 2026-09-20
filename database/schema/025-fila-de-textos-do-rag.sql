@@ -1,5 +1,5 @@
 -- Purple Skills — a fila de textos do indexador ganha memória: recusa
--- definitiva e reserva com prazo (`docs/14-rag.md` §5.6 e §7.1).
+-- definitiva e reserva com prazo (`docs/14-rag.md` §7 e §7.1).
 --
 -- Problema: `listPendingRagTexts` é um anti-join puro — "texto com ocorrência e
 -- sem vetor neste espaço", sempre na mesma ordem (`created_at`) e **sem
@@ -44,8 +44,12 @@
 --     ciclo) faria uma varredura sequencial desta tabela por texto apagado.
 --
 -- **As duas FKs são `ON DELETE CASCADE`**, e isso é parte do desenho: apagar o
--- espaço (trocar de modelo) ou o texto (a coleta de órfãos) leva o estado
--- junto. O efeito colateral é conhecido e aceito: um texto **recusado** que
+-- espaço ou o texto (a coleta de órfãos) leva o estado junto. A do espaço é
+-- defensiva — hoje nenhum caminho de produção apaga espaço: trocar de modelo
+-- **cria** outro e deixa o anterior inteiro, com o estado de fila dele
+-- (`docs/14-rag.md` §10, "nada é apagado numa troca"). O espaço novo começa com
+-- a fila vazia porque o estado é por espaço, não por cascata.
+-- O efeito colateral é conhecido e aceito: um texto **recusado** que
 -- fica órfão e é coletado perde a marca — se o mesmo conteúdo voltar ao acervo,
 -- o provedor o recusa uma vez mais. Guardar a recusa de um texto que já não
 -- existe custaria uma tabela sem dono.
@@ -61,8 +65,9 @@
 
 -- --------------------------------------------------------- rag_text_status ---
 CREATE TABLE IF NOT EXISTS rag_text_status (
-    -- Cascata: trocar de modelo apaga o espaço e com ele todo o estado da fila
-    -- dele — reserva e recusa de um espaço não dizem nada sobre outro.
+    -- Cascata defensiva: apagar um espaço leva todo o estado de fila dele —
+    -- reserva e recusa de um espaço não dizem nada sobre outro. Trocar de modelo
+    -- **não** apaga espaço nenhum: cria outro (`docs/14-rag.md` §10).
     space_uuid   UUID NOT NULL REFERENCES rag_spaces(uuid) ON DELETE CASCADE,
     -- Cascata, ao contrário de `rag_skill_texts.text_sha256`: aqui a linha é
     -- estado sobre o texto, não uso dele, e não pode impedir a coleta de

@@ -37,7 +37,7 @@ const db = vi.hoisted(() => ({
 
 vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
 
-const { createMcpHandlers } = await import('./mcps.js');
+const { NAME_MAX, createMcpHandlers } = await import('./mcps.js');
 const { guard } = await import('./tools.js');
 
 type Role = 'admin' | 'editor' | 'membro';
@@ -76,7 +76,11 @@ const mcp = {
   isOpen: false,
   ownerUserUuid: 'uuid-editor',
   ownerEmail: 'editor@exemplo.com',
-  grants: [],
+  // Uma concessão de conta ativa e uma de conta desativada depois de recebê-la.
+  grants: [
+    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'edit' },
+    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
+  ],
   skillCount: 1,
   activeKeyCount: 0,
   toolCount: 1,
@@ -114,15 +118,26 @@ const skills: Record<string, { ownerUserUuid: string | null; isPublic: boolean }
   alheia: { ownerUserUuid: 'uuid-outro', isPublic: false },
 };
 
+/**
+ * Em quais vMCPs cada skill está, como `getSkillSummary` devolve: todos para o
+ * admin; para os demais, só os que a conta vê (`docs/12` §3.1).
+ */
+const ondeEsta: Record<string, { todos: string[]; visiveis: string[] }> = {};
+
 beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(grants)) delete grants[key];
+  for (const key of Object.keys(ondeEsta)) delete ondeEsta[key];
   db.getVirtualMcp.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) =>
     slug === 'time-a' ? seen(mcp, options?.viewer) : null,
   );
   db.getSkillSummary.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) => {
     const skill = skills[slug];
-    return skill ? seen({ slug, name: slug, ...skill }, options?.viewer) : null;
+    if (!skill) return null;
+    const onde = ondeEsta[slug] ?? { todos: [], visiveis: [] };
+    const todos = !options?.viewer || options.viewer.role === 'admin';
+    const mcps = (todos ? onde.todos : onde.visiveis).map((mcpSlug) => ({ slug: mcpSlug }));
+    return seen({ slug, name: slug, mcps, ...skill }, options?.viewer);
   });
   db.getUserByEmail.mockImplementation(async (email: string) =>
     email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
@@ -311,13 +326,66 @@ describe('link_skill / unlink_skill', () => {
     expect(db.linkSkill).not.toHaveBeenCalled();
   });
 
-  it('desvincula e diz se a skill ficou sem vínculo', async () => {
+  it('desvincula; só o admin, que vê tudo, ouve que a skill ficou sem vínculo', async () => {
     db.unlinkSkill.mockResolvedValue({ ...vinculada, mcps: [] });
 
     const result = await handlers.unlink_skill({ skill: 'privada', mcp: 'time-a' });
+    const doAdmin = await createMcpHandlers(caller('admin', null)).unlink_skill({ skill: 'privada', mcp: 'time-a' });
 
     expect(db.unlinkSkill).toHaveBeenCalledWith('privada', 'mcp-1', 'mcp-admin', caller('editor').actor);
-    expect(result.content[0].text).toMatch(/sem vínculo/);
+    // Quem não é admin não sabe dos servidores fechados alheios: a frase não afirma o que ele não vê.
+    expect(result.content[0].text).toMatch(/nenhum outro MCP virtual que esta credencial veja/);
+    expect(doAdmin.content[0].text).toMatch(/sem vínculo/);
+  });
+
+  /**
+   * A escrita do banco relê a skill na visão do admin. O texto das duas tools
+   * saía dela: `unlink_skill` nomeava **todo** servidor em que a skill
+   * continuava, inclusive o fechado de terceiros, e `link_skill` dava a contagem
+   * global (relatório 009 da auditoria de 2026-09-19).
+   */
+  it('o texto conta só o que a credencial vê, não o que a escrita devolve', async () => {
+    const naVisaoDoAdmin = [vinculada.mcps[0], { ...vinculada.mcps[0], uuid: 'mcp-9', slug: 'fechado-de-outro' }];
+    db.linkSkill.mockResolvedValue({ ...vinculada, mcps: naVisaoDoAdmin });
+    db.unlinkSkill.mockResolvedValue({ ...vinculada, mcps: [naVisaoDoAdmin[1]] });
+    ondeEsta.privada = { todos: ['time-a', 'fechado-de-outro'], visiveis: ['time-a'] };
+
+    const publicada = await handlers.link_skill({ skill: 'privada', mcp: 'time-a', asSkill: true, asPrompt: false, asResource: false });
+    expect(publicada.content[0].text).toMatch(/Agora está em 1 MCP\(s\) virtual\(is\) que esta credencial vê/);
+
+    ondeEsta.privada = { todos: ['fechado-de-outro'], visiveis: [] };
+    const saiu = await handlers.unlink_skill({ skill: 'privada', mcp: 'time-a' });
+    expect(saiu.content[0].text).not.toContain('fechado-de-outro');
+
+    // O admin vê tudo, e a ele a tool continua dizendo onde a skill ficou.
+    const doAdmin = await createMcpHandlers(caller('admin', null)).unlink_skill({ skill: 'privada', mcp: 'time-a' });
+    expect(doAdmin.content[0].text).toMatch(/Continua em fechado-de-outro/);
+  });
+
+  // Skill privada que só chegava à credencial por este vMCP: a releitura é nula.
+  it('desvincular pode tirar a skill do alcance de quem chamou: a tool diz isso, não falha', async () => {
+    grants['uuid-outro'] = 'edit';
+    db.unlinkSkill.mockResolvedValue({ ...vinculada, mcps: [] });
+    db.getSkillSummary.mockResolvedValue(null);
+
+    const result = await createMcpHandlers(caller('membro', 'uuid-outro')).unlink_skill({ skill: 'privada', mcp: 'time-a' });
+
+    expect(result.isError).toBeUndefined();
+    expect(db.unlinkSkill).toHaveBeenCalledOnce();
+    expect(result.content[0].text).toMatch(/deixou de vê-la/);
+  });
+
+  // O banco responde "Skill não encontrada" para uma e "não está vinculada" para
+  // a outra: quem edita um servidor qualquer confirmaria slug de skill alheia.
+  it('skill que não existe e skill que não está aqui dão a mesma resposta, sem ir ao banco', async () => {
+    const inexistente = await guard(() => handlers.unlink_skill({ skill: 'nao-existe', mcp: 'time-a' }));
+    const foraDaqui = await guard(() => handlers.unlink_skill({ skill: 'alheia', mcp: 'time-a' }));
+
+    expect(inexistente.isError).toBe(true);
+    expect(inexistente.content[0].text).toBe('A skill "nao-existe" não está vinculada a este MCP virtual');
+    expect(foraDaqui.content[0].text).toBe('A skill "alheia" não está vinculada a este MCP virtual');
+    expect(db.getSkillSummary).not.toHaveBeenCalled();
+    expect(db.unlinkSkill).not.toHaveBeenCalled();
   });
 });
 
@@ -396,21 +464,69 @@ describe('chaves', () => {
     );
     // O hash vai para o banco; o token não.
     expect(db.createVirtualMcpKey.mock.calls[0][0].keyHash).not.toContain(payload.token);
+    // `<slug>: <nome> (<prefixo>)` — o rótulo que a revogação vai repetir.
+    const prefixo = db.createVirtualMcpKey.mock.calls[0][0].prefix;
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'mcp.key.create', targetLabel: 'time-a: ci' }),
+      expect.objectContaining({ action: 'mcp.key.create', targetLabel: `time-a: ci (${prefixo})` }),
     );
   });
 
-  it('revoga restrito ao MCP e sinaliza quando não achou', async () => {
-    db.revokeVirtualMcpKey.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  // A revogação gravava o uuid da chave, que some com o vMCP (`ON DELETE
+  // CASCADE`) e não aparece em tela nenhuma; o banco passou a devolver nome e
+  // prefixo (relatório 040 da auditoria de 2026-09-19).
+  it('revoga restrito ao MCP, audita pelo nome da chave e sinaliza quando não achou', async () => {
+    db.revokeVirtualMcpKey.mockResolvedValueOnce({ name: 'ci', prefix: 'AbCd1234' }).mockResolvedValueOnce(null);
 
     const ok = await handlers.revoke_virtual_mcp_key({ slug: 'time-a', key_id: 'chave-1' });
     const nao = await handlers.revoke_virtual_mcp_key({ slug: 'time-a', key_id: 'chave-2' });
 
     expect(db.revokeVirtualMcpKey).toHaveBeenCalledWith('chave-1', 'mcp-1');
     expect(ok.isError).toBeUndefined();
+    expect(ok.content[0].text).toBe('Chave "ci" (psv_AbCd1234_…) revogada.');
     expect(nao.isError).toBe(true);
     expect(db.recordAccountAudit).toHaveBeenCalledTimes(1);
+    expect(db.recordAccountAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'mcp.key.revoke', targetLabel: 'time-a: ci (AbCd1234)' }),
+    );
+  });
+});
+
+/**
+ * Nome de vMCP e de chave `psv_` não tinha teto, e os dois são copiados em cada
+ * linha de `skill_accesses` (relatório 042 da auditoria de 2026-09-19). Vale
+ * para quem cria ou renomeia; o nome antigo continua válido até alguém mexer.
+ */
+describe('teto de nome', () => {
+  const handlers = createMcpHandlers(caller('editor'));
+  const LONGO = 'n'.repeat(NAME_MAX + 1);
+
+  it('criar acima do teto é recusado com o limite, antes do banco; no teto passa', async () => {
+    const recusado = await guard(() => handlers.create_virtual_mcp({ name: LONGO }));
+    expect(recusado.isError).toBe(true);
+    expect(recusado.content[0].text).toContain(`o limite é ${NAME_MAX}`);
+    expect(db.createVirtualMcp).not.toHaveBeenCalled();
+
+    db.createVirtualMcp.mockResolvedValue(mcp);
+    expect((await handlers.create_virtual_mcp({ name: 'n'.repeat(NAME_MAX) })).isError).toBeUndefined();
+  });
+
+  it('renomear acima do teto é recusado; reenviar o nome que o vMCP já tem, não', async () => {
+    const recusado = await guard(() => handlers.update_virtual_mcp({ slug: 'time-a', name: LONGO }));
+    expect(recusado.isError).toBe(true);
+    expect(db.updateVirtualMcp).not.toHaveBeenCalled();
+
+    db.getVirtualMcp.mockImplementation(async (_slug: string, options?: { viewer?: Viewer }) =>
+      seen({ ...mcp, name: LONGO }, options?.viewer),
+    );
+    db.updateVirtualMcp.mockResolvedValue(mcp);
+    expect((await handlers.update_virtual_mcp({ slug: 'time-a', name: LONGO, description: 'nova' })).isError).toBeUndefined();
+  });
+
+  it('chave psv_: nome acima do teto é recusado, sem gerar chave', async () => {
+    const recusado = await guard(() => handlers.create_virtual_mcp_key({ slug: 'time-a', name: LONGO }));
+
+    expect(recusado.isError).toBe(true);
+    expect(db.createVirtualMcpKey).not.toHaveBeenCalled();
   });
 });
 
@@ -435,6 +551,45 @@ describe('acesso: share / unshare / transfer', () => {
 
     const nivel = await guard(() => dono.share_mcp({ slug: 'time-a', email: 'maria@exemplo.com', level: 'owner' }));
     expect(nivel.isError).toBe(true);
+  });
+
+  /**
+   * `manage` revoga **qualquer** concessão (`docs/12` decisão 10), inclusive a
+   * de conta desativada depois de recebê-la: a linha fica, inerte, e voltaria a
+   * valer se a conta fosse reativada. Revogar passava pelo funil que exige conta
+   * ativa (relatório 039 da auditoria de 2026-09-19); conceder e transferir
+   * continuam exigindo.
+   */
+  it('revoga a concessão de conta desativada, que a ficha marca; conceder a ela continua recusado', async () => {
+    db.getUserByEmail.mockImplementation(async (email: string) =>
+      email === 'saiu@exemplo.com' ? { uuid: 'uuid-saiu', email, isActive: false } : null,
+    );
+
+    const ficha = JSON.parse((await dono.get_virtual_mcp({ slug: 'time-a' })).content[0].text);
+    expect(ficha.grants).toEqual([
+      { email: 'maria@exemplo.com', name: 'Maria', level: 'edit', isActive: true },
+      { email: 'saiu@exemplo.com', name: 'Saiu', level: 'view', isActive: false },
+    ]);
+
+    const tirado = await dono.unshare_mcp({ slug: 'time-a', email: 'Saiu@Exemplo.com' });
+    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    expect(db.removeVirtualMcpGrant).toHaveBeenCalledWith('time-a', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
+
+    const concedido = await guard(() => dono.share_mcp({ slug: 'time-a', email: 'saiu@exemplo.com', level: 'edit' }));
+    expect(concedido.isError).toBe(true);
+    expect(concedido.content[0].text).toMatch(/desativada/);
+    expect(db.setVirtualMcpGrant).not.toHaveBeenCalled();
+  });
+
+  // Revogar não consulta `users`: a resposta não diz se existe conta com aquele
+  // e-mail — nem desativada, que a busca de contas não revela (decisão 13).
+  it('e-mail sem concessão aqui é recusado sem consultar a conta', async () => {
+    const nada = await guard(() => dono.unshare_mcp({ slug: 'time-a', email: 'x@exemplo.com' }));
+
+    expect(nada.isError).toBe(true);
+    expect(nada.content[0].text).toBe('A conta não tem concessão neste MCP virtual');
+    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.removeVirtualMcpGrant).not.toHaveBeenCalled();
   });
 
   it('só dono ou admin transferem; manage não', async () => {

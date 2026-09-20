@@ -102,7 +102,11 @@ lista completa estão em [`docs/04-design-system.md`](docs/04-design-system.md).
 
 - Monorepo com npm workspaces; Node.js 22+ e TypeScript estrito.
 - Comentários, mensagens de erro, log e documentação em **português**.
-- `npm run typecheck` e `npm test` precisam passar antes de entregar.
+- `npm run typecheck` e `npm test` precisam passar antes de entregar. O
+  `typecheck` **inclui os arquivos de teste**: cada workspace tem um
+  `tsconfig.typecheck.json` (o de build mais `"exclude": []`), porque o Vitest
+  transpila sem checar tipo e o `tsconfig.json` de build exclui `*.test.ts` — o
+  `dist/` das imagens não leva teste, e isso não muda.
 - Nenhum `.env*` versionado além de `.env.example`, sempre com `CHANGE_ME` no
   lugar de cada segredo.
 - Decisões de arquitetura em [`docs/02-architecture-decisions.md`](docs/02-architecture-decisions.md);
@@ -113,6 +117,19 @@ lista completa estão em [`docs/04-design-system.md`](docs/04-design-system.md).
   padrão dela, não o estilo do projeto: uma passada num arquivo de `database/`
   reformatou 842 linhas e precisou ser desfeita à mão. Formate igual ao que está
   em volta, no arquivo que você está editando.
+- **Nunca deixe um byte de controle literal num arquivo-fonte.** Precisa do
+  caractere numa string ou num teste? Monte-o em código
+  (`String.fromCharCode(0)`), como `database/src/queries.ts` faz — **escrever o
+  escape não basta**: há ferramenta de edição que o "resolve" de volta para o
+  byte cru ao gravar, e foi assim que três arquivos deste repositório
+  adoeceram. Dentro de uma faixa de regex o escape é a única forma e está
+  correto (`/[\x00-\x1f]/`). O que o byte causa: quando é o nulo, o git trata o
+  blob como **binário** — o diff vira "Binary files differ" e o `gitleaks`, que
+  lê o histórico por diffs, deixa de enxergar aquelas linhas; o `grep` recusa o
+  arquivo em qualquer caso. O CI tem uma guarda (`Nenhum byte de controle nos
+  fontes`) que olha os **bytes**, e não o veredito do git, porque o git só
+  procura o nulo nos primeiros 8 000 bytes. Ao descrever um desses caracteres em
+  documento ou relatório, escreva `U+0000`, não o caractere.
 - **Regra revogada não se apaga, se marca.** O projeto guarda o histórico de
   decisão de propósito: risque o texto antigo com `~~…~~` e ponha ao lado uma
   citação **Revogado neste ponto por `NN`**, com o link do documento que revogou,

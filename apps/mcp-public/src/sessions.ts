@@ -5,6 +5,7 @@ import {
   closeMcpSessions as dbCloseMcpSessions,
   expireMcpSessions as dbExpireMcpSessions,
   findOpenMcpSession as dbFindOpenMcpSession,
+  normalizeSessionLabel,
   openMcpSession as dbOpenMcpSession,
   touchMcpSession as dbTouchMcpSession,
 } from '@purple-skills/db';
@@ -50,6 +51,12 @@ import {
  * é prejuízo pequeno perto de encher o disco do banco. Só identidade **nova** é
  * recusada — quem já está no mapa continua sendo contado, então uma enxurrada
  * não apaga da tela os clientes de verdade.
+ *
+ * Mínimo `1` (o padrão do `readIntEnv`), ao contrário de `MCP_RATE_LIMIT_MAX`:
+ * aqui `0` não tem como significar "desligado". Com `statelessEntries >= 0`
+ * sempre verdadeiro, nada mais seria contabilizado — o oposto de "sem teto" —,
+ * e sem teto de verdade volta o problema que ele fecha. `0` derruba o boot com
+ * a mensagem de faixa, e é o comportamento desejado.
  */
 const MAX_STATELESS_ENTRIES = readIntEnv('MCP_MAX_STATELESS_SESSIONS', 5_000);
 
@@ -128,6 +135,29 @@ const key = (transport: McpSessionTransport, sessionId: string) => `${transport}
 const mountOf = (req: Request): McpSessionMount => (req.baseUrl ? 'virtual' : 'root');
 
 /**
+ * Um rótulo do `clientInfo` como ele pode ficar **na memória** do rastreador:
+ * a regra é a do banco (`normalizeSessionLabel`), para a linha de
+ * `mcp_sessions` e a entrada do mapa terem o mesmo valor.
+ *
+ * O `clientInfo` é texto livre de quem chama, e chegava aqui cru — limitado só
+ * pelo corpo JSON (`MCP_JSON_LIMIT`, 1 MB). Duas consequências, uma função:
+ *
+ * - **o corte, com cópia** (relatório 047 da auditoria de 2026-09-19). A entrada
+ *   vive no mapa por até uma janela de "online" mais uma varredura, e o
+ *   `user-agent` variável cria identidade nova a cada requisição: medido, 400
+ *   identidades stateless com nome de 1 MB seguravam +400 MB de heap. Um `slice`
+ *   não resolve — no V8 o recorte guarda a string-mãe inteira —, e é por isso
+ *   que a função do banco devolve uma **cópia**. O teto de identidades conta
+ *   entradas, não bytes; com o rótulo em 512 caracteres ele volta a bastar;
+ * - **o saneamento** (relatório 038). O `text` do Postgres recusa U+0000: um
+ *   byte nulo no nome derrubava o INSERT da sessão em silêncio (a escrita é
+ *   melhor esforço) e o cliente sumia da tela de sessões. Caractere de controle
+ *   vira espaço; nome só de controles ou de espaços vira `null`.
+ */
+const rotuloDoCliente = (value: unknown): string | null =>
+  typeof value === 'string' ? normalizeSessionLabel(value) : null;
+
+/**
  * O `clientInfo` do `initialize`, quando esta requisição o carrega. O corpo
  * pode ser uma mensagem ou um lote; qualquer coisa fora do formato é ignorada.
  */
@@ -140,8 +170,8 @@ export function clientInfoOf(body: unknown): ClientInfo | null {
     const info = params?.clientInfo as { name?: unknown; version?: unknown } | undefined;
     if (!info || typeof info !== 'object') return null;
     return {
-      name: typeof info.name === 'string' ? info.name : null,
-      version: typeof info.version === 'string' ? info.version : null,
+      name: rotuloDoCliente(info.name),
+      version: rotuloDoCliente(info.version),
     };
   }
   return null;

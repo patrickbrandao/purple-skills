@@ -28,7 +28,10 @@ const db = vi.hoisted(() => ({
   readFile: vi.fn(),
 }));
 
-vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
+// O teto da consulta é valor, não função, e o `tools.ts` o importa do pacote
+// (relatório 037 da auditoria de 2026-09-19): sem ele no mock não há o que
+// importar. O 200 aqui é o da fixture — os casos de corte abaixo contam com ele.
+vi.mock('@purple-skills/db', () => ({ ...db, AppError, SEARCH_QUERY_MAX_LENGTH: 200 }));
 
 const { createHandlers, createSurfaces, guard, guardSurface } = await import('./tools.js');
 
@@ -244,6 +247,89 @@ describe('get_skill', () => {
 
     expect(result.isError).toBe(true);
     expect(db.recordSkillAccess).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * O teto do texto inline (`MCP_MAX_FILE_TEXT_BYTES`, 4 MiB) nasceu só em
+ * `get_skill_file`: o mesmo SKILL.md que ela recusava pelo caminho saía inteiro
+ * por `get_skill`, `prompts/get` e `resources/read` — três portas sem catraca na
+ * superfície anônima (relatório 032 da auditoria de 2026-09-19).
+ */
+describe('o teto do texto inline vale nas quatro leituras', () => {
+  const TETO = 4 * 1024 * 1024;
+  const GRANDE = `# Minha Skill\n\n${'a'.repeat(TETO)}`;
+  const registroAssentou = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('get_skill: acima do teto vão os metadados e o link do SKILL.md, sem o corpo e sem contar acesso', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: GRANDE });
+
+    const result = await handlers.get_skill({ slug: 'minha-skill' });
+    await registroAssentou();
+    const texto = result.content[0].text;
+
+    expect(result.isError).toBeUndefined();
+    expect(texto).toContain('https://mcp.exemplo.dev/skills/minha-skill/files/SKILL.md');
+    expect(texto).toContain(`${Buffer.byteLength(GRANDE)} bytes; o teto é ${TETO}`);
+    // O cabeçalho continua vindo: é por ele que o agente sabe o que a skill é.
+    expect(texto).toContain('slug: minha-skill');
+    expect(texto).toContain('ref/extra.md');
+    // O corpo não: seriam mais duas cópias de 4 MiB no processo.
+    expect(texto).not.toContain('aaaa');
+    // Quem seguir o link conta a leitura na rota do arquivo; contar aqui daria duas.
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
+  });
+
+  it('no teto exato o SKILL.md ainda vem inteiro; a régua é byte, não caractere', async () => {
+    const noTeto = 'a'.repeat(TETO);
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: noTeto });
+    expect((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text.endsWith(noTeto)).toBe(true);
+
+    // Metade dos caracteres, e passa do teto: cada `ã` são dois bytes em UTF-8.
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: 'ã'.repeat(TETO / 2 + 1) });
+    expect((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text).toContain('grande demais');
+  });
+
+  it('prompts/get e resources/read recusam com erro de protocolo — e o link, se a skill está nas ferramentas', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: GRANDE });
+    db.getSkillSummary.mockResolvedValue(summary);
+
+    const recusa = {
+      code: -32602,
+      message: expect.stringContaining('Baixe pela URL: https://mcp.exemplo.dev/skills/minha-skill/files/SKILL.md'),
+    };
+    await expect(surfaces.getPrompt('minha-skill')).rejects.toMatchObject(recusa);
+    await expect(surfaces.readResource('skill://minha-skill')).rejects.toMatchObject(recusa);
+    await registroAssentou();
+
+    // O link só vale para o vínculo `as_skill`: é por ele que a recusa pergunta.
+    expect(db.getSkillSummary).toHaveBeenCalledWith('minha-skill', recorte);
+    expect(db.recordSkillAccess).not.toHaveBeenCalled();
+    // E o `guardSurface` deixa a recusa passar inteira, como o "não encontrado".
+    await expect(guardSurface(() => surfaces.getPrompt('minha-skill'))).rejects.toMatchObject(recusa);
+  });
+
+  it('skill só de prompt ou resource: a recusa não manda para uma URL que responderia 404', async () => {
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: GRANDE });
+    db.getSkillSummary.mockResolvedValue(null);
+
+    const erro = await surfaces.readResource('skill://minha-skill').catch((err: Error) => err);
+
+    expect((erro as Error).message).toContain('grande demais para vir na resposta');
+    expect((erro as Error).message).toContain('não há URL de download aqui');
+    expect((erro as Error).message).not.toContain('/files/');
+  });
+
+  it('abaixo do teto as três seguem como antes', async () => {
+    db.getSkillDetail.mockResolvedValue(detail);
+
+    expect((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text).toContain('Conteúdo.');
+    expect((await surfaces.getPrompt('minha-skill')).messages[0].content.text).toContain('Conteúdo.');
+    expect((await surfaces.readResource('skill://minha-skill')).contents[0].text).toBe(
+      composeSkillMd(detail, detail.skillMd),
+    );
+    // Nenhuma consulta a mais fora da recusa.
+    expect(db.getSkillSummary).not.toHaveBeenCalled();
   });
 });
 

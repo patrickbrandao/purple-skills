@@ -30,6 +30,7 @@ import {
 import { BASE_URL_GOOGLE, GEMINI_EMBEDDING_2 } from './models.js';
 import {
   embutirEmLotes,
+  ocultarChave,
   retryAfterMs,
   ClienteHttp,
   type OpcoesHttp,
@@ -160,7 +161,9 @@ export class GoogleDriver implements EmbeddingDriver {
   /** Traduz o status HTTP no erro que diz o que fazer. */
   private lancarPeloStatus(resposta: Response, corpo: GoogleErrorBody): never {
     const status = corpo.error?.status ?? '';
-    const mensagem = corpo.error?.message ?? resposta.statusText;
+    // A mensagem vai para o log e para o "Último erro" do painel: a chave, se o
+    // provedor a ecoar, fica pelo caminho (`ocultarChave`).
+    const mensagem = ocultarChave(corpo.error?.message ?? resposta.statusText, this.apiKey);
     const detalhe = `${resposta.status}${status ? ` ${status}` : ''}: ${mensagem}`;
 
     // A página de erros documenta 401 para chave inválida, e a sessão Google
@@ -183,7 +186,10 @@ export class GoogleDriver implements EmbeddingDriver {
       throw new RagRateLimitError(`limite de taxa do Google (${detalhe})`, retryAfterMs(resposta));
     }
 
-    // Outro 400: quase sempre texto longo demais. Quem chamou divide o lote.
+    // Outro 400: quase sempre texto longo demais. Quem chamou divide o lote. O
+    // "quase" é de propósito: este balde também recebe o 400 que é da instalação
+    // (intermediário na URL base, contrato da API), e é por isso que o indexador
+    // confere com o texto-sonda antes de gravar uma recusa permanente.
     if (resposta.status === 400) {
       throw new RagInputTooLongError(`o Google recusou o conteúdo enviado (${detalhe})`);
     }

@@ -19,12 +19,14 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  ApiError,
   addCatalogSkill,
   canEdit,
   canManage,
   canOwn,
   deleteSkill,
   getSkill,
+  isNotFound,
   linkSkillToMcp,
   removeCatalogSkill,
   setCatalogSkillActive,
@@ -38,7 +40,7 @@ import {
   type SkillFileMeta,
 } from '../api.js';
 import { AccessTab } from '../components/AccessPanel.js';
-import { Button, McpChips, Panel, Skel, Tabs, noSite, useConfirm } from '../components/ui.js';
+import { Button, McpChips, Panel, Skel, Tabs, noSite, useConfirm, useMounted } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { FilePickers, SkillFilesTab } from '../components/SkillFiles.js';
 import { Markdown } from '../components/Markdown.js';
@@ -177,18 +179,40 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   // repovoaria o formulário, jogando fora o que ainda não foi salvo.
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
+  const skillRef = useRef(skill);
+  skillRef.current = skill;
+  const mounted = useMounted();
 
-  const reload = useCallback(async () => {
-    try {
-      hydrate(await getSkill(slug));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigateRef.current('/skills');
-    }
-  }, [slug, hydrate, toast]);
+  /**
+   * Relê a skill do endereço. `wanted` diz se a resposta ainda interessa: a
+   * carga da ficha passa a flag do próprio efeito, para a skill anterior não
+   * chegar por último — nem o erro dela levar para a lista quem já saiu daqui.
+   *
+   * Sem a skill deste endereço na tela não há o que mostrar, e a lista é a
+   * saída. Com ela — a releitura depois de um import, ou o endereço novo de um
+   * slug trocado pelo Salvar — sair desmontaria o editor e levaria junto o que
+   * está pendente: só quando a skill ficou fora de alcance (`isNotFound`).
+   */
+  const reload = useCallback(
+    async (wanted: () => boolean = () => true) => {
+      try {
+        const fresh = await getSkill(slug);
+        if (wanted()) hydrate(fresh);
+      } catch (err) {
+        if (!wanted()) return;
+        toast.error((err as Error).message);
+        if (skillRef.current?.slug !== slug || isNotFound(err)) navigateRef.current('/skills');
+      }
+    },
+    [slug, hydrate, toast],
+  );
 
   useEffect(() => {
-    void reload();
+    let active = true;
+    void reload(() => active);
+    return () => {
+      active = false;
+    };
   }, [reload]);
 
   /**
@@ -303,8 +327,12 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     let slugNow = current.slug;
     let formFailed = false;
 
-    // 1. Os arquivos, com o slug que o editor de arquivos conhece.
-    for (const path of now.dirtyFiles) await saveFile(path);
+    // 1. Os arquivos, com o slug que o editor de arquivos conhece. O motivo de
+    // cada falha já saiu no aviso do editor de arquivos; aqui entra a conta,
+    // para o "Alterações salvas." não sair por cima dele.
+    for (const path of now.dirtyFiles) {
+      if (!(await saveFile(path))) failures.push(`gravar o arquivo ${path}`);
+    }
 
     // 2. O formulário, levando junto a visibilidade quando ela mudou.
     const publicChange = now.changes.find((change) => change.type === 'public');
@@ -343,26 +371,54 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       }
     }
 
-    // 4. Relê o que ficou gravado; o que não foi continua pendente.
+    // 4. Relê o que ficou gravado; o que não foi continua pendente. Quem saiu
+    // do editor no meio do Salvar não é trazido de volta nem levado à lista.
+    const withSlug = (next: string) => location.pathname.replace(`/skills/${current.slug}/`, `/skills/${next}/`);
+    const go = (to: string, options?: { replace: boolean }) => {
+      if (mounted.current) navigateRef.current(to, options);
+    };
+    let confirmed = true;
     try {
       const fresh = await getSkill(slugNow);
       hydrate(fresh, formFailed);
-      if (fresh.slug !== current.slug) {
-        navigateRef.current(location.pathname.replace(`/skills/${current.slug}/`, `/skills/${fresh.slug}/`), { replace: true });
-      }
+      if (fresh.slug !== current.slug) go(withSlug(fresh.slug), { replace: true });
     } catch (err) {
-      // Transferir pode tirar da conta o acesso à própria skill.
-      toast.error((err as Error).message);
-      navigateRef.current(transfer ? '/skills' : `/skills/${slugNow}`);
+      const message = (err as Error).message;
+      if (isNotFound(err)) {
+        // A skill ficou fora de alcance: transferir tira da conta o acesso a
+        // ela, ou alguém a removeu no meio da edição. Não há o que manter na
+        // tela — e a ficha de leitura responderia o mesmo 404.
+        toast.error(message);
+        go('/skills');
+      } else {
+        // Sessão vencida (401), 5xx ou rede: **fica**. Sair desmonta o editor
+        // (`/skills/:slug/editar/*` e `/skills/:slug/*` são rotas de elementos
+        // diferentes) e leva junto tudo o que ainda não foi gravado — e era o
+        // que acontecia, em qualquer erro, no clique de Salvar. A página não
+        // reconfere a sessão sozinha: dá para entrar de novo em outra aba.
+        confirmed = false;
+        toast.error(
+          err instanceof ApiError && err.status === 401
+            ? `A sessão caiu (${message}). Nada foi descartado: entre de novo em outra aba e clique em Salvar.`
+            : `Não deu para reler a skill (${message}). Nada foi descartado: o que já foi gravado pode seguir listado como pendente — salve de novo para conferir.`,
+        );
+        // O slug trocado já vale no servidor, e é só o que a resposta do PATCH
+        // dá para aproveitar (as listas dela não são recortadas por quem lê):
+        // sem ele a próxima tentativa iria toda para um endereço que sumiu.
+        if (slugNow !== current.slug) {
+          setSkill((shown) => (shown?.uuid === current.uuid ? { ...shown, slug: slugNow } : shown));
+          go(withSlug(slugNow), { replace: true });
+        }
+      }
     }
 
-    if (failures.length === 0) {
-      toast.success('Alterações salvas.');
-    } else {
+    if (failures.length > 0) {
       const [first, ...rest] = failures;
       toast.error(
         `${failures.length === 1 ? 'Uma alteração não foi gravada' : `${failures.length} alterações não foram gravadas`} e continua pendente — ${first}${rest.length > 0 ? ` (e mais ${rest.length})` : ''}`,
       );
+    } else if (confirmed) {
+      toast.success('Alterações salvas.');
     }
     savingRef.current = false;
     setSaving(false);
@@ -412,7 +468,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         icon: <Save />,
         shortcut: '⌘ S',
         disabled: openFileDirty ? false : 'nada a salvar',
-        run: () => saveFile(openFile),
+        // `saveFile` devolve se gravou; a paleta não espera resposta.
+        run: () => void saveFile(openFile),
       });
     }
     commands.push(

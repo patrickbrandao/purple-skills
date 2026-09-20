@@ -62,7 +62,7 @@ export function createDb(connection: string | pg.PoolConfig = databaseConfig()) 
   return { pool, db };
 }
 
-/** Conexão compartilhada por processo — usada pelos 4 serviços. */
+/** Conexão compartilhada por processo — usada pelos 5 serviços que abrem conexão. */
 export function getDb() {
   if (!cached) cached = createDb();
   return cached;

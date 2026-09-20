@@ -55,8 +55,9 @@ a implementação.
 - **Postgres 18** (`pgvector/pgvector:pg18-trixie`), pelos recursos
   relacionais/full-text **e**, desde a `020`, pela busca vetorial: a migration
   cria a extensão `vector` e as quatro tabelas `rag_*` (§12.5,
-  [`14-rag.md`](14-rag.md)). Ela roda em **toda** instalação, então a extensão
-  e as tabelas existem mesmo com a busca semântica desligada, que é o padrão.
+  [`14-rag.md`](14-rag.md); a quinta, `rag_text_status`, veio com a `025`). Ela
+  roda em **toda** instalação, então a extensão e as tabelas existem mesmo com a
+  busca semântica desligada, que é o padrão.
   **Era**, do `001` ao `019`: ~~"usado apenas por seus recursos
   relacionais/full-text no v1 (busca vetorial fica para o futuro)"~~.
 - Acesso via **Drizzle ORM** (query builder + migrations em SQL).
@@ -169,7 +170,13 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 
 - Painel admin: upload de **.zip** (extraído no servidor, preservando
   `relative_path`) **ou** formulário para adicionar/editar um arquivo por
-  vez.
+  vez. A única exceção à preservação é o **embrulho do pacote baixado**: um
+  .zip cuja pasta raiz única contém o `SKILL.md` (`<slug>/SKILL.md`,
+  `<slug>/ref/…`) entra sem essa pasta, no painel e no `set_files_bulk`. Raiz
+  única **sem** `SKILL.md` é subpasta de verdade — o envio parcial de
+  `scripts/` — e fica nos caminhos (relatório 075 da auditoria de 2026-09-19;
+  antes a pasta era removida em qualquer caso, e os arquivos caíam na raiz da
+  skill, ao lado dos originais).
 - MCP admin: `set_file(slug, path, content)` para um arquivo por vez, mais
   uma variante `set_files_bulk(slug, zip_base64)` para importar uma árvore
   inteira.
@@ -340,11 +347,23 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
   cliente legítimo justamente ao reconectar. E num vMCP aberto todo anônimo
   compartilha a mesma identidade (`virtual:<uuid>:open`), então um 429 por
   identidade viraria negação de serviço contra os anônimos legítimos.
+  A consequência, dita por extenso porque ninguém a lia aqui: **num vMCP aberto
+  esse teto é um balde só para todos os anônimos** — as 50 vagas são do
+  servidor inteiro, não de cada visitante, e quem abre a 51ª derruba a sessão
+  mais parada de um desconhecido. A alavanca é `MCP_MAX_SESSIONS` (que leva o
+  derivado junto), e `/mcp/stateless` não ocupa vaga; o desenho, o que foi
+  medido e recusado, e o que ainda é decisão de capacidade estão em
+  [`08-mcp-virtual.md`](08-mcp-virtual.md) §4.1 (relatório 048 da auditoria de
+  2026-09-19).
 
 ### 7.4 Padrão de secrets (env vars)
 
-Todos os segredos seguem o padrão `<NOME>` / `<NOME>_FILE` (a aplicação lê
-o arquivo se `<NOME>_FILE` estiver definido; senão usa `<NOME>` direto):
+Os segredos **lidos pelas aplicações** seguem o padrão `<NOME>` / `<NOME>_FILE`
+(a aplicação lê o arquivo se `<NOME>_FILE` estiver definido; senão usa `<NOME>`
+direto). Ficam de fora, só com o valor direto, os que não passam pelo
+`readSecret`: `POSTGRES_PASSWORD` (quem a lê é o compose), `DATABASE_URL` e
+`PGPASSWORD` (lidas pelo driver `pg`) e `INSPECTOR_API_TOKEN` (imagem de
+terceiro). Os que seguem o padrão:
 
 - `ADMIN_PASSWORD` / `ADMIN_PASSWORD_FILE` (bootstrap — §7.1)
 - `ADMIN_SESSION_SECRET` / `ADMIN_SESSION_SECRET_FILE`
@@ -404,6 +423,17 @@ daquele mesmo ambiente de testes. Continuam no histórico — que é imutável �
 por isso ficam dispensadas no `.gitleaks.toml`, com escopo fechado no commit
 **e** no arquivo, para que nenhum outro segredo do mesmo commit seja silenciado.
 
+O mesmo commit trazia, no `docker-compose.yml`, a senha do banco com padrão
+embutido `postgres` — solta e dentro do DSN —, removida no `7fd36ca`; ela
+também fica dispensada, na mesma forma, fechada no commit **e** no arquivo
+(relatório 065 da auditoria de 2026-09-19). São **duas** as exceções deste
+commit. Ela passou a ser necessária porque a dispensa de interpolação deixou de
+ser o `^\$\{` solto: agora só passam as formas ancoradas que comprovadamente
+não carregam valor (`${VAR}`, `${VAR:-}`, `${VAR:?mensagem}`), e a dispensa
+pela **linha** saiu de vez — ela valia para todas as regras, inclusive as
+padrão, e calava um token de verdade em qualquer linha que apenas mencionasse
+`${VAR:-…}`.
+
 > **Quem implanta o Purple Skills gera os próprios segredos.** Nenhum valor
 > deste repositório, atual ou histórico, serve como padrão: são exemplos de um
 > ambiente de testes, e reaproveitá-los deixa a instalação com credenciais
@@ -434,13 +464,29 @@ de grupo do IdP. Os motivos estão na §5 de
 
 ### 7.7 Limite de taxa
 
-O limitador mora em `packages/shared` e **não conhece Express** (`014`): a janela é
-a mesma nas três superfícies — site, mcp-public e mcp-admin — e o corpo da recusa é
-de cada app. Ele entra **antes** da autenticação, porque é ele que protege a
-consulta que o `auth` faz, e quem tem credencial é isentado por devolução da marca
-depois de o `auth` passar. A conta é **por processo**: camada barata contra rajada,
-não quota contábil. Os tetos aceitam `0` como "desligado", para a instalação que já
-limita no proxy.
+O limitador mora em `packages/shared` e **não conhece Express** (`014`): a janela
+deslizante por IP é a mesma nas três superfícies que têm limite — o login do painel
+(§2.7 de [`05-accounts-and-roles.md`](05-accounts-and-roles.md)), o site e o
+mcp-public — e o corpo da recusa é de cada app. No site e no mcp-public ele entra
+**antes** de tudo o que consulta o banco — no mcp-public, antes da autenticação,
+porque é ele que protege a consulta que o `auth` faz —, e quem tem credencial é
+isentado por devolução da marca depois de o `auth` passar. A conta é **por
+processo**: camada barata contra rajada, não quota contábil. Os tetos do site e do
+mcp-public (`SITE_RATE_LIMIT_MAX`, `MCP_RATE_LIMIT_MAX`) aceitam `0` como
+"desligado", para a instalação que já limita no proxy.
+
+O **mcp-admin não tem limitador de taxa** — nem hoje, nem antes. Toda rota MCP dele
+exige `Bearer` e a porta fica no loopback por padrão, mas o caminho que o limitador
+protegeria existe: o `auth` faz um `SELECT` por requisição para qualquer
+`Bearer psk_…` bem formado e, quando o prefixo existe e a chave não foi revogada,
+um `scryptSync`; e o 401 não deixa rastro em log nem em auditoria. Quem publica
+esse serviço — `BIND_ADDR` fora do loopback, ou o `docker-compose.traefik.yml`, que
+lhe dá FQDN público **sem** middleware de taxa — precisa limitar **no proxy**.
+Portar o limitador para o mcp-admin, ou registrar a ausência como risco aceito
+(§13), é decisão em aberto.
+Este parágrafo corrige o que a §7.7 afirmava desde a `beta.22` — "site, mcp-public
+e mcp-admin" —, que nunca foi o estado do código: a terceira superfície sempre foi o
+login do painel.
 
 ### 7.8 Trust proxy
 
@@ -478,30 +524,50 @@ de redefinição de senha (§7.1).
 
 ### 8.2 MCP administrativo (`apps/mcp-admin`)
 
-CRUD completo, espelhando o painel administrativo:
+CRUD completo, espelhando o painel administrativo. A assinatura de cada tool,
+argumento a argumento, é a da tabela do
+[`README`](../README.md#ferramentas-do-mcp-administrativo) e a do
+`apps/mcp-admin/src/server.ts`; aqui fica o que é decisão:
 
-- `create_skill(name, description, skill_md_content, tags?, slug?,
-  mcps?: [{slug, asSkill, asPrompt, asResource}])` — nasce publicada onde a
-  credencial administra, ou sem vínculo
-- `edit_skill(slug, { name?, description?, tags?, new_slug?, is_active? })`
-  — `is_active: false` desliga a skill em tudo ([`11`](11-catalogos.md))
+- `create_skill(name, description?, icon?, skill_md_content, tags?, slug?,
+  mcps?: [{slug, asSkill, asPrompt, asResource}], is_public?)` — nasce
+  publicada onde a credencial edita, ou sem vínculo; `is_public: true` a põe no
+  site mesmo sem vínculo (§12.3)
+- `edit_skill(slug, { name?, description?, icon?, tags?, new_slug?,
+  is_active?, is_public? })` — `is_active: false` desliga a skill em tudo
+  ([`11`](11-catalogos.md)); nome, descrição, ícone e tags são `edit`, slug,
+  `is_active` e `is_public` são `manage` ([`12`](12-acesso-granular.md) §3.2)
+- `get_skill(slug)` / `get_file(slug, path)` — leitura; `list_tags()` /
+  `get_stats()` — navegação e números, recortados pelo que a credencial vê
 - `link_skill(skill, mcp, asSkill, asPrompt, asResource)` /
   `unlink_skill(skill, mcp)` — o vínculo pelo lado da skill; a permissão é a
   do MCP virtual alvo
 - `set_file(slug, path, content)`
-- `set_files_bulk(slug, zip_base64)`
+- `set_files_bulk(slug, zip_base64, replace?, confirm_deletions?)` — com
+  `replace` (o padrão) o que sairia é recusado até vir o número exato em
+  `confirm_deletions` (§4)
 - `delete_file(slug, path)` (bloqueado para `path = "SKILL.md"`)
-- `delete_skill(slug)`
-- `list_skills()` — o catálogo inteiro, inclusive skills sem vínculo, cada
-  uma com `mcps`
+- `delete_skill(slug, confirm)` — só o dono ou um admin
+- `list_skills(query?, tag?, scope?, limit?, offset?)` — ~~o catálogo inteiro,
+  inclusive skills sem vínculo~~, cada uma com `mcps`. **Revogado neste ponto
+  por [`12`](12-acesso-granular.md)** (§3.1): o alcance é por conta — as suas,
+  as concedidas e as públicas ou expostas, inclusive sem vínculo e desligadas;
+  tudo para admin.
+- `share_skill(slug, email, level)` / `unshare_skill(slug, email)` /
+  `transfer_skill(slug, email)`, e o mesmo para `*_catalog` e `*_mcp`
+  ([`12`](12-acesso-granular.md)): conceder e revogar é `manage`, transferir é
+  do dono (ou admin).
 - MCPs virtuais ([`08`](08-mcp-virtual.md) §6.2): `list_virtual_mcps()`,
   `get_virtual_mcp(slug)`, `create_virtual_mcp(name, slug?, description?,
   is_open?)`, `update_virtual_mcp(slug, {name?, new_slug?, description?,
   is_open?, is_active?})`, `delete_virtual_mcp(slug, confirm)`,
   `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])`, `list_virtual_mcp_keys(slug)`,
   `create_virtual_mcp_key(slug, name)`, `revoke_virtual_mcp_key(slug, key_id)`.
-  Alcance por dono: o token global e as chaves de admin administram qualquer
-  um; a chave de um usuário, os MCPs de que ele é dono.
+  ~~Alcance por dono: o token global e as chaves de admin administram qualquer
+  um; a chave de um usuário, os MCPs de que ele é dono.~~ **Revogado neste
+  ponto por [`12`](12-acesso-granular.md)**: o alcance é por concessão — todos
+  para admin; os seus, os concedidos e os abertos para os demais, com o acesso
+  (`view`, `edit`, `manage` ou dono) em cada um.
 - MCP padrão ([`09`](09-mcp-padrao-e-skills-flutuantes.md) §3.6):
   `get_default_virtual_mcp()` e `set_default_virtual_mcp(slug | null)`, o
   segundo só admin.
@@ -534,11 +600,22 @@ CRUD completo, espelhando o painel administrativo:
 - Node.js: versão **LTS ativa no momento da implementação** (pin explícito
   no Dockerfile, ex: `node:22-alpine`, atualizado quando a LTS mudar).
 - `docker-compose.yml` local orquestra as imagens de app + Postgres + o passo
-  `migrate`, em rede Docker interna. O `indexer` fica no **perfil `rag`**, fora
-  do `up` do dia a dia (`docker compose --profile rag up -d indexer`): ele é o
-  único serviço que gasta dinheiro e manda conteúdo para fora, então subir é
-  uma escolha. **Era**: ~~"as 4 imagens + Postgres + o passo `migrate`"~~ —
-  hoje são seis de app (§1), uma delas sob perfil.
+  `migrate`, em rede Docker interna. O `indexer` **sobe no `up -d`**, como os
+  demais: com `rag.driver` em `off`, que é o padrão, ele só publica o próprio
+  estado e não fala com provedor nenhum, então a escolha de gastar dinheiro e
+  mandar conteúdo para fora é **uma só** — o driver, no painel, com a chave dele
+  no ambiente (§12.5). Consequência assumida: quem liga o driver não tem segunda
+  trava, e um `up -d` de atualização volta a iniciar o indexador de quem o
+  mantinha parado de propósito. A linha `profiles: [rag]` continua no compose,
+  **comentada**: descomentá-la devolve o opt-in de dois passos a quem o quiser.
+  **Era**, até a `beta.21`: ~~"O `indexer` fica no perfil `rag`, fora do `up` do
+  dia a dia (`docker compose --profile rag up -d indexer`): ele é o único
+  serviço que gasta dinheiro e manda conteúdo para fora, então subir é uma
+  escolha"~~ — a `beta.22` saiu com a linha do perfil comentada, por decisão
+  do mantenedor ([`CHANGELOG`](../CHANGELOG.md), "Decidido e não mudado"), e
+  este parágrafo tinha ficado para trás.
+  **Era**: ~~"as 4 imagens + Postgres + o passo `migrate`"~~ — hoje são seis de
+  app (§1).
 - Cada imagem também pode rodar de forma independente/standalone em
   produção, apontando para um Postgres externo via env vars.
 - **Variável cujo padrão difere entre serviços não entra no `x-app-env`**
@@ -549,7 +626,14 @@ CRUD completo, espelhando o painel administrativo:
   `MCP_PUBLIC_SERVER_NAME`/`MCP_ADMIN_SERVER_NAME` → `MCP_SERVER_NAME`, como
   `INSPECTOR_OMIT_AUTH` → `DANGEROUSLY_OMIT_AUTH`. É mais barato que uma variável
   nova no código e não deixa dois servidores MCP aparecerem com o mesmo nome no
-  `mcp.json` do cliente.
+  `mcp.json` do cliente. O teto do corpo JSON segue a mesma regra desde o
+  relatório 029 da auditoria de 2026-09-19:
+  `MCP_PUBLIC_JSON_LIMIT`/`MCP_ADMIN_JSON_LIMIT` → `MCP_JSON_LIMIT`. Declarar a
+  linha serviço por serviço não bastava enquanto as duas interpolavam a **mesma**
+  `${MCP_JSON_LIMIT:-}`: quem a preenchia para mandar `.zip` maior pelo admin
+  abria os mesmos megabytes ao MCP público, anônimo num vMCP aberto. O nome antigo
+  segue valendo só como queda do admin (`${MCP_ADMIN_JSON_LIMIT:-${MCP_JSON_LIMIT:-}}`),
+  e o valor é validado no boot (`readSizeEnv`), como os limites numéricos.
 - **Fixação de dependência: fixa-se o que um terceiro pode trocar debaixo de nós
   sem revisão; não se fixam bytes que só uma automação mantém novos** (`053`).
   Aplicada: (a) `node:24-alpine` fica **por tag** — o ponto fixo de rollback é a
@@ -581,10 +665,27 @@ CRUD completo, espelhando o painel administrativo:
     valida que o Dockerfile de cada app e o de `database/` constroem).
   - **Sem workflow de release.** Nenhum job de CI tem credencial de registry.
     Publicar imagem é passo manual: depois de criar a tag da versão, quem
-    mantém roda [`release-images.sh`](../release-images.sh) — builda e faz
-    `docker push` das 7 imagens (os 6 apps mais `purple-skills-db`) para o
-    Docker Hub, na conta `tmsoftbrasil` (`tmsoftbrasil/purple-skills-<nome>`),
-    sempre como `latest`. Requer `docker login` prévio nessa conta.
+    mantém roda [`release-images.sh`](../release-images.sh) — um
+    `docker buildx build --push` por imagem, das 7 (os 6 apps mais
+    `purple-skills-db`), para o Docker Hub, na conta `tmsoftbrasil`
+    (`tmsoftbrasil/purple-skills-<nome>`), em `linux/amd64` e `linux/arm64`.
+    Cada imagem leva **duas tags**: `:VERSÃO` (a do `package.json` da raiz) e
+    `:latest`. A `:VERSÃO` é o ponto fixo de rollback do §10
+    (`TAG=<versão anterior> docker compose up -d`), porque `latest` é
+    sobrescrita e não deixa cópia. Requer `docker login` prévio nessa conta.
+    **Era**, até a `beta.21`: ~~"builda e faz `docker push` das 7 imagens […]
+    sempre como `latest`"~~ — o script mudou na `beta.22` (`015`).
+    **Era**, até a `beta.22`: ~~as duas tags saíam do mesmo `--push`, imagem por
+    imagem~~ — o build publica só `:VERSÃO`, e a `:latest` é promovida depois,
+    num segundo laço curto, com `docker buildx imagetools create` (cópia fiel
+    dentro do registry: mesmo digest, logo as mesmas arquiteturas e labels).
+    `db` vai **primeiro** na lista, e nenhuma `latest` se move enquanto todas as
+    pedidas não estiverem no Hub: um build que falha no meio deixava `latest`
+    apontando para versões diferentes entre si, com o risco de alguém puxar um
+    app novo contra um schema velho. A janela mista cai dos minutos do build
+    multi-arquitetura para os segundos da promoção — não zera, e publicar
+    subconjunto por nome continua podendo misturar de propósito (relatório 071
+    da auditoria de 2026-09-19).
   - **O gate da publicação é uma confirmação informada**, não uma bateria de
     testes (`015`). Typecheck e testes não são repetidos no `release-images.sh`
     porque o CI já os roda em todo push para `main`; e árvore limpa não é exigida
@@ -717,8 +818,8 @@ Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). Migration `018`.
 
 ## 12.5 Busca semântica
 
-Desenho em [`14-rag.md`](14-rag.md). Migration `020`, pacote `packages/rag`,
-container `apps/indexer`.
+Desenho em [`14-rag.md`](14-rag.md). Migrations `020` e `025` (a fila de
+textos: reserva e recusa), pacote `packages/rag`, container `apps/indexer`.
 
 - **Uma decisão do v1 mudou de estado.** "Sem busca vetorial" (§3 e §5) valeu do
   `001` ao `019` e a entrega da `020` a revogou. Não foi troca de gosto: a busca
@@ -746,20 +847,26 @@ container `apps/indexer`.
   chave e escolhe entre eles por requisição, pelo `rag.driver` do banco.
   `cohere` é recusado com "ainda não foi implementado", mensagem diferente de
   "driver desconhecido" de propósito.
-- **O indexador é container à parte** (perfil `rag`, §10), com modo contínuo e
-  `--once`, e separa **refatiar** (de graça) de **embutir** (pago) — é o que faz
-  "Reindexar" no painel não custar nada.
+- **O indexador é container à parte**, que sobe no `up -d` e fica parado com o
+  driver `off` (§10 — **era**, até a `beta.21`: ~~"perfil `rag`"~~), com modo
+  contínuo e `--once`, e separa **refatiar** (de graça) de **embutir** (pago) —
+  é o que faz "Reindexar" no painel não custar nada.
 - **Painel "Busca semântica"** em Configurações, só para admin: driver, modelo,
   origem de cada valor, estado da chave pelo que o indexador publicou, cobertura,
   pendências e Reindexar. Auditoria: `rag.settings` e `rag.reindex`.
 - **O que a entrega não trouxe**, para ninguém ler "implementado" como
-  "completo": a marca de texto recusado pelo provedor vive **em memória do
-  processo**, porque falta no banco a função que o indexador já espera
-  (`markRagTextRefused`); não existe apagar os vetores de um espaço, nem limpar
-  texto ou vetor órfão; a perna vetorial é varredura **exata, sem índice** (o
-  HNSW do pgvector para em 2000 dimensões e o modelo do Google tem 3072); e não
-  há recorte de escopo da indexação — ligar vale para o acervo inteiro, que é o
-  risco da §13.
+  "completo": não existe apagar os vetores de um espaço; a perna vetorial é
+  varredura **exata, sem índice** (o HNSW do pgvector para em 2000 dimensões e
+  o modelo do Google tem 3072); e não há recorte de escopo da indexação — ligar
+  vale para o acervo inteiro, que é o risco da §13.
+  **Era**, até a `025`: ~~"a marca de texto recusado pelo provedor vive em
+  memória do processo, porque falta no banco a função que o indexador já espera
+  (`markRagTextRefused`)"~~ e ~~"nem limpar texto ou vetor órfão"~~ — a `025`
+  trouxe as duas: a recusa é gravada em `rag_text_status` e a própria fila a
+  exclui, e `collectOrphanRagTexts` apaga, no fim de cada ciclo, o texto sem
+  ocorrência e, por cascata, os vetores dele. A mesma migration deu **reserva**
+  à fila de textos, então duas réplicas do indexador deixaram de pagar pelo
+  mesmo embedding ([`14-rag.md`](14-rag.md) §7 e §7.1).
 
 ## 13. Riscos aceitos conscientemente (v1)
 

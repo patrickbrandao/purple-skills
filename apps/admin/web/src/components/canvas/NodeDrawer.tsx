@@ -3,7 +3,8 @@ import { ExternalLink, Globe, Library, Radio, Server, Trash2, X } from 'lucide-r
 import { num, type OnlineCount, type VirtualMcpDetail } from '../../api.js';
 import { Badge, Button, McpStateBadges } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
-import { PORTS, PORT_LABEL, flagsToPorts, type Port, type Target } from './types.js';
+import { effectivePorts, hasPending, type Pending } from './pending.js';
+import { PORTS, PORT_LABEL, type Port, type Target } from './types.js';
 
 export type Selection = { kind: 'server' } | { kind: 'internet' } | Target | null;
 
@@ -16,7 +17,7 @@ export function NodeDrawer({
   detail,
   online,
   onlineWindowMs,
-  busy,
+  pending,
   canEdit,
   onClose,
   onTogglePort,
@@ -27,7 +28,8 @@ export function NodeDrawer({
   detail: VirtualMcpDetail;
   online: OnlineCount | null;
   onlineWindowMs: number;
-  busy: (target: Target) => boolean;
+  /** As escritas em andamento no palco: decidem o "ocupado" e o que as caixas mostram. */
+  pending: readonly Pending[];
   canEdit: boolean;
   onClose: () => void;
   onTogglePort: (target: Target, port: Port, on: boolean) => void;
@@ -42,8 +44,13 @@ export function NodeDrawer({
     </button>
   );
 
+  const busy = (target: Target) => hasPending(pending, target);
+
   const portBoxes = (target: Target, flags: { asSkill: boolean; asPrompt: boolean; asResource: boolean }, hint: string) => {
-    const ports = flagsToPorts(flags);
+    // As mesmas portas que as arestas desenham: a caixa clicada fica como foi
+    // deixada enquanto grava, em vez de voltar sozinha até o detalhe chegar —
+    // o que fazia o clique parecer que não pegou e pedia um segundo.
+    const ports = effectivePorts(flags, pending, target);
     return (
       <div className="sec">
         <p className="eyebrow">Portas neste servidor</p>

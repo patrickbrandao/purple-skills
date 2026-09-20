@@ -12,7 +12,7 @@ import {
   type Session,
   type VirtualMcpSummary,
 } from '../api.js';
-import { ACTION_LABEL, ACTION_TONE } from '../audit.js';
+import { ACTION_LABEL, ACTION_TONE, auditRange } from '../audit.js';
 import { SessionsTable } from '../components/SessionsTable.js';
 import { Badge, EmptyRow, Field, Skel, Tabs, useDebounced } from '../components/ui.js';
 
@@ -76,8 +76,9 @@ function Trail() {
       action: action || undefined,
       actor: dactor.trim() || undefined,
       q: dq.trim() || undefined,
-      since: since ? new Date(since).toISOString() : undefined,
-      until: until ? new Date(`${until}T23:59:59`).toISOString() : undefined,
+      // "Desde" e "Até" são dias do calendário de quem olha, como a coluna
+      // "Quando": `auditRange` os transforma nos instantes que o servidor compara.
+      ...auditRange(since, until),
     })
       .then((data) => active && setPage(data))
       .catch((err) => active && setError((err as Error).message));

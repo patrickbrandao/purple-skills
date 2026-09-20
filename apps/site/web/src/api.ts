@@ -18,7 +18,12 @@ export type SkillSummary = {
   slug: string;
   name: string;
   description: string;
-  /** Onde a skill está: é por estar em um MCP aberto que ela aparece aqui. */
+  /**
+   * Onde a skill está: os MCPs virtuais **abertos e ligados** que a publicam,
+   * com as portas de cada um. Pode vir vazia: desde o acesso granular
+   * (`docs/12-acesso-granular.md` §7) a skill também chega ao site por ter sido
+   * marcada pública ou por estar em um catálogo público e ligado.
+   */
   mcps: SkillMcpRef[];
   viewCount: number;
   downloadCount: number;
@@ -86,8 +91,15 @@ export type SiteMeta = {
   /** `<MCP_PUBLIC_URL>/mcp`, ou nulo quando a variável não foi configurada. */
   mcpUrl: string | null;
   mcp: PublicMcpInfo;
+  /** `MCP_ADMIN_URL` como o operador a escreveu: o endereço completo, já com o `/mcp`. */
   mcpAdminUrl: string | null;
   adminUrl: string | null;
+  /**
+   * `true` com `SITE_CORS_ORIGIN` no padrão (`*`): a API aceita qualquer
+   * origem. `false` quando a instalação restringiu — o navegador de outra
+   * origem não lê a resposta; script e agente, sem `Origin`, continuam lendo.
+   */
+  corsOpen: boolean;
 };
 
 async function get<T>(path: string): Promise<T> {

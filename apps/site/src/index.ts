@@ -11,7 +11,6 @@ import {
   createRateLimiter,
   rateLimitKey,
   readIntEnv,
-  readTextEnv,
   securityHeaders,
   trustProxySetting,
 } from '@purple-skills/shared';
@@ -40,12 +39,12 @@ app.use(compression());
 // padrão. Uma instalação alcançável só pela rede interna fecha com
 // `SITE_CORS_ORIGIN` (uma origem, ou uma lista separada por vírgula), porque
 // com `*` a rede deixa de proteger: um site externo aberto por quem trabalha
-// lá lê o catálogo usando o navegador da vítima como ponte. Lido aqui, e não
-// no `config.ts`, porque é a única coisa que essa variável configura.
-const corsOrigin = readTextEnv('SITE_CORS_ORIGIN', '*');
+// lá lê o catálogo usando o navegador da vítima como ponte. O valor mora no
+// `config.ts` porque o `/api/meta` também o lê: o cartão "API REST pública" da
+// home diz se o CORS desta instalação está aberto ou restrito.
 app.use(
   cors({
-    origin: corsOrigin === '*' ? '*' : corsOrigin.split(',').map((origem) => origem.trim()),
+    origin: config.corsOrigin,
     methods: ['GET', 'HEAD', 'OPTIONS'],
   }),
 );

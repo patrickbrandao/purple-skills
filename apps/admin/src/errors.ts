@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler } from 'express';
 import multer from 'multer';
 import { config } from './config.js';
+import { UploadTooLargeError } from './uploads.js';
 
 /**
  * Tratador de erros da API do painel.
@@ -13,6 +14,13 @@ import { config } from './config.js';
  */
 export const onError: ErrorRequestHandler = (err, _req, res, _next) => {
   if (res.headersSent) return;
+
+  // A soma dos arquivos estourou o teto por requisição no meio do envio
+  // (`budgetedMemoryStorage`) — o caso do `chunked`, que não declara tamanho.
+  if (err instanceof UploadTooLargeError) {
+    res.status(413).json({ error: 'payload_too_large', message: err.message });
+    return;
+  }
 
   if (err instanceof multer.MulterError) {
     const tooBig = err.code === 'LIMIT_FILE_SIZE';

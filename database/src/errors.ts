@@ -53,8 +53,11 @@ export function isUniqueViolation(err: unknown, constraint?: string): boolean {
 
 /**
  * Violação de chave estrangeira (SQLSTATE 23503) — a linha referenciada não
- * existe (mais).
+ * existe (mais). Com `constraint`, só a violação **daquela** chave: quem traduz
+ * "a skill sumiu" em 404 não pode dar a mesma resposta para o ator que sumiu.
  */
-export function isForeignKeyViolation(err: unknown): boolean {
-  return findPgError(err)?.code === '23503';
+export function isForeignKeyViolation(err: unknown, constraint?: string): boolean {
+  const pgError = findPgError(err);
+  if (!pgError || pgError.code !== '23503') return false;
+  return constraint === undefined || pgError.constraint === constraint;
 }

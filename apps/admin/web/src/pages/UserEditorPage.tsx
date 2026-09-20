@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Eye, History, KeyRound, ListChecks, Lock, Save, UserRound } from 'lucide-react';
 import {
@@ -64,19 +64,29 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
     setIsActive(fresh.isActive);
   }, []);
 
-  const load = useCallback(async () => {
-    try {
-      hydrate(await getUser(uuid));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigate('/users');
-    }
-  }, [uuid, hydrate, toast, navigate]);
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
+  // dependesse dele, cada troca de guia buscaria a conta de novo e repovoaria o
+  // formulário — bastava ir a Chaves e voltar para perder nome, papel e estado.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
+  // Uma carga por conta. O cleanup descarta a resposta atrasada: trocando de
+  // conta com a ficha montada, a da anterior podia chegar por último e pôr o
+  // formulário dela sob o endereço desta.
   useEffect(() => {
+    let active = true;
     setUser(null);
-    void load();
-  }, [load]);
+    getUser(uuid)
+      .then((fresh) => active && hydrate(fresh))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/users');
+      });
+    return () => {
+      active = false;
+    };
+  }, [uuid, hydrate, toast]);
 
   const dirty = user !== null && (name !== user.name || role !== user.role || isActive !== user.isActive);
 
@@ -125,8 +135,13 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
     try {
       const result = await resetUserPassword(user.uuid);
       setSecret(result.temporaryPassword);
-      hydrate({ ...result.user, name: user.name });
-      setName(name);
+      // O reset mexe só na senha (`resetAccountPassword`, em `admin/src/accounts.ts`):
+      // entra o que ele mudou — "senha temporária", as datas — e o formulário fica
+      // como está. Era `hydrate`, que repunha os três campos e só devolvia o nome:
+      // papel e "conta ativa" em edição sumiam sem aviso. Nome, papel e estado
+      // continuam sendo os que o formulário carregou, para o Salvar comparar com
+      // eles e não regravar por cima o que outra pessoa tenha mudado no meio.
+      setUser({ ...result.user, name: user.name, role: user.role, isActive: user.isActive });
     } catch (err) {
       toast.error((err as Error).message);
     }

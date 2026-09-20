@@ -1,7 +1,8 @@
 # Purple Skills — orquestração local completa.
 #
 #   docker compose run --rm migrate     # aplica database/schema/*.sql (uma vez)
-#   docker compose up -d                # sobe homepage, site, admin, os dois MCPs e o Inspector
+#   docker compose up -d                # sobe homepage, site, admin, os dois MCPs,
+#                                       # o indexador do RAG e o Inspector
 #   docker compose run --rm seed        # (opcional) popula skills de exemplo
 #
 # Em produção cada imagem também roda isolada, apontando para um Postgres
@@ -17,15 +18,18 @@
 #
 # As portas são publicadas só no loopback por padrão. O Docker escreve regras
 # de iptables diretamente e um bind em 0.0.0.0 contorna o UFW na maioria das
-# instalações Debian/Ubuntu — expor o Postgres e o painel assim, sem perceber,
-# é fácil demais. Para alcançar os serviços de outra máquina (um servidor de
-# testes remoto, por exemplo), defina BIND_ADDR=0.0.0.0 no .env, cientes de que
-# aí eles ficam acessíveis para quem chegar na rede.
+# instalações Debian/Ubuntu — expor o painel assim, sem perceber, é fácil
+# demais. Para alcançar os serviços de outra máquina (um servidor de testes
+# remoto, por exemplo), defina BIND_ADDR=0.0.0.0 no .env, cientes de que aí
+# eles ficam acessíveis para quem chegar na rede.
 #
-# O mcp-inspector é a exceção: ele sobe sem autenticação e, de dentro da rede
-# `internal`, alcança o mcp-admin. Por isso ele tem o seu próprio
-# INSPECTOR_BIND_ADDR, que fica no loopback mesmo quando o BIND_ADDR global é
-# 0.0.0.0 — o botão de "alcançar de fora" não arrasta a ferramenta sem senha.
+# Duas portas NÃO acompanham o BIND_ADDR. A do Postgres tem endereço próprio,
+# POSTGRES_BIND_ADDR (em database/docker-compose.yml, com o porquê): nenhum app
+# a usa, e ela fica no loopback mesmo com BIND_ADDR=0.0.0.0. E a do
+# mcp-inspector: ele sobe sem autenticação e, de dentro da rede `internal`,
+# alcança o mcp-admin. Por isso ele tem o seu próprio INSPECTOR_BIND_ADDR, que
+# fica no loopback mesmo quando o BIND_ADDR global é 0.0.0.0 — o botão de
+# "alcançar de fora" não arrasta a ferramenta sem senha.
 
 # `project_directory: .` faz os caminhos relativos do arquivo incluído (e o
 # `.env` lido pelo compose) resolverem a partir da raiz, e não de `database/`.
@@ -215,8 +219,10 @@ services:
       LOGIN_LOCK_SECONDS: ${LOGIN_LOCK_SECONDS:-}
       LOGIN_IP_MAX_ATTEMPTS: ${LOGIN_IP_MAX_ATTEMPTS:-}
       LOGIN_IP_WINDOW_SECONDS: ${LOGIN_IP_WINDOW_SECONDS:-}
-      # Login por OIDC — opcional. Sem OIDC_ALLOWED_DOMAINS o
-      # auto-provisionamento fica desligado, de propósito.
+      # Login por OIDC — opcional. Com ele ligado, OIDC_ALLOWED_DOMAINS é
+      # obrigatória: vazia, todo login por SSO é recusado, inclusive o de conta
+      # que já existe e já está vinculada (sobra o login local). SSO sem criar
+      # conta nova é OIDC_AUTO_PROVISION=false, com a allowlist preenchida.
       # Semeadura da busca semântica: o admin grava estas duas no banco no
       # primeiro boot e, dali em diante, quem manda é o painel — inclusive a
       # escolha entre `google`, `openai` e `voyage`. As chaves das APIs NÃO vêm
@@ -252,6 +258,20 @@ services:
       PORT: 3002
       # O acesso a /mcp é decidido pelo MCP virtual padrão, escolhido no
       # painel: não há variável de autenticação aqui.
+      #
+      # As três abaixo NÃO configuram nada e não têm efeito sobre o servidor.
+      # Estão listadas só para a trava de boot do mcp-public
+      # (`assertNoLegacyAuthEnv`) ENXERGAR o resíduo do .env de uma instalação
+      # <= beta.14 e recusar subir, em vez de abrir em silêncio o vMCP `public`
+      # que a migration 011 cria aberto
+      # (docs/09-mcp-padrao-e-skills-flutuantes.md, §3.4 e §3.5). Sem elas aqui
+      # o .env não chega ao container (ver o comentário do x-app-env) e a trava
+      # nunca dispara. Vazio conta como ausente: quem não as define não sente
+      # nada. Não as remova como "variável morta": foi assim que a trava ficou
+      # inerte da beta.15 à beta.22.
+      MCP_PUBLIC_AUTH: ${MCP_PUBLIC_AUTH:-}
+      MCP_PUBLIC_KEY: ${MCP_PUBLIC_KEY:-}
+      MCP_PUBLIC_KEY_FILE: ${MCP_PUBLIC_KEY_FILE:-}
       # Base das URLs de download que as ferramentas devolvem. Vazio = deduzida
       # de cada requisição (proto://host), o que funciona atrás do Traefik do
       # override.
@@ -267,17 +287,25 @@ services:
       MCP_SERVER_NAME: ${MCP_PUBLIC_SERVER_NAME:-}
       # Teto do corpo JSON. Não cabe no x-app-env: o padrão daqui é 1mb
       # (argumento de ferramenta pública são alguns bytes) e o do admin é 48mb,
-      # e o bloco comum é compartilhado com quem nem lê a variável.
-      MCP_JSON_LIMIT: ${MCP_JSON_LIMIT:-}
+      # e o bloco comum é compartilhado com quem nem lê a variável. O nome no
+      # .env é POR SERVIÇO, como o do MCP_SERVER_NAME acima: com um
+      # `MCP_JSON_LIMIT` só, quem subia o teto do admin para mandar .zip maior
+      # abria os mesmos megabytes à superfície anônima. Formato: número + kb|mb|gb
+      # (ou inteiro de bytes); valor fora disso derruba o boot.
+      MCP_JSON_LIMIT: ${MCP_PUBLIC_JSON_LIMIT:-}
       # Requisições por minuto por IP (padrão 600; `0` desliga). Alto porque o
       # cliente aqui é agente, que trabalha em rajada; quem chega com chave
       # psv_ não gasta a cota do endereço.
       MCP_RATE_LIMIT_MAX: ${MCP_RATE_LIMIT_MAX:-}
+      # Mensagens por lote JSON-RPC (padrão 20; acima disso, 400). Cada mensagem
+      # do lote gasta uma marca do limite acima; vale mesmo com ele em `0`.
+      MCP_MAX_BATCH: ${MCP_MAX_BATCH:-}
       # Identidades stateless contabilizadas ao mesmo tempo (padrão 5000).
       # Cheio, a requisição é atendida sem virar linha em mcp_sessions.
       MCP_MAX_STATELESS_SESSIONS: ${MCP_MAX_STATELESS_SESSIONS:-}
-      # Teto do texto devolvido DENTRO do resultado de get_skill_file (padrão
-      # 4 MiB); acima dele a resposta passa a ser a URL de download.
+      # Teto do texto devolvido DENTRO da resposta (padrão 4 MiB), nas quatro
+      # leituras: get_skill, get_skill_file, prompts/get e resources/read. Acima
+      # dele a resposta passa a ser a URL de download.
       MCP_MAX_FILE_TEXT_BYTES: ${MCP_MAX_FILE_TEXT_BYTES:-}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_PUBLIC_PORT:-3002}:3002'
@@ -302,11 +330,26 @@ services:
       # manda o .zip em base64). É por isso que nenhum dos dois cabe no
       # x-app-env — lá um valor só apagaria a diferença.
       MCP_SERVER_NAME: ${MCP_ADMIN_SERVER_NAME:-}
-      MCP_JSON_LIMIT: ${MCP_JSON_LIMIT:-}
+      # `MCP_JSON_LIMIT` é o nome antigo, de quando um valor só ia para os dois
+      # MCPs: segue valendo AQUI, como queda — é o lado em que subir o teto tem
+      # uso —, e não chega mais ao mcp-public.
+      MCP_JSON_LIMIT: ${MCP_ADMIN_JSON_LIMIT:-${MCP_JSON_LIMIT:-}}
+      # Teto do texto devolvido DENTRO do resultado (get_file e o skillMd do
+      # get_skill; padrão 4 MiB). Aqui não há rota de download: acima dele o
+      # get_file recusa com tamanho e tipo e o get_skill omite o corpo. Sem a
+      # variável própria vale a do mcp-public — quem só quer leitura maior para o
+      # agente administrativo sobe esta, e a superfície anônima fica onde está.
+      MCP_MAX_FILE_TEXT_BYTES: ${MCP_ADMIN_MAX_FILE_TEXT_BYTES:-${MCP_MAX_FILE_TEXT_BYTES:-}}
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${MCP_ADMIN_PORT:-3003}:3003'
 
-  # Indexador do RAG — perfil `rag`, fora do `up -d` do dia a dia:
+  # Indexador do RAG — sobe junto no `up -d`, como os demais serviços (decisão do
+  # mantenedor, desde a beta.22). Com `rag.driver=off`, que é o padrão, ele só
+  # publica o estado e não fala com provedor nenhum: o que liga o envio de
+  # conteúdo a terceiros é o driver escolhido no painel, mais a chave no `.env`.
+  #
+  # O `profiles` abaixo fica comentado de propósito. Descomentado, o indexador
+  # volta a ser opt-in de dois passos e só sobe com
   #
   #   docker compose --profile rag up -d indexer
   #
@@ -396,9 +439,11 @@ services:
       MCP_INSPECTOR_SECRET_STORE: ${INSPECTOR_SECRET_STORE:-memory}
     ports:
       # Endereço próprio, de propósito: o BIND_ADDR global publica o site, o
-      # painel e o Postgres de uma vez, e arrastava com eles o único serviço sem
-      # autenticação. Aqui o padrão é o loopback, e sair dele é decisão
-      # deliberada (e acompanhada de INSPECTOR_OMIT_AUTH=false).
+      # painel e os dois MCPs de uma vez, e arrastava com eles o único serviço
+      # sem autenticação. (O Postgres também saiu do BIND_ADDR, na beta.22: tem
+      # o POSTGRES_BIND_ADDR, em database/docker-compose.yml.) Aqui o padrão é o
+      # loopback, e sair dele é decisão deliberada (e acompanhada de
+      # INSPECTOR_OMIT_AUTH=false).
       - '${INSPECTOR_BIND_ADDR:-127.0.0.1}:${INSPECTOR_PORT:-6274}:6274'
       # A aba "MCP Apps" serve um sandbox em 6275/6278. Publique se for usá-la.
       # - '${INSPECTOR_BIND_ADDR:-127.0.0.1}:6275:6275'

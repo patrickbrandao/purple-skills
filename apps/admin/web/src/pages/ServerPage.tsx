@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, LayoutTemplate, Radio, Settings, Trash2, Users } from 'lucide-react';
 import {
@@ -10,6 +10,7 @@ import {
   formatDateTime,
   getMcp,
   getMcpKeys,
+  getMcpOnline,
   getMcpSessions,
   revokeMcpKey,
   updateMcp,
@@ -38,25 +39,71 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
   const toast = useToast();
   const [detail, setDetail] = useState<VirtualMcpDetail | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setDetail(await getMcp(slug));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigate('/mcps');
-    }
-  }, [slug, toast, navigate]);
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
+  // dependesse dele, cada troca de guia buscaria o servidor de novo, piscaria o
+  // esqueleto e remontaria o canvas.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
+  // Uma carga por servidor. O cleanup descarta a resposta atrasada: trocando de
+  // servidor com a página montada, a do anterior podia chegar por último.
   useEffect(() => {
+    let active = true;
     setDetail(null);
-    void load();
-  }, [load]);
+    getMcp(slug)
+      .then((fresh) => active && setDetail(fresh))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/mcps');
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug, toast]);
+
+  // Estável entre renders: a `SessionsTable` recomeça (esqueleto e consulta)
+  // quando a `load` muda, e esta página renderiza de novo a cada abertura ou
+  // fechamento do ⌘K — o valor do `CommandContext`, que `useRegisterCommands`
+  // consome, muda junto. Fica aqui em cima porque hook não vem depois do
+  // `if (!detail)`.
+  const sessionsSlug = detail?.slug ?? slug;
+  const loadSessions = useCallback(
+    (query: { online?: boolean; limit: number; offset: number }) => getMcpSessions(sessionsSlug, query),
+    [sessionsSlug],
+  );
+
+  // Trocar de guia não recarrega mais o servidor: o que uma guia muda e outra
+  // mostra precisa chegar ao detalhe por aqui. Devolve o mesmo objeto quando o
+  // total não mudou, para não renderizar à toa.
+  const onActiveKeys = useCallback((activeKeyCount: number) => {
+    setDetail((current) => (current && current.activeKeyCount !== activeKeyCount ? { ...current, activeKeyCount } : current));
+  }, []);
 
   const tail = location.pathname.slice(`/mcps/${slug}`.length).replace(/^\//, '');
   const tab = tail === 'sessoes' || tail === 'chaves' || tail === 'acesso' || tail === 'configuracoes' ? tail : 'canvas';
   const canEdit = detail ? canEditAccess(detail.access) : false;
   const manages = detail ? canManage(detail.access) : false;
   const base = session.mcpPublicUrl || 'https://<MCP_PUBLIC_URL>';
+
+  // O selo da guia Sessões só andava em dia porque trocar de guia recarregava o
+  // servidor inteiro. Agora a troca pede só o contador — sem esqueleto e sem
+  // remontar o canvas. Em Configurações não: o formulário de lá se repõe quando
+  // o detalhe muda, e um número novo chegando no meio da digitação a apagaria.
+  // Falha aqui não importa: o número é informativo.
+  const loadedSlug = detail?.slug;
+  useEffect(() => {
+    if (!loadedSlug || !manages || tab === 'configuracoes') return;
+    let active = true;
+    getMcpOnline(loadedSlug)
+      .then(({ total }) => {
+        if (active) setDetail((current) => (current && current.onlineSessions !== total ? { ...current, onlineSessions: total } : current));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [loadedSlug, manages, tab]);
 
   useRegisterCommands(
     detail
@@ -146,7 +193,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             element={
               <div className="stage-body">
                 <div className="page wide">
-                  <SessionsTable load={(query) => getMcpSessions(detail.slug, query)} onlineWindowMs={session.onlineWindowMs} />
+                  <SessionsTable load={loadSessions} onlineWindowMs={session.onlineWindowMs} />
                 </div>
               </div>
             }
@@ -158,7 +205,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             element={
               <div className="stage-body">
                 <div className="page">
-                  <KeysPanel mcp={detail} canEdit={manages} base={base} />
+                  <KeysPanel mcp={detail} canEdit={manages} base={base} onActiveKeys={onActiveKeys} />
                 </div>
               </div>
             }
@@ -199,7 +246,18 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
 
 // --------------------------------------------------------------- chaves ----
 
-function KeysPanel({ mcp, canEdit, base }: { mcp: VirtualMcpDetail; canEdit: boolean; base: string }) {
+function KeysPanel({
+  mcp,
+  canEdit,
+  base,
+  onActiveKeys,
+}: {
+  mcp: VirtualMcpDetail;
+  canEdit: boolean;
+  base: string;
+  /** Quantas chaves valem agora: o selo da guia e a gaveta do canvas leem do detalhe da página. */
+  onActiveKeys: (count: number) => void;
+}) {
   const toast = useToast();
   const confirm = useConfirm();
   const [keys, setKeys] = useState<VirtualMcpKeySummary[] | null>(null);
@@ -209,12 +267,16 @@ function KeysPanel({ mcp, canEdit, base }: { mcp: VirtualMcpDetail; canEdit: boo
 
   const load = useCallback(async () => {
     try {
-      setKeys((await getMcpKeys(mcp.slug)).items);
+      const { items } = await getMcpKeys(mcp.slug);
+      setKeys(items);
+      // A mesma conta do servidor (`revoked_at IS NULL`). Antes o total só se
+      // corrigia porque trocar de guia recarregava o servidor inteiro.
+      onActiveKeys(items.filter((key) => !key.revokedAt).length);
     } catch (err) {
       toast.error((err as Error).message);
       setKeys([]);
     }
-  }, [mcp.slug, toast]);
+  }, [mcp.slug, toast, onActiveKeys]);
 
   useEffect(() => {
     void load();

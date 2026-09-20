@@ -188,8 +188,8 @@ export function Services() {
             Cinco serviços, <span className="grad-text">um só catálogo.</span>
           </h2>
           <p>
-            Cada superfície é um container com a sua própria imagem, falando direto com o Postgres —
-            não existe uma API intermediária para cair. Suba tudo com um{' '}
+            Cada superfície é um container com a sua própria imagem, e as que leem o catálogo falam
+            direto com o Postgres — não existe uma API intermediária para cair. Suba tudo com um{' '}
             <code className="mono">docker compose up</code>, ou só o que você usa.
           </p>
         </div>

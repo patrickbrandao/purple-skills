@@ -4,8 +4,14 @@ import { changePassword, logout } from '../api.js';
 import { Button } from '../components/ui.js';
 
 /**
- * Tela obrigatória de quem entrou com senha temporária. Enquanto
+ * Tela obrigatória de quem está com senha temporária. Enquanto
  * `mustChangePassword` estiver ligado, o servidor recusa todas as outras rotas.
+ *
+ * O texto fala da **conta**, não de como a pessoa entrou: quem tem o SSO já
+ * vinculado e pediu uma senha ao administrador chega aqui pelo SSO, sem ter
+ * digitado a temporária. O primeiro acesso por SSO de uma conta pré-criada não
+ * chega aqui — o vínculo descarta a temporária (`resolveOidcUser`, relatório 002
+ * da auditoria de 2026-09-19).
  */
 export function ChangePasswordPage({ iconUrl, onDone }: { iconUrl: string; onDone: () => void }) {
   const [currentPassword, setCurrent] = useState('');
@@ -35,7 +41,7 @@ export function ChangePasswordPage({ iconUrl, onDone }: { iconUrl: string; onDon
           <span>
             <span className="nm">Escolha uma senha</span>
             <br />
-            <span className="sb">você entrou com uma senha temporária</span>
+            <span className="sb">esta conta está com uma senha temporária</span>
           </span>
         </div>
 

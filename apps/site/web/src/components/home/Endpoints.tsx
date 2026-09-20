@@ -36,6 +36,17 @@ export function Endpoints() {
           ? 'O MCP virtual escolhido como padrão foi removido: este endereço responde 404 até outro ser escolhido.'
           : 'Nenhum MCP virtual foi escolhido como padrão: este endereço responde 404 até um administrador escolher.';
 
+  // Mesmo princípio do cartão do MCP: o rótulo diz o estado desta instalação
+  // (`SITE_CORS_ORIGIN`, pelo `corsOpen` do `/api/meta`), e não o padrão do
+  // projeto. Enquanto o `meta` não chega — a home monta antes da resposta —,
+  // só o que vale em qualquer configuração: todas as rotas do site são GET.
+  const apiAuth =
+    meta?.corsOpen === true
+      ? 'leitura · CORS aberto'
+      : meta?.corsOpen === false
+        ? 'leitura · CORS restrito'
+        : 'leitura';
+
   const endpoints: Endpoint[] = [
     {
       id: 'mcp',
@@ -64,7 +75,7 @@ export function Endpoints() {
     {
       id: 'api',
       title: 'API REST pública',
-      auth: 'leitura · CORS aberto',
+      auth: apiAuth,
       text: 'Alternativa ao MCP para scripts e integrações: a mesma busca e os mesmos downloads das skills públicas, em JSON.',
       url: `${meta?.baseUrl ?? ''}/api/skills`,
       icon: <GlobeIcon />,

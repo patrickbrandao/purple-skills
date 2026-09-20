@@ -94,7 +94,9 @@ describe('sessão SSE presa à credencial', () => {
     const res = await postMessage(base, sessionId, 'chave-do-joao');
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ error: { message: /outra credencial/i } });
+    // `stringMatching`, não a regex crua: dentro de `toMatchObject` ela não é
+    // conferida neste Vitest — passava com qualquer mensagem.
+    expect(await res.json()).toMatchObject({ error: { message: expect.stringMatching(/outra credencial/i) } });
   });
 
   it('responde 404 para sessão inexistente, sem revelar identidade', async () => {
@@ -210,7 +212,7 @@ describe('teto de sessões', () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBeTruthy();
-    expect(await res.json()).toMatchObject({ error: { message: /mcp\/stateless/ } });
+    expect(await res.json()).toMatchObject({ error: { message: expect.stringMatching(/mcp\/stateless/) } });
   });
 });
 

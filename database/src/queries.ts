@@ -6,7 +6,7 @@ import {
   isAccessScope,
   isRole,
   isSkillMd,
-  isTextualMime,
+  isTextualContent,
   isValidSlug,
   mimeTypeFor,
   normalizeRelativePath,
@@ -633,14 +633,25 @@ export async function listSkills(options: ListOptions = {}): Promise<SkillSearch
     ? sql`ts_rank(s.search_vector, websearch_to_tsquery('simple', ${query}))`
     : sql`0::float4`;
 
+  // Toda alternativa termina em `s.uuid`, a chave primária (`tasks/036`). `name`
+  // não é único, e `updated_at` e os contadores empatam **em lote** — `now()` é o
+  // mesmo na transação inteira (seed, importação) e um acervo novo tem tudo em
+  // zero. Sem chave única a ordem entre empatados é indefinida, e cada página é
+  // uma execução à parte (o top-N de `LIMIT` nem é estável): medido em 60
+  // páginas de 12 sobre skills empatadas, só 481 de 720 linhas eram distintas em
+  // `score`, 334 em `recent` e 371 em `name` — o resto repetia, e outras tantas
+  // nunca apareciam. É o que as listagens irmãs já fazem (`s.name, s.slug`,
+  // `created_at DESC, id DESC`). `uuid`, e não `slug`: 16 bytes comparados por
+  // `memcmp`, contra um texto na coleção do banco. Vale para a busca híbrida,
+  // que reusa este `order`.
   const order =
     sort === 'recent'
-      ? sql`s.updated_at DESC`
+      ? sql`s.updated_at DESC, s.uuid`
       : sort === 'name'
-        ? sql`s.name ASC`
+        ? sql`s.name ASC, s.uuid`
         : sort === 'relevance' && query
-          ? sql`rank DESC, (s.view_count + s.download_count) DESC, s.updated_at DESC`
-          : sql`(s.view_count + s.download_count) DESC, s.updated_at DESC`;
+          ? sql`rank DESC, (s.view_count + s.download_count) DESC, s.updated_at DESC, s.uuid`
+          : sql`(s.view_count + s.download_count) DESC, s.updated_at DESC, s.uuid`;
 
   const scope = readScope(options);
 
@@ -731,8 +742,11 @@ function semanticScope(scope: SemanticScope): SemanticLeg {
  *     teto de 100 que havia nela travava o conjunto fundido — e com ele o
  *     `total` e a paginação — em 100 + `neighbors`: ligar o RAG encolhia a
  *     busca. Quem põe a cauda no lugar dela é o próprio RRF: `1/(60 + pos)`
- *     decresce com a posição, e como `pos` é único a ordem é total — a
- *     paginação funda não repete nem pula linha.
+ *     decresce com a posição. Mas `pos` é único **por perna**, não na fusão: um
+ *     resultado só-texto na posição N e um só-vetor na posição N recebem o
+ *     mesmo `1/(60 + N)`, e `rrf` empata. Quem fecha a ordem total — e com ela
+ *     a garantia de a paginação funda não repetir nem pular linha — é o
+ *     `s.uuid` no fim do `order` de `listSkills` (`tasks/036`).
  *
  * A distância nunca corta nada na v1: os `neighbors` vizinhos vêm mesmo pouco
  * relacionados, e o que decide a ordem é a fusão. A perna vetorial é uma
@@ -965,7 +979,22 @@ export async function readFile(
   skillUuid: string,
   relativePath: string,
 ): Promise<FileContent | null> {
-  const result = await db().execute(sql`
+  return readFileFrom(db(), skillUuid, relativePath);
+}
+
+/**
+ * `readFile` sobre a conexão de quem chama: o pool, numa leitura avulsa, ou a
+ * transação de uma escrita. Quem grava lê o conteúdo anterior **com a fila das
+ * escritas na mão** (`lockSkillFilesTx`) — e pela própria transação, nunca por
+ * `db()`: pedir uma segunda conexão ao pool segurando a primeira é o jeito de
+ * travar o processo quando a fila enche o pool.
+ */
+async function readFileFrom(
+  executor: Pick<Tx, 'execute'>,
+  skillUuid: string,
+  relativePath: string,
+): Promise<FileContent | null> {
+  const result = await executor.execute(sql`
     SELECT relative_path, mime_type, size_bytes, text_content, binary_content
     FROM files
     WHERE skill_uuid = ${skillUuid} AND lower(relative_path) = lower(${relativePath})
@@ -1028,7 +1057,10 @@ export async function readAllFiles(skillUuid: string): Promise<FileContent[]> {
  * Desde o `018`, quem serve uma skill grava a leitura com
  * `recordSkillAccess`, que soma estes mesmos contadores no mesmo caminho e
  * ainda deixa a linha da guia "Acessos". As duas funções abaixo ficam para
- * quem só quer o número — a semântica é idêntica.
+ * quem só quer o número, e nenhum app as chama mais. **Uma diferença:** elas
+ * não recebem a superfície lida, então somam em todo catálogo vinculado ao
+ * vMCP, com qualquer porta; `recordSkillAccess` sabe a superfície e só conta
+ * o catálogo que serve aquela porta (`tasks/041`).
  */
 export async function incrementViewCount(skillUuid: string, virtualMcpUuid?: string): Promise<void> {
   await bumpCounter('view_count', skillUuid, virtualMcpUuid);
@@ -1094,6 +1126,13 @@ export async function listTags(
 // -------------------------------------------------------------- escrita ----
 
 /**
+ * U+0000. Montado por código, e não escrito como escape, de propósito: uma
+ * ferramenta que "resolva" o escape deixa um byte nulo literal no fonte, e o
+ * arquivo passa a ser binário para o `git` e para o `grep`.
+ */
+const NUL = String.fromCharCode(0);
+
+/**
  * Texto vindo de JSON que ninguém validou.
  *
  * O MCP valida a entrada com zod antes de chegar aqui, mas a rota REST do
@@ -1101,10 +1140,18 @@ export async function listTags(
  * `TypeError` e virar HTTP 500, quando tipo errado é erro do cliente (400).
  * `null` é tratado como ausente — cada chamador decide o que fazer com isso,
  * como já fazia com `undefined`.
+ *
+ * O caractere nulo também é 400: `text` e `varchar` não o guardam, e o
+ * Postgres recusa o **parâmetro** com 22021 antes de olhar a consulta — nome,
+ * descrição, slug ou `q` com ele terminavam em 500, com o SQL inteiro no log
+ * (`tasks/038`). Nada que gravava passa a ser recusado: com o nulo, nenhuma
+ * dessas escritas jamais chegou ao fim. Os rótulos de sessão **não** passam
+ * por aqui — `sessionLabel` limpa em vez de recusar.
  */
 function optionalText(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'string') throw badRequest(`O campo "${field}" deve ser uma string`);
+  if (value.includes(NUL)) throw badRequest(`O campo "${field}" não pode conter o caractere nulo`);
   return value;
 }
 
@@ -1178,7 +1225,15 @@ export async function createSkill(
   const icon = optionalIcon(input.icon) ?? null;
   const isActive = optionalBoolean(input.isActive, 'isActive') ?? true;
   const isPublic = optionalBoolean(input.isPublic, 'isPublic') ?? false;
-  const links = await resolveLinks(input.mcps ?? []);
+  // Em ordem fixa (a do uuid), e não na que o cliente mandou: cada `linkTx` trava
+  // o vMCP até o COMMIT, e duas criações publicando nos mesmos servidores em
+  // ordens opostas travavam em cruz — medido, 149 de 150 pares perdiam uma das
+  // duas por deadlock (40P01 → 500). É a lição das tags (`replaceTagsTx`): a
+  // ordem só precisa ser a **mesma** em todo chamador. O que muda para quem lê é
+  // a ordem das linhas `mcp.update` na auditoria.
+  const links = [...(await resolveLinks(input.mcps ?? []))].sort((a, b) =>
+    a.virtualMcpUuid.toLowerCase() < b.virtualMcpUuid.toLowerCase() ? -1 : 1,
+  );
 
   // Validado antes de abrir a transação: um caminho recusado no meio da
   // gravação deixaria a skill criada sem parte dos anexos.
@@ -1433,11 +1488,27 @@ export async function updateSkillWithContent(
   const plan = await planSkillUpdate(input, existing);
   let savedSlug = existing.slug;
 
-  const previousSkillMd =
-    typeof input.skillMd === 'string' ? await readTextFile(existing.uuid, SKILL_MD) : null;
+  const skillMd = typeof input.skillMd === 'string' ? Buffer.from(input.skillMd, 'utf8') : null;
+  // Antes da transação: um `SKILL.md` com byte nulo é 400 sem tocar no banco.
+  if (skillMd) fileColumns(SKILL_MD, skillMd);
 
   try {
     await db().transaction(async (tx) => {
+      // Quem grava o `SKILL.md` entra na fila das escritas de arquivo da skill
+      // ANTES de tocar em qualquer linha (`tasks/022`). Esta transação trava
+      // `skills` e depois o `SKILL.md` em `files`; um `setFile('SKILL.md')` trava
+      // `files` e, pelo trigger `files_reindex_skill_trg`, pede `skills` no fim
+      // da statement — ordens opostas, 40P01. Nada de `FOR UPDATE` na skill (é
+      // a armadilha que `createFile` documenta): a fila é um advisory lock, que
+      // ninguém pede segurando linha. Sem `skillMd` esta escrita não toca
+      // `files` e fica fora da fila, como `updateSkill`.
+      let previousSkillMd: string | null = null;
+      if (skillMd) {
+        await lockSkillFilesTx(tx, existing.uuid);
+        const previous = await readFileFrom(tx, existing.uuid, SKILL_MD);
+        previousSkillMd = previous?.isText ? previous.buffer.toString('utf8') : null;
+      }
+
       // A transferência valida o novo dono e apaga a concessão dele antes
       // do UPDATE; o e-mail vai para o label da auditoria.
       const newOwnerEmail = plan.transfer
@@ -1449,8 +1520,8 @@ export async function updateSkillWithContent(
         await replaceTagsTx(tx, existing.uuid, plan.tags);
       }
 
-      if (typeof input.skillMd === 'string') {
-        await upsertFileTx(tx, existing.uuid, SKILL_MD, Buffer.from(input.skillMd, 'utf8'));
+      if (skillMd) {
+        await upsertFileTx(tx, existing.uuid, SKILL_MD, skillMd);
         await auditTx(tx, {
           skillUuid: existing.uuid,
           skillSlug: savedSlug,
@@ -1530,6 +1601,28 @@ async function resolveLinks(inputs: readonly SkillLinkInput[]): Promise<Resolved
  * A posição no canvas entra no INSERT e, num vínculo que já existe, só
  * substitui a gravada quando foi informada: reescrever as flags pelo
  * formulário da skill não pode devolver o nó ao auto-layout.
+ *
+ * **A ordem das travas** (`tasks/023`) é a de toda escrita no recorte de um
+ * vMCP — `setVirtualMcpSkills`, `setVirtualMcpCanvas`, os catálogos: **travar**
+ * o vMCP, mexer nos vínculos e só então **gravar** no vMCP. São duas regras, e
+ * as duas foram medidas:
+ *
+ *   - *o vMCP antes do vínculo.* Na ordem inversa, reescrever um vínculo
+ *     existente segurava a linha dele e pedia a do servidor, enquanto o canvas
+ *     segurava a do servidor e pedia a do vínculo: 28 mortes por 40P01 em 150
+ *     pares contra o canvas, 59 contra o recorte;
+ *   - *trava pura no começo, `UPDATE` no fim.* Adiantar o `UPDATE virtual_mcps`
+ *     para o começo fecha aquele ciclo e abre outro, mais raro: a FK de
+ *     `skill_accesses` pede `FOR KEY SHARE` no vMCP, que não espera um `FOR NO
+ *     KEY UPDATE` — mas, se o snapshot dela viu uma versão já superada da linha,
+ *     o Postgres segue a cadeia de versões e **espera o `UPDATE` em andamento**
+ *     (`while rechecking updated tuple` no log). `recordSkillAccess` segura o
+ *     vínculo e espera o vMCP; quem atualizou o vMCP espera o vínculo. Medido: 3
+ *     mortes em 34 mil operações mistas. A trava pura não cria versão nova da
+ *     linha, então não há o que esperar; e, quando o `UPDATE` chega, esta
+ *     transação já tem todos os vínculos de que precisa.
+ *
+ * `FOR NO KEY UPDATE`, e não `FOR UPDATE` — ver `lockVirtualMcpTx`.
  */
 async function linkTx(
   tx: Tx,
@@ -1539,6 +1632,15 @@ async function linkTx(
   actor: AuditActor | null | undefined,
   position: CanvasPoint | null = null,
 ) {
+  const locked = await tx.execute(sql`
+    SELECT uuid FROM virtual_mcps WHERE uuid = ${link.virtualMcpUuid} FOR NO KEY UPDATE
+  `);
+  // O vMCP foi apagado entre o `resolveLinks` e a transação: o mesmo 400 de lá,
+  // em vez da FK do INSERT abaixo virar 500 (medido: 44 de 100 pares
+  // `deleteVirtualMcp` × `linkSkill`).
+  if ((locked.rows as Row[]).length === 0) {
+    throw badRequest(`MCP virtual não encontrado: ${link.virtualMcpUuid}`);
+  }
   await tx.execute(sql`
     INSERT INTO virtual_mcp_skills
       (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y)
@@ -1552,6 +1654,7 @@ async function linkTx(
       pos_x = COALESCE(EXCLUDED.pos_x, virtual_mcp_skills.pos_x),
       pos_y = COALESCE(EXCLUDED.pos_y, virtual_mcp_skills.pos_y)
   `);
+  // Por último, com o vínculo já na mão (ver acima).
   await tx.execute(
     sql`UPDATE virtual_mcps SET updated_at = now() WHERE uuid = ${link.virtualMcpUuid}`,
   );
@@ -1611,6 +1714,13 @@ export async function unlinkSkill(
   if (!isUuid(virtualMcpUuid)) throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
 
   await db().transaction(async (tx) => {
+    // A ordem de `linkTx` (`tasks/023`): trava pura no vMCP, o vínculo, e só
+    // então o `UPDATE` do vMCP. Na ordem antiga (o vínculo primeiro) eram 57
+    // mortes por 40P01 em 150 pares contra o canvas. vMCP inexistente cai no
+    // 404 de baixo, como sempre: não há vínculo a desfazer.
+    await tx.execute(
+      sql`SELECT uuid FROM virtual_mcps WHERE uuid = ${virtualMcpUuid} FOR NO KEY UPDATE`,
+    );
     const removed = await tx.execute(sql`
       DELETE FROM virtual_mcp_skills
       WHERE virtual_mcp_uuid = ${virtualMcpUuid} AND skill_uuid = ${existing.uuid}
@@ -1647,6 +1757,11 @@ export async function deleteSkill(
   const existing = await requireSkill(slug);
 
   await db().transaction(async (tx) => {
+    // A mesma fila das escritas de arquivo (`setFile`): o `DELETE` trava a skill
+    // e a cascata pede as linhas de `files`, a ordem inversa de quem grava
+    // arquivo. Com a fila, a remoção espera a escrita em andamento e quem vier
+    // depois recebe 404.
+    await lockSkillFilesTx(tx, existing.uuid);
     await tx.execute(sql`DELETE FROM skills WHERE uuid = ${existing.uuid}`);
     await auditTx(tx, {
       skillUuid: existing.uuid,
@@ -1665,6 +1780,17 @@ export type FileInput = { relativePath: string; content: Buffer | string };
 /**
  * Cria ou sobrescreve um arquivo da skill (upsert, em qualquer caixa). Para
  * criar sem risco de sobrescrever, `createFile`.
+ *
+ * **Concorrência** (`tasks/022`): a transação começa pela fila das escritas de
+ * arquivo da skill (`lockSkillFilesTx`), como `createFile`, `setFiles`,
+ * `deleteFile`, `deleteSkill` e o `updateSkillWithContent` que grava o
+ * `SKILL.md`. Quem grava arquivo trava a linha de `files` e, pelos triggers
+ * (`files_reindex_skill_trg`, `files_rag_stale_trg`), pede a de `skills` no fim
+ * da **mesma** statement; quem salva a skill trava `skills` e depois o
+ * `SKILL.md`. Ordens opostas: medido em pares concorrentes, 59 de 150 morriam
+ * com 40P01 (500). A fila é sempre a **primeira** statement — ninguém a pede
+ * segurando linha, então ela não fecha ciclo —, e o conteúdo anterior é lido
+ * com ela na mão: a auditoria registra o que esta escrita de fato substituiu.
  */
 export async function setFile(
   slug: string,
@@ -1678,23 +1804,40 @@ export async function setFile(
   if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
 
   const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-  const previous = await readFile(existing.uuid, path);
-
-  await db().transaction(async (tx) => {
-    await upsertFileTx(tx, existing.uuid, path, buffer);
-    await auditTx(tx, {
-      skillUuid: existing.uuid,
-      skillSlug: slug,
-      filePath: path,
-      action: previous ? 'update' : 'create',
-      source,
-      actor,
-      previousContent: previous?.isText ? previous.buffer.toString('utf8') : null,
-    });
-  });
-
+  // Antes da transação: o `SKILL.md` que não é texto é 400 sem tocar no banco.
   const { mimeType, sizeBytes, isText } = fileColumns(path, buffer);
+
+  try {
+    await db().transaction(async (tx) => {
+      await lockSkillFilesTx(tx, existing.uuid);
+      const previous = await readFileFrom(tx, existing.uuid, path);
+      await upsertFileTx(tx, existing.uuid, path, buffer);
+      await auditTx(tx, {
+        skillUuid: existing.uuid,
+        skillSlug: slug,
+        filePath: path,
+        action: previous ? 'update' : 'create',
+        source,
+        actor,
+        previousContent: previous?.isText ? previous.buffer.toString('utf8') : null,
+      });
+    });
+  } catch (err) {
+    throw skillGoneOr(err, slug);
+  }
+
   return { relativePath: path, mimeType, sizeBytes, isText };
+}
+
+/**
+ * Um `deleteSkill` entre o `requireSkill` e o INSERT do arquivo: a FK de `files`
+ * falha (23503), e isso é o 404 da skill que sumiu — não erro interno. Medido
+ * em pares `deleteSkill` × `setFile`: 29 a 34 de 100 respondiam 500.
+ */
+function skillGoneOr(err: unknown, slug: string): unknown {
+  return isForeignKeyViolation(err, 'files_skill_uuid_fkey')
+    ? notFound(`Skill não encontrada: ${slug}`)
+    : err;
 }
 
 /**
@@ -1845,10 +1988,16 @@ export async function deleteFile(
   if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
   if (isSkillMd(path)) throw badRequest('O arquivo SKILL.md não pode ser removido');
 
-  const previous = await readFile(existing.uuid, path);
-  if (!previous) throw notFound(`Arquivo não encontrado: ${path}`);
-
   await db().transaction(async (tx) => {
+    // A fila das escritas de arquivo da skill, como em `setFile`: o `DELETE`
+    // trava a linha de `files` e o trigger pede a de `skills`, e um `setFiles`
+    // com `replace` — que já tem a skill e quer apagar esta mesma linha — fechava
+    // o ciclo (medido: 4 mortes por 40P01 em 100 pares). A leitura vem depois
+    // da fila: duas remoções simultâneas do mesmo caminho auditavam as duas.
+    await lockSkillFilesTx(tx, existing.uuid);
+    const previous = await readFileFrom(tx, existing.uuid, path);
+    if (!previous) throw notFound(`Arquivo não encontrado: ${path}`);
+
     // Pelo caminho exato da linha lida, não por `lower(...)`: um filtro
     // insensível a caixa apagaria de uma vez todas as variantes do nome.
     await tx.execute(
@@ -1864,6 +2013,50 @@ export async function deleteFile(
       previousContent: previous.isText ? previous.buffer.toString('utf8') : null,
     });
   });
+}
+
+/**
+ * "Fora desta lista de caminhos", como o banco o decide: a `lower()` do
+ * Postgres dos dois lados, a mesma do índice `files_skill_path_lower_uniq`. É o
+ * predicado do `DELETE` de `setFiles` e o da prévia — um fragmento só, para os
+ * dois nunca discordarem (`tasks/017`).
+ */
+function outsideOfSql(keep: readonly string[]): SQL {
+  return sql`lower(relative_path) <> ALL(ARRAY(
+    SELECT lower(enviado) FROM unnest(${sql.param([...keep])}::text[]) AS t(enviado)
+  ))`;
+}
+
+/**
+ * O que um `setFiles(slug, arquivos, …, { replace: true })` **removeria** agora:
+ * os caminhos gravados que não estão na lista, menos o `SKILL.md`. É a prévia
+ * que o chamador mostra antes de confirmar (`expectedDeletions`), com **o mesmo
+ * predicado do `DELETE`** — quem a refaz no app dobra a caixa com o
+ * `toLowerCase()` do JS e discorda do banco em `İ` e no sigma final: anunciava
+ * uma remoção que não acontece, e o 409 de `expectedDeletions` não tinha saída.
+ *
+ * Só leitura, sem trava: a árvore pode mudar entre a prévia e a escrita, e é
+ * para isso que `expectedDeletions` é conferido dentro da transação. Caminho
+ * inválido é o mesmo 400 de `setFiles`; a ordem é a de `listFiles`.
+ */
+export async function previewSetFilesDeletions(
+  skillUuid: string,
+  relativePaths: readonly string[],
+): Promise<string[]> {
+  if (!isUuid(skillUuid)) return [];
+  const keep = relativePaths.map((relativePath) => {
+    const path = normalizeRelativePath(relativePath);
+    if (!path) throw badRequest(`Caminho inválido: ${relativePath}`);
+    return path;
+  });
+  keep.push(SKILL_MD);
+
+  const result = await db().execute(sql`
+    SELECT relative_path FROM files
+    WHERE skill_uuid = ${skillUuid} AND ${outsideOfSql(keep)}
+    ORDER BY relative_path ASC
+  `);
+  return (result.rows as Row[]).map((row) => row.relative_path as string);
 }
 
 export type SetFilesOptions = {
@@ -1938,8 +2131,15 @@ export async function setFiles(
 
     let removed = 0;
     if (replace) {
-      const keep = normalized.map((f) => f.path.toLowerCase());
-      keep.push(SKILL_MD.toLowerCase());
+      // Os caminhos vão **como vieram**: quem dobra a caixa é o Postgres, dos
+      // dois lados, com a mesma `lower()` do índice `files_skill_path_lower_uniq`
+      // (`tasks/017`). O `toLowerCase()` do JS faz o mapeamento completo do
+      // Unicode — `İ` vira dois code points, o sigma final vira `ς` — e o
+      // `lower()` do cluster (libc) é 1:1: com as chaves feitas no JS, este
+      // `DELETE` apagava o `İndice.md` que o upsert acabara de gravar, com
+      // resposta de sucesso.
+      const keep = normalized.map((f) => f.path);
+      keep.push(SKILL_MD);
       // Uma statement: o `DELETE` devolve o que saiu e a auditoria parte dessa
       // lista. `left(...)` é o `truncate` de `auditInsert` em SQL — o conteúdo
       // vai até 200 000 caracteres, e binário não vai (o `text_content` dele é
@@ -1948,7 +2148,7 @@ export async function setFiles(
         WITH removidos AS (
           DELETE FROM files
           WHERE skill_uuid = ${existing.uuid}
-            AND lower(relative_path) <> ALL(${sql.param(keep)}::text[])
+            AND ${outsideOfSql(keep)}
           RETURNING relative_path, text_content
         ), auditados AS (
           INSERT INTO audit_log (
@@ -1982,6 +2182,9 @@ export async function setFiles(
       actor,
       previousContent: null,
     });
+  }).catch((err: unknown) => {
+    // A skill apagada entre o `requireSkill` e o INSERT é 404, como em `setFile`.
+    throw skillGoneOr(err, slug);
   });
 
   return listFiles(existing.uuid);
@@ -2119,8 +2322,16 @@ export type CreateUserInput = {
    * segundo recebe 409 em vez de criar uma segunda conta admin — o que
    * **desligaria a adoção de órfãos**, que exige uma admin ativa só
    * (`adoptOrphans`), deixando a instalação com skills e catálogos sem dono.
-   * Não vale para `createAccount` nem para o auto-provisionamento OIDC, que
-   * gravam com a tabela cheia.
+   * Não vale para `createAccount` nem para o auto-provisionamento OIDC — e
+   * **nada aqui os impede de gravar com a tabela vazia**: sem o campo,
+   * `createUser` grava em qualquer estado da tabela, com qualquer papel. Uma
+   * primeira conta `membro` fecha o `/api/setup` e o login legado sem existir
+   * administrador (`tasks/001`), e quem tem de garantir que a primeira conta é
+   * o admin do setup é o chamador: conta nenhuma é apagada pelo produto, então
+   * um `countUsers() === 0` lido antes do INSERT não tem corrida. A guarda não
+   * mora nesta função porque seria incondicional, e criar uma conta comum
+   * primeiro é o que ambiente de teste faz. A saída de uma instalação que já
+   * caiu nesse estado está no `README.md` ("Instalação sem administrador").
    */
   onlyIfTableEmpty?: boolean;
 };
@@ -2186,8 +2397,23 @@ export type UpdateUserInput = {
   mustChangePassword?: boolean;
   oidcIssuer?: string | null;
   oidcSubject?: string | null;
-  /** true incrementa token_version — derruba todo cookie já emitido. */
+  /**
+   * true incrementa token_version — derruba todo cookie já emitido. **Sozinho**
+   * (nenhum outro campo na chamada) não carimba `updated_at`: é o "Sair" do
+   * painel, movimento de sessão e não alteração administrativa da conta
+   * (`tasks/034`). Com qualquer campo junto, o carimbo vale como sempre.
+   */
   bumpTokenVersion?: boolean;
+  /**
+   * `true` zera `failed_attempts` e `locked_until` no mesmo UPDATE — o destrave
+   * que acompanha a senha redefinida por quem administra ou por um link de
+   * e-mail (`tasks/005`). Sem ele a senha nova, correta, segue recusada até a
+   * trava vencer: o login confere `locked_until` **antes** da senha, e o único
+   * outro código que a limpa é `registerSuccessfulLogin`, que fica inalcançável.
+   * `false` e ausente não mexem — a troca pelo próprio dono logado não tem por
+   * que tocar a trava. Não é login: `last_login_at` fica como está.
+   */
+  clearLoginLock?: boolean;
   /**
    * `true` recusa a escrita com 400 se não houver **outra** conta admin ativa
    * depois dela — a invariante "sempre sobra um administrador" (`tasks/049`).
@@ -2238,11 +2464,25 @@ export async function updateUser(uuid: string, input: UpdateUserInput): Promise<
   }
   if (input.oidcIssuer !== undefined) sets.push(sql`oidc_issuer = ${input.oidcIssuer}`);
   if (input.oidcSubject !== undefined) sets.push(sql`oidc_subject = ${input.oidcSubject}`);
+  if (input.clearLoginLock === true) {
+    sets.push(sql`failed_attempts = 0`, sql`locked_until = NULL`);
+  }
+
+  // Medido **antes** do push do `token_version`: "nenhum campo da conta entrou
+  // no SET, e a chamada só revoga as sessões" — o "Sair" do painel.
+  const soRevogaSessoes = sets.length === 0 && input.bumpTokenVersion === true;
   // Incremento no próprio UPDATE: ler-e-somar no app perderia uma revogação
   // concorrente, que é justamente o que não pode falhar aqui.
   if (input.bumpTokenVersion === true) sets.push(sql`token_version = token_version + 1`);
 
-  sets.push(sql`updated_at = now()`);
+  // `updated_at` descreve alteração administrativa da conta — a razão de
+  // `registerFailedLogin`/`registerSuccessfulLogin` não o tocarem. O logout é
+  // movimento de sessão e não tem linha na trilha que explique uma data nova
+  // (`tasks/034`): ali o carimbo fica como está. Com qualquer campo junto —
+  // senha, papel, ativação, vínculo OIDC, destrave — ele vale; e
+  // `updateUser(uuid, {})`, o PATCH do painel que não mudou nada, continua
+  // carimbando, que é também o que mantém o `SET` não vazio.
+  if (!soRevogaSessoes) sets.push(sql`updated_at = now()`);
 
   const update = sql`
     UPDATE users SET ${sql.join(sets, sql`, `)}
@@ -2405,27 +2645,56 @@ export async function createApiKey(input: {
 }
 
 /**
+ * O que a revogação de uma chave `psk_` devolve: o que identifica a chave numa
+ * linha de auditoria, lido no próprio UPDATE. O app rotula o `key.revoke` como
+ * rotulou o `key.create` — pelo nome e pelo prefixo — em vez do uuid, que não
+ * aparece em tela nenhuma (`tasks/040`). `userEmail` é o dono da chave, que com
+ * o admin revogando não é quem chamou.
+ */
+export type RevokedApiKey = {
+  name: string;
+  prefix: string;
+  userUuid: string;
+  userEmail: string;
+};
+
+/**
  * Revoga. `userUuid` presente restringe ao dono (usuário revogando a própria
  * chave); ausente é o admin revogando qualquer uma.
  *
- * `false` quando não achou **ou** já estava revogada — a operação é
+ * `null` quando não achou **ou** já estava revogada — a operação é
  * idempotente e nunca reescreve o `revoked_at` original, que é o que datou a
- * revogação na auditoria.
+ * revogação na auditoria. Era `boolean` até o `tasks/040`: quem só testa
+ * `if (!revoked)` não muda, porque `null` é falso e o objeto é verdadeiro.
  */
-export async function revokeApiKey(id: string, userUuid?: string | null): Promise<boolean> {
-  if (!isUuid(id)) return false;
+export async function revokeApiKey(
+  id: string,
+  userUuid?: string | null,
+): Promise<RevokedApiKey | null> {
+  if (!isUuid(id)) return null;
 
   const owner = userUuid ?? null;
-  if (owner !== null && !isUuid(owner)) return false;
+  if (owner !== null && !isUuid(owner)) return null;
 
+  // O JOIN é pela PK de `users` e sempre casa (`user_uuid` é NOT NULL com FK);
+  // `UPDATE … FROM` só trava a linha da chave, não a da conta.
   const result = await db().execute(sql`
-    UPDATE api_keys SET revoked_at = now()
-    WHERE id = ${id}
-      AND revoked_at IS NULL
-      AND (${owner}::uuid IS NULL OR user_uuid = ${owner}::uuid)
-    RETURNING id
+    UPDATE api_keys k SET revoked_at = now()
+    FROM users u
+    WHERE k.id = ${id}
+      AND k.revoked_at IS NULL
+      AND (${owner}::uuid IS NULL OR k.user_uuid = ${owner}::uuid)
+      AND u.uuid = k.user_uuid
+    RETURNING k.name, k.prefix, k.user_uuid, u.email
   `);
-  return (result.rows as Row[]).length > 0;
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+  return {
+    name: row.name,
+    prefix: row.prefix,
+    userUuid: row.user_uuid,
+    userEmail: row.email,
+  };
 }
 
 export type ApiKeyRecord = {
@@ -2544,19 +2813,33 @@ export async function consumeResetToken(tokenHash: string): Promise<{ userUuid: 
  * que `skill_slug`/`file_path` são nulos e a conta pode nem existir mais.
  *
  * As chaves de MCP virtual (`mcp.key.*`) entram aqui pelo mesmo motivo: a
- * emissão e a revogação são do app, e o alvo é o nome da chave.
+ * emissão e a revogação são do app, e o alvo é o nome da chave. Na revogação o
+ * app o recebe de `revokeApiKey`/`revokeVirtualMcpKey`, que devolvem nome e
+ * prefixo da chave revogada (`tasks/040`) — o uuid dela não serve de rótulo:
+ * não aparece em tela nenhuma e, na `psv_`, some com o vMCP.
  *
  * `user.password` é a senha de **outra** conta trocada por quem administra ou
  * por um link de redefinição (`024`); o ator diz o caminho (e-mail do admin,
  * `bootstrap` ou `link-de-redefinicao`) e `targetLabel` a conta afetada. A
  * troca feita pelo próprio dono logado não entra, como o login.
+ *
+ * `user.activate` e `user.link` (`026`, `tasks/003`) são os outros dois eventos
+ * que mudam **quem consegue entrar** na conta. `user.activate` é o par de
+ * `user.deactivate` — reativar devolve o login, as concessões e as chaves
+ * `psk_` de uma vez —, com o e-mail de quem reativou como ator. `user.link` é
+ * uma identidade OIDC passando a abrir uma conta local que já existia: uma vez
+ * por conta, não é login; o ator é o caminho (`oidc:<issuer>`, o rótulo do
+ * `user.create` por SSO, com `userUuid` nulo) e `targetLabel` leva o e-mail da
+ * conta e o `subject` que a assumiu.
  */
 export async function recordAccountAudit(entry: {
   action:
     | 'user.create'
     | 'user.role'
     | 'user.deactivate'
+    | 'user.activate'
     | 'user.password'
+    | 'user.link'
     | 'key.create'
     | 'key.revoke'
     | 'mcp.key.create'
@@ -2610,8 +2893,9 @@ export async function listAudit(limit = 100): Promise<AuditEntry[]> {
 
 /**
  * Espelho do `CHECK` de `audit_log.action` (hoje em
- * `schema/024-auditoria-de-troca-de-senha.sql`, que repete a lista inteira),
- * para recusar um filtro inválido com 400 em vez de devolver uma página vazia.
+ * `schema/026-auditoria-de-vinculo-e-reativacao.sql`, que repete a lista
+ * inteira), para recusar um filtro inválido com 400 em vez de devolver uma
+ * página vazia.
  */
 const AUDIT_ACTIONS: readonly AuditAction[] = [
   'create',
@@ -2620,7 +2904,9 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'user.create',
   'user.role',
   'user.deactivate',
+  'user.activate',
   'user.password',
+  'user.link',
   'key.create',
   'key.revoke',
   'mcp.create',
@@ -2834,15 +3120,23 @@ export async function setDefaultVirtualMcp(
   actor: AuditActor,
 ): Promise<DefaultMcpResolution> {
   let slug: string | null = null;
+  // O que vai para `settings` é o uuid **lido do banco**, não o texto recebido
+  // (`tasks/033`). `isUuid` e o tipo `uuid` aceitam maiúsculas, então a
+  // validação abaixo acha o servidor; mas `value` é TEXT e toda leitura compara
+  // `m.uuid::text = st.value`, com `uuid::text` sempre em minúsculas — o valor
+  // gravado como veio era aceito, auditado como sucesso e resolvido como
+  // `deleted`, com a raiz do MCP público em 404.
+  let canonical: string | null = null;
   if (uuid !== null) {
     const mcp = await getVirtualMcpByUuid(uuid);
     if (!mcp) throw notFound(`MCP virtual não encontrado: ${uuid}`);
     slug = mcp.slug;
+    canonical = mcp.uuid;
   }
 
   await db().transaction(async (tx) => {
     await tx.execute(sql`
-      INSERT INTO settings (key, value) VALUES (${DEFAULT_MCP_SETTING}, ${uuid})
+      INSERT INTO settings (key, value) VALUES (${DEFAULT_MCP_SETTING}, ${canonical})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
     `);
     await auditTx(tx, {
@@ -3412,11 +3706,12 @@ export async function setVirtualMcpSkills(
   const slugs = wanted.map((item) => item.slug);
 
   await db().transaction(async (tx) => {
-    // `FOR UPDATE` serializa dois salvamentos concorrentes do mesmo recorte:
-    // o segundo espera o primeiro e enxerga o estado dele, em vez de os dois
-    // apagarem e inserirem por cima um do outro.
+    // A trava serializa dois salvamentos concorrentes do mesmo recorte: o
+    // segundo espera o primeiro e enxerga o estado dele, em vez de os dois
+    // apagarem e inserirem por cima um do outro. `FOR NO KEY UPDATE`, e não
+    // `FOR UPDATE` — ver `lockVirtualMcpTx`.
     const locked = await tx.execute(
-      sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR UPDATE`,
+      sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR NO KEY UPDATE`,
     );
     const mcp = (locked.rows as Row[])[0];
     if (!mcp) throw notFound(`MCP virtual não encontrado: ${uuid}`);
@@ -3511,21 +3806,15 @@ export async function setVirtualMcpCanvas(
   const catalogPositions = readNodePositions(input.catalogPositions, 'catalogPositions');
 
   await db().transaction(async (tx) => {
-    // `FOR UPDATE` serializa com `setVirtualMcpSkills`: o canvas não grava a
-    // posição de um vínculo que um salvamento concorrente está removendo.
+    // A trava serializa com toda escrita no recorte (`setVirtualMcpSkills`,
+    // `linkSkill`, `unlinkSkill`, os catálogos): o canvas não grava a posição
+    // de um vínculo que um salvamento concorrente está removendo. `FOR NO KEY
+    // UPDATE`, e não `FOR UPDATE` — ver `lockVirtualMcpTx`.
     const locked = await tx.execute(
-      sql`SELECT uuid FROM virtual_mcps WHERE uuid = ${virtualMcpUuid} FOR UPDATE`,
+      sql`SELECT uuid FROM virtual_mcps WHERE uuid = ${virtualMcpUuid} FOR NO KEY UPDATE`,
     );
     if ((locked.rows as Row[]).length === 0) {
       throw notFound(`MCP virtual não encontrado: ${virtualMcpUuid}`);
-    }
-
-    if (Object.keys(layoutPatch).length > 0) {
-      // `||` de jsonb substitui chave a chave: as não informadas ficam.
-      await tx.execute(sql`
-        UPDATE virtual_mcps SET layout = layout || ${JSON.stringify(layoutPatch)}::jsonb
-        WHERE uuid = ${virtualMcpUuid}
-      `);
     }
 
     for (const item of positions) {
@@ -3554,6 +3843,19 @@ export async function setVirtualMcpCanvas(
       if ((updated.rows as Row[]).length === 0) {
         throw badRequest(`O catálogo "${item.slug}" não está vinculado a este MCP virtual`);
       }
+    }
+
+    // O `UPDATE` do vMCP por último, com os vínculos já gravados — a regra de
+    // `linkTx`: antes das posições ele criava uma versão nova da linha do
+    // servidor, e a FK de um `recordSkillAccess` que já segurava um daqueles
+    // vínculos esperava por ela. É tudo ou nada do mesmo jeito: uma posição
+    // recusada desfaz a transação inteira, com ou sem `layout`.
+    if (Object.keys(layoutPatch).length > 0) {
+      // `||` de jsonb substitui chave a chave: as não informadas ficam.
+      await tx.execute(sql`
+        UPDATE virtual_mcps SET layout = layout || ${JSON.stringify(layoutPatch)}::jsonb
+        WHERE uuid = ${virtualMcpUuid}
+      `);
     }
   });
 }
@@ -3631,11 +3933,7 @@ function assertVirtualMcpSlug(slug: string): void {
 /** Slug livre a partir do nome, no padrão de `resolveSlug` — mas sobre `virtual_mcps`. */
 async function freeVirtualMcpSlug(name: string): Promise<string> {
   const desired = slugify(name) || 'mcp';
-  const result = await db().execute(
-    sql`SELECT slug FROM virtual_mcps WHERE slug = ${desired} OR slug LIKE ${desired + '-%'}`,
-  );
-  const taken = (result.rows as Row[]).map((row) => row.slug as string);
-  return uniqueSlug(desired, taken);
+  return uniqueSlug(desired, await takenSlugs('virtual_mcps', desired));
 }
 
 /** `null` passa; UUID torto é "conta não encontrada", como em `createApiKey`. */
@@ -3664,13 +3962,27 @@ function requireBoolean(value: unknown, field: string, subject: string): boolean
 }
 
 /**
- * Trava o vMCP (`FOR UPDATE`) e devolve o slug: serializa escritas
- * concorrentes no recorte dele — dois salvamentos não apagam e inserem por
- * cima um do outro — e é o 404 de quem não existe.
+ * Trava o vMCP e devolve o slug: serializa escritas concorrentes no recorte
+ * dele — dois salvamentos não apagam e inserem por cima um do outro — e é o
+ * 404 de quem não existe.
+ *
+ * **`FOR NO KEY UPDATE`, e não `FOR UPDATE`** (`tasks/023`), aqui e nas duas
+ * travas irmãs (`setVirtualMcpSkills`, `setVirtualMcpCanvas`). As duas excluem
+ * todo escritor do recorte, inclusive o `UPDATE virtual_mcps` de `linkTx`, e as
+ * duas seguram `deleteVirtualMcp`, a renomeação e a transferência (que pedem
+ * `FOR UPDATE`). A diferença é o `FOR KEY SHARE` que todo INSERT em tabela filha
+ * pede pela FK: `FOR UPDATE` o barra, e `recordSkillAccess` — uma statement só,
+ * que soma o contador do vínculo e **depois** confere a FK de `skill_accesses`
+ * com o servidor — segurava o vínculo esperando o vMCP enquanto o canvas
+ * segurava o vMCP esperando o vínculo. Medido: 9 mortes por 40P01 em 150 pares
+ * contra o canvas e 26 contra o recorte, quase sempre a do registro de acesso
+ * (a leitura sumia da guia Acessos, com o contador); com `FOR NO KEY UPDATE`,
+ * nenhuma. É a mesma lição do `FOR UPDATE` em `skills` (`createFile`): numa
+ * linha-mãe ele cruza com a FK de quem insere filho.
  */
 async function lockVirtualMcpTx(tx: Tx, uuid: string): Promise<{ slug: string }> {
   const locked = await tx.execute(
-    sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR UPDATE`,
+    sql`SELECT slug FROM virtual_mcps WHERE uuid = ${uuid} FOR NO KEY UPDATE`,
   );
   const row = (locked.rows as Row[])[0];
   if (!row) throw notFound(`MCP virtual não encontrado: ${uuid}`);
@@ -3781,14 +4093,29 @@ export async function listCatalogs(
  * Os membros, com a participação (`cs.is_active`) e o estado da própria
  * skill (`skillIsActive`, o alerta da lista). Inclui inativos: é o painel
  * que lê.
+ *
+ * Com `viewer` que não é admin, **só os membros que a conta consegue abrir**
+ * (`tasks/010`). Dono e concessão no catálogo continuam vendo todos — por
+ * `catalogSeenBy` todo membro é legível, ativo ou não. Quem chega só pelo
+ * "público" lê a participação **ativa** (`docs/12` §3.1) e deixa de receber
+ * nome, slug e descrição da skill privada cuja participação foi desativada —
+ * que o site já não mostrava, e cuja página respondia 404 a essa conta.
+ *
+ * `cs.is_active` vem primeiro de propósito: o catálogo já passou por
+ * `catalogVisibleTo`, então participação ativa **implica** skill legível (pelo
+ * público ou pelo contêiner concedido), e o `OR` para ali. `skillVisibleTo`, o
+ * predicado caro do arquivo, só roda para a participação desativada.
  */
-async function loadCatalogSkills(catalogUuid: string): Promise<CatalogSkill[]> {
+async function loadCatalogSkills(catalogUuid: string, mode: ReadMode): Promise<CatalogSkill[]> {
+  const readable =
+    mode.kind === 'viewer' ? sql`AND (cs.is_active OR ${skillVisibleTo(mode.user)})` : sql``;
   const result = await db().execute(sql`
     SELECT s.uuid, s.slug, s.name, s.description, s.icon,
            cs.is_active, s.is_active AS skill_is_active, cs.created_at AS added_at
     FROM catalog_skills cs
     JOIN skills s ON s.uuid = cs.skill_uuid
     WHERE cs.catalog_uuid = ${catalogUuid}
+      ${readable}
     ORDER BY s.name ASC, s.slug ASC
   `);
   return (result.rows as Row[]).map((row) => ({
@@ -3803,8 +4130,22 @@ async function loadCatalogSkills(catalogUuid: string): Promise<CatalogSkill[]> {
   }));
 }
 
-/** Os vMCPs em que o catálogo está, com as portas do vínculo. Inclui fechados e desligados. */
-async function loadCatalogMcps(catalogUuid: string): Promise<CatalogMcpRef[]> {
+/**
+ * Os vMCPs em que o catálogo está, com as portas do vínculo. Na visão do admin
+ * (`'all'`) inclui fechados e desligados; com `viewer`, **só os que a conta vê**
+ * (aberto e ligado, dela ou concedido a ela) — a regra da lista `mcps` da skill
+ * (`skillColumns`), que vale para todo `viewer` que não é admin, inclusive o
+ * dono do catálogo. A ficha do catálogo não pode revelar o servidor fechado
+ * que `getVirtualMcp(slug, { viewer })` devolve como `null` e que a ficha da
+ * skill esconde (`tasks/010`): um catálogo público é legível por qualquer conta.
+ *
+ * `CatalogSummary.mcpCount` continua **global**, de propósito: é o número que a
+ * confirmação de exclusão do painel mostra, e ali subestimar é pior que dizer
+ * quantos servidores existem. A diferença para o tamanho desta lista é o "e
+ * mais N que você não vê".
+ */
+async function loadCatalogMcps(catalogUuid: string, mode: ReadMode): Promise<CatalogMcpRef[]> {
+  const visible = mode.kind === 'viewer' ? sql`AND ${mcpVisibleTo(mode.user)}` : sql``;
   const result = await db().execute(sql`
     SELECT m.uuid, m.slug, m.name, m.is_open, m.is_active, m.owner_user_uuid,
            (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
@@ -3813,6 +4154,7 @@ async function loadCatalogMcps(catalogUuid: string): Promise<CatalogMcpRef[]> {
     FROM virtual_mcp_catalogs vc
     JOIN virtual_mcps m ON m.uuid = vc.virtual_mcp_uuid
     WHERE vc.catalog_uuid = ${catalogUuid}
+      ${visible}
     ORDER BY m.name ASC, m.slug ASC
   `);
   return (result.rows as Row[]).map((row) => ({
@@ -3832,7 +4174,10 @@ async function loadCatalogMcps(catalogUuid: string): Promise<CatalogMcpRef[]> {
 /**
  * Detalhe = resumo + membros + vMCPs vinculados + concessões. Inclui
  * inativos: é o painel que lê. Com `viewer` que não é admin, um catálogo
- * que a conta não vê é `null`, como se não existisse.
+ * que a conta não vê é `null`, como se não existisse — e as duas listas vêm
+ * recortadas pelo que ela vê (`loadCatalogSkills`, `loadCatalogMcps`). As
+ * escritas releem **sem** `viewer` (`catalogAfterWrite`): o que elas devolvem é
+ * a visão do admin, e recortar antes de responder a quem só tem `edit` é do app.
  */
 async function loadCatalogDetail(
   where: SQL,
@@ -3849,8 +4194,8 @@ async function loadCatalogDetail(
   const summary = toCatalogSummary(row);
   return {
     ...summary,
-    skills: await loadCatalogSkills(summary.uuid),
-    mcps: await loadCatalogMcps(summary.uuid),
+    skills: await loadCatalogSkills(summary.uuid, mode),
+    mcps: await loadCatalogMcps(summary.uuid, mode),
     grants: await listCatalogGrants(summary.uuid),
   };
 }
@@ -4213,8 +4558,10 @@ export async function setCatalogSkillActive(
  * `linkSkill`: a posição no canvas entra no INSERT e, num vínculo que já
  * existe, só substitui quando informada. Audita `mcp.update` no servidor com
  * o slug dele — vincular um catálogo é mudar o que o servidor entrega, como
- * com skill. A permissão é do app, e exige administrar **os dois**
- * (`docs/11-catalogos.md` §3.4).
+ * com skill. A permissão é do app: `edit` no vMCP **e** `view` no catálogo
+ * (`docs/12-acesso-granular.md`, decisão 7); desvincular é só o `edit` do
+ * vMCP. **Era**, até o `017`: "exige administrar os dois"
+ * (`docs/11-catalogos.md` decisão 7 e §3.4, revogadas pelo `12`).
  */
 export async function linkCatalog(
   virtualMcpUuid: string,
@@ -4386,11 +4733,7 @@ function assertCatalogSlug(slug: string): void {
 /** Slug livre a partir do nome, no padrão de `freeVirtualMcpSlug` — mas sobre `catalogs`. */
 async function freeCatalogSlug(name: string): Promise<string> {
   const desired = slugify(name) || 'catalogo';
-  const result = await db().execute(
-    sql`SELECT slug FROM catalogs WHERE slug = ${desired} OR slug LIKE ${desired + '-%'}`,
-  );
-  const taken = (result.rows as Row[]).map((row) => row.slug as string);
-  return uniqueSlug(desired, taken);
+  return uniqueSlug(desired, await takenSlugs('catalogs', desired));
 }
 
 /**
@@ -4569,10 +4912,16 @@ function transferLabel(slug: string, newOwnerEmail: string | null | undefined): 
   return newOwnerEmail ? `${slug} ${newOwnerEmail}` : slug;
 }
 
-/** As colunas de `Grant`: `g` é a concessão, `u` a conta, `gb` quem concedeu. */
+/**
+ * As colunas de `Grant`: `g` é a concessão, `u` a conta, `gb` quem concedeu.
+ * `u.is_active` sai junto para o painel marcar a linha de uma conta desativada
+ * (`tasks/039`): a concessão dela continua aqui, inerte, e volta a valer se a
+ * conta for reativada — quem administra a ACL precisa ver isso para decidir
+ * revogar. Vem do mesmo JOIN pela PK, sem coluna, índice nem junção nova.
+ */
 function grantsQuery(spec: GrantSpec, objectUuid: string, userUuid?: string): SQL {
   return sql`
-    SELECT g.user_uuid, u.email, u.name, u.role, g.level,
+    SELECT g.user_uuid, u.email, u.name, u.role, u.is_active, g.level,
            g.granted_by_user_uuid, gb.email AS granted_by_email, g.created_at
     FROM ${sql.raw(spec.table)} g
     JOIN users u ON u.uuid = g.user_uuid
@@ -4589,6 +4938,7 @@ function toGrant(row: Row): Grant {
     email: row.email,
     name: row.name,
     role: row.role as Role,
+    isActive: row.is_active === true,
     level: row.level as AccessLevel,
     grantedByUserUuid: row.granted_by_user_uuid ?? null,
     grantedByEmail: row.granted_by_email ?? null,
@@ -5099,21 +5449,35 @@ export async function createVirtualMcpKey(input: {
 }
 
 /**
- * Revoga, **sempre** restrita ao servidor informado: a chave pertence ao MCP,
- * e a URL do painel já diz de qual. `false` quando não achou, não é dele ou
- * já estava revogada — idempotente, nunca reescreve o `revoked_at` original.
+ * O que a revogação de uma chave `psv_` devolve, para o app rotular o
+ * `mcp.key.revoke` como rotulou a emissão (`tasks/040`). O nome é congelado na
+ * linha de auditoria porque a chave some com o vMCP (`ON DELETE CASCADE`): uma
+ * linha que só guardasse o uuid ficaria sem referente. O servidor não vem
+ * junto — quem chama já o informou.
  */
-export async function revokeVirtualMcpKey(id: string, virtualMcpUuid: string): Promise<boolean> {
-  if (!isUuid(id) || !isUuid(virtualMcpUuid)) return false;
+export type RevokedVirtualMcpKey = { name: string; prefix: string };
+
+/**
+ * Revoga, **sempre** restrita ao servidor informado: a chave pertence ao MCP,
+ * e a URL do painel já diz de qual. `null` quando não achou, não é dele ou
+ * já estava revogada — idempotente, nunca reescreve o `revoked_at` original.
+ * Era `boolean` até o `tasks/040`; `if (!revoked)` continua valendo.
+ */
+export async function revokeVirtualMcpKey(
+  id: string,
+  virtualMcpUuid: string,
+): Promise<RevokedVirtualMcpKey | null> {
+  if (!isUuid(id) || !isUuid(virtualMcpUuid)) return null;
 
   const result = await db().execute(sql`
     UPDATE virtual_mcp_keys SET revoked_at = now()
     WHERE id = ${id}
       AND virtual_mcp_uuid = ${virtualMcpUuid}
       AND revoked_at IS NULL
-    RETURNING id
+    RETURNING name, prefix
   `);
-  return (result.rows as Row[]).length > 0;
+  const row = (result.rows as Row[])[0];
+  return row ? { name: row.name, prefix: row.prefix } : null;
 }
 
 export type VirtualMcpKeyRecord = {
@@ -5167,8 +5531,45 @@ const MCP_SESSION_MOUNTS: readonly McpSessionMount[] = ['root', 'virtual'];
 const MCP_SESSION_AUTHS: readonly McpSessionAuth[] = ['open', 'key'];
 const MCP_SESSION_END_REASONS: readonly McpSessionEndReason[] = ['closed', 'timeout', 'shutdown'];
 
-/** Teto para o que vem de cabeçalhos e do `clientInfo`: é rótulo de tela, não conteúdo. */
-const MCP_SESSION_LABEL_MAX = 512;
+/**
+ * Teto para o que vem de cabeçalhos e do `clientInfo`: é rótulo de tela, não
+ * conteúdo. Exportado para o mcp-public cortar **na memória** com o mesmo
+ * número que o banco usa na gravação (`tasks/047`) — ver
+ * `normalizeSessionLabel`.
+ */
+export const MCP_SESSION_LABEL_MAX = 512;
+
+/**
+ * Um rótulo de tela (`clientInfo`, `user-agent`, IP, id de sessão) pronto para
+ * gravar: caractere de controle e separador de linha viram espaço, as pontas
+ * são aparadas, vazio vira nulo e o resto é cortado em
+ * `MCP_SESSION_LABEL_MAX`. Aplicar duas vezes dá o mesmo resultado.
+ *
+ * **Por que limpar, e não recusar.** O `text` do Postgres não guarda U+0000:
+ * um byte nulo no nome que o cliente MCP anuncia derrubava a escrita inteira
+ * com 22021 — e em `recordSkillAccess` os três UPDATEs de contador vivem na
+ * mesma instrução do INSERT. Quem se apresentava assim continuava lendo tudo
+ * e sumia da guia "Acessos", dos contadores e da tela de sessões
+ * (`tasks/038`). O rótulo é decorativo e o registro não: perder o primeiro é
+ * aceitável, perder o segundo é evasão de auditoria por quem está sendo
+ * auditado. Sai a categoria `Cc` inteira (C0, DEL e C1) mais `Zl`/`Zp`, e não
+ * só o nulo: quebra de linha e ESC num rótulo são, na melhor das hipóteses,
+ * lixo na tela e no log de quem administra.
+ *
+ * **Por que copiar.** No V8 o recorte de uma string longa (`slice`, `trim`)
+ * guarda uma referência à string-mãe. Medido: 400 rótulos de 512 caracteres
+ * recortados de um `clientInfo.name` de 1 MB seguravam 401 MB de heap, e
+ * 1,4 MB depois de copiados. Para a gravação tanto faz — o valor vai ao
+ * driver e morre —, mas o mcp-public guarda o rótulo em memória por sessão
+ * (`tasks/047`) e usa esta função para ter **a mesma regra** do banco. A ida
+ * e volta por `Buffer` ainda troca por U+FFFD o substituto solitário que o
+ * corte possa ter deixado no meio de um par.
+ */
+export function normalizeSessionLabel(value: string): string | null {
+  const text = value.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').trim();
+  if (!text) return null;
+  return Buffer.from(text.slice(0, MCP_SESSION_LABEL_MAX).trimEnd(), 'utf8').toString('utf8');
+}
 
 export type OpenMcpSessionInput = {
   /** `mcp-session-id`, o `sessionId` do SSE ou a chave sintética do stateless. */
@@ -5227,7 +5628,10 @@ function toMcpSessionSummary(row: Row): McpSessionSummary {
  * Abre a linha de uma sessão e devolve o `id` — é ele que o servidor guarda
  * ao lado do transporte para os `touch`/`close` seguintes. `sessionId`, `ip`
  * e `virtualMcpSlug` vazios, uuid torto ou valor fora dos `CHECK`s são 400;
- * um vMCP (ou chave) que sumiu entre a resolução e a abertura é 404.
+ * um vMCP (ou chave) que sumiu entre a resolução e a abertura é 404. Os
+ * rótulos (`userAgent`, `clientName`, `clientVersion`) passam por
+ * `normalizeSessionLabel`: o que o cliente anuncia no `initialize` é texto
+ * livre, e um byte nulo ali fazia a sessão inteira não ser registrada.
  */
 export async function openMcpSession(input: OpenMcpSessionInput): Promise<string> {
   const sessionId = requireText(input.sessionId, 'sessionId');
@@ -5491,12 +5895,40 @@ const SKILL_ACCESS_ORIGINS: readonly SkillAccessOrigin[] = ['mcp', 'site', 'mcp-
 const SKILL_ACCESS_AUTHS: readonly SkillAccessAuth[] = ['open', 'key', 'user', 'anonymous'];
 
 /**
+ * A porta do vínculo por onde uma leitura registrada entrou no vMCP. O
+ * mcp-public serve `get_skill` (`tool`), o `SKILL.md` avulso (`file`) e o
+ * pacote (`download`) pelo recorte `surface: 'skill'`; `prompts/get` e
+ * `resources/read`, pela porta de mesmo nome. `page` (site) e `admin-tool`
+ * (mcp-admin) não têm vMCP: o valor nem chega a ser usado, e o padrão é a
+ * porta de skill.
+ */
+function accessPort(surface: SkillAccessSurface): VirtualSurface {
+  switch (surface) {
+    case 'prompt':
+      return 'prompt';
+    case 'resource':
+      return 'resource';
+    default:
+      return 'skill';
+  }
+}
+
+/**
  * Grava uma leitura em `skill_accesses` (`docs/13-fichas-e-acessos.md`,
  * `schema/018-acessos-por-skill.sql`) **e soma os contadores** exatamente
  * como `incrementViewCount`/`incrementDownloadCount`: no global da skill
  * sempre e, com `virtualMcpUuid`, no caminho — o vínculo direto se existir,
  * senão cada catálogo que contribuiu (ligado, participação ativa, vinculado
  * ao vMCP). Os catálogos que somam são os mesmos gravados na linha.
+ *
+ * **O caminho olha a porta.** Catálogo que contribuiu é o que serve a
+ * superfície **desta** leitura — `accessPort`: `tool`, `file` e `download`
+ * pela porta de skill, `prompt` e `resource` pela de mesmo nome —, a mesma
+ * regra de `exposedIn`. Um catálogo vinculado só com Prompts não entrega um
+ * `get_skill`: gravá-lo no caminho somava o contador dele e mostrava a quem
+ * o administra o IP, a chave e o cliente de uma leitura que não passou por
+ * ele (`tasks/041`). As linhas anteriores à correção ficam como foram
+ * gravadas: não há registro de qual era a porta do vínculo naquela hora.
  *
  * **Exceção: `origin = 'mcp-admin'` só grava a linha.** O `get_skill` do
  * mcp-admin nunca contou — é administração, não consumo — e a pontuação do
@@ -5515,8 +5947,15 @@ const SKILL_ACCESS_AUTHS: readonly SkillAccessAuth[] = ['open', 'key', 'user', '
  *
  * Uma instrução só, sem transação explícita, como `bumpCounter`: é
  * best-effort e os chamadores disparam com `void … .catch(log)`. Os rótulos
- * (`sessionId`, `ip`, `userAgent`, `clientName`, `clientVersion`) são
- * aparados e cortados em 512 caracteres, como em `openMcpSession`.
+ * (`sessionId`, `ip`, `userAgent`, `clientName`, `clientVersion`) passam por
+ * `normalizeSessionLabel`, como em `openMcpSession`: sem caractere de
+ * controle — o byte nulo derrubava a linha **e** os contadores, `tasks/038`
+ * —, aparados e cortados em `MCP_SESSION_LABEL_MAX` (512). As **cópias de
+ * nome** (skill, vMCP, chave `psv_`, chave `psk_` e cada catálogo) são
+ * cortadas no mesmo teto: slug (96) e e-mail (254) já têm limite na entrada,
+ * nome não tem nenhum, e a linha é copiada a cada leitura numa tabela que
+ * nunca é podada (`tasks/042`). Cortar, e não um `CHECK`, pelo mesmo motivo
+ * dos rótulos: o registro vale mais do que o campo.
  */
 export async function recordSkillAccess(input: SkillAccessInput): Promise<void> {
   if (!isUuid(input.skillUuid)) throw badRequest('O campo "skillUuid" precisa ser um uuid');
@@ -5530,6 +5969,10 @@ export async function recordSkillAccess(input: SkillAccessInput): Promise<void> 
   const userUuid = optionalUuid(input.userUuid);
   // O nome da coluna é um dos dois literais nossos — nunca texto do chamador.
   const column = sql.raw(kind === 'view' ? 'view_count' : 'download_count');
+  // A porta do vínculo catálogo↔vMCP por onde **esta** leitura entrou.
+  const porta = surfaceFlag('vc', accessPort(surface));
+  // O teto das cópias de nome — outro literal nosso, não parâmetro.
+  const teto = sql.raw(String(MCP_SESSION_LABEL_MAX));
 
   // Os três UPDATEs leem o RETURNING de `ins`: sem skill, `ins` é vazio e
   // nenhum deles toca linha alguma; sem vMCP, o vínculo não casa; com
@@ -5555,7 +5998,10 @@ export async function recordSkillAccess(input: SkillAccessInput): Promise<void> 
   // `ins` grava a linha com as cópias resolvidas por LEFT JOIN (o que não
   // existe vira nulo, sem derrubar o INSERT) e com os catálogos do caminho
   // em `p` — só quando há vMCP e **não** há vínculo direto, a precedência
-  // de `docs/11` §3.2.
+  // de `docs/11` §3.2, e só os que servem a porta desta leitura (`porta`).
+  // A precedência (`NOT EXISTS`) fica sem porta, idêntica à de `exposedIn`.
+  // O nome é cortado dentro do `array_agg`, ordenado pelo nome inteiro: os
+  // três arrays continuam posição a posição (o CHECK de cardinalidade do 018).
   await db().execute(sql`
     WITH ins AS (
       INSERT INTO skill_accesses (
@@ -5566,10 +6012,10 @@ export async function recordSkillAccess(input: SkillAccessInput): Promise<void> 
         session_id, ip, user_agent, client_name, client_version
       )
       SELECT
-        s.uuid, s.slug, s.name, ${kind}, ${surface}, ${origin}, ${auth},
-        m.uuid, m.slug, m.name,
+        s.uuid, s.slug, left(s.name, ${teto}), ${kind}, ${surface}, ${origin}, ${auth},
+        m.uuid, m.slug, left(m.name, ${teto}),
         COALESCE(p.uuids, '{}'::uuid[]), COALESCE(p.slugs, '{}'::text[]), COALESCE(p.names, '{}'::text[]),
-        k.id, k.name, ak.id, ak.name, u.uuid, u.email,
+        k.id, left(k.name, ${teto}), ak.id, left(ak.name, ${teto}), u.uuid, u.email,
         ${sessionLabel(input.sessionId, 'sessionId')},
         ${sessionLabel(input.ip, 'ip')},
         ${sessionLabel(input.userAgent, 'userAgent')},
@@ -5583,12 +6029,12 @@ export async function recordSkillAccess(input: SkillAccessInput): Promise<void> 
       LEFT JOIN LATERAL (
         SELECT array_agg(c.uuid ORDER BY c.name, c.slug) AS uuids,
                array_agg(c.slug ORDER BY c.name, c.slug) AS slugs,
-               array_agg(c.name ORDER BY c.name, c.slug) AS names
+               array_agg(left(c.name, ${teto}) ORDER BY c.name, c.slug) AS names
         FROM catalogs c
         JOIN catalog_skills cs
           ON cs.catalog_uuid = c.uuid AND cs.skill_uuid = s.uuid AND cs.is_active
         JOIN virtual_mcp_catalogs vc
-          ON vc.catalog_uuid = c.uuid AND vc.virtual_mcp_uuid = m.uuid
+          ON vc.catalog_uuid = c.uuid AND vc.virtual_mcp_uuid = m.uuid AND ${porta}
         WHERE c.is_active
           AND NOT EXISTS (
             SELECT 1 FROM virtual_mcp_skills v
@@ -6003,10 +6449,13 @@ export async function findRagSpace(input: RagSpaceInput): Promise<RagSpace | nul
  * de cair: o container do indexador sobe junto com o do banco e pode chegar
  * antes do `migrate`.
  *
- * São **cinco** desde a `025`: `rag_text_status` entra na lista porque a fila
- * de textos passou a excluir o que está reservado ou recusado. Num banco
- * parado na `024` a consulta da fila falharia a cada ciclo; com a tabela na
- * conta, o indexador espera a migration, que é o comportamento desenhado.
+ * São **seis**: `rag_text_status` entrou na `025`, porque a fila de textos
+ * passou a excluir o que está reservado ou recusado, e `rag_skill_claims` na
+ * `028`, porque a reserva de skills passou a gravar o prazo nela. Num banco
+ * parado antes disso a reserva falharia a cada ciclo; com a tabela na conta, o
+ * indexador espera a migration, que é o comportamento desenhado. Quem busca
+ * (site, MCP público) cai na busca textual enquanto espera, e só guarda a
+ * resposta quando ela é "pronto".
  */
 export async function ragSchemaReady(): Promise<boolean> {
   const result = await db().execute(sql`
@@ -6014,10 +6463,36 @@ export async function ragSchemaReady(): Promise<boolean> {
        AND to_regclass('public.rag_texts') IS NOT NULL
        AND to_regclass('public.rag_skill_texts') IS NOT NULL
        AND to_regclass('public.rag_vectors') IS NOT NULL
-       AND to_regclass('public.rag_text_status') IS NOT NULL AS pronto
+       AND to_regclass('public.rag_text_status') IS NOT NULL
+       AND to_regclass('public.rag_skill_claims') IS NOT NULL AS pronto
   `);
   return Boolean((result.rows as Row[])[0]?.pronto);
 }
+
+/** Opções de `claimStaleSkills`. */
+export type ClaimStaleSkillsOptions = {
+  /**
+   * Prazo da reserva, em milissegundos (clamp 1 s .. 1 h; padrão 10 min). É o
+   * tempo que um indexador **morto** segura as skills do lote: vencido, elas
+   * voltam à fila sozinhas. Precisa cobrir o laço de refatiação inteiro — ler,
+   * dividir e gravar o lote todo —, não uma skill. Curto demais, a réplica
+   * vizinha retoma uma skill que ainda está sendo refatiada; o resultado é
+   * trabalho repetido, nunca dado errado (`replaceSkillTexts` é declarativa).
+   */
+  claimMs?: number;
+};
+
+/** O prazo padrão da reserva de skills: o mesmo da de textos no indexador. */
+const RAG_CLAIM_DEFAULT_MS = 600_000;
+
+/**
+ * Leituras começadas e não terminadas a partir das quais a reserva vencida
+ * deixa de ser retomada (`028`). Três é o bastante para distinguir a skill que
+ * **derruba** o indexador de um azar — um deploy no meio do lote, o banco
+ * reiniciando — e pouco o bastante para o *crash-loop* durar meia hora, não
+ * para sempre.
+ */
+export const RAG_CLAIM_MAX_ATTEMPTS = 3;
 
 /**
  * Reserva até `limit` skills pendentes e as marca como limpas **antes** de o
@@ -6025,39 +6500,129 @@ export async function ragSchemaReady(): Promise<boolean> {
  * marcá-las pelo trigger, e nada se perde. Se o processamento falhar, quem
  * desfaz é `releaseStaleSkill`.
  *
- * A CTE é `MATERIALIZED` de propósito: sem isso o planner pode empurrar o
+ * A reserva é **gravada com prazo** em `rag_skill_claims` (`028`), na mesma
+ * statement. Antes, a única memória de que o lote ainda precisava de trabalho
+ * era uma variável do indexador: processo morto no meio do lote (SIGKILL, OOM,
+ * o banco caindo junto com a devolução do `catch`) deixava as skills restantes
+ * como "feitas" para sempre, com o painel mostrando zero pendências. Entram no
+ * lote, portanto, dois tipos de skill:
+ *
+ *   * a **pendente** (`rag_stale`) sem reserva viva. Reserva viva segura até a
+ *     skill que o trigger remarcou: um indexador por skill de cada vez — sem
+ *     isso, duas réplicas podiam ler versões diferentes e a mais lenta gravar a
+ *     antiga por cima da nova. A contagem de tentativas recomeça: conteúdo novo
+ *     (ou o "Reindexar") é uma chance nova;
+ *   * a de **reserva vencida** e ainda não pendente — a que um indexador morto
+ *     deixou para trás —, enquanto `attempts` não bate em
+ *     `RAG_CLAIM_MAX_ATTEMPTS`. No teto ela para de voltar e aparece em
+ *     `ragCoverage().stuckSkills`.
+ *
+ * As vencidas têm prioridade na **escolha** (são poucas e já esperaram o prazo
+ * inteiro; um acervo recém-marcado para reindexar não pode deixá-las para
+ * depois) e vêm por último na **ordem devolvida**, por tentativas: processe na
+ * ordem. É o que faz a skill que derruba o processo cair no fim do lote, depois
+ * de as companheiras terem sido gravadas.
+ *
+ * As CTEs são `MATERIALIZED` de propósito: sem isso o planner pode empurrar o
  * `LIMIT` para depois do `UPDATE` e reservar mais linhas do que o lote pedido
- * (§5.5, cenário 22). O `SKIP LOCKED` é o que faz dois indexadores em
- * paralelo pegarem lotes diferentes em vez de esperar um pelo outro.
+ * (§5.5, cenário 22). O `SKIP LOCKED` é o que faz dois indexadores em paralelo
+ * pegarem lotes diferentes em vez de esperar um pelo outro — a statement nunca
+ * espera uma linha de `skills`, e por isso não fecha ciclo com quem grava
+ * arquivo. O `DO UPDATE … WHERE until <= now()` é a segunda trava: a reserva
+ * vencida que o vizinho retomou entre a leitura e a gravação não é tomada, e só
+ * sai no resultado o que esta chamada de fato reservou.
  */
-export async function claimStaleSkills(limit = 20): Promise<string[]> {
+export async function claimStaleSkills(
+  limit = 20,
+  options: ClaimStaleSkillsOptions = {},
+): Promise<string[]> {
   const size = clamp(limit, 1, 500);
+  const prazo =
+    options.claimMs === undefined || options.claimMs === null
+      ? RAG_CLAIM_DEFAULT_MS
+      : clamp(requireCount(options.claimMs, 'claimMs'), RAG_RESERVE_MIN_MS, RAG_RESERVE_MAX_MS);
+
   const result = await db().execute(sql`
-    WITH reservadas AS MATERIALIZED (
-      SELECT uuid FROM skills
-       WHERE rag_stale
-       ORDER BY updated_at, uuid
+    WITH vencidas AS MATERIALIZED (
+      SELECT s.uuid, s.updated_at, c.attempts
+        FROM rag_skill_claims c
+        JOIN skills s ON s.uuid = c.skill_uuid
+       WHERE c.until <= now()
+         AND NOT s.rag_stale
+         AND c.attempts < ${RAG_CLAIM_MAX_ATTEMPTS}
+       ORDER BY c.attempts, s.updated_at, s.uuid
        LIMIT ${size}
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF s SKIP LOCKED
+    ),
+    frescas AS MATERIALIZED (
+      SELECT s.uuid, s.updated_at
+        FROM skills s
+       WHERE s.rag_stale
+         AND NOT EXISTS (
+           SELECT 1 FROM rag_skill_claims c
+            WHERE c.skill_uuid = s.uuid AND c.until > now()
+         )
+       ORDER BY s.updated_at, s.uuid
+       LIMIT ${size}
+         FOR UPDATE OF s SKIP LOCKED
+    ),
+    escolhidas AS MATERIALIZED (
+      SELECT * FROM (
+        SELECT uuid, updated_at, attempts, false AS fresca FROM vencidas
+        UNION ALL
+        SELECT uuid, updated_at, 0, true FROM frescas
+      ) candidatas
+      ORDER BY fresca, attempts, updated_at, uuid
+      LIMIT ${size}
+    ),
+    reservas AS (
+      INSERT INTO rag_skill_claims (skill_uuid, until, attempts)
+      SELECT e.uuid, now() + make_interval(secs => ${prazo}::float8 / 1000), 0
+        FROM escolhidas e
+      ON CONFLICT (skill_uuid) DO UPDATE
+         SET until = EXCLUDED.until,
+             attempts = CASE
+               WHEN (SELECT e.fresca FROM escolhidas e WHERE e.uuid = rag_skill_claims.skill_uuid)
+               THEN 0
+               ELSE rag_skill_claims.attempts
+             END,
+             updated_at = now()
+       WHERE rag_skill_claims.until <= now()
+      RETURNING skill_uuid
+    ),
+    limpas AS (
+      UPDATE skills s
+         SET rag_stale = false
+        FROM reservas r
+       WHERE s.uuid = r.skill_uuid AND s.rag_stale
     )
-    UPDATE skills s
-       SET rag_stale = false
-      FROM reservadas r
-     WHERE s.uuid = r.uuid
-    RETURNING s.uuid
+    SELECT e.uuid
+      FROM reservas r
+      JOIN escolhidas e ON e.uuid = r.skill_uuid
+     ORDER BY e.fresca DESC, e.attempts, e.updated_at, e.uuid
   `);
   return (result.rows as Row[]).map((row) => row.uuid as string);
 }
 
 /**
- * Devolve a skill à fila depois de uma falha. Uuid torto é ignorado: isto
- * roda no `catch` do indexador, e um segundo erro aqui esconderia o primeiro.
+ * Devolve a skill à fila depois de uma falha: volta a ficar pendente e perde a
+ * reserva, então a rodada seguinte a pega — sem esperar o prazo. Uuid torto é
+ * ignorado: isto roda no `catch` do indexador, e um segundo erro aqui
+ * esconderia o primeiro.
+ *
+ * São **duas** statements, cada uma com a sua trava, e nesta ordem de
+ * propósito. Uma statement só travaria a linha de `skills` e a da reserva
+ * juntas, na ordem inversa à de `claimStaleSkills`, e é assim que se fecha um
+ * ciclo. E se o processo morrer entre as duas, a skill fica pendente **com** a
+ * reserva viva: espera o prazo e volta. Na ordem contrária ela ficaria sem
+ * nenhuma das duas marcas — perdida, que é o defeito que a `028` corrige.
  */
 export async function releaseStaleSkill(uuid: string): Promise<void> {
   if (!isUuid(uuid)) return;
   await db().execute(sql`
     UPDATE skills SET rag_stale = true WHERE uuid = ${uuid}::uuid AND NOT rag_stale
   `);
+  await db().execute(sql`DELETE FROM rag_skill_claims WHERE skill_uuid = ${uuid}::uuid`);
 }
 
 /** Um arquivo de texto da skill, como o indexador o recebe para dividir. */
@@ -6088,9 +6653,24 @@ export type RagSkillContent = {
 /**
  * Lê a skill reservada. `null` quando ela sumiu entre a reserva e a leitura —
  * caso normal, não erro: o indexador passa para a próxima.
+ *
+ * É também o **"comecei"** do indexador: havendo reserva (`rag_skill_claims`,
+ * `028`), a leitura soma uma tentativa nela **antes** de carregar o conteúdo —
+ * é carregando os arquivos que um acervo enorme derruba o processo, e a conta
+ * precisa estar gravada quando isso acontecer. Terminar (`replaceSkillTexts`) ou
+ * devolver (`releaseStaleSkill`) apaga a reserva e a conta com ela; só sobra
+ * tentativa na skill cuja leitura começou e nunca acabou. Contar na reserva, em
+ * vez de aqui, puniria as companheiras de lote que nem chegaram a ser abertas.
+ * Sem reserva (um teste, um relatório) a leitura não escreve nada.
  */
 export async function readSkillForRag(uuid: string): Promise<RagSkillContent | null> {
   if (!isUuid(uuid)) return null;
+
+  await db().execute(sql`
+    UPDATE rag_skill_claims
+       SET attempts = attempts + 1, updated_at = now()
+     WHERE skill_uuid = ${uuid}::uuid
+  `);
 
   const result = await db().execute(sql`
     SELECT s.uuid, s.slug, s.name, s.description,
@@ -6162,6 +6742,10 @@ export type RagTextInput = {
  * Devolve quantas ocorrências ficaram. Conteúdo vazio ou só com espaços é 400
  * (§5.3: arquivo em branco não gera texto), assim como ocorrência repetida,
  * fonte fora das duas, parte negativa e `fileId` torto.
+ *
+ * Gravar é **terminar**: a reserva da skill (`rag_skill_claims`, `028`) é
+ * apagada em seguida, e com ela a contagem de tentativas. O indexador não
+ * precisa chamar mais nada no caminho feliz.
  */
 export async function replaceSkillTexts(
   skillUuid: string,
@@ -6188,14 +6772,16 @@ export async function replaceSkillTexts(
       if (!isUuid(fileId)) throw badRequest(`O arquivo de "texts[${index}]" é inválido`);
     }
 
-    const endereco = `${source} ${relativePath} ${part}`;
+    // Separador que não cabe num caminho nem em `source`: `optionalText` já
+    // recusou o nulo. Pela constante, não pelo escape — ver `NUL`.
+    const endereco = `${source}${NUL}${relativePath}${NUL}${part}`;
     if (enderecos.has(endereco)) throw badRequest(`Ocorrência repetida em "texts[${index}]"`);
     enderecos.add(endereco);
 
     return { source, content, relativePath, part, fileId: source === 'file' ? (fileId as string) : null };
   });
 
-  return db().transaction(async (tx) => {
+  const total = await db().transaction(async (tx) => {
     const skill = await tx.execute(sql`SELECT 1 FROM skills WHERE uuid = ${skillUuid}::uuid`);
     if ((skill.rows as Row[]).length === 0) throw notFound(`Skill não encontrada: ${skillUuid}`);
 
@@ -6226,6 +6812,17 @@ export async function replaceSkillTexts(
     }
     return ocorrencias.length;
   });
+
+  // O trabalho terminou: a reserva da skill (`028`) sai. **Depois** do commit e
+  // em statement própria, de propósito — dentro da transação acima a trava da
+  // reserva conviveria com as de `rag_texts`, `files` e `skills` (as FKs das
+  // ocorrências), e `claimStaleSkills` trava `skills` antes da reserva: é a
+  // ordem inversa, e ordem inversa é deadlock. Uma statement que segura uma
+  // trava só não fecha ciclo. Se o processo morrer entre o commit e esta linha,
+  // a reserva vence e a skill é refatiada uma vez a mais — declarativo e de
+  // graça.
+  await db().execute(sql`DELETE FROM rag_skill_claims WHERE skill_uuid = ${skillUuid}::uuid`);
+  return total;
 }
 
 /** Um texto canônico ainda sem vetor no espaço ativo. */
@@ -6361,6 +6958,15 @@ export async function listPendingRagTexts(
  * um erro garantido. A recusa é por par (espaço, texto) — outro modelo pode
  * aceitar o que este recusou.
  *
+ * **Chame só com prova de que o problema é o conteúdo**: o provedor aceitou
+ * outro texto nas mesmas condições (mesma chave, URL, modelo e formato). Um 400
+ * sozinho não prova isso — os três drivers jogam todo 400 residual em "recusa
+ * de conteúdo", e o que é da instalação (proxy, contrato da API, conta) atinge
+ * todo texto. A marca é permanente e nenhuma gravação automática a desfaz; sem
+ * prova, o caminho é `releaseRagTextReservations` (com `retryAfterMs` para tirar
+ * o texto da cabeça da fila sem condená-lo), e o reparo de uma marca gravada
+ * por engano é `clearRagRefusals`.
+ *
  * Idempotente, e é o contrário de `DO NOTHING`: a linha que está lá é a
  * **reserva** do próprio indexador que acabou de levar a recusa, e deixá-la
  * como está devolveria o texto à fila no vencimento. O `DO UPDATE` converte a
@@ -6395,6 +7001,62 @@ export async function markRagTextRefused(
        SET state = 'recusado', until = NULL, reason = EXCLUDED.reason, updated_at = now()
      WHERE rag_text_status.state <> 'recusado'
   `);
+}
+
+/**
+ * Desfaz as recusas de **um** espaço: no ciclo seguinte os textos voltam à fila.
+ * É reparo manual e auditado, não expiração — a recusa continua sem prazo e
+ * intocada por qualquer gravação automática (`025`).
+ *
+ * Existe para o dia em que a marca foi gravada **por engano**. Os três drivers
+ * jogam todo 400 residual em `RagInputTooLongError`, e um 400 que é da
+ * instalação — `RAG_<DRIVER>_BASE_URL` apontando para um intermediário que não
+ * entende um campo, contrato de API que mudou, erro de conta devolvido como 400
+ * — atinge **todo** texto: o acervo inteiro vira "recusado para sempre", 64
+ * textos por ciclo, sem um erro no painel. Corrigida a causa, nada voltava
+ * sozinho: "Reindexar" reinsere o mesmo texto sob o mesmo hash (mesma linha,
+ * mesma recusa), reiniciar o container deixou de limpar desde que a marca foi
+ * para o banco, e o driver `google` só tem um modelo para trocar.
+ *
+ * O que for recusa genuína é recusado **uma vez mais** e remarcado — o mesmo
+ * custo que a `025` aceita para o texto recusado que é coletado e volta ao
+ * acervo. A reserva não é tocada, nem outro espaço. Devolve quantas saíram.
+ *
+ * Audita como `rag.reindex`, com `"<n> recusas"` no lugar de `"<n> skills"`: é
+ * a mesma família ("tente de novo o que já foi tentado"), e uma ação própria
+ * pediria reescrever o `CHECK` de `audit_log.action` e o tipo de shared por um
+ * botão de reparo. Espaço inexistente não apaga nada e audita `"0 recusas"` — o
+ * gesto do admin aconteceu. Uuid torto é 400.
+ *
+ * A memória do **processo** do indexador (`RecusasRag`) não é alcançada daqui:
+ * quem chama isto precisa fazer o indexador esquecer a lista dele (ou
+ * reiniciá-lo), senão ele reserva os textos e os descarta em memória.
+ */
+export async function clearRagRefusals(
+  spaceUuid: string,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<number> {
+  if (!isUuid(spaceUuid)) throw badRequest(`Uuid de espaço inválido: ${String(spaceUuid)}`);
+  return db().transaction(async (tx) => {
+    const result = await tx.execute(sql`
+      DELETE FROM rag_text_status
+      WHERE space_uuid = ${spaceUuid}::uuid AND state = 'recusado'
+      RETURNING text_sha256
+    `);
+    const total = (result.rows as Row[]).length;
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'rag.reindex',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: `${total} recusas`,
+    });
+    return total;
+  });
 }
 
 /**
@@ -6509,6 +7171,107 @@ export async function insertRagVectors(
   return (result.rows as Row[]).length;
 }
 
+/** Opções de `releaseRagTextReservations`. */
+export type ReleaseRagTextsOptions = {
+  /**
+   * Em vez de devolver os textos **já**, marca a volta para daqui a tantos
+   * milissegundos (clamp 1 s .. 24 h): a reserva continua lá, com o prazo novo,
+   * e a fila só os reentrega quando ele vencer.
+   *
+   * É o estado que faltava entre "tente no próximo ciclo" e "nunca mais": o
+   * texto que levou um 400 **sem prova** de que o problema é o conteúdo (nada
+   * foi aceito neste ciclo) sai da cabeça da fila sem ganhar uma marca
+   * permanente; e o lote que bateu no limite de taxa pode esperar o
+   * `Retry-After` em vez de voltar em 30 segundos. Não guarda motivo — quem
+   * explica é o log do indexador.
+   */
+  retryAfterMs?: number;
+};
+
+/** Teto do adiamento: um dia. Mais que isso é recusa, e recusa tem função própria. */
+const RAG_RETRY_AFTER_MAX_MS = 86_400_000;
+
+/**
+ * Devolve à fila os textos que um indexador reservou e **não** resolveu: o lote
+ * falhou por motivo que não é o conteúdo (chave, cota, 5xx, prazo estourado,
+ * erro ao gravar o vetor), ou nem chegou a ser tentado porque um lote anterior
+ * dos mesmos 64 falhou. Sem isto a reserva da `025` só tinha duas saídas — o
+ * vetor gravado e o vencimento —, e o indexador **vivo** que desistia do lote o
+ * segurava por dez minutos: o ciclo seguinte reservava os 64 seguintes, falhava
+ * de novo, e com a fila inteira reservada passava a publicar "sem erro" com
+ * centenas de textos sem vetor.
+ *
+ * Só toca linha `reservado`: a recusa é para sempre e não é mexida por aqui.
+ * Hash sem reserva (já ganhou vetor, já foi recusado, já venceu e foi coletado)
+ * é ignorado, assim como espaço que não existe — isto roda no tratamento de
+ * erro do indexador. Uuid torto e hash fora de 32 bytes continuam 400: são erro
+ * de chamada, não corrida. Devolve quantas reservas saíram (ou foram adiadas).
+ *
+ * **A reserva não tem dono.** Chamar isto depois de a própria reserva ter
+ * vencido pode baixar a que outra réplica acabou de tomar; o pior caso é o que a
+ * `025` já aceita por escrito — duas réplicas pagam pelo mesmo texto —, nunca
+ * perda de dado, e só acontece se o ciclo que falhou durou mais que o prazo.
+ *
+ * As linhas são travadas na ordem de `rag_texts.created_at`, a mesma em que
+ * `listPendingRagTexts` as grava: duas statements que pegam o mesmo conjunto na
+ * mesma ordem esperam uma pela outra em vez de se travarem em cruz.
+ */
+export async function releaseRagTextReservations(
+  spaceUuid: string,
+  hashes: readonly Buffer[],
+  options: ReleaseRagTextsOptions = {},
+): Promise<number> {
+  if (!isUuid(spaceUuid)) throw badRequest(`Uuid de espaço inválido: ${String(spaceUuid)}`);
+  if (!Array.isArray(hashes)) throw badRequest('O campo "hashes" deve ser uma lista');
+  const adiar =
+    options.retryAfterMs === undefined || options.retryAfterMs === null
+      ? null
+      : clamp(
+          requireCount(options.retryAfterMs, 'retryAfterMs'),
+          RAG_RESERVE_MIN_MS,
+          RAG_RETRY_AFTER_MAX_MS,
+        );
+  if (hashes.length === 0) return 0;
+
+  const valores = hashes.map((hash, index) => {
+    if (!Buffer.isBuffer(hash) || hash.length !== 32) {
+      throw badRequest(`O hash de "hashes[${index}]" deve ter 32 bytes`);
+    }
+    return sql`${hash}::bytea`;
+  });
+
+  const alvo = sql`
+    SELECT s.text_sha256
+      FROM rag_text_status s
+      JOIN rag_texts t ON t.sha256 = s.text_sha256
+     WHERE s.space_uuid = ${spaceUuid}::uuid
+       AND s.state = 'reservado'
+       AND s.text_sha256 IN (${sql.join(valores, sql`, `)})
+     ORDER BY t.created_at
+       FOR UPDATE OF s
+  `;
+
+  const result = await db().execute(
+    adiar === null
+      ? sql`
+          WITH alvo AS MATERIALIZED (${alvo})
+          DELETE FROM rag_text_status s
+           USING alvo a
+           WHERE s.space_uuid = ${spaceUuid}::uuid AND s.text_sha256 = a.text_sha256
+          RETURNING s.text_sha256
+        `
+      : sql`
+          WITH alvo AS MATERIALIZED (${alvo})
+          UPDATE rag_text_status s
+             SET until = now() + make_interval(secs => ${adiar}::float8 / 1000), updated_at = now()
+            FROM alvo a
+           WHERE s.space_uuid = ${spaceUuid}::uuid AND s.text_sha256 = a.text_sha256
+          RETURNING s.text_sha256
+        `,
+  );
+  return (result.rows as Row[]).length;
+}
+
 /** O número da seção "Busca semântica" do painel (§9). */
 export type RagCoverage = {
   /** Textos canônicos com ocorrência — o denominador da cobertura. */
@@ -6525,8 +7288,25 @@ export type RagCoverage = {
    * pendência eterna sem dizer por quê.
    */
   refusedTexts: number;
-  /** Skills marcadas para refatiar. */
+  /**
+   * Skills que ainda precisam ser refatiadas: as marcadas (`rag_stale`) **mais**
+   * as reservadas e não terminadas (`rag_skill_claims`, `028`). Sem a segunda
+   * parcela o lote que um indexador morto deixou para trás contava como feito, e
+   * o painel mostrava zero pendências com skills fora da busca.
+   */
   staleSkills: number;
+  /**
+   * Quantas delas estão **travadas**: a reserva venceu com
+   * `RAG_CLAIM_MAX_ATTEMPTS` leituras começadas e nenhuma terminada, e o
+   * indexador não as retoma sozinho — é a skill que o derruba. Está **dentro**
+   * de `staleSkills`, como `refusedTexts` está dentro de `pendingTexts`: a
+   * pendência é real, e este número é a explicação dela. Editar a skill ou
+   * "Reindexar" dá uma chance nova.
+   *
+   * `ragCoverage` sempre o devolve; é opcional no tipo para não quebrar quem
+   * monta um `RagCoverage` à mão.
+   */
+  stuckSkills?: number;
 };
 
 /**
@@ -6551,7 +7331,22 @@ export async function ragCoverage(spaceUuid: string | null): Promise<RagCoverage
                                AND s.text_sha256 = o.text_sha256
                                AND s.state = 'recusado'
       )::int AS recusados,
-      (SELECT count(*) FROM skills WHERE rag_stale)::int AS pendentes
+      -- Duas parcelas, e não um OR: a primeira continua no índice parcial
+      -- skills_rag_stale_idx; a segunda varre rag_skill_claims, que tem no
+      -- máximo um lote por réplica. Um OR … EXISTS varreria skills inteira a
+      -- cada ciclo do indexador e a cada abertura do painel.
+      (
+        (SELECT count(*) FROM skills WHERE rag_stale)
+        + (SELECT count(*) FROM rag_skill_claims c
+             JOIN skills s ON s.uuid = c.skill_uuid
+            WHERE NOT s.rag_stale)
+      )::int AS pendentes,
+      (SELECT count(*) FROM rag_skill_claims c
+         JOIN skills s ON s.uuid = c.skill_uuid
+        WHERE NOT s.rag_stale
+          AND c.until <= now()
+          AND c.attempts >= ${RAG_CLAIM_MAX_ATTEMPTS}
+      )::int AS travadas
   `);
 
   const row = (result.rows as Row[])[0] ?? {};
@@ -6563,6 +7358,7 @@ export async function ragCoverage(spaceUuid: string | null): Promise<RagCoverage
     pendingTexts: texts - withVector,
     refusedTexts: Number(row.recusados ?? 0),
     staleSkills: Number(row.pendentes ?? 0),
+    stuckSkills: Number(row.travadas ?? 0),
   };
 }
 
@@ -6666,11 +7462,17 @@ function requireCount(value: unknown, field: string): number {
   return Math.trunc(value);
 }
 
-/** Rótulo opcional de sessão: aparado, vazio vira nulo, cortado no teto. */
+/**
+ * Rótulo opcional de sessão: ausente é nulo, outro tipo é 400 e o texto passa
+ * por `normalizeSessionLabel` (sem controle, aparado, vazio vira nulo, cortado
+ * no teto). A checagem de tipo é local, e não a de `optionalText`, de
+ * propósito: aquela **recusa** o byte nulo com 400, e aqui ele é limpo — numa
+ * escrita best-effort o registro vale mais do que o campo (`tasks/038`).
+ */
 function sessionLabel(value: unknown, field: string): string | null {
-  const text = optionalText(value, field)?.trim();
-  if (!text) return null;
-  return truncate(text, MCP_SESSION_LABEL_MAX);
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw badRequest(`O campo "${field}" deve ser uma string`);
+  return normalizeSessionLabel(value);
 }
 
 // --------------------------------------------------------------- internos ---
@@ -6710,6 +7512,54 @@ async function resolveSkillSlugsTx(tx: Tx, slugs: readonly string[]): Promise<Ma
 }
 
 /**
+ * O menor prefixo que o slug desejado e **todo** desempate numérico de
+ * `uniqueSlug` têm em comum. O teto do slug é 96 (`MAX_SLUG` de shared, que não é
+ * exportado): perto dele o sufixo `-2`…`-9999` não cabe, `withSuffix` encurta a
+ * base e o candidato deixa de começar por `desired` — no máximo 5 caracteres de
+ * sufixo e 1 hífen aparado no corte (o `slugify` colapsa hífens), 96 − 5 − 1.
+ * Se o teto de shared mudar, este número muda junto; o teste dos homônimos de
+ * nome longo (`virtual-mcps.integration.test.ts`) é quem acusa.
+ */
+const SLUG_SCAN_PREFIX = 90;
+
+/**
+ * Os slugs que podem colidir com `desired` numa das três tabelas que geram slug
+ * a partir do nome — o que `uniqueSlug` recebe como `taken`.
+ *
+ * No caso comum é a consulta de sempre: o próprio slug e os desempates
+ * `desired-N`. Acima de `SLUG_SCAN_PREFIX` ela **não via** os desempates
+ * encurtados (`tasks/035`): com `desired` de 96 caracteres o segundo homônimo
+ * vira `<94 caracteres>-2`, que não casa `desired-%`; o terceiro recebia o mesmo
+ * slug de novo, o INSERT batia no UNIQUE, as três tentativas de `SLUG_ATTEMPTS`
+ * eram idênticas e a criação respondia 409 citando um slug que ninguém pediu —
+ * para sempre, não só sob concorrência. Ali a busca passa a ser pelo prefixo
+ * comum, que **contém** os outros dois padrões; linha a mais é inofensiva,
+ * `uniqueSlug` só testa pertinência.
+ *
+ * Um padrão só, e não os três com `OR`, de propósito: medido em 52 mil skills,
+ * cada `LIKE` de ~90 caracteres pelo GIN de trigrama é estimado caro (muitos
+ * trigramas) e dois deles faziam o planejador trocar o `BitmapOr` por varredura
+ * (2,7 ms → 6,3 ms); o padrão único mantém o `skills_slug_trgm_idx` e os 2,7 ms.
+ *
+ * O `LIKE` de prefixo **fica**: reescrevê-lo como faixa (`>=`/`<`) devolve zero
+ * linhas na coleção do cluster (`en_US.utf8` ignora o hífen no nível primário —
+ * ver "O termo de busca" no README). `desired` sai do `slugify`, só `[a-z0-9-]`:
+ * não há `%` nem `_` a escapar. O nome da tabela é um dos três literais nossos,
+ * nunca texto do chamador — como em `resolveSlugsTx`.
+ */
+async function takenSlugs(
+  table: 'skills' | 'virtual_mcps' | 'catalogs',
+  desired: string,
+): Promise<string[]> {
+  const where =
+    desired.length > SLUG_SCAN_PREFIX
+      ? sql`slug LIKE ${desired.slice(0, SLUG_SCAN_PREFIX) + '%'}`
+      : sql`slug = ${desired} OR slug LIKE ${desired + '-%'}`;
+  const result = await db().execute(sql`SELECT slug FROM ${sql.raw(table)} WHERE ${where}`);
+  return (result.rows as Row[]).map((row) => row.slug as string);
+}
+
+/**
  * O slug de uma skill: o pedido, se veio, ou um livre a partir do nome.
  *
  * Slug **pedido** passa por `isValidSlug`, como em `assertVirtualMcpSlug` e
@@ -6725,11 +7575,7 @@ async function resolveSlug(requested: string | undefined, fallbackName: string):
   if (asked && !isValidSlug(asked)) throw badRequest(`Slug inválido: "${asked}"`);
 
   const desired = slugify(asked || fallbackName) || 'skill';
-  const result = await db().execute(
-    sql`SELECT slug FROM skills WHERE slug = ${desired} OR slug LIKE ${desired + '-%'}`,
-  );
-  const taken = (result.rows as Row[]).map((row) => row.slug as string);
-  const slug = uniqueSlug(desired, taken);
+  const slug = uniqueSlug(desired, await takenSlugs('skills', desired));
 
   if (asked && slug !== desired) {
     throw conflict(`Já existe uma skill com o slug "${desired}"`);
@@ -6750,15 +7596,30 @@ type FileColumns = {
 
 /**
  * A regra única de gravação de arquivo: o mime pela extensão; texto quando o
- * mime é textual e não há byte nulo, binário no resto (`files_one_content_chk`
- * exige exatamente um dos dois); o tamanho em bytes. Conteúdo vazio vale nos
- * dois casos — `''` num texto, `bytea` vazio num binário, nunca `NULL`.
- * Servem-se dela o INSERT (`insertFileSql`) e o `SkillFileMeta` que as
- * escritas devolvem.
+ * mime é textual, não há byte nulo **e os bytes são UTF-8 válido**, binário no
+ * resto (`files_one_content_chk` exige exatamente um dos dois); o tamanho em
+ * bytes. Conteúdo vazio vale nos dois casos — `''` num texto, `bytea` vazio num
+ * binário, nunca `NULL`. Servem-se dela o INSERT (`insertFileSql`) e o
+ * `SkillFileMeta` que as escritas devolvem.
+ *
+ * A régua é `isTextualContent` de shared — a mesma que o `extractZip` usa, para
+ * o pacote e o banco não discordarem (`tasks/015`). Um `.csv` em Windows-1252
+ * tem mime textual e nenhum byte nulo, e `toString('utf8')` **não falha** com
+ * ele: troca cada byte inválido por U+FFFD, sem erro e sem volta — `preço` virava
+ * `pre�o` para sempre, com `size_bytes` do original e conteúdo de outro tamanho.
+ * Esse arquivo é binário: guardado byte a byte e baixado igual ao que chegou.
+ *
+ * O `SKILL.md` é o único caminho que **tem** de ser texto: é ele que
+ * `readTextFile`, o `search_vector` e o RAG leem. Gravado como binário, a skill
+ * ficaria com o corpo vazio para todo leitor, sem erro — por isso é 400 aqui, em
+ * vez de trocar uma corrupção silenciosa por um sumiço silencioso.
  */
 function fileColumns(path: string, buffer: Buffer): FileColumns {
   const mimeType = mimeTypeFor(path);
-  const isText = isTextualMime(mimeType) && !buffer.includes(0);
+  const isText = isTextualContent(mimeType, buffer);
+  if (!isText && isSkillMd(path)) {
+    throw badRequest('O SKILL.md precisa ser um texto UTF-8 válido, sem byte nulo');
+  }
   return {
     mimeType,
     isText,
@@ -6812,12 +7673,15 @@ const FILE_BATCH_BYTES = 8 * 1024 * 1024;
  *
  * Duas coisas que a forma em lote exige e o laço não exigia:
  *
- * - **deduplicar por `lower(relative_path)`, mantendo a última ocorrência.** O
- *   alvo do conflito é um índice sobre `lower(...)`, e um pacote que traga
- *   `Notas.md` e `notas.md` juntos faria o Postgres recusar a statement inteira
- *   com *"ON CONFLICT DO UPDATE command cannot affect row a second time"*
- *   (21000). No laço a última gravação vencia em silêncio, e é esse resultado —
- *   uma linha, com a última grafia e o último conteúdo — que fica;
+ * - **deduplicar por `lower(relative_path)` — o do Postgres, não o
+ *   `toLowerCase()` do JS —, mantendo a última ocorrência.** O alvo do conflito
+ *   é um índice sobre `lower(...)`, e um pacote que traga `Notas.md` e
+ *   `notas.md` juntos faria o Postgres recusar a statement inteira com *"ON
+ *   CONFLICT DO UPDATE command cannot affect row a second time"* (21000). No
+ *   laço a última gravação vencia em silêncio, e é esse resultado — uma linha,
+ *   com a última grafia e o último conteúdo — que fica. Com a chave feita no
+ *   JS, `İ.md` e `I.md` passavam por diferentes e caíam na mesma chave do
+ *   índice: o 21000 que o dedupe existe para evitar (`tasks/017`);
  * - **fatiar o lote** por linha e por byte (ver acima).
  */
 async function upsertFilesTx(
@@ -6825,8 +7689,9 @@ async function upsertFilesTx(
   skillUuid: string,
   files: readonly { path: string; buffer: Buffer }[],
 ): Promise<void> {
+  const keys = await foldPathsTx(tx, files.map((file) => file.path));
   const unique = new Map<string, { path: string; buffer: Buffer }>();
-  for (const file of files) unique.set(file.path.toLowerCase(), file);
+  files.forEach((file, index) => unique.set(keys[index]!, file));
 
   let rows: SQL[] = [];
   let bytes = 0;
@@ -6854,11 +7719,41 @@ async function upsertFilesTx(
 }
 
 /**
- * A trava das escritas de arquivo numa skill (`createFile` e `setFiles`): um
- * advisory lock **de transação**, solto sozinho no COMMIT/ROLLBACK — nada vaza
- * para a conexão devolvida ao pool. A chave é o hash de um texto com prefixo
- * próprio; uma colisão (2⁻⁶⁴) só faria duas criações esperarem uma pela
- * outra sem motivo, nunca gravaria errado.
+ * A chave de caixa de cada caminho **como o Postgres a calcula** — a mesma
+ * `lower()` do índice `files_skill_path_lower_uniq`, na coleção do banco —, na
+ * ordem recebida. Um caminho só não tem o que deduplicar e dispensa a ida ao
+ * banco (é o `setFile` e o `SKILL.md` de toda escrita de skill).
+ *
+ * Reimplementar a dobra no JS seria uma segunda régua: `toLowerCase()` faz o
+ * mapeamento completo do Unicode e o `lower()` da libc é 1:1, e o lado certo
+ * muda com o provedor de coleção do cluster (ICU e `builtin` fazem o completo).
+ * Perguntar ao banco é imune às duas coisas.
+ */
+async function foldPathsTx(tx: Tx, paths: readonly string[]): Promise<string[]> {
+  if (paths.length <= 1) return [...paths];
+  const result = await tx.execute(sql`
+    SELECT lower(caminho) AS chave
+    FROM unnest(${sql.param([...paths])}::text[]) WITH ORDINALITY AS t(caminho, ordem)
+    ORDER BY ordem
+  `);
+  const keys = (result.rows as Row[]).map((row) => row.chave as string);
+  if (keys.length !== paths.length) throw new Error('A dobra de caixa dos caminhos voltou incompleta');
+  return keys;
+}
+
+/**
+ * A fila das escritas de arquivo numa skill — `createFile`, `setFile`,
+ * `setFiles`, `deleteFile`, `deleteSkill` e o `updateSkillWithContent` que grava
+ * o `SKILL.md`: um advisory lock **de transação**, solto sozinho no
+ * COMMIT/ROLLBACK — nada vaza para a conexão devolvida ao pool. A chave é o hash
+ * de um texto com prefixo próprio; uma colisão (2⁻⁶⁴) só faria duas escritas
+ * esperarem uma pela outra sem motivo, nunca gravaria errado.
+ *
+ * **Tem de ser a primeira statement da transação.** É isso que a impede de
+ * fechar ciclo: quem espera por ela não segura linha nenhuma. Tomá-la depois de
+ * um `UPDATE` ou de um `SELECT … FOR …` recria o deadlock que ela existe para
+ * evitar — e, dentro dela, nada de `db()`: a segunda conexão do pool pode não
+ * vir (ver `readFileFrom`).
  */
 async function lockSkillFilesTx(tx: Tx, skillUuid: string): Promise<void> {
   const key = `purple-skills:files:${skillUuid}`;
@@ -6978,8 +7873,16 @@ function truncate(value: string | null, max: number): string | null {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+/**
+ * O termo de busca das listagens: aparado, vazio vira nulo, cortado no teto.
+ * Com o caractere nulo é 400, pelo mesmo motivo de `optionalText` — e aqui
+ * importa mais, porque `listSkills` recebe o termo cru e é a superfície
+ * anônima: `GET /api/skills?q=%00` no site era 500 com o SQL no log
+ * (`tasks/038`). Nenhum texto do banco contém o nulo, então não há o que casar.
+ */
 function normalizeQuery(raw: string | null | undefined): string | null {
   const query = (raw ?? '').trim();
+  if (query.includes(NUL)) throw badRequest('O termo de busca não pode conter o caractere nulo');
   return query.length > 0 ? query.slice(0, SEARCH_QUERY_MAX_LENGTH) : null;
 }
 
@@ -7008,10 +7911,28 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
-/** `OFFSET` é bigint: fração ou lixo vira 0, não erro do driver. */
+/**
+ * O maior deslocamento que desce ao SQL. `OFFSET` é `bigint` (teto
+ * 9223372036854775807) e o driver manda o número como **texto**: `1e20`
+ * (`?offset=99999999999999999999`, finito e inteiro para o JavaScript) sobe
+ * como `"100000000000000000000"` e o Postgres responde 22003; de `1e21` em
+ * diante o texto é `"1e+21"`, que nem é sintaxe de `bigint` (22P02). Os dois
+ * viravam 500 numa listagem anônima (`tasks/086`). `MAX_SAFE_INTEGER` cabe
+ * folgado no `bigint`, é o maior inteiro que o `number` representa exato — o
+ * `offset` devolvido na página é o mesmo que foi ao banco — e está além de
+ * qualquer paginação real.
+ */
+const MAX_PAGE_OFFSET = Number.MAX_SAFE_INTEGER;
+
+/**
+ * `OFFSET` é bigint: fração ou lixo vira 0 e o que passa da faixa **satura**
+ * em `MAX_PAGE_OFFSET` — nunca erro do driver. Saturar, e não recusar, é o
+ * que as listagens já fazem com `limit` (`clamp`) e com o offset negativo: a
+ * resposta é a página vazia de quem paginou além do fim, com o `total` certo.
+ */
 function pageOffset(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
-  return Math.max(0, Math.trunc(value));
+  return Math.min(MAX_PAGE_OFFSET, Math.max(0, Math.trunc(value)));
 }
 
 /**

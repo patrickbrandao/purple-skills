@@ -13,13 +13,21 @@ as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 > [`12`](12-acesso-granular.md)). O item "listar virtuais abertos no site" da
 > `§9` entra no escopo do PR2. O resto — recorte pelo vínculo, chaves `psv_`,
 > dono, identidade da sessão, downloads próprios, 404/401 — continua sendo o
-> desenho de **todo** ponto de montagem, inclusive a raiz.
+> desenho de **todo** ponto de montagem, inclusive a raiz. As frases da `§4.1`
+> e da `§4.3` que ainda tratavam a raiz como "o principal" (sem identidade, com
+> os downloads no site) estão marcadas no ponto; a `§4.3` registra também que o
+> `.zip` passou a sair em fluxo (relatório `044`).
 >
 > **Também parcialmente revogado por [`12`](12-acesso-granular.md):** a
 > decisão 9 e a `§3.1` ("admin manda em todos; o dono, no seu; ninguém mais";
 > só admin transfere) viraram o acesso por níveis — `view`, `edit`, `manage`
 > — com dono e admin transferindo. `canManageVirtualMcp` ficou como atalho
-> de `accessLevel` + `canOwn`.
+> de `accessLevel` + `canOwn`. O "alcance por dono" das tools do mcp-admin
+> (`§6.2`) virou alcance por nível de acesso.
+>
+> **E, em dois pontos, por [`13`](13-fichas-e-acessos.md):** a `§3.4` e o item
+> de estatísticas da `§9` diziam que não há tabela de eventos. Há —
+> `skill_accesses`, desde a migration `018`, gravada pelo próprio mcp-public.
 
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive
@@ -156,8 +164,16 @@ impedido.
 incrementam **o vínculo** (`virtual_mcp_skills.view_count` /
 `download_count`) **e a skill**. O painel do MCP responde "quanto este time
 usa cada skill"; o ranking do site e `get_stats` continuam vendo o total
-real. Não há tabela de eventos: o projeto já aceitou que contadores são
+real. ~~Não há tabela de eventos~~: o projeto já aceitou que contadores são
 inteiros sem dedup (`02` §13).
+
+> **Revogado neste ponto por [`13`](13-fichas-e-acessos.md)** (decisão 13 e
+> `§5`): a tabela de eventos existe desde a migration `018` — `skill_accesses`,
+> uma linha por leitura, com o vMCP e a credencial —, e é o próprio mcp-public
+> que grava nela, nas mesmas cinco superfícies listadas acima
+> (`registrarAcesso`, em `apps/mcp-public/src/access.ts`). `recordSkillAccess`
+> soma os contadores na mesma escrita. O que **continua valendo** é o resto da
+> frase: contador é inteiro, sem dedup, no vínculo **e** na skill.
 
 ## 4. O servidor
 
@@ -165,25 +181,58 @@ inteiros sem dedup (`02` §13).
 
 `createHttpApp` recebe uma lista de **mounts**, cada um com prefixo, `auth`,
 `createServer(req)`, `identityOf(req)` e rotas próprias. O mcp-public monta
-dois: a raiz (o principal, como sempre) e `/virtual/:slug`. Os três
-transportes — Streamable HTTP com sessão, stateless e SSE legado — são
-registrados em cada um; no SSE, o endpoint anunciado ao cliente leva o
-prefixo resolvido (`/virtual/time-a/messages?sessionId=…`), porque
-`req.baseUrl` já é o slug real.
+dois: a raiz (~~o principal, como sempre~~ — desde o `09`, o vMCP padrão) e
+`/virtual/:slug`. Os três transportes — Streamable HTTP com sessão, stateless
+e SSE legado — são registrados em cada um; no SSE, o endpoint anunciado ao
+cliente leva o prefixo resolvido (`/virtual/time-a/messages?sessionId=…`),
+porque `req.baseUrl` já é o slug real.
 
 Um mapa de sessões só, um teto só (`MCP_MAX_SESSIONS`): é um processo e um
 orçamento de memória. O que impede uma sessão aberta em `/virtual/a` de
 responder em `/virtual/b` ou na raiz é a **identidade**, portada do
-mcp-admin: `virtual:<uuid>:key:<id>` ou `virtual:<uuid>:open`. A raiz tem
+mcp-admin: `virtual:<uuid>:key:<id>` ou `virtual:<uuid>:open`. ~~A raiz tem
 identidade `undefined` — com ou sem `MCP_PUBLIC_KEY`, todo cliente é o mesmo
-cliente, como antes.
+cliente, como antes.~~
+
+> **Revogado neste ponto por [`09`](09-mcp-padrao-e-skills-flutuantes.md)
+> `§3.2`:** desde o PR1 dele a raiz é um ponto de montagem do vMCP padrão e
+> **reusa a identidade dele** — `virtual:<uuid>:open` ou
+> `virtual:<uuid>:key:<id>`, a mesma de `/virtual/<slug>` (`rootAuth` →
+> `authenticateAgainst`, em `auth.ts`). Não há mais mount sem identidade, e a
+> `MCP_PUBLIC_KEY` deixou de existir no `011`.
 
 Desde o `007`, o teto global é o **total dos dois transportes** (~~o SSE tinha um
 pool próprio de 500~~) e existe um segundo teto ao lado dele, **por identidade**:
 `MCP_MAX_SESSIONS_PER_IDENTITY`, padrão de um décimo de `MCP_MAX_SESSIONS` com
 mínimo de 10. Ele **recicla** em vez de recusar — cai a sessão mais parada da
-própria credencial, com `end_reason: 'timeout'` — e só o teto global responde 429;
+própria credencial, com `end_reason: 'timeout'` — e só o teto global recusa, com
+**503**, `Retry-After` e o ponteiro para o transporte sem sessão (`rejectWhenFull`,
+em `http.ts` — o 429 do mcp-public é de outra camada, o limite de taxa por IP);
 o porquê está em [`02`](02-architecture-decisions.md) §7.3.
+
+Num vMCP **aberto** a identidade é uma só para todo cliente sem chave
+(`virtual:<uuid>:open`), então esse teto é **um balde comum**: 50 sessões, no
+padrão, para todos os anônimos daquele servidor juntos, venham de onde vierem.
+O que passa disso roda — cai a mais parada, que pode ser a de um estranho, e o
+cliente reabre. É consequência aceita do `007` (o balde existe para o anônimo não
+tomar a vaga de quem tem chave, e o anônimo legítimo não leva recusa), que até o
+relatório 048 da auditoria de 2026-09-19 não estava escrita em lugar nenhum.
+O que mudou com ele: o 404 da
+sessão que caiu **diz o que fazer** — reabrir, ou usar o transporte sem sessão,
+que não ocupa vaga —, o aviso de log nomeia o balde anônimo e a alavanca, e um
+teste fixa o comportamento. Quem precisa de mais vagas anônimas sobe
+`MCP_MAX_SESSIONS`, que leva o teto por credencial junto.
+
+O que **não** mudou, e por quê: a vítima continua sendo escolhida só pela
+ociosidade. "Reciclar primeiro a sessão do próprio endereço" impediria um
+endereço só de despejar os outros em rodízio, mas foi medido e recusado: com o
+balde cheio de sessões abandonadas — o estado normal de um servidor popular —,
+duas janelas do mesmo usuário passam a se derrubar a cada chamada (10 reaberturas
+em 10 chamadas, contra nenhuma hoje), e um escritório atrás de NAT vira uma
+sessão só. As saídas de verdade — balde por endereço com um teto total da
+identidade aberta, ou fatia máxima por endereço — pedem um número novo e trocam
+garantias (a de quem tem chave, quando há mais de um vMCP aberto; a de quem sai
+por NAT), então ficaram como **decisão do mantenedor**.
 
 ### 4.2 Resolução por requisição
 
@@ -199,16 +248,35 @@ código.
 
 ### 4.3 Downloads
 
-`download_skill` e `get_skill_file` (binário) devolvem URLs; no principal
-elas apontam para o site, que só serve skill pública. No virtual apontam para
+`download_skill` e `get_skill_file` (binário) devolvem URLs; ~~no principal
+elas apontam para o site, que só serve skill pública~~. No virtual apontam para
 o próprio mcp-public — `/virtual/<slug>/skills/<skill>/download` e
 `…/files/<path>` — atrás do mesmo `virtualAuth`, e a dica de `download_skill`
-inclui o header quando o MCP exige chave. O `.zip` sai de `writeZip` do
-`shared`, com o `SKILL.md` montado dos metadados, como o do site. Só a
-superfície de ferramentas (`as_skill`) tem download, como no principal.
+inclui o header quando o MCP exige chave. ~~O `.zip` sai de `writeZip` do
+`shared`~~, com o `SKILL.md` montado dos metadados, como o do site. Só a
+superfície de ferramentas (`as_skill`) tem download, ~~como no principal~~.
 
-A `url` da página do site só é devolvida quando a skill é pública; numa
-privada o campo é omitido.
+~~A `url` da página do site só é devolvida quando a skill é pública; numa
+privada o campo é omitido.~~
+
+> **Revogado neste ponto por [`09`](09-mcp-padrao-e-skills-flutuantes.md)
+> `§3.2`:** não há mais "principal" apontando para o site. Em **todo** ponto de
+> montagem as URLs são do próprio mcp-public, sob o prefixo por onde o servidor
+> foi chamado — vazio na raiz, `/virtual/<slug>` nos demais —, atrás do `auth`
+> do mount (`rootAuth` ou `virtualAuth`).
+>
+> **O `.zip` mudou de mecânica no relatório `044`** (beta.22): sai de
+> `streamSkillZip`, em `apps/mcp-public/src/zip.ts`, gerado **em fluxo** — a
+> rota passa a lista e um leitor, entra um arquivo por vez e a resposta não
+> leva `Content-Length`. O `writeZip` do `shared` recebe as entradas prontas,
+> ou seja, exige a skill inteira em memória, e por isso **não** serve aqui: num
+> vMCP aberto o download é anônimo. Quem for mexer lê antes "Download do
+> pacote", no [`03`](03-implementation-notes.md#download-do-pacote).
+>
+> **A `url` da página** deixou de depender de "pública ou privada" com o `09` e
+> o [`12`](12-acesso-granular.md): ela é devolvida quando a skill **está no
+> site** — é pública (`is_public`) ou está em vMCP aberto e ligado (`noSite`,
+> em `tools.ts`) — e omitida fora disso.
 
 ### 4.4 Identidade e instruções
 
@@ -262,7 +330,11 @@ lado só.
 
 ### 6.2 mcp-admin
 
-Nove tools, com o mesmo alcance por dono do painel:
+Nove tools, com o mesmo alcance do painel (~~por dono~~ — **revogado pela
+`§3.2` do [`12`](12-acesso-granular.md):** por nível de acesso; o token
+global e uma chave de admin veem e administram tudo, a chave de um usuário
+alcança os seus, os concedidos — no nível da concessão — e os abertos, em
+leitura; ver `createMcpHandlers`, em `apps/mcp-admin/src/mcps.ts`):
 `list_virtual_mcps`, `get_virtual_mcp`, `create_virtual_mcp`,
 `update_virtual_mcp`, `delete_virtual_mcp(confirm)`,
 `set_virtual_mcp_skills` (a lista é o estado desejado, como `set_files_bulk`),
@@ -274,8 +346,16 @@ O token global cria MCPs órfãos; uma `psk_` cria com o dono da chave.
 Cinco ações novas no CHECK de `audit_log.action`: `mcp.create`,
 `mcp.update` (inclui `is_open`, `is_active`, dono e a lista de skills),
 `mcp.delete`, `mcp.key.create`, `mcp.key.revoke`. Linhas sem skill, com
-`target_label` = slug do MCP (nas chaves, `"<slug>: <nome>"`). Ver a trilha
-continua sendo de admin.
+`target_label` = slug do MCP (nas chaves, ~~`"<slug>: <nome>"`~~
+`"<slug>: <nome> (<prefixo>)"`). Ver a trilha continua sendo de admin.
+
+> **Era**, até o relatório 040 da auditoria de 2026-09-19: só a **emissão**
+> seguia `"<slug>: <nome>"`; a revogação gravava `"<slug>: <uuid da chave>"`, no
+> painel e no mcp-admin. O uuid não aparece em tela nenhuma e, como as chaves
+> somem com o servidor (`ON DELETE CASCADE`), apagado o vMCP a linha ficava sem
+> referente. `revokeVirtualMcpKey` passou a devolver `{ name, prefix }` (ou
+> `null`) do próprio `UPDATE`, e as duas ações rotulam igual — o prefixo, que já
+> é público, desempata chaves de mesmo nome. Linha antiga não é reescrita.
 
 ## 7. Chaves gerenciadas do MCP principal
 
@@ -323,7 +403,12 @@ Sessões no principal ficam presas à identidade como nos virtuais:
 
 ## 9. Fora do escopo
 
-- Estatísticas por MCP além dos contadores do vínculo (sem tabela de eventos).
+- Estatísticas por MCP além dos contadores do vínculo ~~(sem tabela de
+  eventos)~~ — **revogado neste ponto por [`13`](13-fichas-e-acessos.md)**, só
+  na justificativa: a tabela existe (`skill_accesses`, migration `018`, com
+  índice por `virtual_mcp_uuid`). O item **continua fora do escopo** — o painel
+  lista as leituras por skill, por catálogo e por conta, não por vMCP, e
+  estatística derivada do registro segue fora também no `13` (`§8`).
 - Listar virtuais abertos no site — são privados do time.
 - Chaves com expiração.
 - Um virtual que agregue outros virtuais, ou que herde do principal.

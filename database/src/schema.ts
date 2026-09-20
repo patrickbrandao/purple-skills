@@ -119,7 +119,10 @@ export const skills = pgTable(
     // Dois ficam só no SQL, por não caberem no DSL: o da fila do indexador é
     // **parcial** (`skills_rag_stale_idx`, `WHERE rag_stale`, `020`) e o da
     // pontuação é por **expressão** (`skills_score_idx`,
-    // `(view_count + download_count) DESC`, `012`).
+    // `(view_count + download_count) DESC`, `012`). Por referenciar os dois
+    // contadores, ele faz de todo incremento um UPDATE não-HOT — medido e
+    // mantido de propósito (`tasks/055`): ver "Custo de escrita do contador
+    // da skill" no README antes de criar outro índice sobre essas colunas.
   ],
 );
 
@@ -850,6 +853,27 @@ export const ragTextStatus = pgTable(
   ],
 );
 
+/**
+ * A skill **reservada e ainda não terminada** pelo indexador
+ * (`schema/028-reserva-de-skills-com-prazo.sql`). `claimStaleSkills` grava a
+ * linha junto com o `rag_stale = false`; o fim do trabalho, a devolução e a
+ * remoção da skill (cascata) a apagam. O que sobra depois de `until` é a reserva
+ * de um indexador que morreu no meio do lote, e volta à fila sozinha. `attempts`
+ * conta leituras começadas e não terminadas — é o teto que impede a skill que
+ * derruba o indexador de voltar para sempre. É estado de fila, como
+ * `rag_text_status`: por isso não mora em `skills`.
+ */
+export const ragSkillClaims = pgTable('rag_skill_claims', {
+  skillUuid: uuid('skill_uuid')
+    .primaryKey()
+    .references(() => skills.uuid, { onDelete: 'cascade' }),
+  /** Fim da reserva: viva segura a skill, vencida a devolve à fila. */
+  until: timestamp('until', { withTimezone: true }).notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -874,3 +898,4 @@ export type RagTextStatusRow = typeof ragTextStatus.$inferSelect;
 export type RagTextRow = typeof ragTexts.$inferSelect;
 export type RagSkillTextRow = typeof ragSkillTexts.$inferSelect;
 export type RagVectorRow = typeof ragVectors.$inferSelect;
+export type RagSkillClaimRow = typeof ragSkillClaims.$inferSelect;

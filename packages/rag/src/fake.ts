@@ -94,7 +94,14 @@ export class FakeDriver implements EmbeddingDriver {
   /** Tudo que foi pedido, para o teste conferir o prefixo aplicado. */
   readonly recebidos: { metodo: 'documents' | 'query'; textos: string[] }[] = [];
 
-  async embedDocuments(model: EmbeddingModel, texts: readonly string[]): Promise<number[][]> {
+  // O `signal` é o da interface, e é ignorado: não há rede para cortar. Está
+  // declarado para o teste que espia este método poder conferir o prazo que o
+  // indexador manda — com dois parâmetros, a simulação de três não compilava.
+  async embedDocuments(
+    model: EmbeddingModel,
+    texts: readonly string[],
+    _signal?: AbortSignal,
+  ): Promise<number[][]> {
     this.recebidos.push({
       metodo: 'documents',
       textos: texts.map((t) => `${model.documentPrefix}${t}`),

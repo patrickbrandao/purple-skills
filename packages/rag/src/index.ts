@@ -8,14 +8,18 @@
  */
 export {
   assertVector,
+  ragErrorKind,
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
+  RagQuotaError,
   RagRateLimitError,
   RagTimeoutError,
   RagUnavailableError,
   type EmbeddingDriver,
   type EmbeddingModel,
+  type RagErrorKind,
   type UsoDeTokens,
 } from './driver.js';
 
@@ -168,7 +172,7 @@ export type DriversDoAmbiente = {
 /**
  * Monta **todos** os drivers para os quais o ambiente tem chave.
  *
- * Quem decide qual deles vale é o banco (§4.1), e o banco só é lido depois do
+ * Quem decide qual deles vale é o banco (§5), e o banco só é lido depois do
  * boot — daí montar todos e escolher na hora do uso. É também o que torna a
  * troca de driver pelo painel imediata: com as duas chaves no `.env`, mudar
  * `rag.driver` passa a valer no ciclo seguinte, sem recriar container nenhum.

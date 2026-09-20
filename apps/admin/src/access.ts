@@ -4,6 +4,7 @@ import {
   getSkillDetail,
   getSkillSummary,
   getUserByEmail,
+  listSkillGrants,
   lookupUsers,
   notFound,
   removeSkillGrant,
@@ -52,12 +53,68 @@ export function assertAccess(access: EffectiveAccess, minimum: AccessLevel | 'ow
   }
 }
 
+/** O que skill, catálogo e vMCP têm em comum numa ficha. */
+type Sheet = {
+  access: EffectiveAccess;
+  grants: Grant[];
+  ownerUserUuid: string | null;
+  ownerEmail: string | null;
+};
+
 /**
+ * A ficha como ela sai do painel.
+ *
  * A lista de concessões só vai para quem tem `manage` (decisão 11): quem tem
- * `view` ou `edit` vê o dono e o flag público, não com quem divide.
+ * `view` ou `edit` vê o dono e o flag público, não com quem divide. E nenhuma
+ * conta sai pelo `uuid` — ver `ownerByEmail`: o dono e as concessões vão pelo
+ * e-mail, e o dono dos contêineres aninhados (os catálogos de um vMCP, os vMCPs
+ * de um catálogo), que não tem e-mail ao lado e que o painel não lê, não vai.
  */
-export function withGrants<T extends { access: EffectiveAccess; grants: Grant[] }>(object: T): T {
-  return canManage(object.access) ? object : { ...object, grants: [] };
+export function withGrants<T extends Sheet>(object: T): T {
+  const grants = canManage(object.access) ? object.grants.map(grantByEmail) : [];
+  return withoutNestedOwners(ownerByEmail({ ...object, grants }));
+}
+
+/**
+ * O dono como ele sai do painel: pelo **e-mail**, pela mesma razão do
+ * `withoutUuid` da busca de contas. `ownerUserUuid` ao lado de `ownerEmail`, em
+ * toda ficha e lista que a sessão vê, entregava o `sub` do cookie de cada dono —
+ * e a busca dá o papel pelo e-mail, então o par que o `withoutUuid` tirou de
+ * circulação continuava reconstruível (relatório 011 da auditoria de
+ * 2026-09-19). O campo sobrevive como **apelido do e-mail** até sair do tipo
+ * compartilhado; nulo continua "sem dono". Vale para toda sessão, admin
+ * inclusive — quem precisa do uuid de verdade tem `/api/users`. A **entrada**
+ * `ownerUserUuid` do `PATCH` não muda: e-mail ou uuid (`ownerFrom`).
+ */
+export const ownerByEmail = <T extends { ownerUserUuid: string | null; ownerEmail: string | null }>(object: T): T => ({
+  ...object,
+  ownerUserUuid: object.ownerUserUuid === null ? null : object.ownerEmail,
+});
+
+/** A concessão como ela sai: a conta e quem concedeu, pelo e-mail (ver `ownerByEmail`). */
+export const grantByEmail = (grant: Grant): Grant => ({
+  ...grant,
+  userUuid: grant.email,
+  grantedByUserUuid: grant.grantedByUserUuid === null ? null : grant.grantedByEmail,
+});
+
+/**
+ * Tira o `ownerUserUuid` dos itens de `mcps` e `catalogs`. Só dois tipos o
+ * carregam ali (`CatalogMcpRef` e `VirtualMcpCatalog`); nos da skill o campo não
+ * existe e nada muda. Sai **omitido**, não nulo: nulo diria "sem dono". O tipo
+ * compartilhado ainda o declara obrigatório — daí a conversão no fim.
+ */
+function withoutNestedOwners<T extends object>(object: T): T {
+  const out = { ...object } as Record<string, unknown>;
+  for (const key of ['mcps', 'catalogs']) {
+    const refs = out[key];
+    if (!Array.isArray(refs)) continue;
+    out[key] = refs.map((ref: Record<string, unknown>) => {
+      const { ownerUserUuid: _omit, ...rest } = ref;
+      return rest;
+    });
+  }
+  return out as T;
 }
 
 // ------------------------------------------------------------------ skills ---
@@ -115,13 +172,45 @@ export function levelFrom(raw: unknown): AccessLevel {
   return raw;
 }
 
-/** A conta alvo de uma concessão ou transferência, pelo e-mail. */
+/**
+ * A conta alvo de uma **concessão ou transferência**, pelo e-mail: tem de
+ * existir e estar ativa — dar acesso, ou o objeto, a quem não entra não faz
+ * sentido, e o banco recusa os dois (`setGrant`, `transferOwnerTx`). Mudar o
+ * **nível** é a mesma chamada de conceder, e por isso também exige conta ativa.
+ * Revogar **não** passa por aqui: ver `grantOf`.
+ */
 export async function accountByEmail(rawEmail: string): Promise<{ uuid: string; email: string }> {
   const email = normalizeEmail(rawEmail);
   if (!email) throw badRequest('Informe o e-mail da conta');
   const user = await getUserByEmail(email);
   if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${email}`);
   return { uuid: user.uuid, email: user.email };
+}
+
+/**
+ * A concessão a revogar, procurada pelo e-mail **na lista do próprio objeto** —
+ * a que quem tem `manage` já lê —, e não em `users`.
+ *
+ * Revogar passava por `accountByEmail`, que exige conta ativa: a concessão de
+ * quem foi desativado depois de recebê-la não saía por superfície nenhuma,
+ * contra a decisão 10 do `docs/12` ("`manage` revoga qualquer concessão"), e
+ * voltava a valer, sem ninguém querer, se a conta fosse reativada (relatório
+ * 039 da auditoria de 2026-09-19). A linha existe com a conta em qualquer
+ * estado, e `remove*Grant` no banco não olha `is_active`.
+ *
+ * Pela lista, e não por um `accountByEmail` sem a conferência de conta ativa,
+ * porque a resposta de quem consulta `users` distinguiria "não existe conta com
+ * este e-mail" de "existe, e não tem concessão aqui" — inclusive para conta
+ * desativada, que a busca de contas não revela (decisão 13). Aqui a pergunta é
+ * uma só: a linha está na lista ou não está.
+ */
+export function grantOf(grants: readonly Grant[], rawEmail: string, where: string): Grant {
+  const email = normalizeEmail(rawEmail);
+  if (!email) throw badRequest('Informe o e-mail da conta');
+  const grant = grants.find((item) => item.email.toLowerCase() === email);
+  // `where` é o lugar por extenso — "nesta skill", "neste catálogo".
+  if (!grant) throw notFound(`A conta não tem concessão ${where}`);
+  return grant;
 }
 
 /**
@@ -155,13 +244,14 @@ export async function lookup(rawQuery: unknown): Promise<UserLookup[]> {
 export async function shareSkill(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
   const skill = await loadSkillSummary(user, slug, 'manage');
   const target = await accountByEmail(email);
-  return setSkillGrant(skill.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user));
+  return grantByEmail(await setSkillGrant(skill.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
 }
 
+/** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
 export async function unshareSkill(user: AuthUser, slug: string, email: string): Promise<void> {
   const skill = await loadSkillSummary(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  await removeSkillGrant(skill.slug, target.uuid, SOURCE, actorOf(user));
+  const grant = grantOf(await listSkillGrants(skill.uuid), email, 'nesta skill');
+  await removeSkillGrant(skill.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 
 /** UUID canônico, como o banco grava — o que não é e-mail tem de ter esta cara. */

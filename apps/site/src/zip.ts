@@ -24,6 +24,17 @@ export type LerArquivo = (relativePath: string) => Promise<FileContent | null>;
 class ClienteDesistiu extends Error {}
 
 /**
+ * Os cabeçalhos do pacote. Separados do `streamSkillZip` porque a resposta a um
+ * `HEAD` são eles e mais nada (`serveZip`, em `api.ts`), e têm de ser os mesmos
+ * do `GET` — sem `Content-Length`, que o ZIP em fluxo também não tem.
+ */
+export function cabecalhosDoPacote(res: Response, slug: string, ext: 'zip' | 'skill'): void {
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}.${ext}"`);
+  res.setHeader('Cache-Control', 'no-store');
+}
+
+/**
  * Envia os arquivos da skill como um ZIP gerado on-the-fly (streaming). O
  * pacote `.skill` é o mesmo ZIP — só muda a extensão do arquivo baixado.
  *
@@ -64,9 +75,7 @@ export async function streamSkillZip(
   const comecar = (): void => {
     if (comecou) return;
     comecou = true;
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${slug}.${ext}"`);
-    res.setHeader('Cache-Control', 'no-store');
+    cabecalhosDoPacote(res, slug, ext);
     archive.pipe(res);
   };
 

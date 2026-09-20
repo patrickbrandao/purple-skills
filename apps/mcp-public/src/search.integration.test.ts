@@ -223,6 +223,37 @@ descreve('a busca híbrida do mcp-public', () => {
     expect((await buscar('commit')).mode).toBe('hybrid');
   }, 60_000);
 
+  /**
+   * A exclusão com hífen (`-termo`) é da perna **textual**: `websearch_to_tsquery`
+   * a traduz em `!'termo'`, e a CTE `semantica` do `listSkills` filtra só por
+   * visibilidade e tag. Na híbrida a skill excluída volta pelo vetor — sempre,
+   * num acervo de até 20 skills com vetor, porque não há corte por distância — e
+   * o termo excluído ainda vai inteiro ao provedor, puxando por ela (relatório
+   * 062 da auditoria de 2026-09-19).
+   *
+   * Este teste fixa a limitação **como ela é descrita** ao cliente, na descrição
+   * de `search_skills` (`server.ts`) e nos riscos aceitos do `docs/14-rag.md`. No
+   * dia em que o banco aplicar a parte negativa da consulta à perna vetorial, a
+   * segunda metade daqui falha — e é a hora de corrigir os dois textos junto.
+   */
+  it('a exclusão com hífen vale na perna textual; na híbrida o vizinho excluído volta pelo vetor', async () => {
+    const { buscaSemantica } = await import('./rag.js');
+    // "de" está nas três skills; "-commit" tira a de commits.
+    const consulta = 'de -commit';
+
+    await db.setRagSetting('rag.driver', 'off', SOURCE, ACTOR);
+    buscaSemantica.invalidar();
+    const textual = await buscar(consulta);
+    expect(textual.mode).toBe('text');
+    expect(textual.results.map((s) => s.slug).sort()).toEqual(['bolo-de-fuba', 'code-review']);
+
+    await db.setRagSetting('rag.driver', 'google', SOURCE, ACTOR);
+    buscaSemantica.invalidar();
+    const hibrida = await buscar(consulta);
+    expect(hibrida.mode).toBe('hybrid');
+    expect(hibrida.results.map((s) => s.slug)).toContain('commit-conventional');
+  }, 60_000);
+
   it('com o provedor fora do ar, a busca responde em texto sem erro para o cliente', async () => {
     servidor.simular('indisponivel');
     const r = await buscar('commit');

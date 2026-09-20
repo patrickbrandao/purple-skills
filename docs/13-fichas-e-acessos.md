@@ -11,7 +11,12 @@ Revisão de 17/09/2026: **Acesso** vira guia própria nas três fichas,
 Este documento registra o desenho fechado na entrevista de 14/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
 em [`02-architecture-decisions.md`](02-architecture-decisions.md) e os
-desvios em [`03-implementation-notes.md`](03-implementation-notes.md).
+desvios em [`03-implementation-notes.md`](03-implementation-notes.md). Ele
+**revoga**, em pontos marcados em cada um, o "não há tabela de eventos" do
+[`08`](08-mcp-virtual.md) (`§3.4` e o item de estatísticas da `§9`) e do
+[`11`](11-catalogos.md) (`§3.3`): o registro por leitura da `§5` é essa
+tabela. A regra dos contadores — inteiros, sem dedup, somados pelo caminho —
+continua a dos dois.
 
 ## 1. Por que
 
@@ -262,11 +267,19 @@ mcp-admin, que não contava, passa a **registrar sem contar**: `recordSkillAcces
 soma os contadores só quando a origem é o MCP público ou o site, para a
 pontuação do acervo não mudar de significado.
 
-No MCP público, o contexto (credencial, IP, agente) nasce com a requisição
-autenticada e viaja no escopo do servidor MCP (`VirtualScope.access`); o
-`clientInfo` e o id da sessão só existem depois do `initialize`, por isso
-chegam por getters ligados ao `McpServer`. No stateless, que não tem sessão,
-vai a mesma chave sintética com que a sessão é contabilizada.
+No MCP público, a credencial nasce com a requisição autenticada e viaja no
+escopo do servidor MCP (`VirtualScope.access`); o `clientInfo` e o id da sessão
+só existem depois do `initialize`, por isso chegam por getters ligados ao
+`McpServer`. O **IP e o agente** são os da requisição **que leu**: numa sessão o
+servidor é construído uma vez só, então os dois chegam por um
+`AsyncLocalStorage` posto no despacho do transporte (`comOrigem`, em
+`access.ts` — o par do `comCaller` do mcp-admin). A credencial pode seguir sendo
+a da abertura porque a sessão responde 403 a qualquer outra. **Era**, até a
+`beta.22` (`tasks/031`): ~~"o contexto (credencial, IP, agente) nasce com a
+requisição autenticada e viaja no escopo do servidor MCP"~~ — toda leitura de
+uma sessão repetia o IP e o agente de quem a **abriu**, mesmo chegando de outro
+endereço. No stateless, que não tem sessão, vai a mesma chave sintética com que
+a sessão é contabilizada.
 
 ### 5.3 A guia
 

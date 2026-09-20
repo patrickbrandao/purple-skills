@@ -79,18 +79,30 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
 
-  const load = useCallback(async () => {
-    try {
-      setSkill(await getSkill(slug));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigateRef.current('/skills');
-    }
-  }, [slug, toast]);
+  // `wanted` diz se a resposta ainda interessa: a carga da ficha passa a flag do
+  // próprio efeito, para a skill anterior não chegar por último — nem o erro
+  // dela levar para a lista quem já saiu desta página.
+  const load = useCallback(
+    async (wanted: () => boolean = () => true) => {
+      try {
+        const fresh = await getSkill(slug);
+        if (wanted()) setSkill(fresh);
+      } catch (err) {
+        if (!wanted()) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/skills');
+      }
+    },
+    [slug, toast],
+  );
 
   useEffect(() => {
+    let active = true;
     setSkill(null);
-    void load();
+    void load(() => active);
+    return () => {
+      active = false;
+    };
   }, [load]);
 
   /** "Recarregar a árvore" troca só a lista de arquivos. */

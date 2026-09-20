@@ -103,8 +103,8 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
   }
 
   // As ações assíncronas leem o estado de agora, não o da renderização que as criou.
-  const latest = useRef({ docs, files, selected, saving });
-  latest.current = { docs, files, selected, saving };
+  const latest = useRef({ docs, files, selected });
+  latest.current = { docs, files, selected };
 
   const dirtyPaths = useMemo(
     () => new Set([...docs].filter(([, doc]) => isDirtyDoc(doc)).map(([path]) => path)),
@@ -301,32 +301,54 @@ export function useSkillFiles({ skill, canWrite, onFiles, onReloadAll, formDirty
     });
   }, []);
 
+  /** As gravações em curso, por skill e caminho: quem pede de novo espera a mesma. */
+  const inFlight = useRef(new Map<string, Promise<boolean>>());
+
+  /**
+   * Grava um arquivo. Devolve `true` só quando o conteúdo chegou ao servidor —
+   * como `create` — porque o Salvar da página contabiliza o que ficou pendente
+   * (decisão 24 do `docs/13`): sem o sinal, um arquivo que falhava saía com o
+   * erro dele **e** com o "Alterações salvas." da página. Um arquivo que já
+   * está sendo gravado (⌘S nele e, em seguida, o Salvar do cabeçalho) não é
+   * gravado duas vezes nem dado como falha: o segundo pedido recebe o
+   * resultado do primeiro.
+   */
   const save = useCallback(
-    async (path: string) => {
+    (path: string): Promise<boolean> => {
+      const id = `${slug}:${path}`;
+      const running = inFlight.current.get(id);
+      if (running) return running;
       const doc = latest.current.docs.get(path);
-      if (!canWrite || doc?.status !== 'ready' || latest.current.saving.has(path)) return;
+      if (!canWrite || doc?.status !== 'ready') return Promise.resolve(false);
       const content = doc.content;
       setSaving((current) => new Set([...current, path]));
-      try {
-        const meta = await putFile(slug, path, content);
-        setDocs((current) => {
-          const now = current.get(path);
-          // O que foi digitado durante a gravação continua pendente.
-          return now?.status === 'ready' ? new Map(current).set(path, { ...now, original: content }) : current;
-        });
-        onFiles((current) => {
-          const at = current.findIndex((file) => key(file.relativePath) === key(meta.relativePath));
-          if (at === -1) return [...current, meta];
-          const next = [...current];
-          next[at] = meta;
-          return next;
-        });
-        toast.success(`${path} salvo.`);
-      } catch (err) {
-        toast.error((err as Error).message);
-      } finally {
-        setSaving((current) => without(current, path));
-      }
+      const task = (async () => {
+        try {
+          const meta = await putFile(slug, path, content);
+          setDocs((current) => {
+            const now = current.get(path);
+            // O que foi digitado durante a gravação continua pendente.
+            return now?.status === 'ready' ? new Map(current).set(path, { ...now, original: content }) : current;
+          });
+          onFiles((current) => {
+            const at = current.findIndex((file) => key(file.relativePath) === key(meta.relativePath));
+            if (at === -1) return [...current, meta];
+            const next = [...current];
+            next[at] = meta;
+            return next;
+          });
+          toast.success(`${path} salvo.`);
+          return true;
+        } catch (err) {
+          toast.error((err as Error).message);
+          return false;
+        } finally {
+          inFlight.current.delete(id);
+          setSaving((current) => without(current, path));
+        }
+      })();
+      inFlight.current.set(id, task);
+      return task;
     },
     [canWrite, slug, onFiles, toast],
   );

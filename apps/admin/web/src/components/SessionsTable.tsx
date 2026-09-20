@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Radio } from 'lucide-react';
 import { formatDateTime, formatRelative, type McpSessionPage, type McpSessionSummary } from '../api.js';
 import { Badge, Button, EmptyRow, Skel, Status, usePolling } from './ui.js';
 
 const PAGE = 50;
+
+/** O deslocamento da última página que ainda tem linha, para um total que encolheu. */
+export const lastPageOffset = (total: number, size: number) => Math.max(0, Math.ceil(total / size) - 1) * size;
 
 const TRANSPORT_LABEL: Record<McpSessionSummary['transport'], string> = {
   streamable: 'Streamable HTTP',
@@ -31,6 +34,11 @@ export function SessionsTable({
   onlineWindowMs,
   refreshKey = 0,
 }: {
+  /**
+   * Precisa ser **estável** (`useCallback`): a tabela lê a troca de identidade
+   * como troca de recorte e volta à primeira página. Uma arrow nova a cada
+   * render a prenderia na página 1, piscando o esqueleto.
+   */
   load: (query: { online?: boolean; limit: number; offset: number }) => Promise<McpSessionPage>;
   showMcp?: boolean;
   onlineWindowMs: number;
@@ -41,11 +49,42 @@ export function SessionsTable({
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  // O recorte vem de fora — `load` muda quando muda o servidor escolhido na
+  // Auditoria — e o `offset` é estado daqui: sem voltar à primeira página, o
+  // recorte novo herdava o deslocamento do antigo e pedia uma faixa que podia
+  // nem existir ("Nenhuma sessão ainda" com o rodapé em "101–20 de 20"). O
+  // ajuste é feito na renderização, como em `useSkillFiles`: o React refaz o
+  // render antes do commit, e o efeito abaixo nunca roda com o `offset` velho.
+  const [shownLoad, setShownLoad] = useState(() => load);
+  if (shownLoad !== load) {
+    setShownLoad(() => load);
+    setOffset(0);
+  }
+
+  // Uma busca por interação: o contador descarta a resposta atrasada — a do
+  // poll ou a do recorte anterior —, senão a consulta antiga chega por último e
+  // o rodapé acaba descrevendo outra faixa de linhas. Contador, e não a flag
+  // `active` das outras telas, porque esta função também é chamada pelo
+  // `usePolling`, fora do cleanup do efeito.
+  const seq = useRef(0);
+
   const fetchPage = useCallback(async () => {
+    seq.current += 1;
+    const mine = seq.current;
     try {
-      setPage(await load({ online: onlineOnly || undefined, limit: PAGE, offset }));
+      const data = await load({ online: onlineOnly || undefined, limit: PAGE, offset });
+      if (mine !== seq.current) return;
+      // Página órfã: o total encolheu — em "Online agora" as sessões acabam — e a
+      // página pedida ficou além do fim. Volta para a última que existe, em vez
+      // de afirmar "Ninguém conectado agora" com o rodapé em "51–40 de 40".
+      if (offset > 0 && offset >= data.total) {
+        setOffset(lastPageOffset(data.total, PAGE));
+        return;
+      }
+      setPage(data);
       setError(null);
     } catch (err) {
+      if (mine !== seq.current) return;
       setError((err as Error).message);
     }
   }, [load, onlineOnly, offset]);
@@ -55,7 +94,9 @@ export function SessionsTable({
     void fetchPage();
   }, [fetchPage, refreshKey]);
 
-  usePolling(fetchPage, 15_000);
+  // `immediate: false`: a consulta da montagem é a do efeito acima, e não duas.
+  // O poll repete a cada 15 s, e voltar à aba continua atualizando na hora.
+  usePolling(fetchPage, 15_000, true, { immediate: false });
 
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : offset + 1;

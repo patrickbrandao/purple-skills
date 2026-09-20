@@ -1,5 +1,5 @@
 /**
- * O registro único de configurações do RAG (`docs/14-rag.md` §4).
+ * O registro único de configurações do RAG (`docs/14-rag.md` §5).
  *
  * Uma opção é descrita **uma vez** aqui, e daqui saem a leitura do ambiente, a
  * validação, a semeadura e o que o painel mostra. Sem isso, cada container
@@ -14,7 +14,7 @@
  *     garante que acrescentar um driver não deixe metade do sistema sem saber
  *     da variável nova.
  *
- * A precedência é a da §4.1: **o ambiente semeia, o banco decide.** Vários
+ * A precedência é a da §5: **o ambiente semeia, o banco decide.** Vários
  * containers leem a mesma configuração; se o ambiente valesse sempre, um
  * container com a variável diferente divergiria dos outros em silêncio. Então
  * o admin grava o valor do ambiente só quando o banco ainda não tem linha, e
@@ -23,7 +23,7 @@
  *
  * Nada de variável `config` em JSON: cada opção é uma variável própria.
  */
-import { readIntEnv, readSecret, readTextEnv } from '@purple-skills/shared';
+import { isPlaceholder, readIntEnv, readSecret, readTextEnv } from '@purple-skills/shared';
 import type { EmbeddingModel } from './driver.js';
 import {
   BASE_URL_GOOGLE,
@@ -357,12 +357,30 @@ export function readBaseUrlEnv(
   return parseBaseUrl(readTextEnv(info.baseUrlEnv, info.baseUrlPadrao, env), info.baseUrlEnv);
 }
 
-/** Lê a chave **deste** driver, com o `_FILE` tendo prioridade. */
+/**
+ * Lê a chave **deste** driver, com o `_FILE` tendo prioridade.
+ *
+ * O placeholder do `.env.example` (`CHANGE_ME` e afins) vale como **chave
+ * ausente**, e não como chave: as três variáveis saem do exemplo preenchidas
+ * com ele, e o passo a passo só manda trocar a do driver que se vai usar.
+ * Promovido a credencial, ele fazia o boot dizer "chave presente para: google,
+ * openai, voyage", calava o aviso de "nenhuma chave", e — ligado um driver no
+ * painel — mandava texto de skill ao provedor com `CHANGE_ME` a cada ciclo e a
+ * consulta de cada busca, com o painel mostrando "recusada" onde o certo é
+ * "não configurada".
+ *
+ * Não lança, de propósito: a busca semântica é opcional, e placeholder em
+ * chave do RAG não derruba boot nenhum — a guarda que lança segue fora do
+ * `readSecret` (ver `assertNotPlaceholder`). Quem chama já trata `undefined`
+ * como "sem chave": o driver não é montado, o boot avisa, o indexador só
+ * refatia e a busca responde em modo textual sem chamar ninguém.
+ */
 export function readApiKeyEnv(
   driver: RagProviderId,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  return readSecret(driverInfo(driver).apiKeyEnv, env);
+  const chave = readSecret(driverInfo(driver).apiKeyEnv, env);
+  return chave === undefined || isPlaceholder(chave) ? undefined : chave;
 }
 
 /** Prazo do embedding da consulta, em milissegundos. */
@@ -394,7 +412,7 @@ export type SeedDecision =
   | { action: 'avisar'; key: RagSettingKey; value: string; env: string; warning: string };
 
 /**
- * Decide o que fazer com uma chave no boot do admin (§4.1). Função pura: quem
+ * Decide o que fazer com uma chave no boot do admin (§5). Função pura: quem
  * a chama lê o banco antes e grava depois.
  *
  * - banco vazio e ambiente definido → grava (ator `ambiente`);

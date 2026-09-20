@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Eye, History, Info, Library, Plus, Save, SlidersHorizontal, Trash2, Users } from 'lucide-react';
 import {
@@ -70,19 +70,30 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
     setIsActive(fresh.isActive);
   }, []);
 
-  const load = useCallback(async () => {
-    try {
-      hydrate(await getCatalog(slug));
-    } catch (err) {
-      toast.error((err as Error).message);
-      navigate('/catalogos');
-    }
-  }, [slug, hydrate, toast, navigate]);
+  // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
+  // dependesse dele, cada troca de guia buscaria o catálogo de novo e
+  // repovoaria o formulário, jogando fora o que ainda não foi salvo — a
+  // descrição fica numa guia e o nome em outra, com um Salvar só.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
+  // Uma carga por catálogo. O cleanup descarta a resposta atrasada: trocando de
+  // catálogo com a ficha montada, a do anterior podia chegar por último e pôr o
+  // formulário dele sob o endereço deste.
   useEffect(() => {
+    let active = true;
     setDetail(null);
-    void load();
-  }, [load]);
+    getCatalog(slug)
+      .then((fresh) => active && hydrate(fresh))
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigateRef.current('/catalogos');
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug, hydrate, toast]);
 
   /** Os membros mudam na hora; o formulário do cabeçalho não pode perder o que foi digitado. */
   const applyMembers = useCallback((fresh: CatalogDetail) => {

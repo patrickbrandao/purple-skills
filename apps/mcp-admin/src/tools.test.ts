@@ -22,9 +22,11 @@ const db = vi.hoisted(() => ({
   getUserByEmail: vi.fn(),
   setSkillGrant: vi.fn(),
   removeSkillGrant: vi.fn(),
+  listSkillGrants: vi.fn(),
   setFile: vi.fn(),
   setFiles: vi.fn(),
   listFiles: vi.fn(),
+  previewSetFilesDeletions: vi.fn(),
   deleteFile: vi.fn(),
   deleteSkill: vi.fn(),
   listSkills: vi.fn(),
@@ -143,12 +145,12 @@ beforeEach(() => {
   db.getUserByEmail.mockImplementation(async (email: string) =>
     email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
   );
-  // A árvore gravada, que o `set_files_bulk` consulta para saber o que um
-  // `replace` removeria. Só o SKILL.md: nada a remover, nada a confirmar.
-  db.listFiles.mockResolvedValue(detail.files);
+  // O que um `replace` removeria, que o `set_files_bulk` pergunta ao banco
+  // antes de gravar. Por padrão nada: nada a remover, nada a confirmar.
+  db.previewSetFilesDeletions.mockResolvedValue([]);
 });
 
-/** Uma linha de `listFiles`, para montar a árvore já gravada nos testes. */
+/** Uma linha da árvore que `setFiles` devolve depois de gravar. */
 const arquivo = (relativePath: string) => ({
   relativePath,
   mimeType: 'text/markdown',
@@ -299,6 +301,32 @@ describe('delete_file', () => {
     expect(db.deleteFile).not.toHaveBeenCalled();
   });
 
+  /**
+   * Terceira ocorrência do padrão que o `set_file` já tinha corrigido: decidir
+   * com o caminho cru. Aqui não havia dano — o banco normaliza e recusa —, mas a
+   * recusa chegava sem dizer a saída (relatório 016 da auditoria de 2026-09-19).
+   */
+  it('normaliza o caminho antes de decidir: a recusa do SKILL.md é a da tool em qualquer grafia', async () => {
+    for (const path of ['./SKILL.md', '.\\SKILL.md', '/skill.md', 'SKILL.md/']) {
+      const result = await handlers.delete_file({ slug: 'minha-skill', path });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/use set_file para sobrescrevê-lo/);
+    }
+    expect(db.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('recusa o caminho que não normaliza, e manda ao banco o caminho já canônico', async () => {
+    const torto = await handlers.delete_file({ slug: 'minha-skill', path: '../fora.md' });
+    expect(torto.isError).toBe(true);
+    expect(torto.content[0].text).toMatch(/Caminho inválido/);
+    expect(db.deleteFile).not.toHaveBeenCalled();
+
+    db.deleteFile.mockResolvedValue(undefined);
+    const result = await handlers.delete_file({ slug: 'minha-skill', path: './ref//extra.md' });
+    expect(db.deleteFile).toHaveBeenCalledWith('minha-skill', 'ref/extra.md', 'mcp-admin', ADMIN_ACTOR);
+    expect(result.content[0].text).toBe('Arquivo removido de "minha-skill": ref/extra.md');
+  });
+
   it('remove arquivos comuns', async () => {
     db.deleteFile.mockResolvedValue(undefined);
 
@@ -378,7 +406,10 @@ describe('set_file', () => {
    * O caminho não canônico escapava do `stripFrontmatter`: `isSkillMd` compara
    * o texto exato, e `"./SKILL.md"` não bate — mas o banco canoniza na hora de
    * gravar, e o frontmatter forjado ia para a linha do SKILL.md (`tasks/050`).
-   * Metadados são `manage`; `set_file` é `edit`.
+   * O SKILL.md guarda só o corpo: o bloco não mudava metadado nenhum (eles moram
+   * em colunas), mas ficava fora da vista e dentro da busca. Mudar metadados é
+   * `edit_skill` — nome, descrição, ícone e tags com `edit`; slug, estado e
+   * público com `manage` (`docs/12` §3.2).
    */
   it('normaliza o caminho antes de decidir: nenhuma grafia esconde o frontmatter', async () => {
     db.setFile.mockResolvedValue({
@@ -433,6 +464,11 @@ describe('set_files_bulk', () => {
     // `expectedDeletions` refaz a conta dentro da transação (`tasks/011`): zero
     // aqui, porque nada sairia — e zero é conferido como qualquer outro número.
     expect(options).toEqual({ replace: true, expectedDeletions: 0 });
+    // A prévia é pedida ao banco com a skill e os caminhos do .zip, como vieram.
+    expect(db.previewSetFilesDeletions).toHaveBeenCalledTimes(1);
+    const [uuid, enviados] = db.previewSetFilesDeletions.mock.calls[0];
+    expect(uuid).toBe('uuid-1');
+    expect([...enviados].sort()).toEqual(['SKILL.md', 'ref/a.md']);
   });
 
   it('respeita replace=false para apenas adicionar/sobrescrever', async () => {
@@ -445,8 +481,8 @@ describe('set_files_bulk', () => {
     });
 
     expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: false, expectedDeletions: 0 });
-    // Sem remoção não há o que confirmar — nem por que ler a árvore gravada.
-    expect(db.listFiles).not.toHaveBeenCalled();
+    // Sem remoção não há o que confirmar — nem por que perguntar ao banco.
+    expect(db.previewSetFilesDeletions).not.toHaveBeenCalled();
   });
 
   it('tira o frontmatter do SKILL.md que vem no zip', async () => {
@@ -472,7 +508,7 @@ describe('set_files_bulk', () => {
   // O envio parcial é o acidente típico do agente: sem confirmação, apagava o
   // resto da árvore sem deixar como reconstruí-la.
   it('recusa, com a lista e o número, o zip que removeria arquivos', async () => {
-    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+    db.previewSetFilesDeletions.mockResolvedValue(['ref/a.md', 'ref/b.md']);
 
     const result = await handlers.set_files_bulk({
       slug: 'minha-skill',
@@ -489,7 +525,7 @@ describe('set_files_bulk', () => {
   });
 
   it('remove quando confirm_deletions traz o número exato', async () => {
-    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+    db.previewSetFilesDeletions.mockResolvedValue(['ref/a.md', 'ref/b.md']);
     db.setFiles.mockResolvedValue([arquivo('SKILL.md')]);
 
     const result = await handlers.set_files_bulk({
@@ -507,7 +543,7 @@ describe('set_files_bulk', () => {
   // Número errado é o caso do agente que confirmou sem olhar, e o da árvore que
   // mudou entre a recusa e a segunda chamada: nos dois, não se apaga.
   it('recusa de novo quando confirm_deletions não bate com o que sairia', async () => {
-    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md'), arquivo('ref/b.md')]);
+    db.previewSetFilesDeletions.mockResolvedValue(['ref/a.md', 'ref/b.md']);
 
     const result = await handlers.set_files_bulk({
       slug: 'minha-skill',
@@ -521,26 +557,124 @@ describe('set_files_bulk', () => {
     expect(db.setFiles).not.toHaveBeenCalled();
   });
 
-  // O banco compara `lower(relative_path)` e nunca remove o SKILL.md; a prévia
-  // usa a mesma régua, senão pediria confirmação onde nada seria removido.
-  it('não conta o SKILL.md nem a diferença de caixa como remoção', async () => {
-    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('Ref/A.md')]);
-    db.setFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('Ref/A.md')]);
+  /**
+   * Quem diz o que sairia é o banco (`previewSetFilesDeletions`), com o mesmo
+   * predicado do `DELETE` de `setFiles` — a `lower()` do Postgres dos dois
+   * lados, e o SKILL.md fora da conta. A tool refazia a conta com o
+   * `toLowerCase()` do JS, que dobra `İ` em dois code points onde o banco (libc)
+   * dobra em um: um .zip com `I.md` sobre um `İ.md` gravado anunciava uma
+   * remoção que não acontece, e o `expectedDeletions: 1` que ela induzia era 409
+   * para sempre (relatório 017 da auditoria de 2026-09-19). A regra da caixa
+   * está fixada onde ela mora, em `database/src/files.integration.test.ts`.
+   */
+  it('pergunta ao banco o que sairia, com os caminhos como vieram — sem refazer a conta no JS', async () => {
+    // A árvore que a conta antiga leria: com ela, `İ.md` e `Ref/A.md` "sairiam".
+    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('İ.md'), arquivo('Ref/A.md')]);
+    db.setFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('I.md'), arquivo('ref/a.md')]);
 
     const result = await handlers.set_files_bulk({
       slug: 'minha-skill',
-      zip_base64: makeZip({ 'ref/a.md': '# b', 'outro.md': 'x' }),
+      zip_base64: makeZip({ 'I.md': 'x', 'ref/a.md': '# b' }),
     });
 
     expect(result.isError).toBeUndefined();
+    const [uuid, enviados] = db.previewSetFilesDeletions.mock.calls[0];
+    expect(uuid).toBe('uuid-1');
+    // Sem `toLowerCase()` e sem o SKILL.md acrescentado: as duas coisas são do banco.
+    expect([...enviados].sort()).toEqual(['I.md', 'ref/a.md']);
+    expect(db.listFiles).not.toHaveBeenCalled();
     expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: true, expectedDeletions: 0 });
+  });
+
+  /**
+   * O "cenário C" do relatório 075 da auditoria de 2026-09-19. Skill cujos
+   * arquivos vivem em `scripts/`; o agente manda só os dois, sem o SKILL.md
+   * (que é sempre preservado). Com a raiz única achatada, chegavam `a.py` e
+   * `b.py`, e a recusa por remoção listava justamente os arquivos recém-enviados;
+   * confirmada, achatava a árvore de verdade.
+   */
+  it('envio parcial de uma subpasta: os caminhos ficam, e a recusa não acusa o que acabou de chegar', async () => {
+    // O que o banco responderia para a árvore gravada: fora da lista, menos o SKILL.md.
+    const gravados = ['SKILL.md', 'scripts/a.py', 'scripts/b.py'];
+    db.previewSetFilesDeletions.mockImplementation(async (_uuid: string, enviados: readonly string[]) => {
+      const ficam = new Set(enviados.map((path) => path.toLowerCase()));
+      return gravados.filter((path) => path !== 'SKILL.md' && !ficam.has(path.toLowerCase()));
+    });
+    db.setFiles.mockResolvedValue(gravados.map(arquivo));
+
+    const result = await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'scripts/a.py': 'print(1)', 'scripts/b.py': 'print(2)' }),
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).not.toContain('removeria');
+    const files = db.setFiles.mock.calls[0][1] as { relativePath: string }[];
+    expect(files.map((file) => file.relativePath).sort()).toEqual(['scripts/a.py', 'scripts/b.py']);
+    expect(db.setFiles.mock.calls[0][3]).toEqual({ replace: true, expectedDeletions: 0 });
+  });
+
+  it('o pacote baixado (<slug>/SKILL.md) continua entrando sem o embrulho', async () => {
+    db.setFiles.mockResolvedValue([]);
+
+    await handlers.set_files_bulk({
+      slug: 'minha-skill',
+      zip_base64: makeZip({ 'minha-skill/SKILL.md': '# a', 'minha-skill/scripts/a.py': 'print(1)' }),
+    });
+
+    const files = db.setFiles.mock.calls[0][1] as { relativePath: string }[];
+    expect(files.map((file) => file.relativePath).sort()).toEqual(['SKILL.md', 'scripts/a.py']);
+  });
+
+  /**
+   * Relatório 015 da auditoria de 2026-09-19: `toString('utf8')` troca byte
+   * inválido por U+FFFD sem erro. O anexo que não é UTF-8 segue como binário,
+   * byte a byte; o SKILL.md não tem essa saída — é o `extractZip` que recusa
+   * (`ZipContentError`), senão o corpo gravado por cima do prompt seria vazio.
+   */
+  describe('conteúdo fora de UTF-8', () => {
+    /** `preço;ação\n` como o Excel exporta: Windows-1252, 11 bytes. */
+    const CSV_1252 = Buffer.from([0x70, 0x72, 0x65, 0xe7, 0x6f, 0x3b, 0x61, 0xe7, 0xe3, 0x6f, 0x0a]);
+
+    function zipDeBytes(entries: Record<string, Buffer>): string {
+      const zip = new AdmZip();
+      for (const [name, content] of Object.entries(entries)) zip.addFile(name, content);
+      return zip.toBuffer().toString('base64');
+    }
+
+    it('SKILL.md em Windows-1252 é recusado com a causa, e nada é gravado', async () => {
+      const result = await handlers.set_files_bulk({
+        slug: 'minha-skill',
+        zip_base64: zipDeBytes({
+          'SKILL.md': Buffer.from([0x23, 0x20, 0x49, 0x6e, 0x73, 0x74, 0x72, 0x75, 0xe7, 0xf5, 0x65, 0x73, 0x0a]),
+          'ref/a.md': Buffer.from('# a', 'utf8'),
+        }),
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/UTF-8 válido/);
+      expect(db.previewSetFilesDeletions).not.toHaveBeenCalled();
+      expect(db.setFiles).not.toHaveBeenCalled();
+    });
+
+    it('anexo em Windows-1252 chega ao banco byte a byte igual ao do .zip', async () => {
+      db.setFiles.mockResolvedValue([]);
+
+      await handlers.set_files_bulk({
+        slug: 'minha-skill',
+        zip_base64: zipDeBytes({ 'SKILL.md': Buffer.from('# a', 'utf8'), 'dados.csv': CSV_1252 }),
+      });
+
+      const files = db.setFiles.mock.calls[0][1] as { relativePath: string; content: Buffer }[];
+      expect(files.find((file) => file.relativePath === 'dados.csv')?.content.equals(CSV_1252)).toBe(true);
+    });
   });
 
   // A prévia e a escrita são idas ao banco distintas: entre elas a árvore pode
   // mudar, e aí quem recusa é a transação. A mensagem dela chega inteira
   // (`tasks/031`), e as tools acrescentam o que fazer em seguida.
   it('explica o que fazer quando a transação recusa o número confirmado', async () => {
-    db.listFiles.mockResolvedValue([arquivo('SKILL.md'), arquivo('ref/a.md')]);
+    db.previewSetFilesDeletions.mockResolvedValue(['ref/a.md']);
     db.setFiles.mockRejectedValue(
       new AppError(
         'A árvore de arquivos mudou: a chamada confirmou 1 remoção(ões) e 2 arquivo(s) sairiam agora — releia a árvore e tente de novo',
@@ -613,14 +747,15 @@ describe('get_skill', () => {
   });
 
   it('mostra o dono e o acesso; as concessões só para quem administra', async () => {
-    const dado = { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', level: 'view', grantedByUserUuid: null, grantedByEmail: null, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dado = { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'view', grantedByUserUuid: null, grantedByEmail: null, createdAt: '2026-01-01T00:00:00.000Z' };
     db.getSkillDetail.mockImplementation(async (_slug: string, options?: { viewer?: Viewer }) =>
       seen({ ...detail, grants: [dado] }, options?.viewer),
     );
 
     const doDono = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
     expect(doDono).toMatchObject({ owner: 'editor@exemplo.com', isPublic: false, access: 'owner' });
-    expect(doDono.grants).toEqual([{ email: 'maria@exemplo.com', name: 'Maria', level: 'view' }]);
+    // `isActive` é a conta: desativada, a concessão fica na lista, inerte, até ser revogada.
+    expect(doDono.grants).toEqual([{ email: 'maria@exemplo.com', name: 'Maria', level: 'view', isActive: true }]);
 
     grants['uuid-maria'] = 'view';
     const daMaria = JSON.parse(
@@ -643,6 +778,78 @@ describe('get_skill', () => {
     db.getSkillDetail.mockResolvedValue({ ...detail, isPublic: true, isActive: false });
     const desligada = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
     expect(desligada.url).toBeUndefined();
+  });
+});
+
+/**
+ * O teto do texto inline (`MCP_MAX_FILE_TEXT_BYTES`, 4 MiB) só existia no
+ * `get_skill_file` do mcp-public: aqui `get_file` e `get_skill` devolviam texto
+ * de qualquer tamanho, e cada leitura o materializava de novo como string e como
+ * JSON-RPC (relatório 032 da auditoria de 2026-09-19). Este servidor não tem
+ * rota de download, então a saída é recusar dizendo o tamanho.
+ */
+describe('o teto do texto inline', () => {
+  const TETO = 4 * 1024 * 1024;
+
+  it('get_file recusa o texto acima do teto com tamanho e tipo, sem devolver o conteúdo', async () => {
+    const grande = 'a'.repeat(TETO + 1);
+    db.readFile.mockResolvedValue({
+      relativePath: 'ref/gigante.md',
+      mimeType: 'text/markdown',
+      // Declarado pequeno de propósito: a régua são os bytes lidos.
+      sizeBytes: 10,
+      isText: true,
+      buffer: Buffer.from(grande, 'utf8'),
+    });
+
+    const result = await handlers.get_file({ slug: 'minha-skill', path: 'ref/gigante.md' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(`${TETO + 1} bytes (text/markdown)`);
+    expect(result.content[0].text).toContain(`teto de ${TETO}`);
+    expect(result.content[0].text).not.toContain('aaaa');
+  });
+
+  it('get_file no teto exato ainda devolve o arquivo', async () => {
+    const noTeto = 'a'.repeat(TETO);
+    db.readFile.mockResolvedValue({
+      relativePath: 'ref/limite.md',
+      mimeType: 'text/markdown',
+      sizeBytes: TETO,
+      isText: true,
+      buffer: Buffer.from(noTeto, 'utf8'),
+    });
+
+    const result = await handlers.get_file({ slug: 'minha-skill', path: 'ref/limite.md' });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe(noTeto);
+  });
+
+  it('get_skill omite o corpo acima do teto e diz o tamanho; o resto da ficha segue inteiro', async () => {
+    // Metade dos caracteres do teto, e passa dele: a régua é byte, e `ã` são dois.
+    const grande = 'ã'.repeat(TETO / 2 + 1);
+    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: grande });
+
+    const bruto = (await handlers.get_skill({ slug: 'minha-skill' })).content[0].text;
+    const payload = JSON.parse(bruto);
+
+    expect(payload).not.toHaveProperty('skillMd');
+    expect(payload.skillMdBytes).toBe(TETO + 2);
+    expect(payload.skillMdOmitido).toContain(`teto de ${TETO}`);
+    expect(payload.slug).toBe('minha-skill');
+    expect(payload.files).toHaveLength(detail.files.length);
+    expect(bruto.length).toBeLessThan(10_000);
+  });
+
+  it('get_skill abaixo do teto não ganha campo novo nenhum', async () => {
+    db.getSkillDetail.mockResolvedValue(detail);
+
+    const payload = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
+
+    expect(payload).toHaveProperty('skillMd');
+    expect(payload).not.toHaveProperty('skillMdBytes');
+    expect(payload).not.toHaveProperty('skillMdOmitido');
   });
 });
 
@@ -745,9 +952,16 @@ describe('get_stats', () => {
 describe('acesso: share / unshare / transfer', () => {
   const dono = createHandlers(caller('editor'));
 
+  /** As concessões da skill: uma de conta ativa e uma de conta desativada depois de recebê-la. */
+  const CONCESSOES = [
+    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'manage' },
+    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
+  ];
+
   it('manage concede e revoga pelo e-mail', async () => {
     db.setSkillGrant.mockResolvedValue({ userUuid: 'uuid-maria', email: 'maria@exemplo.com', level: 'manage' });
     db.removeSkillGrant.mockResolvedValue(undefined);
+    db.listSkillGrants.mockResolvedValue(CONCESSOES);
 
     const dado = await dono.share_skill({ slug: 'minha-skill', email: 'maria@exemplo.com', level: 'manage' });
     expect(dado.content[0].text).toMatch(/maria@exemplo.com agora pode administrar/);
@@ -774,6 +988,41 @@ describe('acesso: share / unshare / transfer', () => {
     const inativa = await guard(() => dono.transfer_skill({ slug: 'minha-skill', email: 'x@exemplo.com' }));
     expect(inativa.isError).toBe(true);
     expect(inativa.content[0].text).toMatch(/desativada/);
+  });
+
+  /**
+   * `manage` revoga **qualquer** concessão (`docs/12` decisão 10), inclusive a
+   * de conta desativada depois de recebê-la: a linha fica, inerte, e voltaria a
+   * valer se a conta fosse reativada. Revogar passava pelo funil que exige conta
+   * ativa, e a linha não saía por tool nenhuma (relatório 039 da auditoria de
+   * 2026-09-19). Conceder e transferir continuam exigindo conta ativa.
+   */
+  it('revoga a concessão de conta desativada; conceder a ela continua recusado', async () => {
+    db.listSkillGrants.mockResolvedValue(CONCESSOES);
+    db.getUserByEmail.mockResolvedValue({ uuid: 'uuid-saiu', email: 'saiu@exemplo.com', isActive: false });
+
+    const tirado = await dono.unshare_skill({ slug: 'minha-skill', email: 'Saiu@Exemplo.com' });
+    expect(tirado.isError).toBeUndefined();
+    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    expect(db.removeSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
+
+    const concedido = await guard(() => dono.share_skill({ slug: 'minha-skill', email: 'saiu@exemplo.com', level: 'view' }));
+    expect(concedido.isError).toBe(true);
+    expect(concedido.content[0].text).toMatch(/desativada/);
+    expect(db.setSkillGrant).not.toHaveBeenCalled();
+  });
+
+  // Revogar não consulta `users`: a resposta não diz se existe conta com aquele
+  // e-mail — nem desativada, que a busca de contas não revela (decisão 13).
+  it('e-mail sem concessão na skill é recusado sem consultar a conta', async () => {
+    db.listSkillGrants.mockResolvedValue(CONCESSOES);
+
+    const nada = await guard(() => dono.unshare_skill({ slug: 'minha-skill', email: 'x@exemplo.com' }));
+
+    expect(nada.isError).toBe(true);
+    expect(nada.content[0].text).toBe('A conta não tem concessão nesta skill');
+    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.removeSkillGrant).not.toHaveBeenCalled();
   });
 });
 

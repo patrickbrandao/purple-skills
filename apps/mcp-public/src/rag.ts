@@ -33,7 +33,14 @@ export const buscaSemantica = criarBuscaSemantica({
 export function avisoDeBoot(): string | null {
   if (drivers.comChave.length === 0) {
     const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
-    return `[mcp-public] nenhuma chave de RAG no ambiente (${vars}): a busca responde em modo textual`;
+    // O placeholder conta como ausente (`readApiKeyEnv`, relatório 021 da
+    // auditoria de 2026-09-19): sem dizer isso, quem copiou o `.env.example` lê
+    // "nenhuma chave" com três variáveis preenchidas e procura o defeito no
+    // lugar errado.
+    return (
+      `[mcp-public] nenhuma chave de RAG no ambiente (${vars}; o CHANGE_ME do .env.example conta ` +
+      'como chave ausente): a busca responde em modo textual'
+    );
   }
   return null;
 }

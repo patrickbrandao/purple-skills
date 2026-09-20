@@ -11,12 +11,25 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   FakeDriver,
   MODELO_FALSO,
+  RagAuthError,
+  RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
+  RagQuotaError,
+  RagRateLimitError,
+  RagTimeoutError,
   RagUnavailableError,
   chunkSkill,
   textSha256,
 } from '@purple-skills/rag';
-import { runCycle, runOnce, RecusasRag, RESERVA_MS, type IndexerPorts } from './indexer.js';
+import {
+  runCycle,
+  runOnce,
+  RecusasRag,
+  RESERVA_MS,
+  TEXTO_SONDA,
+  type IndexerPorts,
+} from './indexer.js';
 
 /**
  * O critério de tipo (`.svg` e binário fora da divisão) mora no
@@ -124,7 +137,8 @@ function portas(over: Partial<IndexerPorts> = {}) {
  * Um banco de mentira com o contrato do `025`: a fila exclui o que foi recusado
  * e o que está reservado no prazo, a leitura com `reserveMs` reserva o que
  * devolve, o vetor baixa a reserva e a recusa a substitui (os dois estados são
- * exclusivos).
+ * exclusivos). E a terceira saída da reserva, a de quem desistiu do lote:
+ * `releaseRagTextReservations` a baixa sem vetor e sem recusa.
  *
  * As portas de `portas()` guardam tudo em memória **do teste**, que é o que o
  * `RecusasRag` também faz: com elas não dá para ver a diferença entre lembrar no
@@ -141,9 +155,15 @@ function banco(textos: readonly string[], agora: () => number = () => Date.now()
   const livre = (h: string) =>
     !comVetor.has(h) && !recusados.has(h) && (reservas.get(h) ?? 0) <= agora();
 
+  /** O que o indexador devolveu à fila, na ordem: uma lista de hashes por chamada. */
+  const devolvidos: string[][] = [];
+
   const portas: Pick<
     IndexerPorts,
-    'listPendingRagTexts' | 'insertRagVectors' | 'markRagTextRefused'
+    | 'listPendingRagTexts'
+    | 'insertRagVectors'
+    | 'markRagTextRefused'
+    | 'releaseRagTextReservations'
   > = {
     listPendingRagTexts: async (_espaco, limite, options) => {
       const lote = acervo.filter((t) => livre(hex(t))).slice(0, limite);
@@ -151,6 +171,14 @@ function banco(textos: readonly string[], agora: () => number = () => Date.now()
         for (const t of lote) reservas.set(hex(t), agora() + options.reserveMs);
       }
       return lote;
+    },
+    // Como `releaseRagTextReservations` do banco: só baixa reserva, ignora hash
+    // sem reserva e não toca a recusa. Devolve quantas saíram.
+    releaseRagTextReservations: async (_espaco, hashes) => {
+      devolvidos.push(hashes.map((h) => h.toString('hex')));
+      let baixadas = 0;
+      for (const h of hashes) if (reservas.delete(h.toString('hex'))) baixadas += 1;
+      return baixadas;
     },
     insertRagVectors: async (_espaco, entradas) => {
       for (const e of entradas) {
@@ -167,7 +195,7 @@ function banco(textos: readonly string[], agora: () => number = () => Date.now()
     },
   };
 
-  return { acervo, comVetor, recusados, reservas, portas };
+  return { acervo, comVetor, recusados, reservas, devolvidos, portas };
 }
 
 describe('o ambiente incompleto', () => {
@@ -411,6 +439,121 @@ describe('as falhas', () => {
       lastError: 'deu ruim',
       lastErrorAt: '2026-09-15T22:00:00.000Z',
     });
+  });
+});
+
+/**
+ * O painel não recebe a chave nem fala com o provedor: o que ele sabe da chave
+ * sai de `rag.indexer.status`. A **classe** do erro vai publicada ao lado da
+ * mensagem, porque a mensagem é prosa — decidir por pedaço dela fazia a conta sem
+ * crédito e o IP recusado aparecerem no painel como "chave aceita".
+ */
+describe('a classe do erro no estado publicado', () => {
+  /** Um ciclo em que o provedor responde com este erro. */
+  async function cicloCom(erro: Error) {
+    const driver = new FakeDriver();
+    vi.spyOn(driver, 'embedDocuments').mockRejectedValue(erro);
+    const { ports, status } = portas({ driver });
+    const resultado = await runCycle(ports);
+    return { resultado, publicado: status.at(-1)! };
+  }
+
+  it.each([
+    ['RagAuthError', 'auth', new RagAuthError('o provedor recusou a chave (401)'), false],
+    // As duas subclasses: a política é a da classe-base (o ciclo encerra), e só
+    // o que o painel mostra muda.
+    [
+      'RagOriginError',
+      'origin',
+      new RagOriginError('o provedor recusou a origem, não a chave (403)'),
+      false,
+    ],
+    [
+      'RagQuotaError',
+      'quota',
+      new RagQuotaError('a conta está sem crédito (429 insufficient_quota)'),
+      false,
+    ],
+    ['RagConfigError', 'config', new RagConfigError('configuração recusada (404)'), false],
+    ['RagRateLimitError', 'rate-limit', new RagRateLimitError('limite de taxa (429)', null), false],
+    ['RagUnavailableError', 'unavailable', new RagUnavailableError('indisponível (503)'), true],
+    ['RagTimeoutError', 'timeout', new RagTimeoutError('o prazo estourou'), true],
+  ] as const)('%s sai com lastErrorKind "%s"', async (_nome, classe, erro, continuar) => {
+    const { resultado, publicado } = await cicloCom(erro);
+
+    expect(publicado).toMatchObject({ lastError: erro.message, lastErrorKind: classe });
+    expect(resultado.lastErrorKind).toBe(classe);
+    expect(resultado.continuar).toBe(continuar);
+  });
+
+  it('ciclo sem erro publica a classe nula, junto da mensagem nula', async () => {
+    const { ports, status } = portas();
+    await runCycle(ports);
+    expect(status[0]).toMatchObject({ lastError: null, lastErrorKind: null });
+  });
+
+  it('erro que não veio do provedor não tem classe', async () => {
+    // Refatiar não fala com o provedor, e gravar o vetor também não: o painel
+    // não pode tirar destes erros conclusão nenhuma sobre a chave.
+    const refatiar = portas({
+      replaceSkillTexts: async () => {
+        throw new Error('constraint violada');
+      },
+    });
+    await runCycle(refatiar.ports);
+    expect(refatiar.status[0]).toMatchObject({
+      lastError: 'constraint violada',
+      lastErrorKind: null,
+    });
+
+    const gravar = portas({
+      insertRagVectors: async () => {
+        throw new Error('sem conexão com o banco');
+      },
+    });
+    const r = await runCycle(gravar.ports);
+    expect(r.lastErrorKind).toBeNull();
+    expect(gravar.status[0]).toMatchObject({
+      lastError: 'sem conexão com o banco',
+      lastErrorKind: null,
+    });
+  });
+
+  it('o erro do provedor substitui o de refatiar, mensagem e classe juntas', async () => {
+    const driver = new FakeDriver();
+    vi.spyOn(driver, 'embedDocuments').mockRejectedValue(new RagAuthError('chave recusada (401)'));
+    const { ports, status } = portas({
+      driver,
+      replaceSkillTexts: async () => {
+        throw new Error('constraint violada');
+      },
+    });
+
+    await runCycle(ports);
+
+    // O par nunca fica desencontrado: classe de um erro com mensagem de outro
+    // faria o painel dizer "recusada" ao lado de um erro de banco.
+    expect(status[0]).toMatchObject({ lastError: 'chave recusada (401)', lastErrorKind: 'auth' });
+  });
+
+  it('configuração recusada pelo próprio indexador sai como "config"', async () => {
+    // Modelo que o driver não tem: é o par inválido que a semeadura gravava.
+    const modelo = portas({
+      getRagSettings: async () => ({
+        'rag.driver': { value: 'google' },
+        'rag.model': { value: 'text-embedding-3-large' },
+      }),
+    });
+    const r = await runCycle(modelo.ports);
+    expect(r.lastErrorKind).toBe('config');
+    expect(modelo.status[0]).toMatchObject({ lastErrorKind: 'config' });
+    expect(String(modelo.status[0]!.lastError)).toContain('não tem o modelo');
+
+    const desconhecido = portas({
+      getRagSettings: async () => ({ 'rag.driver': { value: 'pinecone' } }),
+    });
+    await runCycle(desconhecido.ports);
+    expect(desconhecido.status[0]).toMatchObject({ lastErrorKind: 'config', keyPresent: false });
   });
 });
 
@@ -804,5 +947,552 @@ describe('a reserva da fila de textos', () => {
     expect(presa.textosProcessados).toBe(0);
     expect(solta.textosProcessados).toBe(1);
     expect(bd.comVetor.size).toBe(1);
+  });
+});
+
+/**
+ * A reserva de quem **desistiu** do lote (relatório 024 da auditoria de
+ * 2026-09-19). A `025` deu à reserva duas saídas — o vetor e o vencimento — e
+ * nenhuma para o indexador **vivo** que falhou: o lote ficava dez minutos fora da
+ * fila, o ciclo seguinte reservava os 64 seguintes e falhava de novo, e com tudo
+ * reservado a fila vinha "vazia" e o estado publicado dizia "sem erro" com o
+ * acervo sem vetor.
+ */
+describe('a reserva devolvida quando o lote falha', () => {
+  const TEXTOS = ['primeiro da fila', 'segundo da fila', 'terceiro da fila'];
+
+  /** Driver que falha com o erro dado enquanto `fora` for verdadeiro. */
+  function driverInstavel(erro: () => Error) {
+    const driver = new FakeDriver();
+    const estado = { fora: true };
+    const enviados: string[][] = [];
+    const original = driver.embedDocuments.bind(driver);
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (model, texts) => {
+      enviados.push([...texts]);
+      if (estado.fora) throw erro();
+      return original(model, texts);
+    });
+    return { driver, estado, enviados };
+  }
+
+  it('o lote que falhou volta à fila no ciclo seguinte, não em dez minutos', async () => {
+    const bd = banco(TEXTOS);
+    const { driver, estado, enviados } = driverInstavel(() => new RagUnavailableError('503'));
+    const { ports, status, logs } = portas({
+      ...bd.portas,
+      driver,
+      claimStaleSkills: async () => [],
+    });
+
+    const falhou = await runCycle(ports);
+
+    expect(falhou.erros).toBe(1);
+    // Nada fica reservado por quem já desistiu.
+    expect(bd.reservas.size).toBe(0);
+    expect(logs.join('\n')).toContain('3 textos devolvidos à fila');
+
+    // O provedor voltou. **Sem avançar o relógio**: é o ciclo seguinte, 30 s depois.
+    estado.fora = false;
+    const retomou = await runCycle(ports);
+
+    expect(retomou.textosProcessados).toBe(3);
+    expect(bd.comVetor.size).toBe(3);
+    expect(enviados.at(-1)).toEqual(TEXTOS);
+    expect(status.at(-1)).toMatchObject({ lastError: null, lastErrorKind: null });
+  });
+
+  it('a falha que persiste aparece em todo ciclo, em vez de sumir com a fila reservada', async () => {
+    const bd = banco(TEXTOS);
+    const { driver } = driverInstavel(() => new RagAuthError('chave recusada (401)'));
+    const { ports, status } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    // Dois textos por ciclo. Sem a devolução, o segundo ciclo reservava o que
+    // sobrou e o **terceiro** achava a fila vazia: publicava `lastError: null`, e
+    // o painel mostrava a chave como aceita com a chave recusada.
+    for (let ciclo = 0; ciclo < 4; ciclo += 1) await runCycle(ports, { textBatch: 2 });
+
+    expect(status.map((s) => s.lastErrorKind)).toEqual(['auth', 'auth', 'auth', 'auth']);
+  });
+
+  it('devolve a fatia que falhou e os lotes que nem foram tentados', async () => {
+    // Três lotes de um texto cada: 30 mil caracteres e `maxBatchChars` é 60 mil.
+    const a = 'a'.repeat(30_000);
+    const b = 'b'.repeat(30_000);
+    const c = 'c'.repeat(30_000);
+    const bd = banco([a, b, c]);
+    const driver = new FakeDriver();
+    const original = driver.embedDocuments.bind(driver);
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (model, texts) => {
+      if (texts.some((t) => t.startsWith('b'))) throw new RagUnavailableError('503');
+      return original(model, texts);
+    });
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    await runCycle(ports);
+
+    // O primeiro estava pago e fica gravado; o segundo falhou e o terceiro nem
+    // saiu — os dois estavam reservados à toa.
+    expect([...bd.comVetor]).toEqual([textSha256(a).toString('hex')]);
+    expect(bd.devolvidos).toEqual([[b, c].map((t) => textSha256(t).toString('hex'))]);
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('o --once reexecutado depois da falha não sai com 0 de fila cheia', async () => {
+    const bd = banco(TEXTOS);
+    const { driver, estado } = driverInstavel(() => new RagAuthError('chave recusada (401)'));
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const primeira = await runOnce(ports);
+    expect(primeira.exitCode).toBe(1);
+
+    // O operador corrigiu a chave e rodou de novo, sem esperar dez minutos. A
+    // fila vinha vazia por causa das reservas da execução anterior, e o modo
+    // único saía com 0 e "0 erro(s)" sem ter embutido nada.
+    estado.fora = false;
+    const segunda = await runOnce(ports);
+
+    expect(segunda.exitCode).toBe(0);
+    expect(bd.comVetor.size).toBe(TEXTOS.length);
+  });
+
+  it('erro ao gravar o vetor também devolve o lote', async () => {
+    const bd = banco(TEXTOS);
+    const { ports } = portas({
+      ...bd.portas,
+      claimStaleSkills: async () => [],
+      insertRagVectors: async () => {
+        throw new Error('sem conexão com o banco');
+      },
+    });
+
+    const r = await runCycle(ports);
+
+    expect(r.lastError).toBe('sem conexão com o banco');
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('falha ao devolver não esconde o erro do provedor, e o log diz que a reserva ficou', async () => {
+    const bd = banco(TEXTOS);
+    const { driver } = driverInstavel(
+      () => new RagUnavailableError('o provedor está indisponível (503)'),
+    );
+    const { ports, logs, status } = portas({
+      ...bd.portas,
+      driver,
+      claimStaleSkills: async () => [],
+      releaseRagTextReservations: async () => {
+        throw new Error('sem conexão com o banco');
+      },
+    });
+
+    const r = await runCycle(ports);
+
+    // Roda dentro do tratamento de outro erro: um segundo erro aqui esconderia o
+    // primeiro. O prazo da reserva continua sendo a rede de segurança.
+    expect(r.erros).toBe(1);
+    expect(r.lastError).toBe('o provedor está indisponível (503)');
+    expect(status[0]).toMatchObject({ lastErrorKind: 'unavailable' });
+    expect(logs.join('\n')).toContain('não deu para devolver os textos à fila');
+    expect(logs.join('\n')).toContain('sem conexão com o banco');
+  });
+
+  it('etapa que passou do prazo da reserva não devolve: o que sobrou já pode ser de outro', async () => {
+    // A reserva não tem dono. Vencida, o texto volta à fila sozinho e a réplica
+    // vizinha pode tê-lo reservado: devolver agora baixaria a reserva **dela**, e
+    // as duas pagariam pelo mesmo embedding.
+    let relogio = Date.parse('2026-09-15T22:00:00Z');
+    const bd = banco(TEXTOS, () => relogio);
+    const driver = new FakeDriver();
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async () => {
+      // O provedor segurou as chamadas para além do prazo da reserva.
+      relogio += RESERVA_MS + 1;
+      throw new RagTimeoutError('o prazo da requisição estourou');
+    });
+    const { ports } = portas({
+      ...bd.portas,
+      driver,
+      claimStaleSkills: async () => [],
+      now: () => new Date(relogio),
+    });
+
+    const r = await runCycle(ports);
+
+    expect(r.erros).toBe(1);
+    expect(bd.devolvidos).toEqual([]);
+  });
+
+  it('fila vazia com texto sem vetor que não é recusa: o log diz que estão reservados', async () => {
+    // O caso que a devolução não alcança: processo morto no meio do lote, ou a
+    // outra réplica trabalhando. Sem esta linha o ciclo "vazio" é mudo, e o
+    // operador lê silêncio como "terminou".
+    const { ports, logs } = portas({
+      claimStaleSkills: async () => [],
+      listPendingRagTexts: async () => [],
+      ragCoverage: async () => ({
+        texts: 10,
+        withVector: 5,
+        pendingTexts: 5,
+        refusedTexts: 2,
+        staleSkills: 0,
+      }),
+    });
+
+    await runCycle(ports);
+
+    expect(logs.join('\n')).toContain('3 textos sem vetor estão reservados e fora da fila');
+  });
+
+  it('fila vazia só com recusados não diz nada: eles não voltam', async () => {
+    const { ports, logs } = portas({
+      claimStaleSkills: async () => [],
+      listPendingRagTexts: async () => [],
+      ragCoverage: async () => ({
+        texts: 10,
+        withVector: 8,
+        pendingTexts: 2,
+        refusedTexts: 2,
+        staleSkills: 0,
+      }),
+    });
+
+    await runCycle(ports);
+
+    expect(logs.join('\n')).not.toContain('fora da fila');
+  });
+});
+
+/**
+ * O 400 que não é do conteúdo (relatório 025 da auditoria de 2026-09-19). Os
+ * três drivers jogam todo 400 residual em `RagInputTooLongError`, e a recusa é
+ * **permanente** desde a `025`. Um 400 que é da instalação — proxy na URL base,
+ * contrato da API, conta — atinge todo texto: o acervo inteiro virava "recusado
+ * para sempre", 64 textos por ciclo, sem um erro no painel.
+ *
+ * A regra: um 400 só prova que o problema é **aquele conteúdo** se o provedor,
+ * nas mesmas condições, aceita outro. Quem pergunta é o texto-sonda.
+ */
+describe('o 400 que não é do conteúdo', () => {
+  const TEXTOS = ['alfa', 'beta', 'gama', 'delta'];
+  const VENENO = 'texto que o provedor nunca aceita';
+
+  /** Provedor que responde 400 a **tudo**, inclusive ao texto-sonda. */
+  function driverQueRecusaTudo() {
+    const driver = new FakeDriver();
+    const chamadas: string[][] = [];
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (_model, texts) => {
+      chamadas.push([...texts]);
+      throw new RagInputTooLongError(
+        'a OpenAI recusou o conteúdo enviado (400 invalid_request_error: unknown field)',
+      );
+    });
+    return { driver, chamadas };
+  }
+
+  /** Provedor que recusa só o que o predicado aponta — a recusa genuína. */
+  function driverQueRecusaSe(recusa: (texto: string) => boolean) {
+    const driver = new FakeDriver();
+    const chamadas: string[][] = [];
+    const original = driver.embedDocuments.bind(driver);
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (model, texts) => {
+      chamadas.push([...texts]);
+      if (texts.some(recusa)) {
+        throw new RagInputTooLongError('o provedor recusou o conteúdo enviado (400)');
+      }
+      return original(model, texts);
+    });
+    return { driver, chamadas };
+  }
+
+  it('não marca nada, registra erro de configuração e devolve o lote', async () => {
+    const bd = banco(TEXTOS);
+    const { driver, chamadas } = driverQueRecusaTudo();
+    const { ports, status } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports, { recusas: new RecusasRag() });
+
+    // Antes: os quatro recusados para sempre, `erros === 0` e a chave "aceita".
+    expect(bd.recusados.size).toBe(0);
+    expect(r.textosRecusados).toBe(0);
+    expect(r.erros).toBe(1);
+    expect(r.continuar).toBe(false);
+    expect(r.lastErrorKind).toBe('config');
+    expect(r.lastError).toContain('texto-sonda');
+    // A resposta do provedor vai junto: é ela que diz ao operador o que corrigir.
+    expect(r.lastError).toContain('unknown field');
+    expect(status[0]).toMatchObject({ lastErrorKind: 'config' });
+    expect(String(status[0]!.lastError)).toContain('texto-sonda');
+    // O lote e a sonda, e mais nada: reenviar um a um seria queimar uma
+    // requisição por texto num erro que não é de texto nenhum.
+    expect(chamadas).toEqual([TEXTOS, [TEXTO_SONDA]]);
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('corrigida a causa, a indexação retoma sozinha no ciclo seguinte', async () => {
+    const bd = banco(TEXTOS);
+    const quebrado = driverQueRecusaTudo();
+    const recusas = new RecusasRag();
+    const antes = portas({ ...bd.portas, driver: quebrado.driver, claimStaleSkills: async () => [] });
+    await runCycle(antes.ports, { recusas });
+
+    // Mesmo processo (a mesma memória de recusas), driver consertado.
+    const depois = portas({ ...bd.portas, claimStaleSkills: async () => [] });
+    const r = await runCycle(depois.ports, { recusas });
+
+    expect(r.textosProcessados).toBe(TEXTOS.length);
+    expect(bd.comVetor.size).toBe(TEXTOS.length);
+  });
+
+  it('o --once sai com 1 e não grava recusa nenhuma', async () => {
+    const bd = banco(TEXTOS);
+    const { driver } = driverQueRecusaTudo();
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const { exitCode, rodadas } = await runOnce(ports);
+
+    // Antes: percorria o acervo inteiro marcando tudo, e saía com 0.
+    expect(exitCode).toBe(1);
+    expect(rodadas).toBe(1);
+    expect(bd.recusados.size).toBe(0);
+  });
+
+  it('recusa genuína: a sonda vai antes do um a um, uma vez, e sem conteúdo de skill', async () => {
+    const bd = banco([VENENO, 'bom um', 'bom dois']);
+    const { driver, chamadas } = driverQueRecusaSe((t) => t === VENENO);
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports);
+
+    expect(r.textosRecusados).toBe(1);
+    expect(r.erros).toBe(0);
+    expect([...bd.recusados]).toEqual([textSha256(VENENO).toString('hex')]);
+    // O vetor da sonda é descartado: só o acervo foi gravado.
+    expect(bd.comVetor.size).toBe(2);
+    expect(chamadas).toEqual([
+      [VENENO, 'bom um', 'bom dois'],
+      [TEXTO_SONDA],
+      [VENENO],
+      ['bom um'],
+      ['bom dois'],
+    ]);
+  });
+
+  it('dez recusas genuínas seguidas na cabeça da fila são marcadas, e a fila anda', async () => {
+    // Um arquivo grande num alfabeto que gasta mais tokens por caractere rende
+    // dez partes recusadas em sequência. "Lote inteiro recusado é erro de
+    // configuração" pararia aqui para sempre — a sonda é o que separa os casos.
+    const ruins = Array.from({ length: 10 }, (_, i) => `parte recusada ${i}`);
+    const bd = banco([...ruins, 'o décimo primeiro']);
+    const { driver } = driverQueRecusaSe((t) => t.startsWith('parte recusada'));
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports);
+
+    expect(r.textosRecusados).toBe(10);
+    expect(r.erros).toBe(0);
+    expect(bd.recusados.size).toBe(10);
+    expect(bd.comVetor.has(textSha256('o décimo primeiro').toString('hex'))).toBe(true);
+  });
+
+  it('lote de um texto só também passa pela sonda antes de virar recusa', async () => {
+    const bd = banco([VENENO]);
+    const { driver, chamadas } = driverQueRecusaSe((t) => t === VENENO);
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports);
+
+    expect(r.textosRecusados).toBe(1);
+    // O culpado já está identificado: a sonda, e nenhum reenvio dele.
+    expect(chamadas).toEqual([[VENENO], [TEXTO_SONDA]]);
+  });
+
+  it('o 400 sistêmico que começa no meio do ciclo também não marca nada', async () => {
+    // Três lotes de um texto cada. O primeiro passa; daí em diante tudo é 400.
+    // "Já aceitou algo neste ciclo" não é prova: a prova vem **depois** do 400.
+    const a = 'a'.repeat(30_000);
+    const b = 'b'.repeat(30_000);
+    const c = 'c'.repeat(30_000);
+    const bd = banco([a, b, c]);
+    const driver = new FakeDriver();
+    const original = driver.embedDocuments.bind(driver);
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (model, texts) => {
+      if (texts[0] === a) return original(model, texts);
+      throw new RagInputTooLongError('o provedor recusou o conteúdo enviado (400)');
+    });
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports);
+
+    expect(r.textosProcessados).toBe(1);
+    expect(bd.recusados.size).toBe(0);
+    expect(r.lastErrorKind).toBe('config');
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('sonda que cai por outro motivo: nada é marcado, e o erro publicado é o dela', async () => {
+    const bd = banco(TEXTOS);
+    const driver = new FakeDriver();
+    vi.spyOn(driver, 'embedDocuments').mockImplementation(async (_model, texts) => {
+      if (texts.includes(TEXTO_SONDA)) {
+        throw new RagUnavailableError('o provedor está indisponível (503)');
+      }
+      throw new RagInputTooLongError('o provedor recusou o conteúdo enviado (400)');
+    });
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    const r = await runCycle(ports);
+
+    // Na dúvida não se grava marca permanente.
+    expect(bd.recusados.size).toBe(0);
+    expect(r.erros).toBe(1);
+    expect(r.lastError).toBe('o provedor está indisponível (503)');
+    expect(r.lastErrorKind).toBe('unavailable');
+    expect(r.continuar).toBe(true);
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('recusa limpa no painel volta a ser tentada: a memória do processo não a segura', async () => {
+    const bd = banco([VENENO, 'bom']);
+    const { driver, chamadas } = driverQueRecusaSe((t) => t === VENENO);
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+    const recusas = new RecusasRag();
+
+    await runCycle(ports, { recusas });
+    expect(bd.recusados.size).toBe(1);
+    const enviosAntes = chamadas.filter((c) => c.includes(VENENO)).length;
+
+    // O "tentar de novo os recusados" do painel: `clearRagRefusals` apaga a linha
+    // no banco e não alcança este processo. Com a memória guardando **toda**
+    // recusa, o indexador reservava o texto liberado, descartava-o em memória e o
+    // segurava por dez minutos a cada ciclo — até alguém reiniciar o container.
+    bd.recusados.clear();
+    const r = await runCycle(ports, { recusas });
+
+    // Recusado uma vez mais e remarcado: é o custo que o reparo promete.
+    expect(chamadas.filter((c) => c.includes(VENENO)).length).toBeGreaterThan(enviosAntes);
+    expect(r.textosRecusados).toBe(1);
+    expect(bd.recusados.size).toBe(1);
+    expect(bd.reservas.size).toBe(0);
+  });
+});
+
+/**
+ * A parada educada (relatório 027 da auditoria de 2026-09-19). O SIGTERM fechava
+ * o pool com o ciclo em curso: as skills reservadas e nem começadas só voltavam
+ * quando a reserva vencia. O ciclo agora consulta `deveParar` nos pontos em que
+ * dá para sair sem deixar nada pela metade, e devolve o que reservou.
+ */
+describe('a parada pedida no meio do ciclo', () => {
+  const UUIDS = [1, 2, 3, 4, 5].map((n) => `00000000-0000-7000-8000-00000000010${n}`);
+
+  /** Cinco skills pendentes, e o registro do que foi refatiado e devolvido. */
+  function cincoSkills(over: Partial<IndexerPorts> = {}) {
+    let fila = [...UUIDS];
+    const refatiadas: string[] = [];
+    const devolvidas: string[] = [];
+    const montadas = portas({
+      claimStaleSkills: async (limit) => {
+        const lote = fila.slice(0, limit);
+        fila = fila.slice(limit);
+        return lote;
+      },
+      releaseStaleSkill: async (uuid) => {
+        devolvidas.push(uuid);
+        fila.push(uuid);
+      },
+      readSkillForRag: async (uuid) => ({ ...SKILL, uuid }),
+      replaceSkillTexts: async (uuid, texts) => {
+        refatiadas.push(uuid);
+        return texts.length;
+      },
+      ...over,
+    });
+    return { ...montadas, refatiadas, devolvidas, naFila: () => [...fila] };
+  }
+
+  it('entre uma skill e outra: a em curso termina, e o resto do lote volta à fila', async () => {
+    const lerFila = vi.fn(async () => []);
+    const { ports, refatiadas, devolvidas, naFila, logs } = cincoSkills({
+      listPendingRagTexts: lerFila,
+    });
+
+    // O sinal chega enquanto a segunda skill está sendo gravada.
+    const r = await runCycle(ports, { deveParar: () => refatiadas.length >= 2 });
+
+    expect(refatiadas).toEqual(UUIDS.slice(0, 2));
+    expect(devolvidas).toEqual(UUIDS.slice(2));
+    expect(naFila()).toEqual(UUIDS.slice(2));
+    expect(r.skillsRefatiadas).toBe(2);
+    expect(r.erros).toBe(0);
+    expect(r.continuar).toBe(false);
+    expect(logs.join('\n')).toContain('parada pedida: devolvendo 3 skill(s)');
+    // Nada de reservar 64 textos para morrer logo em seguida.
+    expect(lerFila).not.toHaveBeenCalled();
+  });
+
+  it('parada pedida antes do lote: nem reserva as skills', async () => {
+    const reservar = vi.fn(async () => UUIDS);
+    const { ports } = cincoSkills({ claimStaleSkills: reservar });
+
+    const r = await runCycle(ports, { deveParar: () => true });
+
+    expect(reservar).not.toHaveBeenCalled();
+    expect(r.continuar).toBe(false);
+  });
+
+  it('a devolução que falha vai para o log, e o ciclo não lança', async () => {
+    const { ports, logs } = cincoSkills({
+      replaceSkillTexts: async () => {
+        throw new Error('constraint violada');
+      },
+      releaseStaleSkill: async () => {
+        throw new Error('Cannot use a pool after calling end on the pool');
+      },
+    });
+
+    const r = await runCycle(ports, { skillBatch: 1 });
+
+    // O erro que conta é o de refatiar, uma vez só; o da devolução não o esconde
+    // nem soma — mas deixou de ser engolido em silêncio.
+    expect(r.erros).toBe(1);
+    expect(r.lastError).toBe('constraint violada');
+    expect(logs.join('\n')).toContain(`não deu para devolver a skill ${UUIDS[0]} à fila`);
+    expect(logs.join('\n')).toContain('Cannot use a pool');
+  });
+
+  it('entre um lote de textos e outro: o que nem saiu volta à fila', async () => {
+    // Três lotes de um texto cada: 30 mil caracteres e `maxBatchChars` é 60 mil.
+    const a = 'a'.repeat(30_000);
+    const b = 'b'.repeat(30_000);
+    const c = 'c'.repeat(30_000);
+    const bd = banco([a, b, c]);
+    const driver = new FakeDriver();
+    const embutir = vi.spyOn(driver, 'embedDocuments');
+    const { ports } = portas({ ...bd.portas, driver, claimStaleSkills: async () => [] });
+
+    // O sinal chega durante o primeiro lote.
+    const r = await runCycle(ports, { deveParar: () => embutir.mock.calls.length >= 1 });
+
+    expect(embutir).toHaveBeenCalledTimes(1);
+    expect(r.textosProcessados).toBe(1);
+    expect(r.erros).toBe(0);
+    expect(r.continuar).toBe(false);
+    expect(bd.comVetor.size).toBe(1);
+    expect(bd.reservas.size).toBe(0);
+  });
+
+  it('o modo único para de repetir rodadas', async () => {
+    let publicou = false;
+    const { ports } = portas({
+      setRagIndexerStatus: async () => {
+        publicou = true;
+      },
+    });
+
+    // O sinal chega no fim da primeira rodada — que trabalhou, e por isso pediria
+    // uma segunda.
+    const { rodadas, result } = await runOnce(ports, { deveParar: () => publicou });
+
+    expect(rodadas).toBe(1);
+    expect(result.textosEmbutidos).toBe(1);
   });
 });

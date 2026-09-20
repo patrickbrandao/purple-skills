@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw, Sparkles } from 'lucide-react';
 import {
+  clearRagRefusals,
   getRagSettings,
   reindexRag,
   saveRagSettings,
+  type RagCoverage,
   type RagSettings,
   type RagValue,
 } from '../api.js';
-import { Button, Field, Panel, Skel } from './ui.js';
+import { Button, Field, Panel, Skel, useConfirm } from './ui.js';
 import { useToast } from './Toast.js';
 
 /**
@@ -27,9 +29,13 @@ import { useToast } from './Toast.js';
  *    trocar qualquer um aponta a busca para outro espaço, com a cobertura
  *    dele. Nada é apagado — os vetores do espaço anterior ficam lá, prontos
  *    para quando alguém voltar atrás.
+ * 4. **"Tentar de novo" os recusados não é "Reindexar".** Reindexar é de graça
+ *    por contrato; devolver à fila o que o provedor recusou custa requisições.
+ *    Por isso são dois botões, e este pede confirmação.
  */
 export function RagPanel() {
   const toast = useToast();
+  const confirm = useConfirm();
   const [dados, setDados] = useState<RagSettings | null>(null);
   const [driver, setDriver] = useState('');
   const [model, setModel] = useState('');
@@ -40,7 +46,7 @@ export function RagPanel() {
       const atual = await getRagSettings();
       setDados(atual);
       setDriver(atual.driver.value);
-      setModel(atual.model.value);
+      setModel(modeloDaTela(atual));
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -54,6 +60,15 @@ export function RagPanel() {
   const modelos = dados?.driverOptions.find((d) => d.id === driver)?.models ?? [];
   const dirty =
     dados !== null && (driver !== dados.driver.value || model !== dados.model.value);
+  /**
+   * O par gravado não combina (modelo de outro driver): o indexador recusa a
+   * configuração a cada ciclo. A tela já abre com o primeiro modelo do driver
+   * escolhido (`modeloDaTela`), então basta salvar — sem isso o select de um
+   * driver com um modelo só nunca dispararia `onChange`, e o "Salvar" ficaria
+   * desabilitado para sempre.
+   */
+  const parInvalido =
+    dados !== null && driver === dados.driver.value && modeloDaTela(dados) !== dados.model.value;
 
   /**
    * Trocar de driver troca o modelo junto: um modelo do driver anterior não
@@ -74,7 +89,7 @@ export function RagPanel() {
       );
       setDados(salvo);
       setDriver(salvo.driver.value);
-      setModel(salvo.model.value);
+      setModel(modeloDaTela(salvo));
       toast.success(
         salvo.driver.value === 'off'
           ? 'Busca semântica desligada. A busca volta ao modo textual em até 10 segundos.'
@@ -104,6 +119,37 @@ export function RagPanel() {
     }
   }
 
+  /**
+   * O reparo da recusa gravada por engano: a marca é permanente, e "Reindexar"
+   * não a desfaz — o texto volta sob o mesmo hash e reencontra a mesma linha.
+   */
+  async function tentarRecusados(quantos: number) {
+    const ok = await confirm({
+      title: `Tentar de novo ${quantos} texto(s) recusado(s)?`,
+      description:
+        'Eles voltam à fila do indexador no próximo ciclo. Diferente de "Reindexar", isto ' +
+        'custa requisições ao provedor: o que ele recusar de novo volta a ser marcado. Serve ' +
+        'para depois de corrigir a causa — URL base, intermediário ou conta do provedor.',
+      confirmLabel: 'Tentar de novo',
+    });
+    if (!ok) return;
+
+    setBusy(true);
+    try {
+      const { refusals } = await clearRagRefusals();
+      toast.success(
+        refusals === 0
+          ? 'Nenhuma recusa a desfazer neste espaço.'
+          : `${refusals} texto(s) devolvido(s) à fila. O indexador os tenta no próximo ciclo.`,
+      );
+      await load();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (dados === null) {
     return (
       <Panel title="Busca semântica" icon={<Sparkles />}>
@@ -113,6 +159,7 @@ export function RagPanel() {
   }
 
   const cobertura = dados.coverage;
+  const pendencias = cobertura === null ? null : pendenciasDe(cobertura);
   const pct =
     cobertura && cobertura.texts > 0
       ? Math.round((cobertura.withVector / cobertura.texts) * 100)
@@ -164,9 +211,11 @@ export function RagPanel() {
         <Field
           label="Modelo"
           hint={
-            model === dados.model.value
-              ? origemDe(dados.model)
-              : 'trocar o modelo cria outro espaço; os vetores do atual continuam onde estão'
+            parInvalido
+              ? `o modelo gravado (${dados.model.value}) não é deste driver, e o indexador recusa a combinação — salve para gravar o escolhido`
+              : model === dados.model.value
+                ? origemDe(dados.model)
+                : 'trocar o modelo cria outro espaço; os vetores do atual continuam onde estão'
           }
         >
           <select
@@ -191,6 +240,16 @@ export function RagPanel() {
         </p>
       )}
 
+      {dados.model.ambienteIgnorado !== null && dados.driver.value !== 'off' && (
+        <p className="panel-hint mt-2" style={{ color: 'var(--warn)' }}>
+          O <code>.env</code> define <code>RAG_MODEL={dados.model.ambienteIgnorado}</code>, que
+          está sendo ignorado:{' '}
+          {dados.model.origem === 'banco'
+            ? 'quem decide é o valor gravado aqui.'
+            : 'ele não é modelo do driver gravado aqui, e vale o padrão desse driver.'}
+        </p>
+      )}
+
       <div className="row gap-2 mt-3">
         <Button disabled={busy || !dirty} onClick={() => void salvar()}>
           Salvar
@@ -212,11 +271,35 @@ export function RagPanel() {
         </dd>
 
         <dt>Pendências</dt>
-        <dd>
-          {cobertura === null
-            ? '—'
-            : `${cobertura.staleSkills} skill(s) a refatiar, ${cobertura.pendingTexts} texto(s) a embutir`}
-        </dd>
+        <dd>{cobertura === null ? '—' : resumoDasPendencias(cobertura)}</dd>
+
+        {pendencias !== null && pendencias.travadas > 0 && (
+          <>
+            <dt>Skills travadas</dt>
+            <dd style={{ color: 'var(--warn)' }}>
+              {pendencias.travadas} skill(s) que o indexador não consegue refatiar: a leitura
+              delas começou três vezes e nenhuma terminou, e ele deixou de tentar sozinho. Edite-as
+              ou clique em Reindexar para dar uma chance nova.
+            </dd>
+          </>
+        )}
+
+        {pendencias !== null && pendencias.recusados > 0 && (
+          <>
+            <dt>Textos recusados</dt>
+            <dd>
+              {pendencias.recusados} texto(s) que o provedor recusou neste espaço, e que o
+              indexador não tenta mais. "Reindexar" não os traz de volta.{' '}
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => void tentarRecusados(pendencias.recusados)}
+              >
+                Tentar de novo
+              </Button>
+            </dd>
+          </>
+        )}
 
         <dt>Último ciclo</dt>
         <dd className="mono">
@@ -248,13 +331,78 @@ export function RagPanel() {
   );
 }
 
-const ROTULO_DA_CHAVE: Record<RagSettings['keyState'], string> = {
+/**
+ * O resumo da chave. Ele fica logo acima do "Último erro", e não pode
+ * desmenti-lo: só `presente` afirma que o provedor aceitou a chave, e o
+ * servidor só o devolve para ciclo sem erro. Erro que não fala da chave —
+ * provedor fora do ar, prazo, configuração, origem recusada — é
+ * `nao-confirmada`, que manda ler a linha de baixo em vez de concluir por ela.
+ */
+export const ROTULO_DA_CHAVE: Record<RagSettings['keyState'], string> = {
   presente: 'aceita pelo provedor no último ciclo',
   ausente: 'não configurada — as skills são refatiadas, nada é embutido',
   recusada: 'recusada pelo provedor',
-  'cota-esgotada': 'cota esgotada (no Google, a diária zera à meia-noite do Pacífico)',
+  // Limite de taxa passa sozinho, e é nele que a cota diária do Google cai.
+  'cota-esgotada':
+    'limite de taxa ou cota do provedor atingido — o indexador tenta de novo sozinho ' +
+    '(no Google, a cota diária zera à meia-noite do Pacífico)',
+  'sem-credito': 'conta do provedor sem crédito — esperar não resolve, é preciso regularizar o faturamento',
+  'nao-confirmada':
+    'não confirmada — o último ciclo terminou com um erro que não fala da chave (veja o último erro)',
   desconhecido: 'ainda não se sabe — o indexador não publicou estado nenhum',
 };
+
+/**
+ * As pendências, separando o que o indexador **vai** fazer do que ele não faz
+ * sozinho. `refusedTexts` está dentro de `pendingTexts` e `stuckSkills` dentro de
+ * `staleSkills` (é assim que o banco conta: a pendência é real, e o segundo
+ * número é a explicação dela); somados numa linha só, "5 textos a embutir" com 2
+ * recusados prometia um trabalho que não vai acontecer.
+ *
+ * Os dois campos novos entram com `?? 0`: `stuckSkills` é opcional no tipo, e uma
+ * resposta em cache de antes da atualização não traz nenhum dos dois.
+ */
+export function pendenciasDe(cobertura: RagCoverage): {
+  aRefatiar: number;
+  travadas: number;
+  aEmbutir: number;
+  recusados: number;
+} {
+  const travadas = cobertura.stuckSkills ?? 0;
+  const recusados = cobertura.refusedTexts ?? 0;
+  return {
+    aRefatiar: Math.max(0, cobertura.staleSkills - travadas),
+    travadas,
+    aEmbutir: Math.max(0, cobertura.pendingTexts - recusados),
+    recusados,
+  };
+}
+
+/** A linha "Pendências". O que não anda sozinho só aparece quando existe. */
+export function resumoDasPendencias(cobertura: RagCoverage): string {
+  const { aRefatiar, travadas, aEmbutir, recusados } = pendenciasDe(cobertura);
+  return [
+    `${aRefatiar} skill(s) a refatiar`,
+    travadas > 0 ? `${travadas} travada(s)` : null,
+    `${aEmbutir} texto(s) a embutir`,
+    recusados > 0 ? `${recusados} recusado(s) pelo provedor` : null,
+  ]
+    .filter((parte) => parte !== null)
+    .join(', ');
+}
+
+/**
+ * O modelo com que a tela abre: o gravado, ou o primeiro do driver gravado
+ * quando o par não combina (o `.env` de outro driver já semeou modelo errado, e
+ * a linha ficou no banco). Com o driver desligado não há o que conferir.
+ */
+export function modeloDaTela(
+  dados: Pick<RagSettings, 'driver' | 'model' | 'driverOptions'>,
+): string {
+  const doDriver = dados.driverOptions.find((d) => d.id === dados.driver.value)?.models ?? [];
+  if (doDriver.length === 0 || doDriver.includes(dados.model.value)) return dados.model.value;
+  return doDriver[0] ?? dados.model.value;
+}
 
 function origemDe(valor: RagValue): string {
   if (valor.origem === 'banco') {

@@ -25,7 +25,9 @@ import { closeDb } from './client.js';
 import { runMigrations, schemaDir } from './migrate.js';
 import { AppError } from './errors.js';
 import {
+  RAG_CLAIM_MAX_ATTEMPTS,
   claimStaleSkills,
+  clearRagRefusals,
   collectOrphanRagTexts,
   createSkill,
   createVirtualMcp,
@@ -43,6 +45,7 @@ import {
   ragCoverage,
   ragSchemaReady,
   readSkillForRag,
+  releaseRagTextReservations,
   releaseStaleSkill,
   replaceSkillTexts,
   resolveRagSpace,
@@ -209,15 +212,14 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       ])
     ).rows[0]!.updated_at.toISOString();
 
-    // Cenário 01, primeira metade: a `020` aplicada pelo runner, numa base com dados.
-    expect(await runMigrations(url!)).toEqual([
-      '020-rag.sql',
-      '021-chaves-por-emissor.sql',
-      '022-busca-por-substring.sql',
-      '023-links-de-reset-substituidos.sql',
-      '024-auditoria-de-troca-de-senha.sql',
-      '025-fila-de-textos-do-rag.sql',
-    ]);
+    // Cenário 01, primeira metade: a `020` aplicada pelo runner, numa base com
+    // dados — ela e tudo o que a pasta traz depois, lido da pasta: uma lista
+    // escrita à mão quebra a cada migration nova, de quem quer que seja.
+    const depoisDo019 = readdirSync(schemaDir())
+      .filter((file) => file.endsWith('.sql') && file.slice(0, 3) > '019')
+      .sort();
+    expect(depoisDo019[0]).toBe('020-rag.sql');
+    expect(await runMigrations(url!)).toEqual(depoisDo019);
     // As queries resolvem a conexão por `getDb()`, que lê o ambiente na
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
@@ -305,6 +307,70 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       // caminho iguais e não marca.
       await setFile('trigger', 'guia.md', 'conteúdo', SOURCE, ACTOR);
       expect(await pendente('trigger')).toBe(false);
+    });
+
+    it('09b — o mesmo conteúdo trocando de binário para texto (e de volta) marca (027)', async () => {
+      // Uma linha de antes da beta.22, quando `.ini` não estava na tabela de
+      // mime e ia para `binary_content`. A tabela de hoje já não produz esse
+      // estado, por isso o SQL cru.
+      const conteudo = '[a]\nb=1\n';
+      await raw.query(
+        `INSERT INTO files (skill_uuid, relative_path, binary_content, mime_type, size_bytes)
+         SELECT uuid, 'app.ini', convert_to($2::text, 'UTF8'), 'application/octet-stream',
+                octet_length(convert_to($2::text, 'UTF8'))
+           FROM skills WHERE slug = $1`,
+        ['trigger', conteudo],
+      );
+      const hash = async () =>
+        (
+          await raw.query<{ h: string }>(
+            `SELECT encode(f.content_sha256, 'hex') AS h
+               FROM files f JOIN skills s ON s.uuid = f.skill_uuid
+              WHERE s.slug = 'trigger' AND f.relative_path = 'app.ini'`,
+          )
+        ).rows[0]!.h;
+      const comoBinario = await hash();
+      await limpar('trigger');
+
+      // O operador reenvia o mesmo arquivo, e hoje o upsert o grava como texto.
+      // Hash dos bytes e caminho são os mesmos — era o atalho que saía antes de
+      // olhar o tipo, e o arquivo nunca entrava na busca semântica.
+      await setFile('trigger', 'app.ini', conteudo, SOURCE, ACTOR);
+      expect(await hash()).toBe(comoBinario);
+      expect(await pendente('trigger')).toBe(true);
+      expect((await readSkillForRag(await uuidDe('trigger')))?.files.map((f) => f.relativePath)).toContain(
+        'app.ini',
+      );
+
+      // O sentido contrário: deixou de ser texto sem mudar de conteúdo. A linha é
+      // atualizada, não apagada, então a cascata das ocorrências não dispara — só
+      // a pendência tira as partes do arquivo do índice.
+      await limpar('trigger');
+      await raw.query(
+        `UPDATE files SET binary_content = convert_to(text_content, 'UTF8'), text_content = NULL
+          WHERE relative_path = 'app.ini'
+            AND skill_uuid = (SELECT uuid FROM skills WHERE slug = $1)`,
+        ['trigger'],
+      );
+      expect(await hash()).toBe(comoBinario);
+      expect(await pendente('trigger')).toBe(true);
+
+      // Binário regravado igual continua sem marcar: o atalho segue valendo
+      // quando o tipo **não** muda.
+      await limpar('trigger');
+      await raw.query(
+        `UPDATE files SET mime_type = 'application/x-ini'
+          WHERE relative_path = 'app.ini'
+            AND skill_uuid = (SELECT uuid FROM skills WHERE slug = $1)`,
+        ['trigger'],
+      );
+      expect(await pendente('trigger')).toBe(false);
+
+      await raw.query(
+        `DELETE FROM files WHERE relative_path = 'app.ini'
+          AND skill_uuid = (SELECT uuid FROM skills WHERE slug = $1)`,
+        ['trigger'],
+      );
     });
 
     it('10 — mudar o conteúdo do SKILL.md marca', async () => {
@@ -1107,6 +1173,183 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       }
       expect(await claimStaleSkills(10)).toEqual([]);
     });
+
+    // ------------------------------------- a reserva com prazo (028) -------
+
+    /** A reserva gravada da skill, ou `null`. */
+    async function reserva(uuid: string): Promise<{ attempts: number; viva: boolean } | null> {
+      const { rows } = await raw.query<{ attempts: number; viva: boolean }>(
+        'SELECT attempts, until > now() AS viva FROM rag_skill_claims WHERE skill_uuid = $1',
+        [uuid],
+      );
+      return rows[0] ?? null;
+    }
+
+    /** O indexador morreu: as reservas dele ficam para trás e o prazo passa. */
+    async function vencer(uuids: string[]): Promise<void> {
+      await raw.query(
+        `UPDATE rag_skill_claims SET until = now() - interval '1 second' WHERE skill_uuid = ANY($1)`,
+        [uuids],
+      );
+    }
+
+    /** Só as skills dadas ficam pendentes, e ninguém tem reserva. */
+    async function partida(slugs: string[]): Promise<void> {
+      await raw.query('DELETE FROM rag_skill_claims');
+      await raw.query('UPDATE skills SET rag_stale = false WHERE rag_stale');
+      await raw.query('UPDATE skills SET rag_stale = true WHERE slug = ANY($1)', [slugs]);
+    }
+
+    it('a reserva é gravada com prazo; terminar e devolver a baixam', async () => {
+      await partida(['fila-1', 'fila-2']);
+      const [a, b] = await claimStaleSkills(5);
+      expect(await claimStaleSkills(5)).toEqual([]);
+
+      // Dez minutos por padrão, e `claimMs` passa pelo mesmo clamp de `reserveMs`.
+      const { rows } = await raw.query<{ padrao: boolean }>(
+        `SELECT bool_and(until BETWEEN now() + interval '9 minutes' AND now() + interval '10 minutes')
+                AS padrao FROM rag_skill_claims`,
+      );
+      expect(rows[0]!.padrao).toBe(true);
+      expect(await reserva(a!)).toEqual({ attempts: 0, viva: true });
+
+      // `rag_stale` já é falso nas duas — era aqui que o lote de um indexador
+      // morto virava "0 skills a refatiar" no painel.
+      expect(await conta('SELECT count(*) AS n FROM skills WHERE rag_stale')).toBe(0);
+      expect((await ragCoverage(null)).staleSkills).toBe(2);
+
+      // Ler é começar (soma a tentativa); gravar é terminar (baixa a reserva).
+      await readSkillForRag(a!);
+      expect(await reserva(a!)).toEqual({ attempts: 1, viva: true });
+      await replaceSkillTexts(a!, []);
+      expect(await reserva(a!)).toBeNull();
+      expect((await ragCoverage(null)).staleSkills).toBe(1);
+
+      // Devolver baixa a reserva **e** remarca: a rodada seguinte pega, sem
+      // esperar o prazo.
+      await readSkillForRag(b!);
+      await releaseStaleSkill(b!);
+      expect(await reserva(b!)).toBeNull();
+      expect(await claimStaleSkills(5)).toEqual([b]);
+      expect(await reserva(b!)).toEqual({ attempts: 0, viva: true });
+
+      // Ler sem reserva (um relatório, um teste) não escreve nada.
+      await readSkillForRag(a!);
+      expect(await reserva(a!)).toBeNull();
+
+      expect((await capture(claimStaleSkills(5, { claimMs: -1 }))).status).toBe(400);
+    });
+
+    it('indexador morto não estaciona a fila: a reserva vencida volta, a viva não', async () => {
+      await partida(['fila-1', 'fila-2', 'fila-3']);
+      const lote = await claimStaleSkills(5);
+      expect(lote).toHaveLength(3);
+
+      // kill -9 depois da primeira: uma terminada, uma lida pela metade, uma
+      // que nem foi aberta. Nenhuma devolução rodou.
+      await readSkillForRag(lote[0]!);
+      await replaceSkillTexts(lote[0]!, []);
+      await readSkillForRag(lote[1]!);
+
+      // Dentro do prazo ninguém as retoma: pode haver um indexador vivo nelas.
+      expect(await claimStaleSkills(5)).toEqual([]);
+      expect((await ragCoverage(null)).staleSkills).toBe(2);
+
+      // Vencido o prazo elas voltam, mesmo com `rag_stale = false` — e a que
+      // nunca foi aberta vem **antes** da que já derrubou alguém uma vez.
+      await vencer(lote);
+      await raw.query("UPDATE skills SET rag_stale = true WHERE slug = 'fila-4'");
+      const retomadas = await claimStaleSkills(5);
+      expect(retomadas).toEqual([await uuidDe('fila-4'), lote[2], lote[1]]);
+      expect(await reserva(lote[1]!)).toEqual({ attempts: 1, viva: true });
+      expect(await reserva(lote[2]!)).toEqual({ attempts: 0, viva: true });
+    });
+
+    it('a skill que derruba o indexador para de voltar no teto de tentativas, e aparece como travada', async () => {
+      await partida(['fila-1']);
+      const [venenosa] = await claimStaleSkills(5);
+
+      for (let vez = 1; vez <= RAG_CLAIM_MAX_ATTEMPTS; vez += 1) {
+        // Lê, o processo morre, o prazo passa.
+        await readSkillForRag(venenosa!);
+        await vencer([venenosa!]);
+        if (vez < RAG_CLAIM_MAX_ATTEMPTS) {
+          expect((await ragCoverage(null)).stuckSkills).toBe(0);
+          expect(await claimStaleSkills(5)).toEqual([venenosa]);
+        }
+      }
+
+      // No teto ela deixa de ser retomada — e **aparece**, em vez de sumir.
+      expect(await reserva(venenosa!)).toEqual({ attempts: RAG_CLAIM_MAX_ATTEMPTS, viva: false });
+      expect(await claimStaleSkills(5)).toEqual([]);
+      expect(await ragCoverage(null)).toMatchObject({ staleSkills: 1, stuckSkills: 1 });
+
+      // Conteúdo novo (o trigger) é uma chance nova, e a conta recomeça.
+      await setFile('fila-1', 'notas.md', 'agora cabe', SOURCE, ACTOR);
+      expect(await claimStaleSkills(5)).toEqual([venenosa]);
+      expect(await reserva(venenosa!)).toEqual({ attempts: 0, viva: true });
+      expect((await ragCoverage(null)).stuckSkills).toBe(0);
+      await replaceSkillTexts(venenosa!, []);
+      await deleteFile('fila-1', 'notas.md', SOURCE, ACTOR);
+    });
+
+    it('reserva viva segura a skill que o trigger remarcou: um indexador por skill', async () => {
+      await partida(['fila-2']);
+      const [emCurso] = await claimStaleSkills(5);
+
+      // Alguém edita a skill enquanto ela é refatiada. Sem a reserva, a réplica
+      // vizinha a pegava aqui, lia a versão nova, e a mais lenta das duas
+      // gravava a antiga por cima.
+      await setFile('fila-2', 'notas.md', 'editada no meio do caminho', SOURCE, ACTOR);
+      expect(await pendente('fila-2')).toBe(true);
+      expect(await claimStaleSkills(5)).toEqual([]);
+
+      // Terminou: a baixa libera, e a pendência que o trigger deixou a traz de
+      // volta na rodada seguinte.
+      await replaceSkillTexts(emCurso!, []);
+      expect(await claimStaleSkills(5)).toEqual([emCurso]);
+      await replaceSkillTexts(emCurso!, []);
+      await deleteFile('fila-2', 'notas.md', SOURCE, ACTOR);
+    });
+
+    it('duas réplicas não retomam a mesma reserva vencida, e a statement não espera por linha travada', async () => {
+      await partida(fila);
+      const lote = await claimStaleSkills(10);
+      expect(lote).toHaveLength(4);
+      await vencer(lote);
+
+      // Em paralelo, as duas chamadas repartem as vencidas sem repetir.
+      const [a, b] = await Promise.all([claimStaleSkills(2), claimStaleSkills(2)]);
+      expect(a).toHaveLength(2);
+      expect(b).toHaveLength(2);
+      expect(new Set([...a, ...b]).size).toBe(4);
+
+      // Uma transação alheia segura a linha de uma skill (é o que `setFiles` faz
+      // pelo trigger): a reserva pula a linha em vez de esperar — esperar por
+      // linha de `skills` é como se fecha ciclo com quem grava arquivo.
+      await vencer(lote);
+      const alheia = new pg.Client({ connectionString: url });
+      await alheia.connect();
+      try {
+        await alheia.query('BEGIN');
+        await alheia.query('SELECT 1 FROM skills WHERE uuid = $1 FOR UPDATE', [lote[0]]);
+        const semEspera = await claimStaleSkills(10);
+        expect(semEspera).toHaveLength(3);
+        expect(semEspera).not.toContain(lote[0]);
+        await alheia.query('COMMIT');
+      } finally {
+        await alheia.end();
+      }
+      expect(await claimStaleSkills(10)).toEqual([lote[0]]);
+
+      // Apagar a skill leva a reserva junto: não sobra nada para retomar.
+      await createSkill({ name: 'fila-5', slug: 'fila-5', skillMd: '# fila-5' }, SOURCE, ACTOR);
+      const [efemera] = await claimStaleSkills(10);
+      await deleteSkill('fila-5', SOURCE, ACTOR);
+      expect(await reserva(efemera!)).toBeNull();
+
+      await partida([]);
+    });
   });
 
   // ------------------------- a fila de textos: recusa, reserva e órfãos ----
@@ -1222,6 +1465,128 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       ).toBe(400);
     });
 
+    it('o lote que falha devolve a reserva: o texto volta no ciclo seguinte, não em dez minutos', async () => {
+      const vivas = () =>
+        conta(
+          `SELECT count(*) AS n FROM rag_text_status WHERE space_uuid = $1 AND state = 'reservado'`,
+          [espacoFila.uuid],
+        );
+
+      // O ciclo lê a fila reservando, e o provedor cai (chave, cota, 5xx, prazo).
+      const reservados = await listPendingRagTexts(espacoFila.uuid, 500, { reserveMs: 600_000 });
+      const meus = reservados.filter((t) => textos.includes(t.content));
+      expect(meus.map((t) => t.content)).toEqual([textos[0], textos[2]]);
+      // A fila exclui toda reserva viva — inclusive a de quem a criou e já
+      // desistiu do lote. Era assim que o ciclo seguinte via "fila vazia".
+      expect(await minhaFila()).toEqual([]);
+
+      // Devolver um só: o outro continua reservado.
+      expect(await releaseRagTextReservations(espacoFila.uuid, [meus[0]!.sha256])).toBe(1);
+      expect(await minhaFila()).toEqual([textos[0]]);
+
+      // A recusa não é tocada; hash sem reserva e espaço que não existe são
+      // ignorados; a contagem é só do que saiu.
+      expect(
+        await releaseRagTextReservations(espacoFila.uuid, [
+          sha256(textos[1]!),
+          sha256('nunca existiu'),
+          meus[0]!.sha256,
+        ]),
+      ).toBe(0);
+      expect((await estado(textos[1]!))!.state).toBe('recusado');
+      expect(
+        await releaseRagTextReservations('00000000-0000-7000-8000-000000000000', [meus[1]!.sha256]),
+      ).toBe(0);
+      expect(await releaseRagTextReservations(espacoFila.uuid, [])).toBe(0);
+
+      // Adiar em vez de devolver: a reserva fica, com o prazo novo — é a saída
+      // do 400 sem prova de que o problema é o conteúdo, e do `Retry-After`.
+      expect(
+        await releaseRagTextReservations(espacoFila.uuid, [meus[1]!.sha256], {
+          retryAfterMs: 3_600_000,
+        }),
+      ).toBe(1);
+      const adiado = (await estado(textos[2]!))!;
+      expect(adiado.state).toBe('reservado');
+      expect(adiado.reason).toBeNull();
+      const { rows } = await raw.query<{ uma_hora: boolean }>(
+        `SELECT until BETWEEN now() + interval '59 minutes' AND now() + interval '60 minutes' AS uma_hora
+           FROM rag_text_status WHERE space_uuid = $1 AND text_sha256 = $2`,
+        [espacoFila.uuid, sha256(textos[2]!)],
+      );
+      expect(rows[0]!.uma_hora).toBe(true);
+      expect(await minhaFila()).toEqual([textos[0]]);
+
+      // O resto do lote volta de uma vez, e o espaço fica sem reserva nenhuma.
+      await releaseRagTextReservations(
+        espacoFila.uuid,
+        reservados.map((t) => t.sha256),
+      );
+      expect(await vivas()).toBe(0);
+      expect(await minhaFila()).toEqual([textos[0], textos[2]]);
+
+      // Erro de chamada continua sendo 400.
+      expect((await capture(releaseRagTextReservations('nao-e-uuid', []))).status).toBe(400);
+      expect(
+        (await capture(releaseRagTextReservations(espacoFila.uuid, [Buffer.alloc(8)]))).status,
+      ).toBe(400);
+      expect(
+        (await capture(releaseRagTextReservations(espacoFila.uuid, [], { retryAfterMs: -1 }))).status,
+      ).toBe(400);
+    });
+
+    it('clearRagRefusals desfaz as recusas de um espaço — e só dele — com auditoria', async () => {
+      // Um espaço à parte: o 400 sistêmico (URL base num proxy, contrato da API)
+      // marcou tudo o que o indexador tentou.
+      const reparo = await resolveRagSpace({ ...GOOGLE, model: 'gemini-embedding-reparo' });
+      const meusPendentes = async () =>
+        (await listPendingRagTexts(reparo.uuid, 500))
+          .map((t) => t.content)
+          .filter((c) => textos.includes(c));
+      for (const texto of textos) {
+        await markRagTextRefused(reparo.uuid, sha256(texto), 'o provedor recusou o conteúdo (400)');
+      }
+      // E uma reserva viva no mesmo espaço, que o reparo não pode tocar.
+      const reservados = await listPendingRagTexts(reparo.uuid, 1, { reserveMs: 600_000 });
+      expect(reservados).toHaveLength(1);
+
+      expect((await ragCoverage(reparo.uuid)).refusedTexts).toBe(3);
+      expect(await meusPendentes()).toEqual([]);
+      const antes = (await listAuditPage({ action: 'rag.reindex' })).total;
+
+      expect(await clearRagRefusals(reparo.uuid, SOURCE, ACTOR)).toBe(3);
+
+      expect((await ragCoverage(reparo.uuid)).refusedTexts).toBe(0);
+      expect(await meusPendentes()).toEqual(textos);
+      // A reserva ficou, e a recusa do outro espaço também.
+      expect(
+        await conta(
+          `SELECT count(*) AS n FROM rag_text_status WHERE space_uuid = $1 AND state = 'reservado'`,
+          [reparo.uuid],
+        ),
+      ).toBe(1);
+      expect((await estado(textos[1]!))!.state).toBe('recusado');
+
+      const trilha = await listAuditPage({ action: 'rag.reindex' });
+      expect(trilha.total).toBe(antes + 1);
+      expect(trilha.items[0]).toMatchObject({
+        action: 'rag.reindex',
+        actorLabel: 'teste',
+        targetLabel: '3 recusas',
+        skillSlug: null,
+      });
+
+      // Nada a limpar é zero — e o gesto do admin continua na trilha.
+      expect(await clearRagRefusals(reparo.uuid, SOURCE, ACTOR)).toBe(0);
+      expect((await listAuditPage({ action: 'rag.reindex' })).items[0]!.targetLabel).toBe('0 recusas');
+      expect((await capture(clearRagRefusals('nao-e-uuid', SOURCE, ACTOR))).status).toBe(400);
+
+      await releaseRagTextReservations(
+        reparo.uuid,
+        reservados.map((t) => t.sha256),
+      );
+    });
+
     it('a reserva gravada impede duas réplicas de pagar pelo mesmo texto', async () => {
       const reservas = () =>
         conta(
@@ -1323,7 +1688,22 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
   // ------------------------------------ configuração, auditoria e schema ---
 
   describe('a configuração, a auditoria e o estado do schema', () => {
-    it('ragSchemaReady enxerga as cinco tabelas', async () => {
+    it('ragSchemaReady enxerga as seis tabelas — e espera a migration quando falta uma', async () => {
+      expect(await ragSchemaReady()).toBe(true);
+
+      // Código novo sobre banco parado antes da `028`: sem `rag_skill_claims` a
+      // reserva falharia a cada ciclo. Com a tabela na conta, o indexador espera
+      // a migration e quem busca cai na busca textual enquanto isso.
+      // Pelo nome, e não pelo número: uma renumeração não pode quebrar isto.
+      const arquivo = readdirSync(schemaDir()).find((file) =>
+        file.endsWith('-reserva-de-skills-com-prazo.sql'),
+      )!;
+      await raw.query('DROP TABLE rag_skill_claims');
+      try {
+        expect(await ragSchemaReady()).toBe(false);
+      } finally {
+        await raw.query(readFileSync(join(schemaDir(), arquivo), 'utf8'));
+      }
       expect(await ragSchemaReady()).toBe(true);
     });
 
@@ -1380,6 +1760,9 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
     });
 
     it('reindexar marca todo o acervo, não apaga vetor e não toca updated_at', async () => {
+      // `clearRagRefusals` audita na mesma ação, com `"<n> recusas"`: a conta é
+      // relativa ao que já havia na trilha.
+      const reindexAntes = (await listAuditPage({ action: 'rag.reindex' })).total;
       const vetores = await conta('SELECT count(*) AS n FROM rag_vectors');
       const { rows: antes } = await raw.query<{ uuid: string; updated_at: Date }>(
         'SELECT uuid, updated_at FROM skills ORDER BY uuid',
@@ -1398,7 +1781,7 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       );
 
       const trilha = await listAuditPage({ action: 'rag.reindex' });
-      expect(trilha.total).toBe(1);
+      expect(trilha.total).toBe(reindexAntes + 1);
       expect(trilha.items[0]).toMatchObject({
         action: 'rag.reindex',
         targetLabel: `${marcadas} skills`,
@@ -1435,9 +1818,27 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
     );
 
     // Apagar do histórico é o que força o runner a rodar o arquivo de novo —
-    // uma segunda chamada normal só o pularia.
-    await raw.query("DELETE FROM schema_migrations WHERE name = '020-rag.sql'");
-    expect(await runMigrations(url!)).toEqual(['020-rag.sql']);
+    // uma segunda chamada normal só o pularia. A `020` volta **junto com a
+    // `027`**, que redefine `files_rag_stale_tg`: sozinha, a `020` recria a
+    // função antiga e desfaz a correção — migration antiga sobre schema novo, o
+    // que o CLI recusa (`refuseRetroactive`; aqui é de propósito, sem a opção).
+    const trocaDeTipo = readdirSync(schemaDir()).find((file) =>
+      file.endsWith('-rag-stale-na-troca-de-tipo.sql'),
+    )!;
+    const corpoDaFuncao = async () =>
+      (
+        await raw.query<{ prosrc: string }>(
+          "SELECT prosrc FROM pg_proc WHERE proname = 'files_rag_stale_tg'",
+        )
+      ).rows[0]!.prosrc;
+    const TIPO = '(NEW.text_content IS NULL) = (OLD.text_content IS NULL)';
+    expect(await corpoDaFuncao()).toContain(TIPO);
+
+    await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [
+      ['020-rag.sql', trocaDeTipo],
+    ]);
+    expect(await runMigrations(url!)).toEqual(['020-rag.sql', trocaDeTipo]);
+    expect(await corpoDaFuncao()).toContain(TIPO);
 
     expect({
       textos: await conta('SELECT count(*) AS n FROM rag_texts'),
@@ -1470,6 +1871,7 @@ describe.skipIf(!url)('RAG: pendência, textos canônicos, espaços, vetores e b
       `SELECT indexname FROM pg_indexes WHERE tablename LIKE 'rag_%' ORDER BY indexname`,
     );
     expect(indices.map((i) => i.indexname)).toEqual([
+      'rag_skill_claims_pkey',
       'rag_skill_texts_file_idx',
       'rag_skill_texts_pkey',
       'rag_skill_texts_sha256_idx',

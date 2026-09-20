@@ -30,6 +30,7 @@ import {
   ragCoverage,
   ragSchemaReady,
   readSkillForRag,
+  releaseRagTextReservations,
   releaseStaleSkill,
   replaceSkillTexts,
   resolveRagSpace,
@@ -42,13 +43,15 @@ import {
   subirServidorFalso,
   OpenAIDriver,
   VoyageDriver,
+  TEXT_EMBEDDING_3_LARGE,
   TEXT_EMBEDDING_3_SMALL,
+  VOYAGE_4,
   VOYAGE_4_LITE,
   type EmbeddingDriver,
   type RagProviderId,
   type ServidorFalso,
 } from '@purple-skills/rag';
-import { runOnce, type IndexerPorts } from './indexer.js';
+import { runCycle, runOnce, type IndexerPorts } from './indexer.js';
 
 const url = process.env.TEST_DATABASE_URL;
 const descreve = url ? describe : describe.skip;
@@ -133,6 +136,9 @@ descreve('trocar de driver, com o banco de verdade', () => {
       insertRagVectors,
       ragCoverage,
       setRagIndexerStatus,
+      // Como no container: o lote que falha volta à fila na hora, em vez de ficar
+      // dez minutos reservado por quem desistiu dele.
+      releaseRagTextReservations,
       driver: (id) => drivers[id],
       keyPresent: (id) => drivers[id] !== null,
       log: () => {},
@@ -283,5 +289,62 @@ descreve('trocar de driver, com o banco de verdade', () => {
     const { result } = await runOnce(portas());
     expect(result.state).toBe('sem-chave');
     expect(await contar('rag_spaces')).toBe(2);
+  }, 120_000);
+
+  /**
+   * O que o painel sabe da chave sai de `rag.indexer.status`, e ele decide pela
+   * **classe** do erro, não pela mensagem. Os dois casos abaixo são os que a
+   * leitura por pedaço de texto mostrava como "chave aceita": só o corpo de erro
+   * de verdade os distingue de um limite de taxa e de uma chave recusada, e só o
+   * banco de verdade prova que a classe sobrevive à ida e volta pelo JSON.
+   */
+  it('o estado gravado leva a classe do erro: conta sem crédito e IP recusado', async () => {
+    const estadoGravado = async () =>
+      JSON.parse((await getRagSettings())['rag.indexer.status']?.value ?? '{}') as Record<
+        string,
+        unknown
+      >;
+
+    try {
+      // Modelo novo = espaço novo, com o acervo inteiro pendente nele.
+      await configurar('openai', TEXT_EMBEDDING_3_LARGE.id);
+      servidores.openai.simular('sem-credito');
+      const semCredito = await runCycle(portas());
+
+      expect(semCredito.continuar).toBe(false);
+      expect(await estadoGravado()).toMatchObject({
+        driver: 'openai',
+        keyPresent: true,
+        lastErrorKind: 'quota',
+      });
+      expect(String((await estadoGravado()).lastError)).toContain('sem crédito');
+
+      await configurar('voyage', VOYAGE_4.id);
+      servidores.voyage.simular('ip-recusado');
+      const ipRecusado = await runCycle(portas());
+
+      expect(ipRecusado.continuar).toBe(false);
+      expect(await estadoGravado()).toMatchObject({
+        driver: 'voyage',
+        keyPresent: true,
+        // `auth` aqui faria o painel dizer "chave recusada" — e a mensagem diz
+        // justamente o contrário.
+        lastErrorKind: 'origin',
+      });
+      expect(String((await estadoGravado()).lastError)).toContain('não a chave');
+
+      // Passada a falha, o ciclo seguinte limpa a mensagem e a classe juntas.
+      servidores.voyage.simular(undefined);
+      const { result } = await runOnce(portas());
+      expect(result.erros).toBe(0);
+      expect(await estadoGravado()).toMatchObject({ lastError: null, lastErrorKind: null });
+      // E limpa porque **trabalhou**, não porque a fila veio vazia: o lote que a
+      // falha largou voltou na hora. Sem a devolução este `runOnce` também saía
+      // sem erro — com o espaço inteiro sem vetor, reservado por dez minutos.
+      expect((await ragCoverage(result.space?.uuid ?? null)).pendingTexts).toBe(0);
+    } finally {
+      servidores.openai.simular(undefined);
+      servidores.voyage.simular(undefined);
+    }
   }, 120_000);
 });

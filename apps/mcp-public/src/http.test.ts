@@ -62,7 +62,9 @@ function startApp(extras: Partial<Opcoes> = {}) {
         createServer: (req) => new McpServer({ name: `virtual-${req.params.slug}`, version: '0.0.0' }),
         identityOf: (req) => `${req.params.slug}:${req.header(IDENTITY_HEADER) ?? 'anon'}`,
         routes: (router) => {
-          router.get('/skills/:skill/download', (req, res) => {
+          // O `:slug` vem do ponto de montagem, não deste caminho: sem o tipo
+          // explícito o Express deduz `params` só do literal da rota.
+          router.get<{ slug: string; skill: string }>('/skills/:skill/download', (req, res) => {
             res.json({ slug: req.params.slug, skill: req.params.skill });
           });
         },
@@ -84,12 +86,12 @@ function startApp(extras: Partial<Opcoes> = {}) {
 }
 
 /** Abre o `GET <base>/sse` e devolve o endpoint anunciado no evento `endpoint`. */
-async function openSse(url: string, identity?: string): Promise<string> {
+async function openSse(url: string, identity?: string, extras: Record<string, string> = {}): Promise<string> {
   const controller = new AbortController();
   abortControllers.push(controller);
 
   const res = await fetch(url, {
-    headers: identity ? { [IDENTITY_HEADER]: identity } : {},
+    headers: { ...(identity ? { [IDENTITY_HEADER]: identity } : {}), ...extras },
     signal: controller.signal,
   });
   const reader = res.body!.getReader();
@@ -105,12 +107,13 @@ async function openSse(url: string, identity?: string): Promise<string> {
   return /data: (\S+)/.exec(buffer)![1]!;
 }
 
-const post = (url: string, identity?: string) =>
+const post = (url: string, identity?: string, extras: Record<string, string> = {}) =>
   fetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(identity ? { [IDENTITY_HEADER]: identity } : {}),
+      ...extras,
     },
     body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
   });
@@ -178,7 +181,11 @@ describe('GET /', () => {
   it('anuncia os metadados fixos e o que `describe` calcula por requisição', async () => {
     const base = await startApp();
 
-    const payload = await (await fetch(`${base}/`)).json();
+    const payload = (await (await fetch(`${base}/`)).json()) as {
+      name: string;
+      transports: unknown;
+      defaultMcp: unknown;
+    };
 
     expect(payload.name).toBe('teste');
     expect(payload.transports).toBeDefined();
@@ -340,7 +347,9 @@ describe('teto de sessões', () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get('retry-after')).toBeTruthy();
-    expect(await res.json()).toMatchObject({ error: { message: /mcp\/stateless/ } });
+    // `stringMatching`, não a regex crua: dentro de `toMatchObject` ela casa
+    // com qualquer coisa e a asserção não conferia nada.
+    expect(await res.json()).toMatchObject({ error: { message: expect.stringMatching(/mcp\/stateless/) } });
   });
 
   it('antes de recusar por teto, a faxina libera a vaga da sessão vencida', async () => {
@@ -353,6 +362,85 @@ describe('teto de sessões', () => {
     const res = await initialize(`${base}/virtual/time-a/mcp`);
 
     expect(res.status).toBe(200);
+  });
+});
+
+/**
+ * Num vMCP aberto a identidade é uma só para todo cliente sem chave, então o
+ * teto por credencial é **um balde comum** a todos eles: cai a sessão mais
+ * parada, venha de onde vier (`docs/08` §4.1). É consequência aceita, agora
+ * escrita; o primeiro teste a fixa, para que mudá-la seja decisão e não acidente.
+ *
+ * O segundo guarda o motivo de "reciclar primeiro a do próprio endereço" ter sido
+ * recusado: medido, com o balde cheio de sessões abandonadas — o estado normal de
+ * um servidor popular —, aquela regra fazia as duas janelas de um mesmo usuário
+ * se derrubarem a cada chamada (10 reaberturas em 10 chamadas; hoje, nenhuma).
+ */
+describe('teto de sessões na identidade aberta', () => {
+  // O teste fala com o app por loopback, que o `trust proxy` padrão aceita como
+  // proxy: o `X-Forwarded-For` vira o `req.ip`, como atrás do Traefik.
+  const de = (ip: string): Record<string, string> => ({ 'x-forwarded-for': ip });
+  const ANA = de('203.0.113.1');
+  const BIA = de('198.51.100.2');
+
+  const startAberto = (maxSessionsPerIdentity: number) =>
+    startApp({
+      maxSessionsPerIdentity,
+      mounts: [
+        {
+          basePath: '',
+          auth: (_req, _res, next) => next(),
+          createServer: () => new McpServer({ name: 'principal', version: '0.0.0' }),
+          identityOf: () => 'virtual:u-1:open',
+        },
+      ],
+    });
+
+  it('o balde é um só para todos os endereços: cai a mais parada, venha de onde vier', async () => {
+    const base = await startAberto(2);
+    const daBia = await openSse(`${base}/sse`, undefined, BIA);
+    const primeiraDaAna = await openSse(`${base}/sse`, undefined, ANA);
+
+    // O anônimo nunca leva recusa (`02` §7.3): a terceira entra, e sai a mais parada.
+    const segundaDaAna = await openSse(`${base}/sse`, undefined, ANA);
+
+    expect((await post(`${base}${daBia}`, undefined, BIA)).status).toBe(404);
+    expect((await post(`${base}${primeiraDaAna}`, undefined, ANA)).status).toBe(202);
+    expect((await post(`${base}${segundaDaAna}`, undefined, ANA)).status).toBe(202);
+  });
+
+  it('com o balde cheio de sessões abandonadas, duas janelas do mesmo endereço convivem', async () => {
+    const base = await startAberto(5);
+    for (const ip of ['192.0.2.1', '192.0.2.2', '192.0.2.3', '192.0.2.4']) await openSse(`${base}/sse`, undefined, de(ip));
+
+    const janelas = [await openSse(`${base}/sse`, undefined, ANA), await openSse(`${base}/sse`, undefined, ANA)];
+
+    // Uso alternado: quem cai são as abandonadas, nunca a janela ao lado.
+    for (let i = 0; i < 6; i += 1) {
+      expect((await post(`${base}${janelas[i % 2]!}`, undefined, ANA)).status).toBe(202);
+    }
+  });
+
+  it('a sessão continua sendo de quem tem a credencial, não de um endereço', async () => {
+    const base = await startAberto(2);
+    const daAna = await openSse(`${base}/sse`, undefined, ANA);
+
+    // Trocar de rede no meio da sessão não pode custar a sessão — vale para
+    // qualquer desenho futuro que ponha o endereço na conta do teto.
+    expect((await post(`${base}${daAna}`, undefined, BIA)).status).toBe(202);
+  });
+
+  it('o 404 da sessão que caiu diz o que fazer', async () => {
+    const base = await startAberto(1);
+    const primeira = await openSse(`${base}/sse`, undefined, ANA);
+    await openSse(`${base}/sse`, undefined, ANA);
+
+    const res = await post(`${base}${primeira}`, undefined, ANA);
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: -32001, message: expect.stringMatching(/GET \/sse.*\/mcp\/stateless/) },
+    });
   });
 });
 
@@ -407,5 +495,189 @@ describe('limite de taxa por IP', () => {
     // E com o IP já estourado nem a chave passa: o limite é anterior ao `auth`
     // porque é ele que protege o `auth`.
     expect((await comChave()).status).toBe(429);
+  });
+});
+
+/**
+ * O limite de taxa conta requisição HTTP, e o corpo de um POST pode ser um
+ * array: sem o guarda do lote, uma requisição aceita comprava milhares de
+ * `tools/call` — medido antes da correção, 2 000 execuções por **uma** marca. O
+ * guarda vem depois do `json` (antes disso não há corpo para contar) e faz duas
+ * coisas: teto de mensagens por lote e uma marca por mensagem.
+ */
+describe('lote JSON-RPC', () => {
+  /** App cuja tool `contar` anota cada execução: é o que diz quantas mensagens do lote rodaram. */
+  function startAppComContador(execucoes: { total: number }, extras: Partial<Opcoes> = {}) {
+    return startApp({
+      mounts: [
+        {
+          basePath: '',
+          auth: (_req, _res, next) => next(),
+          createServer: () => {
+            const server = new McpServer({ name: 'principal', version: '0.0.0' });
+            server.registerTool('contar', { title: 'Contar' }, () => {
+              execucoes.total += 1;
+              return { content: [{ type: 'text' as const, text: 'ok' }] };
+            });
+            return server;
+          },
+          identityOf: (req) => (req.header(IDENTITY_HEADER) ? 'virtual:u-1:key:k-1' : 'virtual:u-1:open'),
+        },
+      ],
+      ...extras,
+    });
+  }
+
+  const chamadas = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      jsonrpc: '2.0',
+      id: i + 1,
+      method: 'tools/call',
+      params: { name: 'contar', arguments: {} },
+    }));
+
+  const postar = (url: string, corpo: unknown, extras: Record<string, string> = {}) =>
+    fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...extras },
+      body: JSON.stringify(corpo),
+    });
+
+  it('recusa o lote acima do teto com 400 JSON-RPC, sem executar nada; no teto, passa', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { maxBatch: 3 });
+
+    const grande = await postar(`${base}/mcp/stateless`, chamadas(4));
+    expect(grande.status).toBe(400);
+    expect(await grande.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32600, message: expect.stringMatching(/4 mensagens.*limite de 3/) },
+    });
+    expect(execucoes.total).toBe(0);
+
+    const noTeto = await postar(`${base}/mcp/stateless`, chamadas(3));
+    expect(noTeto.status).toBe(200);
+    expect(await noTeto.json()).toHaveLength(3);
+    expect(execucoes.total).toBe(3);
+  });
+
+  it('cada mensagem do lote gasta uma marca do limite por IP', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { rateLimitMax: 5 });
+
+    // Três mensagens, três marcas: a da entrada mais duas do guarda.
+    expect((await postar(`${base}/mcp/stateless`, chamadas(3))).status).toBe(200);
+    expect(execucoes.total).toBe(3);
+
+    // Sobram duas: o lote de três não cabe, e nenhuma mensagem dele roda.
+    const recusado = await postar(`${base}/mcp/stateless`, chamadas(3));
+    expect(recusado.status).toBe(429);
+    expect(recusado.headers.get('retry-after')).toBeTruthy();
+    expect(await recusado.json()).toMatchObject({
+      error: { code: -32000, message: expect.stringMatching(/mensagem de um lote/) },
+    });
+    expect(execucoes.total).toBe(3);
+  });
+
+  it('o lote dentro de uma sessão paga igual ao do stateless', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { rateLimitMax: 4 });
+    const inicio = await initialize(`${base}/mcp`);
+    const sessionId = inicio.headers.get('mcp-session-id')!;
+    await inicio.text();
+
+    // Uma marca foi do `initialize`; o lote de quatro pediria mais quatro.
+    const recusado = await postar(`${base}/mcp`, chamadas(4), { 'mcp-session-id': sessionId });
+    expect(recusado.status).toBe(429);
+    expect(execucoes.total).toBe(0);
+  });
+
+  it('a mensagem avulsa continua custando uma marca só', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { rateLimitMax: 2 });
+    const [avulsa] = chamadas(1);
+
+    expect((await postar(`${base}/mcp/stateless`, avulsa)).status).toBe(200);
+    expect((await postar(`${base}/mcp/stateless`, avulsa)).status).toBe(200);
+    expect((await postar(`${base}/mcp/stateless`, avulsa)).status).toBe(429);
+    expect(execucoes.total).toBe(2);
+  });
+
+  it('a chave psv_ não paga o lote com a cota do endereço, mas obedece ao teto de mensagens', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { rateLimitMax: 2, maxBatch: 5 });
+    const comChave = { [IDENTITY_HEADER]: 'k' };
+
+    // Duas vezes cinco mensagens com a cota em 2: nada disso conta.
+    expect((await postar(`${base}/mcp/stateless`, chamadas(5), comChave)).status).toBe(200);
+    expect((await postar(`${base}/mcp/stateless`, chamadas(5), comChave)).status).toBe(200);
+    expect(execucoes.total).toBe(10);
+
+    // O teto de mensagens protege o banco, não a cota: vale com chave também.
+    expect((await postar(`${base}/mcp/stateless`, chamadas(6), comChave)).status).toBe(400);
+    expect(execucoes.total).toBe(10);
+
+    // E a cota anônima do mesmo endereço seguiu intacta.
+    expect((await postar(`${base}/mcp/stateless`, chamadas(2))).status).toBe(200);
+  });
+
+  it('com o limite de taxa desligado, o teto de mensagens continua valendo', async () => {
+    const execucoes = { total: 0 };
+    const base = await startAppComContador(execucoes, { rateLimitMax: 0, maxBatch: 2 });
+
+    expect((await postar(`${base}/mcp/stateless`, chamadas(3))).status).toBe(400);
+    expect((await postar(`${base}/mcp/stateless`, chamadas(2))).status).toBe(200);
+    expect(execucoes.total).toBe(2);
+  });
+});
+
+/**
+ * O `text` do Postgres recusa U+0000 com 22021, e o slug da URL chega cru à
+ * consulta: `/virtual/a%00b/mcp` e `/skills/a%00b/download` eram 500 com a SQL
+ * no log, sem credencial nenhuma (achado do relatório 038 da auditoria de
+ * 2026-09-19). A guarda é uma só, antes dos pontos de montagem — o `auth`, que
+ * é quem consulta o banco pelo slug, nem chega a rodar.
+ */
+describe('caractere nulo na URL', () => {
+  it.each([
+    ['/virtual/a%00b/mcp', 'POST'],
+    ['/virtual/a%00b/sse', 'GET'],
+    ['/virtual/time-a/skills/x%00y/download', 'GET'],
+    ['/virtual/time-a/skills/x/download?formato=%00', 'GET'],
+    ['/mcp/stateless?x=%00', 'POST'],
+  ])('%s responde 400 em JSON-RPC, antes do ponto de montagem', async (rota, method) => {
+    const base = await startApp();
+
+    const res = await fetch(`${base}${rota}`, {
+      method,
+      ...(method === 'POST'
+        ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) }
+        : {}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Requisição inválida: o endereço não pode conter o caractere nulo (%00)' },
+      id: null,
+    });
+  });
+
+  it('a mesma rota sem o nulo segue atendida', async () => {
+    const base = await startApp();
+
+    const res = await fetch(`${base}/virtual/time-a/skills/x/download`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ slug: 'time-a', skill: 'x' });
+  });
+
+  it('a sondagem com nulo gasta a cota do endereço, como qualquer requisição', async () => {
+    const base = await startApp({ rateLimitMax: 2 });
+
+    expect((await fetch(`${base}/virtual/a%00b/mcp`)).status).toBe(400);
+    expect((await fetch(`${base}/virtual/a%00b/mcp`)).status).toBe(400);
+    expect((await fetch(`${base}/virtual/a%00b/mcp`)).status).toBe(429);
   });
 });

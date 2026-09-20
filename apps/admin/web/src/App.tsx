@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useLocation, useMatch, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 import {
   BookOpenCheck,
   ExternalLink,
@@ -22,10 +22,12 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  ApiError,
   SESSION_OPERATION_DEFAULTS,
   canCreate,
   canManageUsers,
   getSession,
+  getSkill,
   logout,
   type Session,
   type SessionUser,
@@ -35,8 +37,16 @@ import { ConfirmProvider, Skel, armChord, isChordKey, isTypingTarget, useConfirm
 import { CommandProvider, useRegisterCommands } from './components/commands.js';
 import { CommandPalette } from './components/shell/CommandPalette.js';
 import { Layout } from './components/shell/Layout.js';
+import {
+  IMPORT_SKILL_PATH,
+  NEW_SKILL_PATH,
+  SKILL_EDIT_ROUTE,
+  SKILL_VIEW_ROUTE,
+  isLegacyNewSkillPath,
+  legacyNewSkillTarget,
+} from './components/shell/routes.js';
 import type { OnLogout } from './components/shell/UserMenu.js';
-import { useTheme } from './useTheme.js';
+import { useTheme } from './themeStore.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { ChangePasswordPage } from './pages/ChangePasswordPage.js';
 import { AccountPage } from './pages/AccountPage.js';
@@ -232,14 +242,16 @@ function Shell({
           }
         />
         <Route path="/skills" element={<SkillsPage key="all" user={user} />} />
+        {/* A criação fica FORA de `/skills/…`: ali, uma rota estática ganharia do
+            `:slug` em qualquer ordem, e a skill de slug `new` não abriria (`routes.ts`). */}
         <Route
-          path="/skills/new"
+          path={NEW_SKILL_PATH}
           element={canCreate(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
         />
         {/* As fichas têm guias em rotas próprias (`/propriedades`, `/acessos`); a edição fica sob `/editar`. */}
         {/* Sem trava de papel: o editor já trava o que o acesso não permite. */}
-        <Route path="/skills/:slug/editar/*" element={<SkillEditorPage session={session} user={user} />} />
-        <Route path="/skills/:slug/*" element={<SkillViewPage session={session} user={user} />} />
+        <Route path={SKILL_EDIT_ROUTE} element={<SkillEditorPage session={session} user={user} />} />
+        <Route path={SKILL_VIEW_ROUTE} element={<SkillRoute session={session} user={user} />} />
         <Route path="/catalogos" element={<CatalogsPage key="all" user={user} />} />
         <Route path="/catalogos/:slug/editar/*" element={<CatalogEditorPage user={user} />} />
         <Route path="/catalogos/:slug/*" element={<CatalogPage session={session} user={user} />} />
@@ -311,6 +323,46 @@ function StageSkeleton() {
   );
 }
 
+/**
+ * A ficha da skill — e, em `/skills/new`, o desempate. Esse endereço já foi o
+ * do formulário de criação (hoje `NEW_SKILL_PATH`) e continua em favoritos e
+ * links de fora; ele é também, como o de qualquer skill, o da que tem o slug
+ * `new`. Vence a skill quando ela existe para esta sessão; sem ela, o endereço
+ * segue levando ao formulário, como sempre levou. Os outros slugs passam
+ * direto, sem consulta nenhuma.
+ */
+function SkillRoute({ session, user }: { session: Session; user: SessionUser }) {
+  const { slug, '*': rest } = useParams();
+  const location = useLocation();
+  const legacy = isLegacyNewSkillPath(slug, rest);
+  // `null` = ainda não se sabe se a skill de slug `new` existe.
+  const [exists, setExists] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!legacy || exists !== null) return;
+    let active = true;
+    getSkill(slug ?? '')
+      .then(() => active && setExists(true))
+      // Só o 404 diz "não existe". Qualquer outra falha fica com a ficha, que
+      // já sabe avisar e voltar para a lista, como faz com toda skill.
+      .catch((err) => active && setExists(!(err instanceof ApiError && err.status === 404)));
+    return () => {
+      active = false;
+    };
+  }, [legacy, exists, slug]);
+
+  if (legacy && exists === null) {
+    return (
+      <div className="page">
+        <Skel h={32} w={320} className="mb-5" />
+        <Skel h="50vh" />
+      </div>
+    );
+  }
+  if (legacy && !exists) return <Navigate to={legacyNewSkillTarget(location.search)} replace />;
+  return <SkillViewPage session={session} user={user} />;
+}
+
 /** Os comandos que valem em qualquer tela: criar, navegar, conta. */
 function GlobalCommands({ session, user, onLogout }: { session: Session; user: SessionUser; onLogout: OnLogout }) {
   const navigate = useNavigate();
@@ -352,7 +404,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
               group: 'Criar' as const,
               icon: <Plus />,
               keywords: ['criar', 'skill'],
-              run: () => navigate('/skills/new'),
+              run: () => navigate(NEW_SKILL_PATH),
             },
             {
               id: 'import-skill',
@@ -360,7 +412,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
               group: 'Criar' as const,
               icon: <Upload />,
               keywords: ['zip', 'importar', 'upload'],
-              run: () => navigate('/skills/new?modo=zip'),
+              run: () => navigate(IMPORT_SKILL_PATH),
             },
           ]
         : []),

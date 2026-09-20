@@ -228,6 +228,35 @@ describe('o mapeamento dos erros', () => {
     const driver = new GoogleDriver({ apiKey: 'a-errada', baseUrl: servidor.baseUrl });
     await expect(driver.embedQuery(GEMINI_EMBEDDING_2, 'x')).rejects.toBeInstanceOf(RagAuthError);
   });
+
+  it('chave que o provedor ecoar não sai na mensagem do erro', async () => {
+    // A mensagem vai para o log do indexador e para o "Último erro" do painel.
+    // Hoje o Google não ecoa a chave; o corte é o mesmo nos três drivers para
+    // não depender disso.
+    const apiKey = 'AIzaSy-chave-que-nao-pode-ir-para-o-log';
+    const driver = new GoogleDriver({
+      apiKey,
+      baseUrl: 'https://exemplo.test/v1beta',
+      maxRetries: 0,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 403,
+              status: 'PERMISSION_DENIED',
+              message: `API key ${apiKey} is not authorized for this project`,
+            },
+          }),
+          { status: 403, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch,
+    });
+
+    const falha = (await driver.embedQuery(GEMINI_EMBEDDING_2, 'x').catch((e: unknown) => e)) as Error;
+
+    expect(falha).toBeInstanceOf(RagAuthError);
+    expect(falha.message).not.toContain(apiKey);
+    expect(falha.message).toContain('API key [chave omitida] is not authorized');
+  });
 });
 
 describe('o prazo', () => {

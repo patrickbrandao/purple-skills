@@ -42,16 +42,35 @@ sugerida. A execução é do agente daquela área.
    segura ao rodar de novo.
 6. Renomear um arquivo já aplicado exige entrada em `RENAMED`, em
    `database/src/migrate.ts` — o nome do arquivo é a identidade da migration na
-   tabela `schema_migrations`.
-7. Reflita a mudança em `database/src/schema.ts` (tipagem) e, se houver query
+   tabela `schema_migrations`. Migration que **nunca saiu** desta cópia de
+   trabalho não entra em `RENAMED`: renumerar antes de publicar é só renomear o
+   arquivo e recriar os bancos descartáveis.
+7. **O runner recusa migration retroativa.** Arquivo fora do histórico quando o
+   banco já passou dele — número menor que o último aplicado, ou
+   `schema_migrations` vazia com o schema já existindo — derruba o `migrate`
+   com saída 1, porque migration antiga sobre schema novo perde dado em
+   silêncio (o `012` reaplicado derrubava o `skills.is_public` que o `017`
+   recriou). A saída deliberada é `MIGRATE_ALLOW_RETRO=1`, e ela vale só no
+   CLI: quem chama `runMigrations()` direto — as suítes de integração — segue
+   sem a recusa. Um banco descartável que aplicou um número que depois mudou
+   precisa ser recriado.
+8. Reflita a mudança em `database/src/schema.ts` (tipagem) e, se houver query
    nova, em `database/src/queries.ts`. Nunca gere migration com `drizzle-kit`.
-8. Atualize a tabela de arquivos e a lista de exportações em
+9. Atualize a tabela de arquivos e a lista de exportações em
    `database/README.md`.
 
 ## Como verificar
 
 Nunca dê uma migration por boa sem aplicá-la. Use um banco **descartável** —
 jamais o banco de desenvolvimento ou de produção do mantenedor:
+
+> **Antes de subir o container, veja se a porta já está tomada**
+> (`lsof -iTCP:55432 -sTCP:LISTEN`). Nesta máquina costuma haver um
+> `pgvector` descartável de longa duração ouvindo ali; nesse caso **não crie
+> outro** — crie um banco só seu dentro dele
+> (`docker exec <container> psql -U postgres -c 'CREATE DATABASE …'`) e pule o
+> `docker run`/`docker rm` abaixo. As suítes de integração derrubam o schema do
+> banco que você apontar, então um banco por agente não é luxo.
 
 ```bash
 docker run -d --rm --name ps-dba-check -e POSTGRES_PASSWORD=CHANGE_ME \

@@ -11,7 +11,8 @@ import {
 /**
  * O pacote `.zip` de uma skill, gerado em fluxo.
  *
- * Gêmeo de `apps/site/src/zip.ts`, e pelo mesmo motivo do `MAX_QUERY_CHARS`:
+ * Gêmeo de `apps/site/src/zip.ts`, e pelo mesmo motivo do `consultaDaBusca`
+ * (o pacote compartilhado ainda não oferece a peça pronta):
  * cada app tem o seu `zip.ts` (o painel também) e o `writeZip` do
  * `@purple-skills/shared` recebe as entradas prontas — ou seja, exige a skill
  * inteira em memória. Quando o `shared` ganhar uma versão preguiçosa, os três
@@ -32,6 +33,17 @@ export type LerArquivo = (relativePath: string) => Promise<FileContent | null>;
 
 /** A resposta fechou antes do fim: o cliente desistiu, não é erro do servidor. */
 class ClienteDesistiu extends Error {}
+
+/**
+ * Os cabeçalhos do pacote. Separados do `streamSkillZip` porque a resposta a um
+ * `HEAD` são eles e mais nada (`servirZip`, em `downloads.ts`), e têm de ser os
+ * mesmos do `GET` — sem `Content-Length`, que o ZIP em fluxo também não tem.
+ */
+export function cabecalhosDoPacote(res: Response, slug: string, ext: 'zip' | 'skill'): void {
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}.${ext}"`);
+  res.setHeader('Cache-Control', 'no-store');
+}
 
 /**
  * Envia os arquivos da skill como um ZIP gerado on-the-fly. O pacote `.skill` é
@@ -71,9 +83,7 @@ export async function streamSkillZip(
   const comecar = (): void => {
     if (comecou) return;
     comecou = true;
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${slug}.${ext}"`);
-    res.setHeader('Cache-Control', 'no-store');
+    cabecalhosDoPacote(res, slug, ext);
     archive.pipe(res);
   };
 

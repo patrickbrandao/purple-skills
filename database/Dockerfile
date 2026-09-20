@@ -2,8 +2,9 @@
 # Purple Skills — imagem do banco de dados (migrations + dados de exemplo).
 #
 # É a única imagem que escreve DDL: aplica os arquivos de `database/schema/` e,
-# sob demanda, popula o catálogo de exemplo. Os quatro apps recebem só o cliente
-# (`dist/`), nunca o SQL.
+# sob demanda, popula o catálogo de exemplo. Os cinco apps que abrem conexão
+# (site, admin, mcp-public, mcp-admin e indexer) recebem só o cliente (`dist/`),
+# nunca o SQL.
 #
 # Build a partir da raiz do monorepo:
 #   docker build -f database/Dockerfile -t purple-skills-db .
@@ -17,7 +18,9 @@ FROM node:24-alpine AS build
 WORKDIR /app
 
 # Manifests primeiro: a camada de dependências fica em cache entre builds.
-# Todos os workspaces precisam existir para o `npm ci` da raiz resolver.
+# Entram a raiz e seis dos nove workspaces — não os nove: o `npm ci` da raiz
+# resolve sem `packages/rag`, `apps/homepage` e `apps/indexer`, que este build
+# não compila nem leva para a imagem.
 COPY package.json package-lock.json ./
 COPY database/package.json database/
 COPY packages/shared/package.json packages/shared/

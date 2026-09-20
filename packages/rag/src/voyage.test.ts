@@ -10,9 +10,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { VoyageDriver } from './voyage.js';
 import { VOYAGE_4, VOYAGE_4_LARGE, VOYAGE_4_LITE } from './models.js';
 import {
+  ragErrorKind,
   RagAuthError,
   RagConfigError,
   RagInputTooLongError,
+  RagOriginError,
   RagRateLimitError,
   RagTimeoutError,
   RagUnavailableError,
@@ -222,6 +224,36 @@ describe('o mapeamento dos erros', () => {
     await expect(driver.embedQuery(MODELO, 'x')).rejects.toThrow(/a origem da requisição, não a chave/);
   });
 
+  it('403 sai como RagOriginError: a política é a do erro de chave, o kind não', async () => {
+    // O painel resume a chave pelo `kind`. Com `auth` ele diria "recusada pelo
+    // provedor" — justamente o que a mensagem acima existe para não dizer.
+    const { chamadas, driver } = driverCom(() => erro(403, detalhe('Forbidden IP address')));
+
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    expect(falha).toBeInstanceOf(RagOriginError);
+    expect(falha).toBeInstanceOf(RagAuthError);
+    expect(ragErrorKind(falha)).toBe('origin');
+    // Não insiste: trocar de tentativa não muda o IP de onde o pedido sai.
+    expect(chamadas).toHaveLength(1);
+  });
+
+  it('401 continua sendo chave recusada', async () => {
+    const { driver } = driverCom(() => erro(401, detalhe('Invalid authentication')));
+    const falha = await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e);
+    expect(falha).not.toBeInstanceOf(RagOriginError);
+    expect(ragErrorKind(falha)).toBe('auth');
+  });
+
+  it('chave que o provedor ecoar não sai na mensagem do erro', async () => {
+    // A mensagem vai para o log do indexador e para o "Último erro" do painel. O
+    // corte é o mesmo nos três drivers, para não depender de quem ecoa hoje.
+    const { driver } = driverCom(() => erro(401, detalhe(`Provided API key ${CHAVE} is invalid.`)));
+    const falha = (await driver.embedQuery(MODELO, 'x').catch((e: unknown) => e)) as Error;
+
+    expect(falha.message).not.toContain(CHAVE);
+    expect(falha.message).toContain('Provided API key [chave omitida] is invalid.');
+  });
+
   it('erro de chave não é tentado de novo', async () => {
     const { chamadas, driver } = driverCom(() => erro(401, detalhe('Invalid authentication')));
     await expect(driver.embedQuery(MODELO, 'x')).rejects.toBeInstanceOf(RagAuthError);
@@ -246,8 +278,9 @@ describe('o mapeamento dos erros', () => {
   });
 
   it('um texto longo demais é isolado pela divisão do lote', async () => {
-    // O 400 do lote inteiro não diz qual texto estourou; dividir ao meio até
-    // sobrar um é o que separa o culpado sem perder os outros.
+    // O 400 do lote inteiro não diz qual texto estourou; dividir ao meio chega
+    // até ele. A chamada inteira é rejeitada assim mesmo — `embedDocuments` é tudo
+    // ou nada —, e quem embute os outros é o indexador, um texto por vez.
     const { chamadas, driver } = driverCom((chamada) => {
       const entradas = corpoDe(chamada).input as string[];
       if (entradas.includes('grande')) {

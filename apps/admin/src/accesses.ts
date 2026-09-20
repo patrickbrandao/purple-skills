@@ -31,9 +31,21 @@ function optionsOf(query: AccessQuery) {
   };
 }
 
+/**
+ * A página como ela sai para quem administra o objeto: a conta que leu vai pelo
+ * **e-mail**. `userUuid` ao lado de `userEmail` era mais um caminho por onde o
+ * `sub` do cookie de sessão de outra conta chegava a quem não é admin (ver
+ * `ownerByEmail`, em `access.ts`); o painel não lê o campo, que fica como apelido
+ * do e-mail. `ofUser` é rota de admin, que já tem o uuid na URL, e não muda.
+ */
+const readersByEmail = (page: SkillAccessPage): SkillAccessPage => ({
+  ...page,
+  items: page.items.map((entry) => ({ ...entry, userUuid: entry.userUuid === null ? null : entry.userEmail })),
+});
+
 export async function ofSkill(user: AuthUser, slug: string, query: AccessQuery): Promise<SkillAccessPage> {
   const skill = await loadSkill(user, slug, 'manage');
-  return listSkillAccesses({ skillUuid: skill.uuid, ...optionsOf(query) });
+  return readersByEmail(await listSkillAccesses({ skillUuid: skill.uuid, ...optionsOf(query) }));
 }
 
 /** As leituras feitas por uma conta, pelas chaves `psk_` dela (a rota já exige admin). */
@@ -44,5 +56,5 @@ export async function ofUser(uuid: string, query: AccessQuery): Promise<SkillAcc
 
 export async function ofCatalog(user: AuthUser, slug: string, query: AccessQuery): Promise<SkillAccessPage> {
   const catalog = await loadCatalog(user, slug, 'manage');
-  return listSkillAccesses({ catalogUuid: catalog.uuid, ...optionsOf(query) });
+  return readersByEmail(await listSkillAccesses({ catalogUuid: catalog.uuid, ...optionsOf(query) }));
 }

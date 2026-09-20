@@ -128,7 +128,11 @@ os comandos registrados pela tela atual, em grupos de ordem fixa: Criar, Ir
 para, Recurso, Conta, Perigo. Cada tela registra os seus ao montar e remove
 ao desmontar (`useRegisterCommands`); comandos desabilitados aparecem
 esmaecidos com o motivo. A paleta tem uma segunda página, "escolher skill",
-usada pelo canvas. Atalhos: `g s`/`g k`/`g a`/`g u` navegam; no palco, `a`
+usada pelo canvas. Ela fica montada ao lado do shell, do login ao logout, e por
+isso **não guarda lista**: servidores e catálogos são buscados a cada abertura,
+como a busca de skills — na raiz a lista anterior fica na tela até a nova
+chegar; em "escolher catálogo", que alimenta uma gravação, ela sai antes
+(`paletteLists.ts`). Atalhos: `g s`/`g k`/`g a`/`g u` navegam; no palco, `a`
 adiciona e `f` enquadra; no editor, ⌘S salva.
 
 ### 3.3 O sino
@@ -148,7 +152,7 @@ abertura contam como não lidos (`localStorage`). Nada disso é tabela nova.
 |------|---------|
 | `/mcps` | Servidores MCP, a home: cards (ou lista) com a colmeia de skills e catálogos (`13` §4), selos, estado e clientes online; ordenação; "Novo vMCP" num modal |
 | `/mcps/:slug` | O servidor: abas Canvas, Sessões, Chaves, Configurações |
-| `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/skills/new` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação |
+| `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/nova-skill` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação. A criação **era** `/skills/new`, até 19/09/2026: uma rota estática sob `/skills/` ganha do `:slug` no ranking do react-router, em qualquer ordem, e a skill de slug `new` abria o formulário em vez da ficha. Hoje `/skills/new` é a ficha dessa skill e, quando ela não existe, leva ao formulário (com o `?modo=zip` que veio) — favoritos antigos continuam valendo |
 | `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
 | `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
 | `/meu-espaco/skills`, `/meu-espaco/catalogos` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` |
@@ -204,6 +208,15 @@ A regra "nó = ao menos uma aresta" é a decisão 5: não existe vínculo sem
 porta a partir do painel, o que mantém a regra atual do app e do mcp-admin
 (`flagsFrom`). O banco continua aceitando as três flags desligadas, porque o
 backfill do `011` grava assim; o canvas simplesmente não produz esse estado.
+
+O `PUT` leva o **conjunto inteiro** de portas, não a diferença. Por isso cada
+gesto parte do gravado **mais** o que ainda está em andamento — a mesma conta
+que desenha as arestas —, e as escritas de vínculo saem **uma por vez, na
+ordem dos gestos**, cada uma com a sua recarga do detalhe (`pending.ts`). Sem
+isso, dois ✕ seguidos no mesmo item religavam uma das portas, e as caixas da
+gaveta chegavam a perguntar "era a última porta?" quando não era. A marca de
+"salvando" vale do gesto até o detalhe voltar, e enquanto ela existe as caixas
+da gaveta daquele item ficam travadas.
 
 ### 4.3 Posições
 
@@ -325,7 +338,11 @@ mas o padrão compilado nos dois MCPs segue congelado em `1.0.0-beta.1`.
 
 - **Uma escrita por gesto.** Conectar e desconectar gravam na hora; não há
   "desfazer" além de refazer o gesto. O canvas mostra o estado salvo, então
-  um erro de rede deixa a aresta como estava e avisa.
+  um erro de rede deixa a aresta como estava e avisa. Vale também quando a
+  escrita passa e é a **recarga** do detalhe que falha: o aviso diz que gravou
+  e pede para recarregar a página, a tela fica no estado anterior até lá, e o
+  diálogo de adicionar fecha de qualquer jeito — ele não tem outra saída
+  enquanto diz "Adicionando…".
 - **O stateless agrupa por IP + agente.** Dois clientes iguais atrás do mesmo
   NAT, com o mesmo agente e a mesma credencial, contam como um. É o melhor
   que o transporte permite sem sessão.

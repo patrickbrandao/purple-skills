@@ -29,7 +29,17 @@ const db = vi.hoisted(() => ({
   readFile: vi.fn(),
 }));
 
-vi.mock('@purple-skills/db', () => ({ ...db, AppError }));
+/**
+ * O teto da consulta é **valor**, não função: sem ele no mock, o `server.ts` e o
+ * `tools.ts` não têm o que importar. E é de propósito um número que **não** é o
+ * 200 de produção: é o que prova que a descrição da tool e o corte saem da
+ * constante do `@purple-skills/db` — com 200 aqui, o teste passaria igual com o
+ * literal escrito à mão de volta no `server.ts` (relatório 037 da auditoria de
+ * 2026-09-19).
+ */
+const { TETO_DA_CONSULTA } = vi.hoisted(() => ({ TETO_DA_CONSULTA: 120 }));
+
+vi.mock('@purple-skills/db', () => ({ ...db, AppError, SEARCH_QUERY_MAX_LENGTH: TETO_DA_CONSULTA }));
 
 const { createMcpServer } = await import('./server.js');
 
@@ -161,11 +171,13 @@ describe('identidade do servidor', () => {
  * anuncia o corte para o cliente não supor que a consulta inteira foi buscada.
  */
 describe('o teto da consulta de search_skills', () => {
-  it('anuncia o corte na descrição do argumento', async () => {
+  // O número anunciado é o da constante — aqui, o do mock —, não um literal.
+  it('anuncia o corte na descrição do argumento, com o número que o servidor aplica', async () => {
     const { tools } = await (await conectar()).listTools();
     const busca = tools.find((tool) => tool.name === 'search_skills');
 
-    expect(JSON.stringify(busca?.inputSchema)).toContain('200 caracteres');
+    expect(JSON.stringify(busca?.inputSchema)).toContain(`Acima de ${TETO_DA_CONSULTA} caracteres`);
+    expect(JSON.stringify(busca?.inputSchema)).not.toContain('200 caracteres');
   });
 
   it('aceita consulta longa e busca só o trecho cortado, em vez de recusar a chamada', async () => {
@@ -178,7 +190,28 @@ describe('o teto da consulta de search_skills', () => {
     });
 
     expect(resposta.isError).toBeFalsy();
-    expect((db.listSkills.mock.calls[0][0].query as string).length).toBeLessThanOrEqual(200);
+    // O corte é no mesmo número que a descrição anunciou.
+    const cortada = db.listSkills.mock.calls[0][0].query as string;
+    expect(cortada.length).toBeLessThanOrEqual(TETO_DA_CONSULTA);
+    expect(cortada.length).toBeGreaterThan(TETO_DA_CONSULTA - 32);
+  });
+});
+
+/**
+ * A exclusão com hífen é só da perna textual: na híbrida o vizinho excluído
+ * volta pelo vetor (relatório 062 da auditoria de 2026-09-19; o comportamento
+ * está fixado em `search.integration.test.ts`). A descrição da tool é o que um
+ * agente lê antes de agir, e dizia "continuam valendo".
+ */
+describe('a descrição de search_skills não promete o que a busca híbrida não cumpre', () => {
+  it('diz que aspas e hífen valem na busca por texto, e o que muda com mode "hybrid"', async () => {
+    const { tools } = await (await conectar()).listTools();
+    const descricao = tools.find((tool) => tool.name === 'search_skills')?.description ?? '';
+
+    expect(descricao).not.toContain('continuam valendo');
+    expect(descricao).toContain('valem na busca por texto');
+    expect(descricao).toContain('mode "hybrid"');
+    expect(descricao).toContain('pode trazer de volta uma skill que o hífen excluiu');
   });
 });
 

@@ -65,12 +65,24 @@ export const canEdit = (access: EffectiveAccess) => accessAtLeast(access, 'edit'
 export const canManage = (access: EffectiveAccess) => accessAtLeast(access, 'manage');
 export const canOwn = (access: EffectiveAccess) => access === 'owner';
 
-/** Uma concessão: a conta, o nível e quem concedeu. */
+/**
+ * Uma concessão: a conta, o nível e quem concedeu.
+ *
+ * A conta se identifica pelo **e-mail**. `userUuid` e `grantedByUserUuid` chegam
+ * do servidor como apelido do e-mail — o uuid de uma conta não sai mais do
+ * painel (`ownerByEmail`, em `admin/src/access.ts`) —, e nada aqui os lê.
+ */
 export type Grant = {
   userUuid: string;
   email: string;
   name: string;
   role: Role;
+  /**
+   * A conta está ativa? Desativada, a concessão fica na lista, inerte, e volta a
+   * valer se a conta for reativada (`docs/12` §2) — por isso a guia Acesso a
+   * marca, e revogá-la continua possível.
+   */
+  isActive: boolean;
   level: AccessLevel;
   grantedByUserUuid: string | null;
   grantedByEmail: string | null;
@@ -84,6 +96,11 @@ export type AccessScope = 'mine' | 'shared' | 'public';
 
 /** Os campos de acesso que skill, catálogo e vMCP têm em comum. */
 export type Accessible = {
+  /**
+   * Chega do servidor como **apelido de `ownerEmail`**: o uuid da conta dona não
+   * sai mais do painel (`ownerByEmail`, em `admin/src/access.ts`). O dono se
+   * compara pelo e-mail — ver `ownedBy`, em `AccessPanel.tsx`.
+   */
   ownerUserUuid: string | null;
   ownerEmail: string | null;
   access: EffectiveAccess;
@@ -100,7 +117,11 @@ export type SkillSummary = Accessible & {
   isActive: boolean;
   /** Legível por qualquer conta e pelo site, sem concessão. Não a publica em MCP nenhum. */
   isPublic: boolean;
-  /** Onde a skill está, direto ou por catálogo. Vazio = flutuante: não é exibida em lugar nenhum. */
+  /**
+   * Onde a skill está, direto ou por catálogo. Vazio = flutuante: nenhum MCP a
+   * serve. No site ela ainda entra se `isPublic` ou se participa de catálogo
+   * público (`docs/12-acesso-granular.md` §7) — ver `noSite` em `components/ui.tsx`.
+   */
   mcps: SkillMcpRef[];
   /** Os catálogos de que participa. */
   catalogs: SkillCatalogRef[];
@@ -154,6 +175,12 @@ export type Stats = {
   activeUsers?: number;
 };
 
+/**
+ * Espelho do `AuditAction` de `packages/shared/src/types.ts`, **na mesma
+ * ordem**. `audit.test.ts` compara esta lista com a fonte de lá e falha quando
+ * uma ação fica sem espelho, sem rótulo ou sem tom: ação nova entra aqui, em
+ * `AUDIT_ACTIONS` e nos dois mapas de `audit.ts`.
+ */
 export type AuditAction =
   | 'create'
   | 'update'
@@ -161,7 +188,9 @@ export type AuditAction =
   | 'user.create'
   | 'user.role'
   | 'user.deactivate'
+  | 'user.activate'
   | 'user.password'
+  | 'user.link'
   | 'key.create'
   | 'key.revoke'
   | 'mcp.create'
@@ -179,6 +208,10 @@ export type AuditAction =
   | 'catalog.unshare'
   | 'mcp.share'
   | 'mcp.unshare'
+  // Busca semântica (`docs/14-rag.md` §9): o alvo é `chave=valor` em
+  // `rag.settings` e a quantidade de skills marcadas em `rag.reindex`.
+  | 'rag.settings'
+  | 'rag.reindex'
   | 'public.key.create'
   | 'public.key.revoke';
 
@@ -189,7 +222,9 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'user.create',
   'user.role',
   'user.deactivate',
+  'user.activate',
   'user.password',
+  'user.link',
   'key.create',
   'key.revoke',
   'mcp.create',
@@ -207,6 +242,8 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'catalog.unshare',
   'mcp.share',
   'mcp.unshare',
+  'rag.settings',
+  'rag.reindex',
   'public.key.create',
   'public.key.revoke',
 ];
@@ -293,7 +330,7 @@ export type SessionOperation = {
   onlineWindowMs: number;
   /**
    * O que o `.env` do painel define para a busca semântica — só leitura. Quem
-   * decide é o valor gravado no banco (`docs/14-rag.md` §4.1).
+   * decide é o valor gravado no banco (`docs/14-rag.md` §5).
    */
   rag?: { driver: string | null; model: string | null };
   version: string;
@@ -456,6 +493,12 @@ export type CatalogSkill = {
   addedAt: string;
 };
 
+/**
+ * Um vMCP em que o catálogo está. A lista vem só com os que a conta vê; o que
+ * sobra de `mcpCount` é o "e mais N" da ficha. O `ownerUserUuid` que o tipo
+ * compartilhado declara **não chega**: o servidor o omite (uuid de conta não sai
+ * do painel, e aqui não há e-mail ao lado para virar apelido).
+ */
 export type CatalogMcpRef = {
   uuid: string;
   slug: string;
@@ -463,7 +506,6 @@ export type CatalogMcpRef = {
   isOpen: boolean;
   isActive: boolean;
   isDefault: boolean;
-  ownerUserUuid: string | null;
   asSkill: boolean;
   asPrompt: boolean;
   asResource: boolean;
@@ -609,6 +651,15 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+/**
+ * O objeto pedido ficou **fora de alcance**: não existe mais, ou a conta deixou
+ * de vê-lo — o servidor responde 404 aos dois, para não revelar o que existe
+ * (`assertAccess`, em `admin/src/access.ts`). É o único erro de leitura que
+ * justifica tirar a pessoa de uma ficha já carregada: sessão vencida (401),
+ * 5xx e queda de rede passam, e sair desmontaria a tela com o que está nela.
+ */
+export const isNotFound = (err: unknown): boolean => err instanceof ApiError && err.status === 404;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -1064,13 +1115,18 @@ export const plural = (n: number, one: string, many: string) => `${num(n)} ${n =
  * O painel **não recebe** a chave da API: quem sabe se ela existe e se o
  * provedor a aceitou é o indexador, que publica o estado no banco a cada ciclo.
  * Por isso `keyState` pode ser `desconhecido` — é o caso honesto de quando o
- * indexador ainda não rodou.
+ * indexador ainda não rodou. O que chega aqui é sempre a **classificação** do
+ * estado da chave, decidida no servidor pela classe do último erro; o valor
+ * dela não sai do container que fala com o provedor.
  */
 export type RagValue = {
   value: string;
   origem: 'banco' | 'ambiente' | 'padrão';
   updatedAt: string | null;
-  /** O `.env` diz outra coisa e está sendo ignorado: o banco decide (§4.1). */
+  /**
+   * O `.env` diz outra coisa e está sendo ignorado: o banco decide (§5). No
+   * modelo, também quando o `RAG_MODEL` não é do driver que o banco gravou.
+   */
   ambienteIgnorado: string | null;
 };
 
@@ -1078,7 +1134,17 @@ export type RagCoverage = {
   texts: number;
   withVector: number;
   pendingTexts: number;
+  /**
+   * Quantos dos pendentes o provedor recusou de vez neste espaço. Está **dentro**
+   * de `pendingTexts`: é a explicação da cobertura que não fecha.
+   */
+  refusedTexts: number;
   staleSkills: number;
+  /**
+   * Quantas das skills a refatiar o indexador não retoma sozinho: a leitura delas
+   * começou três vezes e nenhuma terminou. Está **dentro** de `staleSkills`.
+   */
+  stuckSkills?: number;
 };
 
 export type RagIndexerState = {
@@ -1087,6 +1153,12 @@ export type RagIndexerState = {
   model?: string;
   keyPresent?: boolean;
   lastError?: string | null;
+  /**
+   * A classe de `lastError`, como o indexador a publica; `null` quando o erro
+   * não veio do provedor, ausente em estado gravado por indexador antigo. Quem
+   * a traduz em `keyState` é o servidor — a tela não decide por ela.
+   */
+  lastErrorKind?: string | null;
   lastErrorAt?: string | null;
 };
 
@@ -1103,7 +1175,18 @@ export type RagSettings = {
   spaceUuid: string | null;
   coverage: RagCoverage | null;
   indexer: RagIndexerState | null;
-  keyState: 'presente' | 'ausente' | 'recusada' | 'cota-esgotada' | 'desconhecido';
+  /**
+   * `nao-confirmada`: o último ciclo terminou com um erro que não fala da chave.
+   * `sem-credito`: a conta do provedor precisa ser paga; esperar não resolve.
+   */
+  keyState:
+    | 'presente'
+    | 'ausente'
+    | 'recusada'
+    | 'cota-esgotada'
+    | 'sem-credito'
+    | 'nao-confirmada'
+    | 'desconhecido';
   /** Só o Google tem nível gratuito que lê o conteúdo enviado; nos outros é nulo. */
   freeTierWarning: string | null;
 };
@@ -1115,3 +1198,10 @@ export const saveRagSettings = (body: { driver?: string; model?: string }) =>
 
 export const reindexRag = () =>
   request<{ skills: number }>('/api/settings/rag/reindex', { method: 'POST' });
+
+/**
+ * Devolve à fila os textos recusados do espaço em uso. Não é o "Reindexar": custa
+ * requisições ao provedor, e o que for recusa genuína é recusado uma vez mais.
+ */
+export const clearRagRefusals = () =>
+  request<{ refusals: number }>('/api/settings/rag/refusals/clear', { method: 'POST' });

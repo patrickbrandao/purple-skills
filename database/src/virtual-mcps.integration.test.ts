@@ -384,12 +384,23 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
 
     // Outro MCP não revoga a chave deste.
     const outro = await createVirtualMcp({ name: 'Outro', ownerUserUuid: null }, SOURCE, ana);
-    expect(await revokeVirtualMcpKey(chave.id, outro.uuid)).toBe(false);
+    expect(await revokeVirtualMcpKey(chave.id, outro.uuid)).toBeNull();
     expect((await listVirtualMcpKeys(mcpUuid))[0]?.revokedAt).toBeNull();
 
-    expect(await revokeVirtualMcpKey(chave.id, mcpUuid)).toBe(true);
-    expect(await revokeVirtualMcpKey(chave.id, mcpUuid)).toBe(false);
-    expect((await listVirtualMcpKeys(mcpUuid))[0]?.revokedAt).not.toBeNull();
+    // A revogação devolve o nome e o prefixo (`tasks/040`): é com eles que o app
+    // rotula o `mcp.key.revoke` como rotulou a emissão. O uuid da chave não
+    // aparece em tela nenhuma e some com o vMCP (`CASCADE`), então uma linha que
+    // só o guardasse ficaria sem referente.
+    expect(await revokeVirtualMcpKey(chave.id, mcpUuid)).toEqual({
+      name: 'agente-de-dados',
+      prefix: 'vvv12345',
+    });
+    const dataDaRevogacao = (await listVirtualMcpKeys(mcpUuid))[0]?.revokedAt;
+    expect(dataDaRevogacao).not.toBeNull();
+    // Idempotente: `null` na segunda vez, sem reescrever o `revoked_at` original.
+    expect(await revokeVirtualMcpKey(chave.id, mcpUuid)).toBeNull();
+    expect(await revokeVirtualMcpKey('nao-e-uuid', mcpUuid)).toBeNull();
+    expect((await listVirtualMcpKeys(mcpUuid))[0]?.revokedAt).toBe(dataDaRevogacao);
     expect((await getVirtualMcpByUuid(mcpUuid))?.activeKeyCount).toBe(0);
 
     const inexistente = await capture(
@@ -430,7 +441,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     const revogada = await emitir('b-revogada', 'vvvb0002', brunoUuid);
     await emitir('b-nova', 'vvvb0003', brunoUuid);
     await emitir('a-unica', 'vvva0001', anaUuid);
-    expect(await revokeVirtualMcpKey(revogada.id, emissor.uuid)).toBe(true);
+    expect(await revokeVirtualMcpKey(revogada.id, emissor.uuid)).toMatchObject({ name: 'b-revogada' });
 
     // A `agente-de-dados` do caso anterior é do Bruno, revogada e mais velha.
     const doBruno = await listVirtualMcpKeysByCreator(brunoUuid);

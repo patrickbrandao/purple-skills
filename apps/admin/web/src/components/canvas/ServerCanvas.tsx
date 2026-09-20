@@ -14,6 +14,7 @@ import {
 } from '@xyflow/react';
 import { LayoutTemplate, Library, Maximize, Minus, Plus } from 'lucide-react';
 import {
+  getMcp,
   getMcpOnline,
   linkCatalogToMcp,
   linkSkillToMcp,
@@ -29,15 +30,15 @@ import {
 import { usePalette, useRegisterCommands } from '../commands.js';
 import { useToast } from '../Toast.js';
 import { Button, isChordKey, isTypingTarget, useConfirm, usePolling } from '../ui.js';
-import { useTheme } from '../../useTheme.js';
+import { useTheme } from '../../themeStore.js';
 import { nodeTypes } from './nodes.js';
 import { edgeTypes } from './edges.js';
 import { AddSkillDialog, pickedKey, type Picked } from './AddSkillDialog.js';
 import { NodeDrawer, type Selection } from './NodeDrawer.js';
 import { DEFAULT_INTERNET, DEFAULT_SERVER, GRID, autoLayout, freeSlot, placeNodes, snap } from './layout.js';
+import { createWriteQueue, effectivePorts, hasPending, nextPorts, unlinkMarks, type Pending } from './pending.js';
 import {
   INTERNET_ID,
-  PORTS,
   SERVER_ID,
   SKILL_HANDLE,
   catalogNodeId,
@@ -56,8 +57,6 @@ import {
   type PortEdge,
   type Target,
 } from './types.js';
-
-type Pending = { target: Target; port: Port; kind: 'add' | 'remove' };
 
 /** Uma skill ou um catálogo vinculado, com o que o palco precisa dos dois. */
 type Linked = { target: Target; name: string; flags: LinkFlags };
@@ -78,6 +77,11 @@ const isSelectedNode = (id: string, selection: Selection): boolean => {
  * desconectar desliga — e a última aresta que sai tira a skill (ou o
  * catálogo) do servidor. Skill e catálogo têm os mesmos gestos; só o `PUT`
  * muda (`docs/11-catalogos.md` §5).
+ *
+ * O `PUT` leva o conjunto inteiro de portas, não a diferença. Por isso cada
+ * gesto parte do gravado **mais** o que ainda está em andamento, e as escritas
+ * saem uma por vez, na ordem dos gestos (`pending.ts`): dois gestos rápidos no
+ * mesmo item não se desfazem um ao outro.
  */
 export function ServerCanvas(props: CanvasProps) {
   return (
@@ -103,15 +107,17 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
   const [theme] = useTheme();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
+  // O que está em andamento, do gesto até o detalhe voltar (`pending.ts`). É
+  // daqui que saem as arestas "salvando", o "ocupado" de cada alvo e o ponto
+  // de partida do próximo gesto.
   const [pending, setPending] = useState<Pending[]>([]);
-  const [busy, setBusy] = useState<Target | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [online, setOnline] = useState<OnlineCount | null>(null);
   const [adding, setAdding] = useState<Picked | null>(null);
   const [addBusy, setAddBusy] = useState(false);
   const fitted = useRef(false);
 
-  const isBusy = useCallback((target: Target) => busy !== null && sameTarget(busy, target), [busy]);
+  const isBusy = useCallback((target: Target) => hasPending(pending, target), [pending]);
 
   /** Tudo que está ligado ao servidor, skill e catálogo, na mesma forma. */
   const linked = useMemo<Linked[]>(
@@ -186,7 +192,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
               ports: flagsToPorts(catalog),
               activeSkillCount: catalog.activeSkillCount,
               skillCount: catalog.skillCount,
-              busy: busy !== null && sameTarget(busy, { kind: 'catalog', slug: catalog.slug }),
+              busy: isBusy({ kind: 'catalog', slug: catalog.slug }),
             },
             zIndex: 2,
             deletable: canEdit,
@@ -202,7 +208,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
               name: skill.name,
               icon: skill.icon,
               ports: flagsToPorts(skill),
-              busy: busy !== null && sameTarget(busy, { kind: 'skill', slug: skill.slug }),
+              busy: isBusy({ kind: 'skill', slug: skill.slug }),
             },
             zIndex: 2,
             deletable: canEdit,
@@ -210,7 +216,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         ),
       ];
     });
-  }, [detail, linked, online?.total, busy, canEdit, setNodes]);
+  }, [detail, linked, online?.total, isBusy, canEdit, setNodes]);
 
   // A seleção da gaveta manda no destaque dos nós, sem tocar no resto.
   useEffect(() => {
@@ -260,14 +266,9 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       zIndex: 1,
     });
     for (const item of linked) {
-      const ports = new Set(flagsToPorts(item.flags));
-      for (const change of pending) {
-        if (!sameTarget(change.target, item.target)) continue;
-        if (change.kind === 'add') ports.add(change.port);
-        else ports.delete(change.port);
-      }
-      for (const port of PORTS) {
-        if (!ports.has(port)) continue;
+      // A mesma conta de quem grava (`togglePort`, `onConnect`): o que a tela
+      // mostra é o ponto de partida do próximo gesto.
+      for (const port of effectivePorts(item.flags, pending, item.target)) {
         const saving = pending.some((change) => sameTarget(change.target, item.target) && change.port === port);
         list.push(portEdge(item.target, port, saving));
       }
@@ -328,9 +329,11 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
   );
 
   // ------------------------------------------------------------- vínculos --
+  // Uma escrita de vínculo por vez, na ordem dos gestos (`pending.ts`).
+  const [enqueue] = useState(createWriteQueue);
+
   const runLink = useCallback(
     async (target: Target, ports: Port[], position?: CanvasPoint) => {
-      setBusy(target);
       try {
         // A resposta é o detalhe da skill (ou do servidor); o do servidor é
         // recarregado por quem nos chamou, para os dois caminhos serem iguais.
@@ -341,8 +344,6 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       } catch (err) {
         toast.error((err as Error).message);
         return false;
-      } finally {
-        setBusy(null);
       }
     },
     [detail.slug, toast],
@@ -350,7 +351,6 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
 
   const runUnlink = useCallback(
     async (target: Target) => {
-      setBusy(target);
       try {
         if (target.kind === 'skill') await unlinkSkillFromMcp(target.slug, detail.slug);
         else await unlinkCatalogFromMcp(detail.slug, target.slug);
@@ -358,27 +358,47 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       } catch (err) {
         toast.error((err as Error).message);
         return false;
-      } finally {
-        setBusy(null);
       }
     },
     [detail.slug, toast],
   );
 
-  /** Reaplica as portas de um item: com nenhuma, desvincula (e o nó some). */
+  /**
+   * Recarrega o detalhe do servidor depois de uma escrita que passou. A falha
+   * daqui não desfaz nada — o vínculo já está gravado —, e o aviso diz isso com
+   * todas as letras: quem lê só "erro" refaz o gesto achando que não gravou.
+   */
+  const reload = useCallback(async () => {
+    try {
+      onDetail(await getMcp(detail.slug));
+      return true;
+    } catch (err) {
+      toast.error(`Gravado, mas o canvas não pôde ser recarregado: ${(err as Error).message}. Recarregue a página para ver o estado atual.`);
+      return false;
+    }
+  }, [detail.slug, onDetail, toast]);
+
+  /**
+   * Reaplica as portas de um item: com nenhuma, desvincula (e o nó some). As
+   * marcas entram já no gesto e só saem depois de o detalhe voltar — até lá é
+   * por elas que as arestas e o próximo gesto sabem o que está em andamento.
+   */
   const applyPorts = useCallback(
-    async (item: Linked, ports: Port[], change: Pending) => {
-      setPending((current) => [...current, change]);
-      const ok = ports.length === 0 ? await runUnlink(item.target) : await runLink(item.target, ports);
-      setPending((current) => current.filter((entry) => entry !== change));
-      if (ok) {
-        onDetail(await refetch(detail.slug));
-        if (ports.length === 0 && (selection?.kind === 'skill' || selection?.kind === 'catalog') && sameTarget(selection, item.target)) {
-          setSelection(null);
-        }
+    async (item: Linked, ports: Port[], marks: Pending[]) => {
+      setPending((current) => [...current, ...marks]);
+      try {
+        await enqueue(async () => {
+          const ok = ports.length === 0 ? await runUnlink(item.target) : await runLink(item.target, ports);
+          if (!ok || !(await reload()) || ports.length > 0) return;
+          // O que saiu é o que a gaveta mostra agora? Então ela fecha.
+          const selected = selectionRef.current;
+          if ((selected?.kind === 'skill' || selected?.kind === 'catalog') && sameTarget(selected, item.target)) setSelection(null);
+        });
+      } finally {
+        setPending((current) => current.filter((entry) => !marks.includes(entry)));
       }
     },
-    [detail.slug, onDetail, runLink, runUnlink, selection],
+    [enqueue, reload, runLink, runUnlink],
   );
 
   const noun = (target: Target) => (target.kind === 'skill' ? 'A skill' : 'O catálogo');
@@ -387,9 +407,12 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
     (target: Target, port: Port, on: boolean) => {
       const item = findLinked(target);
       if (!item) return;
-      const current = flagsToPorts(item.flags);
-      if (on === current.includes(port)) return;
-      const ports = on ? [...current, port] : current.filter((entry) => entry !== port);
+      // Parte do gravado MAIS o que está em andamento — a conta das arestas. O
+      // `PUT` substitui as três flags: partir só de `item.flags` religaria a
+      // porta que o gesto anterior acabou de desligar, e nas caixas da gaveta
+      // perguntaria "era a última?" quando não era (`tasks/053`).
+      const ports = nextPorts(effectivePorts(item.flags, pending, target), port, on);
+      if (!ports) return;
       if (ports.length === 0) {
         void confirm({
           title: `Tirar "${item.name}" do servidor?`,
@@ -397,13 +420,13 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
           confirmLabel: 'Tirar',
           danger: true,
         }).then((ok) => {
-          if (ok) void applyPorts(item, ports, { target, port, kind: 'remove' });
+          if (ok) void applyPorts(item, ports, unlinkMarks(target));
         });
         return;
       }
-      void applyPorts(item, ports, { target, port, kind: on ? 'add' : 'remove' });
+      void applyPorts(item, ports, [{ target, port, kind: on ? 'add' : 'remove' }]);
     },
-    [applyPorts, confirm, findLinked],
+    [applyPorts, confirm, findLinked, pending],
   );
 
   const removeTarget = useCallback(
@@ -417,8 +440,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         danger: true,
       });
       if (!ok) return;
-      const ports = flagsToPorts(item.flags);
-      await applyPorts(item, [], { target, port: ports[0] ?? 'tools', kind: 'remove' });
+      await applyPorts(item, [], unlinkMarks(target));
     },
     [applyPorts, confirm, findLinked],
   );
@@ -433,11 +455,11 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       if (!port || !target || connection.source !== SERVER_ID || portOfSkillHandle(connection.targetHandle) !== port) return;
       const item = findLinked(target);
       if (!item) return;
-      const current = flagsToPorts(item.flags);
-      if (current.includes(port)) return;
-      void applyPorts(item, [...current, port], { target, port, kind: 'add' });
+      const ports = nextPorts(effectivePorts(item.flags, pending, target), port, true);
+      if (!ports) return;
+      void applyPorts(item, ports, [{ target, port, kind: 'add' }]);
     },
-    [applyPorts, findLinked],
+    [applyPorts, findLinked, pending],
   );
 
   const isValidConnection = useCallback<IsValidConnection<CanvasEdge>>(
@@ -489,8 +511,10 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
           danger: true,
         });
         if (!ok) return false;
+        // `applyPorts` avisa a própria falha e não rejeita: um item que não
+        // saiu (ou cuja recarga falhou) não segura os que vêm depois dele.
         for (const item of items) {
-          await applyPorts(item, [], { target: item.target, port: flagsToPorts(item.flags)[0] ?? 'tools', kind: 'remove' });
+          await applyPorts(item, [], unlinkMarks(item.target));
         }
         // Já cuidamos de tudo: o React Flow não precisa apagar nada.
         return false;
@@ -535,18 +559,24 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       const position = freeSlot(serverNode?.position ?? DEFAULT_SERVER, taken);
       const marks: Pending[] = ports.map((port) => ({ target, port, kind: 'add' }));
       setPending((current) => [...current, ...marks]);
-      const ok = await runLink(target, ports, position);
-      setPending((current) => current.filter((item) => !marks.includes(item)));
-      if (ok) {
-        const fresh = await refetch(detail.slug);
-        onDetail(fresh);
-        setSelection(target);
-        toast.success(adding.kind === 'skill' ? `"${name}" adicionada.` : `Catálogo "${name}" adicionado.`);
+      try {
+        await enqueue(async () => {
+          // Sem o detalhe novo não há nó para selecionar, e o aviso de `reload`
+          // já disse que o vínculo foi gravado.
+          if (!(await runLink(target, ports, position)) || !(await reload())) return;
+          setSelection(target);
+          toast.success(adding.kind === 'skill' ? `"${name}" adicionada.` : `Catálogo "${name}" adicionado.`);
+        });
+      } finally {
+        // Destrava e fecha aconteça o que acontecer: com `addBusy` ligado o
+        // diálogo não tem saída — Esc, o clique fora e o Cancelar passam todos
+        // por ele —, e a cortina cobre o console inteiro (`tasks/054`).
+        setPending((current) => current.filter((item) => !marks.includes(item)));
+        setAddBusy(false);
+        setAdding(null);
       }
-      setAddBusy(false);
-      setAdding(null);
     },
-    [adding, detail.slug, nodes, onDetail, runLink, toast],
+    [adding, enqueue, nodes, reload, runLink, toast],
   );
 
   // ------------------------------------------------------------- layout --
@@ -732,7 +762,7 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
         detail={detail}
         online={online}
         onlineWindowMs={onlineWindowMs}
-        busy={isBusy}
+        pending={pending}
         canEdit={canEdit}
         onClose={() => setSelection(null)}
         onTogglePort={togglePort}
@@ -753,10 +783,4 @@ function Canvas({ detail, onDetail, canEdit, onlineWindowMs, onOpenSessions }: C
       />
     </div>
   );
-}
-
-/** Recarrega o detalhe do servidor depois de uma escrita. */
-async function refetch(slug: string): Promise<VirtualMcpDetail> {
-  const { getMcp } = await import('../../api.js');
-  return getMcp(slug);
 }

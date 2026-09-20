@@ -7,6 +7,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { SEARCH_QUERY_MAX_LENGTH } from '@purple-skills/db';
 import { config } from './config.js';
 import { createHandlers, createSurfaces, guard, guardSurface, type VirtualScope } from './tools.js';
 
@@ -77,25 +78,40 @@ export function createMcpServer(scope: VirtualScope): McpServer {
     'search_skills',
     {
       title: 'Buscar skills',
+      // A exclusão com hífen é só da perna textual: a vetorial filtra por
+      // visibilidade e tag, não por texto, e sem corte por distância devolve a
+      // skill excluída entre os vizinhos (relatório 062 da auditoria de
+      // 2026-09-19; `docs/14-rag.md` §12). A frase antiga — "continuam valendo"
+      // — prometia a um agente, que age sobre o que lê, o que a híbrida não
+      // cumpre. O `mode` da resposta é como ele sabe em qual caso está.
       description:
         'Busca as skills deste servidor por significado e por texto. Descreva a tarefa em ' +
-        'linguagem natural, em qualquer idioma; termos entre aspas e exclusão com hífen ' +
-        'continuam valendo. Retorna os slugs a usar em get_skill.',
+        'linguagem natural, em qualquer idioma. Termos entre aspas e exclusão com hífen valem ' +
+        'na busca por texto; quando a resposta vem com mode "hybrid", a busca por significado ' +
+        'também rodou e pode trazer de volta uma skill que o hífen excluiu. Retorna os slugs a ' +
+        'usar em get_skill.',
       inputSchema: {
         // Sem `.max()`: passar do teto não é erro, é corte (`consultaDaBusca`,
         // em tools.ts). Recusar a chamada deixaria sem resposta justamente quem
         // descreveu a tarefa com folga — o que esta ferramenta pede — e o corte
-        // já protege o provedor. O teto vai na descrição para o cliente saber.
+        // já protege o provedor. O teto vai na descrição para o cliente saber, e
+        // sai da mesma constante que o aplica: número escrito aqui à mão era a
+        // quarta cópia dele (relatório 037).
         query: z
           .string()
           .describe(
             'A tarefa em linguagem natural, ou termos. Vazio lista as mais acessadas. ' +
-              'Acima de 200 caracteres a consulta é cortada na última palavra inteira: ' +
+              `Acima de ${SEARCH_QUERY_MAX_LENGTH} caracteres a consulta é cortada na última palavra inteira: ` +
               'descreva a tarefa, não cole o arquivo.',
           )
           .optional(),
         tag: z.string().describe('Filtra por uma tag exata.').optional(),
         limit: z.number().int().min(1).max(50).describe('Máximo de resultados (padrão 10).').optional(),
+        // Sem `.max()` também aqui, e de propósito: `1e20` passa pelo `.int()`
+        // (`Number.isInteger` não exige inteiro seguro), mas quem tem o teto é o
+        // banco — `pageOffset` satura em `MAX_SAFE_INTEGER` e a resposta é a
+        // página vazia de quem paginou além do fim (relatório 086). Um `maximum`
+        // no schema só trocaria essa página por um erro de validação.
         offset: z.number().int().min(0).describe('Deslocamento para paginação.').optional(),
       },
     },
@@ -108,7 +124,8 @@ export function createMcpServer(scope: VirtualScope): McpServer {
       title: 'Ler skill',
       description:
         'Retorna o conteúdo completo do SKILL.md, os metadados e a lista de arquivos anexados. ' +
-        'Contabiliza um acesso para a skill.',
+        'Contabiliza um acesso para a skill. Um SKILL.md grande demais para o resultado vem ' +
+        'como URL de download, como os arquivos binários.',
       inputSchema: { slug: z.string().describe('Slug da skill, obtido em search_skills.') },
     },
     (args) => guard(() => handlers.get_skill(args)),

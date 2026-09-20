@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TOKEN_CALLER, callerAtual, type Caller } from './auth.js';
 import { config } from './config.js';
 import { createCatalogHandlers } from './catalogs.js';
-import { createMcpHandlers } from './mcps.js';
+import { NAME_MAX, createMcpHandlers } from './mcps.js';
 import { createHandlers, guard } from './tools.js';
 
 const INSTRUCTIONS = `Servidor MCP administrativo do Purple Skills.
@@ -24,16 +24,18 @@ Regras importantes:
   remoção é irreversível e não acontece sem confirmação: a chamada é recusada
   com a lista do que sairia e o número a repetir em confirm_deletions. Num envio
   parcial, use replace=false em vez de confirmar.
-- Uma skill é um elemento flutuante: existe no catálogo e só é exibida — no
-  site e nos servidores MCP — onde está vinculada a um MCP virtual. Skill
-  recém-criada nasce sem vínculo, a menos que create_skill receba mcps; depois,
-  link_skill / unlink_skill publicam e despublicam pelo lado da skill, e
-  set_virtual_mcp_skills define a lista inteira pelo lado do MCP. Cada vínculo
-  escolhe as três superfícies (asSkill, asPrompt, asResource). Publicar em um
-  MCP virtual exige "edit" nele e "view" na skill.
+- Uma skill é um elemento flutuante: existe no catálogo e só é servida por um
+  servidor MCP onde está vinculada a um MCP virtual — o site tem regra própria,
+  no item seguinte. Skill recém-criada nasce sem vínculo, a menos que
+  create_skill receba mcps; depois, link_skill / unlink_skill publicam e
+  despublicam pelo lado da skill, e set_virtual_mcp_skills define a lista
+  inteira pelo lado do MCP. Cada vínculo escolhe as três superfícies (asSkill,
+  asPrompt, asResource). Publicar em um MCP virtual exige "edit" nele e "view"
+  na skill.
 - O site lista o que está em ao menos um MCP virtual aberto e ligado, mais as
-  skills e catálogos marcados públicos (is_public); list_skills e get_skill
-  mostram, em mcps, onde cada skill está.
+  skills e catálogos marcados públicos (is_public) — uma skill pública continua
+  no site mesmo sem vínculo nenhum. list_skills e get_skill mostram, em mcps e
+  isPublic, onde cada skill está.
 - delete_skill é irreversível, exige confirm=true e é do dono (ou admin).
 - Acesso: skills, catálogos e MCPs virtuais têm dono. O papel da credencial
   decide só quem CRIA (editor e admin; um "membro" não cria). O resto é o
@@ -135,7 +137,12 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     'get_file',
     {
       title: 'Ler arquivo',
-      description: 'Lê o conteúdo textual de um arquivo da skill.',
+      description:
+        'Lê o conteúdo textual de um arquivo da skill. Arquivo binário, ou texto acima do teto ' +
+        'de bytes do resultado (MCP_MAX_FILE_TEXT_BYTES), é recusado com o tamanho e o tipo, ' +
+        'porque aqui não há URL de download para onde mandar: nesse caso baixe o pacote da ' +
+        'skill pelo painel. O get_skill segue o mesmo teto e, quando o SKILL.md passa dele, ' +
+        'devolve os demais campos com skillMdBytes e skillMdOmitido em vez do corpo.',
       inputSchema: {
         slug: z.string(),
         path: z.string().describe('Caminho relativo, ex: "reference/exemplos.md".'),
@@ -150,7 +157,8 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       title: 'Criar skill',
       description:
         'Cria uma skill nova. O conteúdo do SKILL.md é obrigatório. Sem mcps a skill nasce sem ' +
-        'vínculo, exibida em lugar nenhum. O frontmatter é gerado a partir dos campos abaixo.',
+        'vínculo: nenhum MCP a serve. No site ela ainda aparece se nascer pública (is_public: true) ' +
+        'ou entrar depois num catálogo público. O frontmatter é gerado a partir dos campos abaixo.',
       inputSchema: {
         name: z.string().describe('Nome legível da skill.'),
         description: z.string().describe('Resumo de uma linha.').optional(),
@@ -254,7 +262,9 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Tirar skill de um MCP virtual',
       description:
-        'Desfaz o vínculo. Uma skill sem vínculo nenhum deixa de ser exibida no site e em qualquer MCP.',
+        'Desfaz o vínculo. Sem vínculo nenhum a skill deixa de ser servida por qualquer MCP; no site ' +
+        'ela continua se for pública (is_public) ou participar de um catálogo público e ligado — ' +
+        'para tirá-la do site, confira is_public em get_skill e use edit_skill.',
       inputSchema: {
         skill: z.string().describe('Slug da skill.'),
         mcp: z.string().describe('Slug do MCP virtual.'),
@@ -284,7 +294,10 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Importar árvore de arquivos',
       description:
-        'Importa um .zip (base64) com a árvore de arquivos da skill, preservando os caminhos. ' +
+        'Importa um .zip (base64) com a árvore de arquivos da skill, preservando os caminhos — a ' +
+        'única exceção é o embrulho: uma pasta raiz única que contenha o SKILL.md (o formato do ' +
+        'pacote baixado, <slug>/SKILL.md) é desembrulhada; uma subpasta enviada sozinha ' +
+        '(scripts/a.py, scripts/b.py) entra com a pasta, como veio. ' +
         'Por padrão o zip representa o estado desejado completo: arquivos ausentes nele são ' +
         'removidos da skill (o SKILL.md é sempre preservado). Passe replace=false para apenas ' +
         'adicionar e sobrescrever, sem remover nada. Quando o zip de fato removeria arquivos, a ' +
@@ -389,7 +402,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description:
         'Cria um MCP virtual vazio em /virtual/<slug>/mcp. Quem cria é o dono. Nasce ligado e exigindo chave.',
       inputSchema: {
-        name: z.string().describe('Nome de exibição.'),
+        name: z.string().describe(`Nome de exibição (até ${NAME_MAX} caracteres).`),
         slug: z.string().describe('Slug (a-z, 0-9 e hífen). Gerado do nome se omitido.').optional(),
         description: z
           .string()
@@ -409,7 +422,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Altera nome, slug, descrição, is_open ou is_active (exige "manage"). Aberto (is_open), o MCP é público: o site o lista, com suas skills — inclusive as privadas.',
       inputSchema: {
         slug: z.string().describe('Slug atual.'),
-        name: z.string().optional(),
+        name: z.string().describe(`Novo nome (até ${NAME_MAX} caracteres).`).optional(),
         new_slug: z.string().describe('Novo slug — muda o endereço de todo cliente configurado.').optional(),
         description: z.string().optional(),
         is_open: z.boolean().optional(),
@@ -473,7 +486,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       description: 'Emite uma chave psv_ para o MCP virtual. O token aparece uma única vez, na resposta.',
       inputSchema: {
         slug: z.string(),
-        name: z.string().describe('Nome da chave (ex.: "CI do projeto X").'),
+        name: z.string().describe(`Nome da chave, até ${NAME_MAX} caracteres (ex.: "CI do projeto X").`),
       },
     },
     (args) => guard(() => mcps().create_virtual_mcp_key(args)),
@@ -520,7 +533,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
       title: 'Criar catálogo',
       description: 'Cria um catálogo vazio e ligado. Quem cria é o dono.',
       inputSchema: {
-        name: z.string().describe('Nome de exibição.'),
+        name: z.string().describe(`Nome de exibição (até ${NAME_MAX} caracteres).`),
         slug: z.string().describe('Slug (a-z, 0-9 e hífen). Gerado do nome se omitido.').optional(),
         description: z.string().describe('Para quem administra: do que este grupo trata.').optional(),
         is_public: z
@@ -540,7 +553,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         'Altera nome, slug, descrição, is_active ou is_public (exige "manage"). Desligado, o catálogo não entrega nada a MCP nenhum (membros e vínculos ficam); público, o site o lista com todos os membros.',
       inputSchema: {
         slug: z.string().describe('Slug atual.'),
-        name: z.string().optional(),
+        name: z.string().describe(`Novo nome (até ${NAME_MAX} caracteres).`).optional(),
         new_slug: z.string().optional(),
         description: z.string().optional(),
         is_active: z.boolean().optional(),
@@ -620,7 +633,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
   };
   const unshareInput = {
     slug: z.string().describe('Slug do objeto.'),
-    email: z.string().describe('E-mail da conta que perde o acesso.'),
+    email: z.string().describe('E-mail da conta que perde o acesso — ativa ou desativada (a concessão de conta desativada fica na lista, inerte, até ser revogada).'),
   };
   const transferInput = {
     slug: z.string().describe('Slug do objeto.'),

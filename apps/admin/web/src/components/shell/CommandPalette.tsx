@@ -6,6 +6,7 @@ import { getCatalogs, getMcps, listSkills, type CatalogSummary, type SkillSummar
 import { GROUP_ORDER, fuzzyScore, useCommandRegistry, type Command as Cmd } from '../commands.js';
 import { SkillIcon } from '../SkillIcon.js';
 import { Kbd, useDebounced } from '../ui.js';
+import { loadPaletteLists } from './paletteLists.js';
 
 /**
  * A paleta (⌘K): busca servidores, catálogos e skills e lista os comandos
@@ -29,25 +30,19 @@ export function CommandPalette() {
   const pickingCatalog = request?.page === 'pick-catalog' ? request : null;
   const picking = pickingSkill ?? pickingCatalog;
 
-  // Limpa ao fechar; carrega servidores e catálogos ao abrir a raiz, e os
-  // catálogos (que a sessão administra) na página de escolha deles.
+  // Limpa ao fechar; a CADA abertura carrega servidores e catálogos na raiz, e
+  // os catálogos (que a sessão administra) na página de escolha deles — a
+  // paleta fica montada até o logout, então buscar uma vez só era mostrar a
+  // foto da primeira abertura pelo resto da sessão (`paletteLists.ts`).
   useEffect(() => {
     if (!open) {
       setSearch('');
       setSkills([]);
       return;
     }
-    if (!pickingSkill && mcps === null && !pickingCatalog) {
-      getMcps()
-        .then((data) => setMcps(data.items))
-        .catch(() => setMcps([]));
-    }
-    if (!pickingSkill && catalogs === null) {
-      getCatalogs()
-        .then((data) => setCatalogs(data.items))
-        .catch(() => setCatalogs([]));
-    }
-  }, [open, pickingSkill, pickingCatalog, mcps, catalogs]);
+    if (pickingSkill) return;
+    return loadPaletteLists(pickingCatalog ? 'pick-catalog' : 'root', { getMcps, getCatalogs, setMcps, setCatalogs });
+  }, [open, pickingSkill, pickingCatalog]);
 
   // Skills vêm do servidor: na raiz só com 2+ letras; na página de escolha sempre.
   useEffect(() => {

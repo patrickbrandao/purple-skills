@@ -110,7 +110,8 @@ const PARES: Par[] = [
     copia: 'apps/admin/web/src/frontmatter.ts',
     motivo:
       'Par: frontmatter.ts (monta o SKILL.md) e Markdown.tsx (renderiza) são cópia ' +
-      'idêntica entre o site e o painel. Só o SkillDoc.tsx diverge, pelos ícones.',
+      'idêntica entre o site e o painel. Na caixa do prompt, só o SkillDoc.tsx diverge, ' +
+      'pelos ícones — e por isso não se copia por cima (docs/04, "A caixa do prompt").',
   },
   {
     arquivo: 'Markdown.tsx',
@@ -118,7 +119,8 @@ const PARES: Par[] = [
     copia: 'apps/admin/web/src/components/Markdown.tsx',
     motivo:
       'Par: frontmatter.ts (monta o SKILL.md) e Markdown.tsx (renderiza) são cópia ' +
-      'idêntica entre o site e o painel. Só o SkillDoc.tsx diverge, pelos ícones.',
+      'idêntica entre o site e o painel. Na caixa do prompt, só o SkillDoc.tsx diverge, ' +
+      'pelos ícones — e por isso não se copia por cima (docs/04, "A caixa do prompt").',
   },
   // useTheme.ts é o único copiado nos três apps: um por app, arquivos idênticos.
   {

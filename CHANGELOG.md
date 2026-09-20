@@ -9,16 +9,383 @@ aplicada ou **deliberadamente recusada**, ela fica registrada aqui com o motivo.
 Os relatórios que originaram cada entrada são **locais e não versionados** (o
 diretório `tasks/` está no `.gitignore`), então nada aqui depende deles: quando
 uma entrada precisa citar a origem, ela diz "relatório NNN da auditoria de
-2026-09-18" e o motivo fica escrito aqui mesmo, que é a única cópia que viaja
-com o repositório.
+`<data>`" e o motivo fica escrito aqui mesmo, que é a única cópia que viaja com
+o repositório. **A data importa:** cada auditoria renumerou os relatórios do
+zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
+esse cuidado em qualquer texto novo.
 
-## [Não publicado]
+## [1.0.0-beta.23] — 2026-09-20
 
-Auditoria de 2026-09-18: 53 relatórios de problema foram reverificados no código
-— não na descrição do relatório —, corrigidos quando procediam e anotados um a
-um, mais alguns desdobramentos encontrados no caminho. O que **não** foi mudado
-está em "Decidido e não mudado", com o motivo; o que ficou para depois está em
-"Pendente".
+Auditoria de 2026-09-19 (segunda rodada). 87 relatórios, reverificados **no
+código** — não na descrição do relatório —, corrigidos quando procediam e
+anotados um a um. Dos 87: a grande maioria
+procedia, um punhado procedia em parte, e o que foi **mantido de propósito**
+está em "Decidido e não mudado (2026-09-19)", com a medição que fundamentou a
+decisão. Nenhum diff proposto foi aplicado sem antes ser reproduzido ou medido;
+vários foram trocados por uma correção diferente porque a proposta criava outro
+defeito, e esses casos estão nomeados abaixo.
+
+Resultado medido no fim: `npm run typecheck` limpo — agora **cobrindo também os
+arquivos de teste** — e, com `TEST_DATABASE_URL` num banco recriado do zero,
+**93 arquivos e 1782 testes, zero falhas e zero pulados** (a linha de base eram
+70 arquivos e 1084 testes). Quatro migrations novas, renumeradas no fecho para
+uma sequência contígua: `026-auditoria-de-vinculo-e-reativacao`,
+`027-rag-stale-na-troca-de-tipo`, `028-reserva-de-skills-com-prazo` e
+`029-arquivos-de-texto-antigos` — nesta ordem de propósito, porque a conversão
+depende da correção do trigger.
+
+### Mudanças incompatíveis (2026-09-19)
+
+Cada item diz o que o operador — ou quem integra — faz a respeito.
+
+- **Instalação e boot**
+  - `ADMIN_COOKIE_SECURE` e `OIDC_AUTO_PROVISION` passaram a ser lidas por um
+    leitor estrito: aceitam `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` em
+    qualquer caixa, e **valor irreconhecível derruba o boot** nomeando a
+    variável. Antes, `TRUE` ou `yes` viravam `false` em silêncio — ou seja,
+    destravavam o cookie de sessão que o operador quis travar. *Faça:* confira
+    as duas no `.env`.
+  - O teto do corpo JSON ganhou **um nome por serviço**:
+    `MCP_PUBLIC_JSON_LIMIT` e `MCP_ADMIN_JSON_LIMIT`. O nome único levava o teto
+    generoso do administrativo para a superfície anônima. `MCP_JSON_LIMIT`
+    continua valendo como queda do **administrativo**. *Faça:* quem apertava o
+    MCP público por `MCP_JSON_LIMIT` precisa escrever `MCP_PUBLIC_JSON_LIMIT`;
+    sem isso o público volta ao padrão de `1mb`. Valor fora do formato (`48m`,
+    `64 megas`) passou a derrubar o boot: o `bytes` os lia como **48 bytes** e o
+    serviço subia respondendo 413 a tudo.
+  - As três variáveis do antigo MCP principal (`MCP_PUBLIC_AUTH`,
+    `MCP_PUBLIC_KEY`, `MCP_PUBLIC_KEY_FILE`) voltaram ao `environment` do
+    `mcp-public` no compose — ver "Segurança". *Faça:* quem ainda tem uma delas
+    **preenchida** no `.env` verá o `mcp-public` recusar o boot até removê-la;
+    antes disso, feche o MCP padrão ou emita chaves `psv_` no painel.
+  - O runner de migrations **recusa reaplicação retroativa**: histórico truncado
+    (restauração sem `schema_migrations`) ou arquivo novo com número menor que o
+    último aplicado saem com 1 e explicam o caminho. Era o que deixava o `012`
+    reaplicado derrubar `skills.is_public` em silêncio. *Faça:* a saída
+    deliberada é `MIGRATE_ALLOW_RETRO=1`.
+  - Com a busca semântica ligada, os anexos antigos de extensão textual
+    (`.conf`, `.ini`, `.log`, `.tf`…) passam a ir ao provedor de embeddings no
+    ciclo seguinte: a migration `029-arquivos-de-texto-antigos` converte para
+    texto as linhas gravadas como binário antes da beta.22. *Faça:* em base com
+    muitos anexos, aplique em janela.
+- **Painel e API**
+  - **Nenhuma resposta do painel carrega o uuid de uma conta.** Dono,
+    concessões e quem leu saem pelo **e-mail**; `mcps[].ownerUserUuid` (na ficha
+    do catálogo) e `catalogs[].ownerUserUuid` (na do vMCP) sumiram. *Faça, quem
+    integra:* trate `ownerUserUuid` e `grants[].userUuid` como e-mail.
+  - A checagem anti-CSRF compara a origem **inteira** — esquema, nome e porta —
+    e `ADMIN_ALLOWED_ORIGINS` passou a casar do mesmo jeito. *Faça:* painel
+    atrás de proxy numa porta que **não** chega no `Host` (nginx com
+    `Host $host` em `:8443`) precisa de `ADMIN_PUBLIC_URL`, senão as escritas
+    respondem 403.
+  - `POST /api/users` com a **sessão de bootstrap** passou de 201 a 400: a
+    primeira conta é sempre o administrador do `/api/setup`. Campo de texto que
+    não é texto (`{"name":123}`) responde 400 em vez de 500 ou de gravar
+    `"[object Object]"`.
+  - O teto de texto inline vale agora nas **quatro** leituras do MCP público e,
+    no administrativo, em `get_file` e `get_skill`; leitura recusada não conta
+    acesso. `MCP_ADMIN_MAX_FILE_TEXT_BYTES` permite subir só o administrativo.
+  - Nome de vMCP, catálogo e chave `psv_` ganhou teto de **200 caracteres** na
+    criação e na renomeação; nome antigo mais longo continua editável.
+  - Envio avulso de um `SKILL.md` que não é UTF-8 válido responde 400 em vez de
+    gravar o prompt corrompido, e um `.zip` cujo `SKILL.md` não é texto é
+    recusado em vez de gravar corpo vazio.
+
+### Corrigido (2026-09-19)
+
+- **Contas, sessão e acesso**
+  - A primeira conta é sempre o administrador: com a tabela vazia o SSO não
+    auto-provisiona ninguém, e a recusa aponta "Criar o primeiro
+    administrador". Um membro criado antes do setup fechava o setup e o login
+    pela `ADMIN_PASSWORD` **sem existir administrador**.
+  - O primeiro acesso por SSO a uma conta pré-criada descarta a senha
+    temporária, em vez de cobrá-la: a conta vira só-SSO e as sessões abertas com
+    a temporária caem.
+  - Gerar a senha temporária zera a trava de login no mesmo `UPDATE`: a
+    temporária certa era recusada com 429 até a trava vencer, e a ficha
+    prometia o contrário.
+  - Reativar conta e vincular identidade OIDC entram na trilha (`user.activate`
+    e `user.link`, com o ator `oidc:<issuer>`), pela migration
+    `026-auditoria-de-vinculo-e-reativacao`.
+  - Revogar a concessão de uma **conta desativada** voltou a funcionar nas seis
+    superfícies, e a guia Acesso marca a linha em vez de oferecer mudança de
+    nível.
+  - A revogação de chave `psk_`/`psv_` audita `<dono ou slug>: <nome>
+    (<prefixo>)` — o mesmo rótulo da emissão — em vez do uuid da chave.
+  - O "Sair" deixou de carimbar `users.updated_at`: movimento de sessão não é
+    alteração da conta.
+  - O limitador por IP do login passou a ser o do pacote compartilhado, que
+    conta IPv6 por **/64**; a cópia local, que contava por endereço, saiu.
+- **Conteúdo da skill**
+  - Anexo de extensão textual que **não** é UTF-8 válido (o `.csv` do Excel em
+    Windows-1252) é guardado byte a byte como binário, em vez de ter os bytes
+    inválidos trocados por `�` sem aviso. A régua é uma só, no pacote e no banco.
+  - `PUT …/files/*path` normaliza o caminho antes de decidir sobre o
+    frontmatter: `.%5CSKILL.md` gravava o bloco enviado na linha do `SKILL.md`,
+    fora da vista e **dentro da busca**.
+  - `stripFrontmatter` só descarta bloco com cara de mapa YAML e virou
+    idempotente (medido em 400 mil documentos aleatórios: a função antiga não
+    era, em 4,8% deles): o prompt que abre com uma régua `---` não perde mais o
+    trecho até a régua seguinte.
+  - A importação lê `description` em escalar de bloco (`>-`, `|`) e em texto que
+    continua na linha de baixo; antes a skill nascia com a descrição `">-"`.
+  - Upload de `.zip` e `set_files_bulk` não achatam mais um envio parcial de
+    subpasta: a raiz única só é removida quando **contém o `SKILL.md`**.
+  - Nome de arquivo com acento deixou de ser lido como Latin-1
+    (`descriÃ§Ã£o.md`), e o teto de upload passou a valer também para envio
+    `chunked` — a soma é conferida a cada pedaço, com 413 no que estoura, em vez
+    de bufferizar até 50× o teto.
+  - A prévia de remoção do `set_files_bulk` usa o mesmo predicado do `DELETE` no
+    banco; a conta refeita em JavaScript discordava em `İ` e levava a um 409
+    sem saída.
+- **Concorrência no banco** (tudo medido em container descartável)
+  - Toda escrita de arquivo de uma skill entra numa fila por advisory lock, como
+    **primeira** statement: o deadlock entre salvar a skill com o `SKILL.md` e
+    gravar arquivo era 500 em ~40% dos pares concorrentes, e foi a zero.
+  - Ordem única de travas no recorte do vMCP — travar o servidor com
+    `FOR NO KEY UPDATE`, mexer nos vínculos, gravar no servidor por último.
+    Zera os deadlocks de vínculo × canvas × recorte × registro de acesso e o de
+    duas criações publicando nos mesmos servidores (149 de 150 pares). O remédio
+    "óbvio" (adiantar o `UPDATE` do vMCP) foi medido e **recusado**: abria um
+    ciclo novo com a chave estrangeira do registro de acesso.
+  - A skill apagada no meio de uma escrita responde 404 em vez de 500.
+  - O slug gerado perto do teto de 96 caracteres deixou de responder 409 a
+    partir do terceiro homônimo, nas três tabelas.
+  - Toda ordenação de `listSkills` termina em chave única: sem isso a paginação
+    não era partição do conjunto (medido: 481 skills distintas em 720 lidas).
+  - Offset além da faixa do `bigint` **satura** em vez de virar 500 na lista
+    anônima do site.
+- **RAG e indexador**
+  - O lote que falha por motivo que **não** é o conteúdo devolve a reserva na
+    hora, com os lotes que nem saíram; antes ficava dez minutos reservado e o
+    painel alternava entre "chave recusada" e "aceita, sem erro".
+  - Recusa permanente só depois de confirmar, com um texto-sonda, que o provedor
+    aceita outro conteúdo: um 400 que atinge tudo (proxy na URL base, contrato
+    da API, conta) vira erro de configuração, não marca nada e faz o `--once`
+    sair com 1. O painel ganhou "Tentar de novo" os textos recusados.
+  - `SIGTERM`/`SIGINT` viraram parada educada, também no `--once`: o ciclo
+    devolve à fila as skills e os textos que reservou e não começou, com teto de
+    8 s. A reserva de skills ganhou prazo, então o lote de um indexador morto
+    (OOM, banco reiniciando) volta à fila em vez de ficar "feito" para sempre.
+  - A pendência do RAG enxerga a troca binário ↔ texto com o conteúdo igual: um
+    `.ini` reenviado igual virava texto sem entrar na busca semântica.
+  - A semeadura deixou de conferir `RAG_MODEL` contra o `RAG_DRIVER` do `.env`
+    quando o banco já decidiu o driver — o par inválido fazia o indexador
+    recusar a cada ciclo e a busca cair para o modo textual.
+  - O painel decide o estado da chave por uma **classe** de erro, não por
+    pedaços do texto da última falha: conta sem crédito, IP recusado e provedor
+    fora do ar apareciam como "aceita pelo provedor".
+- **Painel (interface)**
+  - O tema tem um estado só: trocar pelo menu da conta não deixa mais o comando
+    da paleta com o rótulo invertido e o primeiro clique sem efeito.
+  - No canvas, dois gestos rápidos no mesmo item não se desfazem: cada gesto
+    parte do que está gravado **mais** o que está em andamento, e as escritas
+    saem uma por vez. Se a recarga falha depois de uma escrita que passou, o
+    diálogo fecha e o painel avisa que gravou, em vez de travar em
+    "Adicionando…".
+  - Trocar de guia nas fichas de catálogo, conta e servidor não recarrega a
+    ficha — o que apagava, sem aviso, o que ainda não tinha sido salvo. O
+    "Salvar" da skill só sai do editor quando a skill ficou fora de alcance
+    (404); em sessão vencida, 5xx ou queda de rede a página fica com as
+    pendências de pé.
+  - A tabela de sessões volta à primeira página quando o servidor escolhido
+    muda, descarta resposta atrasada e consulta uma vez na montagem.
+  - A paleta de comandos busca servidores e catálogos a cada abertura: catálogo
+    criado na sessão aparece sem precisar de F5 (que descartava rascunhos).
+  - A criação de skill saiu de `/skills/new` para `/nova-skill`: uma skill de
+    slug `new` abre a ficha, e o endereço antigo continua levando ao formulário
+    quando essa skill não existe.
+  - A trilha e o sino nomeiam `rag.settings` e `rag.reindex`, e o período da
+    auditoria usa o **dia do calendário de quem olha** nas duas bordas (o
+    "Desde" saía em UTC e o "Até" em hora local).
+- **Site, homepage e MCP público**
+  - `HEAD` não conta visualização nem download e devolve só os cabeçalhos:
+    cada `HEAD` anônimo gravava acesso, mexia na ordem da vitrine e gerava o
+    `.zip` inteiro para descartar.
+  - O registro de acessos grava o IP e o agente da requisição que **leu**, em
+    vez de repetir os de quem abriu a sessão.
+  - O caminho de uma leitura registrada olha a porta: o catálogo vinculado só
+    com Prompts deixa de entrar na linha de um `get_skill`.
+  - A seção "Via MCP" da página da skill só ensina `get_skill("<slug>")` quando
+    algum vMCP aberto publica a skill por essa porta; o cartão da API REST diz
+    "CORS aberto" ou "restrito" conforme a instalação.
+  - A homepage voltou a dizer o que o código faz (a receita de 60 segundos
+    manda trocar os **quatro** `CHANGE_ME`, e ganhou o `cd` que faltava), com um
+    teste que confere esses números contra o código e os composes.
+- **Build e ferramentas**
+  - A raiz declara `vite ^7.1.5` junto do Vitest: sem isso o lock instalava o
+    Vite **8** na raiz e o 7 aninhado por app, os plugins hasteados resolviam
+    para o 8, e o `vite dev` morria com *Missing field `moduleType`*. Com a
+    declaração há um `vite` só (7.3.6), sem `rolldown` na árvore — e o
+    `vite dev` voltou a subir.
+  - `npm run typecheck` passou a cobrir os **arquivos de teste** (um
+    `tsconfig.typecheck.json` por workspace; o `build` continua sem eles).
+    Ligar a conferência achou sete erros de tipo reais, dois em asserções que
+    nunca haviam sido verificadas por recaírem sobre um valor `unknown`.
+  - O `release-images.sh` só move `latest` no fim, por um segundo laço com
+    `docker buildx imagetools create`, começando pela imagem do banco: build que
+    falha no meio deixa `latest` inteira na versão anterior, em vez de
+    repartida. Ao abortar, inclusive por Ctrl-C, ele diz em que estado o Hub
+    ficou.
+  - `npm run migrate` deixou de sair com 0 sem fazer nada quando a cópia de
+    trabalho tem espaço, acento ou symlink no caminho.
+
+### Segurança (2026-09-19)
+
+- **Um lote JSON-RPC deixou de furar o limite de taxa do MCP público.** Um POST
+  só comprava milhares de `tools/call` por uma marca do porteiro — medido em
+  2 000 execuções numa requisição. Array com mais de `MCP_MAX_BATCH` mensagens
+  (padrão 20) responde 400, e cada mensagem do lote gasta uma marca; chave
+  `psv_` segue sem gastar cota.
+- **`clientInfo` sem corte retinha a memória do processo.** 400 identidades
+  stateless com nome de 1 MB seguravam **+400 MB** de heap, porque o corte por
+  `slice` mantém viva a string original; com cópia, +1,4 MB. O rótulo é saneado
+  e cortado em 512 caracteres antes de entrar na memória e no banco — e um byte
+  nulo no nome do cliente, que fazia a leitura sumir da guia "Acessos" e dos
+  contadores, não derruba mais a gravação.
+- **A trava de boot do antigo MCP principal estava inerte sob o compose.** Da
+  beta.15 à beta.22 as três variáveis não chegavam ao container, então o `/mcp`
+  de quem protegia o servidor com `MCP_PUBLIC_KEY` abria em silêncio ao subir de
+  versão. Elas voltaram ao `environment`, com padrão vazio, e um teste de guarda
+  falha se a próxima faxina as tirar de lá.
+- **A ficha devolvida pelas escritas vazava o que a conta não vê.** O vínculo de
+  skill a vMCP, o `PATCH` da skill e as escritas de catálogo reliam na visão do
+  administrador: nome, uuid e dono de servidores fechados e catálogos privados
+  de terceiros chegavam a qualquer conta logada. Agora a resposta é recortada
+  como o `GET`, e a ficha diz "e mais N que você não vê".
+- **A mensagem de erro do provedor de embeddings não leva mais a chave** ao log,
+  ao banco nem ao "Último erro": o 401 da OpenAI ecoa a chave, e ela sai como
+  "[chave omitida]" nos três drivers.
+- **O `.gitleaks.toml` dispensava segredo em interpolação.** `${VAR:-valor}`
+  passava nas três regras do projeto, e a dispensa por linha calava também as
+  regras padrão — provado com um token no formato de PAT do GitHub. A dispensa
+  passou a ser ancorada no fim, o allowlist por linha saiu, e
+  `INSPECTOR_API_TOKEN` e `PGPASSWORD` entraram na regra.
+- **Guarda nova no CI: nenhum byte de controle literal em fonte.** Três arquivos
+  da árvore tinham um — e quando o byte é o nulo, o git trata o blob como
+  binário, o diff vira "Binary files differ" e o `gitleaks`, que lê o histórico
+  por diffs, **nunca enxerga aquelas linhas**. A guarda olha os bytes, não o
+  veredito do git: ele procura o nulo só nos primeiros 8 000 bytes, e num dos
+  três o nulo estava no byte 274 217.
+- O pedido de redefinição de senha não espera mais a gravação do link nem o
+  envio: tempo e status da resposta deixaram de revelar se o e-mail tem conta.
+- "Abrir cru" serve `.js` e `.css` como `text/plain` com `nosniff` — o `'self'`
+  da CSP aceitava o arquivo cru como sub-recurso da própria origem (verificado
+  num navegador real: com `text/javascript` o script executava) — e manda
+  `Cache-Control: private, no-cache`.
+- Endereço com `%00` responde 400 na entrada dos roteadores do painel, do site e
+  do MCP público; antes virava o erro 22021 do Postgres e um 500.
+
+### Desempenho (2026-09-19)
+
+- O recorte de membros da ficha do catálogo usa a condição barata: com 1 000
+  membros mede ~6 ms sem JIT, contra 54–112 ms da forma proposta pelo relatório.
+- A escolha de slug perto do teto mantém o índice: o terceiro padrão `LIKE` que
+  o diff proposto acrescentava trocava o `BitmapOr` por `Seq Scan` (2,7 → 6,3 ms
+  em 52 mil skills).
+
+### Documentação (2026-09-19)
+
+- `docs/14` e o comentário do cliente HTTP do RAG descreviam o RAG **anterior**
+  à fila com reserva: fila sem reserva, recusa só em memória, coleta de órfãos
+  inexistente, indexador sem prazo. Corrigidos, com o texto antigo riscado sob
+  "Era, até a fila de textos" e marca no topo do documento.
+- O `docs/02` §7.7 afirmava limite de taxa em "site, mcp-public e mcp-admin": o
+  **administrativo nunca teve limitador** — a terceira superfície é o login do
+  painel. Corrigido, com a orientação de limitar no proxy.
+- O `docs/05` deixou de prometer que a chave `psk_` de um membro "só executa as
+  tools de leitura": o papel barra apenas criar; o resto é o acesso ao objeto.
+  Quem entrega uma `psk_` a um agente entrega o alcance inteiro da conta.
+- O README parou de mandar copiar os quatro CSS "juntos" entre os apps — o
+  painel **nunca** é destino dos três primeiros, e sobrescrevê-los destrói o
+  console —, e o cabeçalho dos dois `SkillDoc.tsx` parou de mandar copiar um
+  sobre o outro.
+- A documentação do indexador foi alinhada ao compose: ele sobe no
+  `docker compose up -d` comum desde a beta.22, porque o perfil `rag` está
+  comentado de propósito. *Consequência para quem atualiza:* quem mantinha o
+  indexador parado com driver escolhido volta a enviar o acervo.
+- Marcas de revogação que faltavam em `docs/08`, `09` e `11`, e quatro pontos do
+  `docs/08` acertados (o teto global de sessões recusa com 503, não 429; a raiz
+  reusa a identidade do vMCP padrão; o `.zip` sai em fluxo; a "tabela de
+  eventos" existe).
+- A seção "Armadilhas medidas" ganhou as lições desta rodada: a fila por
+  advisory lock, a ordem única de travas do vMCP, e o byte de controle literal
+  em fonte — com o aviso de que a ferramenta de edição recria o U+0000 ao
+  gravar, e que a forma certa é montar o caractere em código.
+
+### Decidido e não mudado (2026-09-19)
+
+- **`skills_score_idx` fica.** Ele faz de todo incremento de contador um
+  `UPDATE` não-HOT — medido: 0% de HOT, 49 315 bytes de WAL por incremento,
+  índices de 7 para 68 MB —, e `fillfactor` não muda nada. Mas derrubá-lo deixa
+  a listagem padrão 2 a 3,5 vezes mais lenta (0,6 → 396 ms em 52 mil skills). O
+  desenho que atende os dois lados (tabela estreita mantida por trigger, ~560
+  bytes por incremento) está medido e **não** aplicado: é tarefa própria, porque
+  mexe no `FROM` da consulta principal.
+- **O balde de sessões de um vMCP aberto continua único para todos os
+  anônimos.** A variante barata — "reciclar primeiro a sessão do próprio
+  endereço" — foi implementada, medida e **revertida**: com o balde cheio de
+  sessões abandonadas, duas janelas do mesmo usuário deram 10 reaberturas em 10
+  chamadas, e um NAT inteiro vira uma sessão só. O que mudou foi a
+  documentação e o 404, que agora diz o que fazer.
+- **A memoização de embeddings por consulta não entrou.** Ela era o
+  "complemento" do relatório do lote JSON-RPC, mas embedding por requisição sem
+  cache já fora decidido na rodada anterior como custo, não defeito — e a
+  correção principal (cobrar por mensagem) resolve o abuso.
+- **A terceira frente do relatório de concessões continua recusada:** mudar o
+  **nível** de uma concessão de conta desativada segue proibido; revogar, que é
+  o que estava quebrado, voltou a funcionar.
+- **`RENAMED` não recebeu entrada** pelas migrations renumeradas: nenhuma delas
+  foi publicada, e a tabela existe para migration que já saiu da cópia de
+  trabalho.
+- **O runner de migrations continua sem advisory lock** e a **bisseção do driver
+  do RAG** continua descartando lotes já pagos — as duas decisões vêm da rodada
+  anterior e foram respeitadas.
+
+### Pendente (2026-09-19)
+
+Nada aqui é especulação: cada item vem de um relato.
+
+- **Decisões que dependem do mantenedor:** se o link de redefinição por e-mail
+  também deve destravar a conta (hoje só a senha temporária gerada pelo
+  administrador destrava); se o dono de uma skill deve ver vMCP fechado de
+  terceiro na ficha (hoje não vê em nenhum dos dois lados); se os tipos de
+  arquivo recém-convertidos (`.conf`, `.ini`, `.log`) devem mesmo ir ao provedor
+  de embeddings; o teto de nome para a **skill** (o de vMCP, catálogo e chave
+  entrou); e o balde por endereço no vMCP aberto.
+- **Pedidos ao dba ainda abertos:** aplicar a parte negativa da consulta também
+  na perna semântica da busca híbrida — hoje a exclusão com hífen vale só na
+  perna textual, e a descrição da tool deixou de prometer o que não cumpre; e a
+  tabela estreita da ordenação por pontuação.
+- **Etapa 2 do e-mail no lugar do uuid:** os campos ainda existem no tipo
+  compartilhado e na projeção do banco, agora sem consumidor.
+- **Diagnóstico de dados já danificados**, que nenhuma correção desfaz: linhas
+  de arquivo com `U+FFFD` de decodificação errada, `SKILL.md` gravado com
+  frontmatter dentro do corpo, descrições que nasceram como `">-"` e
+  `relative_path` com nome corrompido em Latin-1. As consultas estão nos
+  relatórios.
+- **Duas vulnerabilidades altas em `nodemailer`**, pré-existentes e não
+  introduzidas por esta rodada: o conserto é `nodemailer@10`, troca de major.
+- **A CI continua sem serviço `postgres` e sem `TEST_DATABASE_URL`**, então as
+  suítes de integração seguem sem rodar lá — nesta rodada foram executadas à
+  mão. O `typecheck` da CI, esse sim, passou a **compilar** os testes de
+  integração, o que já pega erro de tipo sem executá-los.
+- **Republicar as imagens** continua pendente da rodada anterior: as que estão
+  no Docker Hub seguem só `arm64`.
+
+---
+
+## [1.0.0-beta.22] — 2026-09-19
+
+Auditoria de 2026-09-18 (primeira rodada). 53 relatórios de problema foram
+reverificados no código — não na descrição do relatório —, corrigidos quando
+procediam e anotados um a um, mais alguns desdobramentos encontrados no caminho.
+O que **não** foi mudado está em "Decidido e não mudado", com o motivo; o que
+ficou para depois está em "Pendente". **Os números de relatório citados daqui
+para baixo são os desta rodada**, e não os da de 2026-09-19.
+
+*Esta seção saiu na beta.22 rotulada como "Não publicado": o rótulo foi
+acertado na beta.23, junto com o cabeçalho de versão que faltava.*
 
 ### Mudanças incompatíveis
 
@@ -169,6 +536,13 @@ operador (ou quem integra) faz a respeito.
     cota do endereço. *Faça:* NAT muito grande, ou orquestrador que dispare
     centenas de chamadas paralelas do mesmo IP, mede e sobe o número — o
     download de arquivo de vMCP conta contra o teto (relatório 014).
+  - `get_skill_file` não devolve mais inline arquivo de texto acima de
+    `MCP_MAX_FILE_TEXT_BYTES` (4 MiB): responde com a URL de download, que serve
+    o arquivo sem as cópias que o JSON-RPC exigiria (relatório 044). *Esta
+    entrada estava no grupo "MCP administrativo"; a tool é do MCP **público** —
+    corrigido pelo relatório 032 da auditoria de 2026-09-19, que estendeu o
+    mesmo teto às outras três leituras do público e, no administrativo, a
+    `get_file` e `get_skill`.*
 
 - **MCP administrativo**
   - `set_files_bulk` **recusa** a chamada que removeria arquivos: responde com a
@@ -177,9 +551,6 @@ operador (ou quem integra) faz a respeito.
     instante, nada é removido. *Faça, quem automatiza:* repetir com
     `confirm_deletions`, ou usar `replace: false` para envio parcial — um `.zip`
     que não remove nada continua passando de primeira (relatório 011).
-  - `get_skill_file` não devolve mais inline arquivo de texto acima de
-    `MCP_MAX_FILE_TEXT_BYTES` (4 MiB): responde com a URL de download, que serve
-    o arquivo sem as cópias que o JSON-RPC exigiria (relatório 044).
   - As sessões MCP têm teto **por credencial**, além do teto do processo:
     estourado o limite, fecha a sessão parada há mais tempo **da mesma
     credencial** em vez de recusar a nova, e a sessão SSE ociosa passa a
@@ -251,8 +622,14 @@ operador (ou quem integra) faz a respeito.
 
 - **MCP administrativo**
   - `set_file` normaliza o caminho antes de decidir sobre o frontmatter:
-    `"./SKILL.md"` escapava da limpeza e gravava metadados forjados na linha do
-    `SKILL.md` — e mexer em metadados é `manage`, não `edit` (relatório 050).
+    `"./SKILL.md"` escapava da limpeza e gravava o frontmatter enviado na linha
+    do `SKILL.md`, que guarda só o corpo. O bloco não redefinia metadado nenhum
+    — eles moram em colunas e o frontmatter é gerado na leitura —, mas ficava
+    fora da vista e dentro do índice de busca. Mudar metadados é `edit_skill`:
+    nome, descrição, ícone e tags com `edit`; slug, estado e público com
+    `manage` (`docs/12` §3.2). Esta entrada dizia "mexer em metadados é
+    `manage`, não `edit`", o que nunca foi regra do projeto (relatório 050;
+    texto corrigido pelo relatório 079 da auditoria de 2026-09-19).
   - O registro de acessos e o `audit_log` gravam o IP e o agente **da
     requisição** que fez a leitura, em vez de repetirem os da primeira chamada
     da sessão (relatório 006).
@@ -263,6 +640,10 @@ operador (ou quem integra) faz a respeito.
     skill privada não volta a `true` por um salvamento de texto. Renomeação
     concorrente sobrevive (a skill volta pelo slug gravado) e skill apagada no
     meio da escrita é 404 em vez de erro interno (relatório 005).
+  - A ação `user.password` entrou no `CHECK` de `audit_log.action` pela
+    migration `024-auditoria-de-troca-de-senha.sql`, **nesta mesma rodada**, o
+    que é o que faz a linha de troca de senha gravar de verdade (o detalhe do
+    que ela registra está em "Segurança → Painel"; relatórios 030 e 079).
   - O `schema.ts` volta a descrever o banco: três chaves estrangeiras (duas
     `SET NULL`), nove índices, dois `UNIQUE` e seis `DESC` existiam só no SQL.
     Nada muda em tempo de execução — muda o que uma ferramenta de migração
@@ -358,16 +739,23 @@ operador (ou quem integra) faz a respeito.
     quem, e registra que toda sessão daquela conta caiu; nem a senha temporária
     nem hash nenhum vão para o registro. Trocar a senha por um link de e-mail
     também deixa rastro, com o ator `link-de-redefinicao` — quem chegou pelo
-    link não é, necessariamente, o dono da conta (relatório 030; a linha só
-    chega ao banco depois do pedido ao dba, ver "Pendente").
+    link não é, necessariamente, o dono da conta (relatório 030; a ação
+    `user.password` entrou no `CHECK` de `audit_log.action` pela migration
+    `024-auditoria-de-troca-de-senha.sql`, nesta mesma rodada: a linha grava de
+    verdade. Esta entrada ainda dizia que ela só chegaria ao banco depois de um
+    pedido ao dba e mandava ver "Pendente", onde o item não está — o pedido foi
+    atendido na própria rodada; texto corrigido pelo relatório 079 da auditoria
+    de 2026-09-19).
   - A criação do primeiro administrador confere a tabela de contas dentro da
     própria gravação: a janela em que dois `POST /api/setup` simultâneos criavam
     dois administradores — e com isso desligavam a adoção de órfãos, que exige
     uma única conta admin ativa — deixa de conter o scrypt da senha (relatório
     049).
-  - Arquivo de skill é servido com `Cache-Control: private`, para nenhum cache
-    compartilhado continuar entregando o que acabou de ser despublicado
-    (relatório 045).
+  - Arquivo de skill servido **pelo site** vai com `Cache-Control: private`,
+    para nenhum cache compartilhado continuar entregando o que acabou de ser
+    despublicado (relatório 045). *Esta entrada estava no grupo "Painel" e
+    descrevia o site; o "Abrir cru" do painel só ganhou o cabeçalho na auditoria
+    de 2026-09-19 (relatório 014), e está registrado lá.*
   - A política de cabeçalhos (`Content-Security-Policy`, `X-Frame-Options`,
     `Referrer-Policy`, `Cross-Origin-Opener-Policy`) é montada uma vez só no
     pacote compartilhado, e o hash do `<script>` de tema sai do próprio
@@ -469,12 +857,17 @@ operador (ou quem integra) faz a respeito.
 - **Arquitetura e decisões**
   - A busca semântica foi reconhecida na arquitetura: decisão nova (duas pernas
     fundidas por RRF, espaço de embedding, ambiente semeia e banco decide, três
-    drivers, indexador em perfil próprio), e as decisões "sem busca vetorial no
-    v1" ficaram marcadas como revogadas, sem apagar. O documento não sabia que o
-    sétimo container existe, em quatro lugares. Também ficou escrito o que a
-    entrega **não** trouxe: recusa de texto só em memória, sem apagar vetores de
-    um espaço, sem limpeza de órfãos, sem índice vetorial e sem recorte de
-    escopo da indexação (relatório 019).
+    drivers, ~~indexador em perfil próprio~~), e as decisões "sem busca vetorial
+    no v1" ficaram marcadas como revogadas, sem apagar. O documento não sabia que
+    o sétimo container existe, em quatro lugares. Também ficou escrito o que a
+    entrega **não** trouxe: ~~recusa de texto só em memória,~~ sem apagar vetores
+    de um espaço, ~~sem limpeza de órfãos,~~ sem índice vetorial e sem recorte de
+    escopo da indexação (relatório 019). *Os três trechos riscados saíram
+    errados desta rodada:* o indexador sobe no `up -d` (o perfil `rag` está
+    comentado no compose — ver "Decidido e não mudado"), e a recusa gravada no
+    banco e a coleta de órfãos foram entregues pela `025`, como a seção
+    "Corrigido" registra. Os documentos foram alinhados ao código na auditoria
+    de 2026-09-19 (relatórios 020 e 059).
   - O inventário de segredos ganhou as três `RAG_*_API_KEY`/`_FILE` — as únicas
     chaves de terceiro com custo por uso — e o registro de que elas nunca vão
     para o painel (relatório 019).
@@ -571,14 +964,24 @@ Estas entradas existem para ninguém reabrir o assunto como achado novo.
   exceção fixada, por ser imagem de terceiro, sem autenticação e com rota até o
   MCP administrativo.
 - **`#profiles: [rag]` comentado no `docker-compose.yml` é decisão do
-  mantenedor** (relatório 047). A divergência existe só na cópia de trabalho: o
-  estado versionado é coerente no compose, no comentário e no README. Restaurar
-  a linha derrubaria o indexador da stack local dele sem que tenha pedido;
-  documentar a linha comentada transformaria uma conveniência local em política
-  do projeto e apagaria o **opt-in explícito** do envio de conteúdo a terceiros.
-  *Atenção de quem fechar o commit:* três agentes editaram esse arquivo, e um
-  `git add` leva a linha comentada junto — se ela for commitada, toda instalação
-  passa a subir o indexador sem ter pedido.
+  mantenedor** (relatório 047). Restaurar a linha derrubaria o indexador da
+  stack dele sem que tenha pedido. **A linha comentada é o estado versionado
+  desde a `beta.22`:** o indexador **sobe no `up -d`** em toda instalação, e o
+  que liga o envio de conteúdo a terceiros é só o `rag.driver` do painel, com a
+  chave no ambiente — com o driver `off`, que é o padrão, o indexador publica o
+  próprio estado e não fala com provedor nenhum. Quem quer de volta o opt-in de
+  dois passos descomenta a linha e sobe com `docker compose --profile rag up -d
+  indexer`. ~~A divergência existe só na cópia de trabalho: o estado versionado
+  é coerente no compose, no comentário e no README. […] documentar a linha
+  comentada transformaria uma conveniência local em política do projeto e
+  apagaria o opt-in explícito do envio de conteúdo a terceiros. *Atenção de
+  quem fechar o commit:* […] se ela for commitada, toda instalação passa a
+  subir o indexador sem ter pedido.~~ Era o texto desta entrada até a auditoria
+  de 2026-09-19 (relatório 020): a premissa deixou de valer no mesmo commit que
+  a publicou — a linha **foi** commitada com a `beta.22` —, e o compose dizia
+  uma coisa enquanto o README e os `docs/02`, `03` e `14` diziam outra. Os
+  textos foram alinhados ao compose, com a decisão antiga ("perfil `rag`, subir
+  é uma escolha") marcada como revogada em `docs/02` §10.
 - **A poda de `mcp_sessions` e `skill_accesses` ficou para o mantenedor**
   (relatório 014). Apagar linha revisita a decisão "nunca apagar" escrita nas
   duas migrations, então é decisão de produto antes de ser técnica. Com o limite
@@ -672,7 +1075,8 @@ relato, e o que foi fechado depois saiu desta lista.
   relato; o agente não abriu o banco de produção e não renomeia dado sem pedido.
 - **Decisões que dependem do mantenedor**, todas com o motivo escrito acima:
   criar o `dependabot` e então fixar as actions por SHA, e o `needs: test` no
-  job de imagem (041); o perfil `rag` comentado (047); a retenção de sessões e
+  job de imagem (041); ~~o perfil `rag` comentado (047)~~ (decidido: o indexador
+  sobe no `up -d` — ver "Decidido e não mudado"); a retenção de sessões e
   acessos (014); subir o teto de 200 caracteres da busca, que é o único lugar
   onde o número deve mudar (022); aposentar a derivação do segredo por
   `ADMIN_PASSWORD` (001); devolver a barreira de API da abertura de vMCP, e se

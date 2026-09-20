@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertNotPlaceholder,
   bearerToken,
+  isPlaceholder,
   readSecret,
   requireSecret,
   safeEqual,
@@ -86,6 +87,24 @@ describe('assertNotPlaceholder', () => {
     // não é um placeholder inteiro e não pode derrubar ninguém.
     const url = 'postgres://postgres:CHANGE_ME@localhost:5432/purple_skills';
     expect(assertNotPlaceholder('DATABASE_URL', url)).toBe(url);
+  });
+});
+
+describe('isPlaceholder', () => {
+  it('reconhece os mesmos valores que o assertNotPlaceholder recusa, sem lançar', () => {
+    for (const valor of ['CHANGE_ME', ' change_me ', 'PLACEHOLDER', 'exemplo', 'xxxx', 'undefined']) {
+      expect(isPlaceholder(valor)).toBe(true);
+      expect(() => assertNotPlaceholder('X', valor)).toThrow(/placeholder/);
+    }
+  });
+
+  it('não confunde valor de verdade com placeholder', () => {
+    // `k` e `sem-custo` são as fixtures de chave dos testes do RAG; a URL é o
+    // caso ancorado do `assertNotPlaceholder`.
+    const url = 'postgres://postgres:CHANGE_ME@localhost:5432/purple_skills';
+    for (const valor of ['k', 'sem-custo', 'change_me_depois', url, '']) {
+      expect(isPlaceholder(valor)).toBe(false);
+    }
   });
 });
 

@@ -22,6 +22,7 @@ const grant = (userUuid: string, level: Grant['level']): Grant => ({
   email: `${userUuid}@x.dev`,
   name: userUuid,
   role: 'membro',
+  isActive: true,
   level,
   grantedByUserUuid: null,
   grantedByEmail: null,
