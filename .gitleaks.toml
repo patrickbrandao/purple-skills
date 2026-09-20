@@ -104,6 +104,36 @@ condition = "AND"
 commits = ["b317e0faf2901a1b982a1d6e604ff6a7cd4ab724"]
 paths = ['''^apps/admin/web/src/components/shell/Layout\.tsx$''']
 
+# O `94bd13a` (`chore: 1.0.0-beta.23`) trouxe o teste "a chave mascarada não sai
+# na mensagem do erro", de `packages/rag/src/openai.test.ts`, com um `apiKey`
+# escrito por extenso no formato de chave de projeto da OpenAI. Não é segredo, e
+# o que sustenta isso foi conferido, não presumido:
+#   - tem 48 caracteres (`sk-proj-` e 40), e as chaves de projeto que a OpenAI
+#     emite têm mais de 150 — o formato **não autentica**;
+#   - não traz o marcador `T3BlbkFJ` (base64 de "OpenAI") que as emitidas têm;
+#   - não é igual a nenhuma credencial do `.env` nem do ambiente do mantenedor;
+#   - no teste ele é **inerte**: o provedor ecoa a chave já mascarada, e quem a
+#     tira da mensagem é a máscara de `ocultarChave` (`packages/rag/src/http.ts`),
+#     não o valor literal.
+# O que **não** foi feito: testá-lo contra a API — ele não sai desta máquina.
+#
+# O commit fica no histórico e faria a varredura falhar para sempre (o CI ficou
+# vermelho da beta.23 em diante, por este único achado). Mesma forma das exceções
+# acima, e mais estreita: fechada no commit, no arquivo **e no formato do valor**
+# — 40 caracteres depois de `sk-proj-` —, então uma chave de outro tamanho colada
+# no mesmo arquivo, no mesmo commit, continua sendo apontada.
+#
+# O teste em si deixou de carregar o valor por extenso (agora ele o monta em
+# código, como a máscara ao lado), justamente para que mexer naquela linha não
+# reabra o achado num commit novo: esta exceção só cobre o `94bd13a`.
+[[allowlists]]
+description = "openai.test.ts de 94bd13a — chave de fixture de 48 caracteres, formato que a OpenAI não emite"
+condition = "AND"
+commits = ["94bd13ab3db825148a04da7be5455d78f749c639"]
+paths = ['''^packages/rag/src/openai\.test\.ts$''']
+regexTarget = "secret"
+regexes = ['''^sk-proj-[A-Za-z0-9_-]{40}$''']
+
 # `PGPASSWORD` e o prefixo `MCP_` do token do inspector não são variáveis do
 # `.env.example`: são os nomes com que o compose entrega ao container a senha do
 # banco e o token do inspector. Entram para que o casamento comece na chave YAML

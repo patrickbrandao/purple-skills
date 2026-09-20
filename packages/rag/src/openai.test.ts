@@ -372,7 +372,13 @@ describe('a chave ecoada pelo provedor', () => {
   });
 
   it('a chave mascarada não sai na mensagem do erro', async () => {
-    const apiKey = 'sk-proj-Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78St90';
+    // Montada em código, como a máscara logo abaixo, e não por extenso: uma chave
+    // de projeto escrita inteira num teste é o que o gitleaks existe para apontar,
+    // e mexer nesta linha reabriria o achado num commit novo. O valor aqui é
+    // inerte — o provedor ecoa a chave já mascarada, e quem a tira da mensagem é
+    // a máscara, não o literal —, então só o formato importa: 48 caracteres,
+    // terminando em `St90` como o eco.
+    const apiKey = `sk-proj-${'q7Zr'.repeat(9)}St90`;
     const eco = `sk-proj-${'*'.repeat(36)}St90`;
     const { driver } = driverCom(
       () =>
