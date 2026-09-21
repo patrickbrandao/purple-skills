@@ -11,7 +11,7 @@
     "apps/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.15"
   },
   "scripts": {
     "build": "npm run build:packages && npm run build -w @purple-skills/homepage && npm run build -w @purple-skills/site && npm run build -w @purple-skills/admin && npm run build -w @purple-skills/mcp-public && npm run build -w @purple-skills/mcp-admin && npm run build -w @purple-skills/indexer",

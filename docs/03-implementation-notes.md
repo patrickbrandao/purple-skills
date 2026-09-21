@@ -643,6 +643,20 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
   `references/` um embrulho. O caso que continua ambíguo, de propósito: uma
   subpasta enviada **com** um `SKILL.md` direto dentro dela é indistinguível de
   um embrulho e é desembrulhada.
+
+  > **Revisado neste ponto pelo [`15`](15-quarentena.md)** (§10): o parágrafo
+  > acima segue valendo para o `extractZip`, e por ele para o `set_files_bulk`
+  > do MCP administrativo. A **importação** não passa mais por ali — ela lê o
+  > pacote cru (`extractArchive`) e deixa o `splitBundle` achar as skills —, e
+  > o que desembrulha passou a ser o diretório do `SKILL.md`, em qualquer
+  > profundidade: um `.zip` com `archive/skills/foo/SKILL.md` entrava torto,
+  > com `skills/foo/` grudado em todo caminho do envio, porque a raiz única não
+  > trazia o `SKILL.md` logo abaixo dela. Isso vale quando a raiz do pacote
+  > (já sem o embrulho) **não** tem `SKILL.md`; com um lá, o pacote é uma skill
+  > só e os caminhos ficam como vieram — é a decisão 27 do `15`, e o preço da
+  > outra metade é que o que está fora de um diretório de skill não entra em
+  > envio nenhum. O descarte de `__MACOSX`, `.DS_Store` e `Thumbs.db` vale nos
+  > dois caminhos (`isJunkPath`).
 - **O teto de descompressão não confia no tamanho declarado no diretório
   central** (`004`). Quando ele é zero — o valor que desliga o `maxOutputLength`
   do zlib dentro do `adm-zip` e deixaria a descompressão sem limite —, a entrada
@@ -658,6 +672,26 @@ Decisões que a spec (`05-accounts-and-roles.md`) deixou em aberto:
   `.zip` de 200 MB → ~400 MB de RSS). Quem aumenta
   `ZIP_MAX_UNCOMPRESSED_BYTES` aumenta `APP_MEM_LIMIT` na mesma conta — ver
   [Portas](#portas).
+- **O orçamento de bytes é um só para o pacote, somado entre as camadas de
+  envelope** (`extractArchive`): cada `.gz`/`.zst` aberto desconta o que
+  produziu, e o leitor de dentro recebe o que sobrou. Enquanto o teto valia
+  cheio de novo a cada camada, a conta de "~2×" do item acima deixava de valer
+  para o pacote com envelope: medido com maxRSS no Node 26, 250 MB de conteúdo
+  custavam 346 MB em `.zip`, 653 MB em `.tar.gz` e 871 MB em gzip(gzip(tar)) —
+  com `mem_limit` de 1536m e sem swap, três envios de 264 KB em paralelo
+  bastavam para o OOM killer. A mensagem de recusa cita o limite **configurado**,
+  não o resto do orçamento, porque é o número que o operador reconhece.
+- **O teto de entradas conta o lixo de SO; o de arquivos por skill, não.**
+  `BUNDLE_MAX_ENTRIES` é conferido antes do descarte — no `.zip`, sobre o que o
+  fim do diretório central declara (`getEntryCount()`, antes de materializar
+  entrada nenhuma); no `.tar`, sobre cada membro aberto. Medido: um `.zip` com
+  um `SKILL.md` e nove entradas de lixo é recusado com o teto em 9, e a mensagem
+  fala em 10. Os bytes do `._<nome>` solto também entram no teto descomprimido,
+  porque a assinatura AppleDouble só se prova no conteúdo — ele é lido, somado e
+  só então descartado. Depois disso a lista já está limpa, e é a limpa que o
+  `splitBundle`, a guarda do pacote sem `SKILL.md` e o `fileCount` do envio
+  veem. Era o contrário do que a §10 do [`15`](15-quarentena.md) dizia
+  ("o lixo de SO sai antes de qualquer conta"), corrigido lá.
 
 ## Download do pacote
 

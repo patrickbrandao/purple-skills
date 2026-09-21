@@ -11,6 +11,28 @@ avulso): o "Importar .zip" e o "Substituir a árvore por um .zip" da guia
 > 7, 12 e 13 mudaram, e as 14 a 17 entraram. Cada ponto revisado está marcado
 > onde estava.
 
+> **Ampliado em 20/09/2026** com a importação de **bundle** — o pacote que traz
+> várias skills. As decisões 19 a 26 e a §10 entraram, e a decisão 2 ganhou o
+> limite que o bundle impôs, marcado onde ela está.
+
+> **Corrigido em 20/09/2026**, depois da validação do bundle: a decisão 27
+> entrou e delimita as 19 e 20 (`SKILL.md` na raiz quer dizer uma skill só), a
+> revisão da decisão 12 deixou de citar uma opção sem chamador, a decisão 25
+> ganhou a medida do que a rota faz de fato, e na §10 saíram duas afirmações
+> falsas — "o lixo de SO sai antes de qualquer conta" e "o pacote de uma skill
+> não mudou de comportamento". ~~Cada trecho está riscado onde estava.~~
+> **Aquelas duas estão** — a varredura da §10 não foi completa, e a
+> reverificação achou de pé uma terceira, a do `BUNDLE_MAX_SKILLS`.
+
+> **Reverificado em 20/09/2026.** O terceiro trecho caiu junto com a causa: ele
+> registrava como desenho medido uma recusa que era **defeito** — o
+> `BUNDLE_MAX_SKILLS` não recusa mais o pacote cuja raiz é a skill, e a linha da
+> tabela de tetos e o parágrafo dela foram reescritos sobre o que
+> `apps/admin/src/api.ts` faz hoje. Entrou também, na mesma tabela, a assimetria
+> de orçamento entre `.zip` e `.tar.gz`. Este cabeçalho não promete varredura
+> completa da §10: promete que **estes três trechos** estão riscados onde
+> estavam.
+
 Este documento registra o desenho fechado na conversa de 20/09/2026 e é a
 referência de *por que* cada peça é assim; o que é do banco — tabelas, queries,
 a transação da promoção — está em
@@ -42,6 +64,10 @@ skill como qualquer outra, com o pacote já conferido.
 2. **O destino é de quem importa**, escolhido na tela de importação, e não uma
    propriedade da instalação. A mesma pessoa manda um pacote de confiança
    direto para produção e o pacote de origem duvidosa para a fila.
+
+   > **Revisado com a importação de bundle (20/09/2026).** A escolha vale para
+   > o pacote de **uma** skill. O pacote com duas ou mais vai sempre para a
+   > quarentena, e pedir `production` é **400** — decisão 21.
 3. **Nada de metadado separado do arquivo.** Na skill de produção o nome, a
    descrição e as tags moram em colunas, e o `SKILL.md` gravado é só o corpo —
    o frontmatter é remontado na leitura. Na quarentena o arquivo é a **única**
@@ -97,8 +123,20 @@ skill como qualquer outra, com o pacote já conferido.
     > **Revisado em 20/09/2026.** A primeira versão só tolerava a *ausência* do
     > arquivo: um `SKILL.md` fora de UTF-8 era recusado pelo `extractZip` antes
     > de o destino ser lido, e o espaço criado para consertar pacote torto era
-    > justamente o que não aceitava o caso mais comum. Hoje a importação para a
-    > quarentena passa `allowBinarySkillMd`, e produção continua recusando.
+    > justamente o que não aceitava o caso mais comum.
+    >
+    > ~~Hoje a importação para a quarentena passa `allowBinarySkillMd`, e
+    > produção continua recusando.~~ **Era**, até a importação de bundle (§10):
+    > a rota deixou de chamar o `extractZip`, e com ele a opção ficou sem
+    > chamador nesse caminho. O que aceita o `SKILL.md` não-UTF-8 hoje é o fato
+    > de **ninguém o decodificar** ali: o `extractArchive` devolve `{ path,
+    > data }` cru e o `envioDoPacote` grava esses bytes como chegaram. Quem
+    > decide texto × binário (`toExtractedFile`) é chamado só no ramo de
+    > **produção**, que continua recusando com a mensagem de sempre, e no
+    > rótulo do envio — um `SKILL.md` ilegível ali custa apenas o nome, que cai
+    > para o do diretório de origem. `allowBinarySkillMd` segue existindo em
+    > `extractZip`; o único chamador que restou, o `set_files_bulk` do MCP
+    > administrativo, não a liga.
 13. **A edição de uma skill recebe só texto** (§6), e isso vale para as **duas**
     portas: o envio avulso (multipart) e as rotas de arquivo por JSON. Estas
     carregam `content: string`, mas quem decide texto × binário na gravação é a
@@ -130,6 +168,104 @@ skill como qualquer outra, com o pacote já conferido.
     próprio envio na política padrão e, como dona da skill que nascia, podia
     torná-la pública — enquanto `POST /api/skills` lhe devolvia 403. O envio
     dela continua visível e editável (§3.1); o que fechou foi o portão.
+19. **Um diretório com `SKILL.md` é uma skill.** É o critério que o próprio
+    formato aberto Agent Skills usa, e é o único que não obriga quem importa a
+    conhecer a arrumação interna do repositório de terceiro — arrumação que
+    muda de projeto para projeto e não é declarada em lugar nenhum. Diretório
+    **sem** `SKILL.md` não entra em lugar nenhum: nem como skill, nem como
+    anexo de outra. O `.github/`, o `docs/` e o `src/` de um repositório são
+    exatamente isso. É decisão de desenho, não conserto de defeito medido: não
+    há um segundo sinal confiável para escolher.
+
+    > **Delimitado pela decisão 27 (20/09/2026).** Esta regra vale quando a
+    > **raiz** do pacote não tem `SKILL.md`. Com um lá, o pacote é uma skill só
+    > e os `SKILL.md` de subpasta são conteúdo dela.
+20. **A skill leva a subpasta, menos a subpasta que é skill.** O `ref/` e o
+    `scripts/` acompanham a skill acima deles; um `SKILL.md` mais abaixo faz
+    nascer uma skill própria, e aqueles arquivos **saem** da mãe — vale sempre
+    o diretório de skill mais fundo que contém o arquivo. Sem a segunda metade
+    da regra os mesmos arquivos entrariam duas vezes, uma em cada envio, e a
+    mãe ainda ganharia um segundo `SKILL.md` no meio da própria árvore — o
+    contrário da decisão 3, em que o `SKILL.md` da raiz é a única verdade do
+    envio.
+
+    > **Delimitado pela decisão 27 (20/09/2026).** Como a 19: a "subpasta que é
+    > skill" só existe quando a raiz do pacote não tem `SKILL.md`. Era
+    > justamente aqui que o template de skill se quebrava — o exemplo em
+    > `references/` saía da mãe.
+21. **O bundle vai sempre para a quarentena.** O pacote com duas ou mais
+    skills mandado para `production` é recusado com **400**, dizendo quantas
+    foram encontradas e apontando a fila. Criar N skills direto no acervo
+    contrariaria a decisão 1 — o portão existe justamente para o pacote de
+    terceiro — e multiplicaria por N, sem revisão nenhuma, a publicação e o
+    fatiamento pelo RAG. A conta é de quantas o pacote **trazia**, e a pulada
+    da decisão 22 entra nela: um pacote de duas em que uma passou do teto
+    continua sendo um pacote de duas, e chamá-lo de "uma só" faria a outra
+    sumir sem aviso. Revisa a decisão 2 no ponto marcado lá.
+22. **A skill grande é pulada, não derruba o pacote.** O teto por skill
+    continua sendo o de sempre (`DEFAULT_MAX_ZIP_ENTRIES`, 512 — decisão 14;
+    a rota passa o `MAX_FILES_POR_ENVIO` do envio explicitamente, para as duas
+    réguas serem uma coisa só): o diretório acima dele fica de fora, a resposta
+    diz qual foi e por quê, e as irmãs entram normalmente. Recusar o pacote
+    inteiro obrigaria a editar o `.zip` de terceiro para conseguir importar
+    qualquer coisa dele; truncar a skill faria o envio mentir sobre o pacote de
+    origem, que é o contrário do que a quarentena promete — o envio é o retrato
+    do que chegou. Em `production`, o pacote de **uma** skill que passou do
+    teto é **400** com o diretório e a contagem, e não com o "precisa conter um
+    SKILL.md": ele está lá, e dizer que falta mandaria consertar o que não está
+    quebrado.
+23. **RAR não é suportado, e isso é dito.** A única via em Node é um WASM do
+    UnRAR, cuja licença proíbe usar o fonte para construir um arquivador
+    compatível com RAR — uma cláusula que não combina com a MIT deste
+    repositório, para uma dependência binária que entraria em
+    `packages/shared` e, com ele, nas **seis** imagens. Então o formato é
+    **detectado pela assinatura** e recusado com o nome dele e a lista do que é
+    aceito, em vez de cair no erro genérico de arquivo inválido: quem manda um
+    `.rar` precisa saber que o formato é recusado de propósito, e não ficar
+    procurando defeito num arquivo que está inteiro. Vale igual para `.7z`,
+    `.xz` e `.bz2`.
+24. **O formato sai da assinatura, não da extensão.** Um `.skill` é um ZIP e um
+    `.tgz` é um tar em gzip: a extensão já não descrevia o conteúdo. E um
+    arquivo renomeado não deve enganar a leitura nem, pior, escapar da recusa
+    da decisão 23 — bastaria chamar de `.zip` o que é RAR. A extensão continua
+    servindo para uma coisa só: dar nome à entrada quando o pacote é um `.gz`
+    de arquivo único.
+25. **O envio de bundle registra de onde veio.** `source_filename` passa a
+    guardar `pacote.zip (skills/brainstorming)` quando a skill veio de um
+    diretório do pacote — o nome do arquivo enviado e o diretório de origem. É
+    o que deixa conferir a fila contra o pacote enviado sem abrir envio por
+    envio; só com o nome do arquivo, quarenta envios ficariam indistinguíveis
+    na lista. A skill que estava na **raiz** do pacote — e o pacote de uma
+    skill só, desembrulhado — fica com o nome do arquivo sozinho, como sempre
+    foi. Nenhuma coluna nova: `source_filename` já é TEXT livre, e o banco é do
+    agente dba.
+
+    > **Precisão medida (20/09/2026).** O diretório entra no `source_filename`
+    > só no ramo que grava **vários** envios. O pacote que rende **um** envio
+    > fica com o nome do arquivo sozinho mesmo quando a skill dele veio de uma
+    > subpasta: um `.zip` com `README.md` e `skills/foo/SKILL.md` grava
+    > `pacote.zip`, não `pacote.zip (skills/foo)`. Não é descuido — num envio só
+    > não há o que desempatar, que é para o que o sufixo existe —, mas "quando a
+    > skill veio de um diretório do pacote" prometia mais do que a rota faz.
+26. **Uma falha no meio não desfaz o que já entrou.** Cada envio é a sua
+    própria transação; a quarentena é uma **fila**, não um lote atômico. O que
+    já foi gravado fica, e o erro sobe. Desfazer tudo trataria o pacote como
+    unidade — e o pacote de quarenta skills que morresse na trigésima nona
+    devolveria o operador ao ponto de partida, sem nada para olhar. É a mesma
+    razão da decisão 22.
+27. **`SKILL.md` na raiz do pacote quer dizer uma skill só.** A regra da decisão
+    19 é o *segundo* ramo da leitura, não o único: com um `SKILL.md` na raiz (já
+    sem o embrulho), o pacote é uma skill e todo o resto é conteúdo dela, em
+    qualquer profundidade; os `SKILL.md` de subpasta são arquivos, não irmãs.
+    Corrige uma quebra medida: o formato de **template** de skill guarda um
+    `SKILL.md` de exemplo em `references/`, e sem esta regra um pacote desses
+    contava como **duas** skills — em produção batia no 400 da decisão 21, e na
+    quarentena virava um bundle de dois envios em que o principal **perdia** o
+    arquivo de exemplo (decisão 20 aplicada onde não cabia). O pacote que o
+    próprio painel exporta é exatamente essa forma, então a regra também é o que
+    mantém de pé "exportar e reimportar". A raiz sem `SKILL.md` segue na decisão
+    19, e é de lá que vem o preço descrito na §10: o que está fora do diretório
+    de uma skill não entra em envio nenhum.
 
 ## 3. O espaço
 
@@ -191,7 +327,10 @@ dentro dele: o que está ali ainda não é skill. Só quem pode criar chega a v�
 - A importação (`/nova-skill?modo=zip`) ganhou a escolha de destino. Em
   "Para a quarentena" o formulário de metadados e o seletor de servidores
   **somem** da tela: eles não teriam onde encostar, e mostrá-los prometeria
-  algo que a tela não cumpre.
+  algo que a tela não cumpre. Um pacote com **duas ou mais** skills vai para a
+  fila de qualquer jeito (decisão 21), e o que volta é o resumo da §10 — a
+  tela "Pacote importado", com quais entraram e quais ficaram de fora, cada
+  linha levando ao envio —, não a ficha de um envio.
 - **Configurações → Quarentena** guarda a política da §4.
 
 O botão **Aprovar** só aparece para quem pode; a rota confere de novo, que é
@@ -245,7 +384,10 @@ Sob `/api/quarantine`, com a sessão do painel. O endereço é o `uuid`.
 | `GET` / `PUT` `/api/settings/quarantine` | a política da §4 (só admin) |
 
 `POST /api/skills/import` ganhou o campo `destination`: `production` (o padrão,
-o comportamento de sempre) ou `quarantine`.
+o comportamento de sempre) ou `quarantine`. É também a porta do **bundle**
+(§10): com `quarantine`, o pacote de uma skill e nada de fora responde a ficha
+do envio, como sempre, e qualquer outro caso responde o resumo; com
+`production`, o pacote de duas ou mais é **400**.
 
 O `?raw` do arquivo de um envio tem os mesmos cuidados do da skill — `Content-
 Type` de texto, `nosniff`, CSP de `sandbox` e `Cache-Control: private` —, e pela
@@ -281,3 +423,222 @@ e um `.html` ou `.svg` anexado rodaria JavaScript autenticado como o operador.
 - Promover para dentro de um catálogo ou servidor, ou devolver uma skill de
   produção para a quarentena.
 - Fila por instalação com cota, prioridade ou responsável.
+
+## 10. O bundle
+
+Um pacote pode trazer **várias** skills. Quem decide quais são não é um índice
+nem uma convenção de nome: é o `SKILL.md`. A leitura acontece em duas etapas, e
+a primeira é a **raiz** do pacote, já sem o embrulho (decisão 27):
+
+- **`SKILL.md` na raiz** → o pacote é **uma** skill, e tudo o mais é conteúdo
+  dela, em qualquer profundidade. O `SKILL.md` de exemplo que um template guarda
+  em `references/` é arquivo da skill, não uma irmã.
+- **sem `SKILL.md` na raiz** → vale a regra de bundle: cada diretório que tem um
+  é uma skill, e leva junto os arquivos dele e das subpastas dele — menos as
+  subpastas que são, elas próprias, skills (decisões 19 e 20). Diretório que não
+  tem `SKILL.md`, e não está dentro de um que tenha, é ignorado por inteiro.
+
+O caso que o recurso veio atender, e vale citá-lo por inteiro: baixar o `.zip`
+do repositório `obra/superpowers` no GitHub e importá-lo. Ele chega como o
+GitHub o monta — `.github/`, `docs/`, o `README.md` da raiz, o resto —, e o que
+entra na fila são as skills de `skills/…`, uma por diretório. Nada mais.
+
+"Nada mais" é literal, e é o preço do segundo ramo: **o que está fora do
+diretório de uma skill não entra em envio nenhum**, nem quando o pacote traz uma
+skill só. Um `.zip` com `README.md`, `LICENSE` e `skills/foo/SKILL.md` grava um
+envio com os arquivos de `skills/foo/` e mais nada — medido, e antes do bundle o
+mesmo pacote gravava um envio com os quatro arquivos, nos caminhos em que
+vieram. É a decisão 19 aplicada até o fim: não há um segundo sinal confiável
+para dizer que o `README.md` da raiz de um repositório é documentação de uma
+skill que está três pastas abaixo. Quem quer os arquivos de fora põe um
+`SKILL.md` na raiz do pacote, que é o primeiro ramo acima.
+
+Nesse segundo ramo os arquivos são **rebaseados**: o `SKILL.md` da skill fica na
+raiz do envio, como em qualquer outro envio da quarentena (no primeiro ramo não
+há o que rebasear — a skill já é o pacote). Daí em diante um envio vindo de
+bundle é um envio como os outros — a fila, o editor cru, a aprovação e o
+descarte não sabem de onde ele veio. Quem sabe é o `source_filename`, que guarda
+o arquivo enviado e, nos pacotes que rendem vários envios, o diretório de origem
+(decisão 25 e a medida marcada nela).
+
+### Formatos
+
+Aceitos: `.zip`, `.skill` (o mesmo ZIP), `.tar`, `.tar.gz`/`.tgz`, `.gz` e
+`.tar.zst`/`.tzst`/`.zst`. Recusados **com o nome do formato na mensagem**, e
+não com o erro genérico de arquivo inválido: `.rar`, `.7z`, `.xz` e `.bz2`
+(decisão 23). Quem decide qual é qual é a **assinatura** do arquivo, não a
+extensão (decisão 24).
+
+Nada disso traz dependência nova: `gzip` e `zstd` saem do `node:zlib`, e só o
+`.tar` precisou do `tar-stream`. O `zstd` **cobra um piso de Node**, e por isso
+o `engines` do repositório subiu de `>=22` para `>=22.15`: o
+`zstdDecompressSync` só existe a partir dessa versão, e o que falha num
+22.0–22.14 não é o caminho `.zst` — é a **ligação** do módulo ESM, que resolve
+os imports nomeados antes de rodar linha nenhuma. O `archive.ts` deixa de
+carregar, o barril do `@purple-skills/shared` vai junto, e com ele todo serviço
+que o importa (o `@purple-skills/db` importa, então são os cinco). As imagens
+publicadas não sentem — os sete Dockerfiles são `node:24-alpine` —, mas quem
+roda fora do Docker, sim.
+
+### Tetos
+
+| Teto | Variável | Padrão | Ao estourar |
+|------|----------|--------|-------------|
+| entradas do pacote inteiro | `BUNDLE_MAX_ENTRIES` | `20000` | o pacote é recusado (400) |
+| diretórios com `SKILL.md`, no pacote **cuja raiz não é skill** | `BUNDLE_MAX_SKILLS` | `200` | o pacote é recusado (400) |
+| arquivos de **uma** skill | `ZIP_MAX_ENTRIES` | `512` | **aquela** skill é pulada e reportada (decisão 22); se não sobrar nenhuma, **400** |
+| arquivos do pacote **sem `SKILL.md` nenhum** | `ZIP_MAX_ENTRIES` | `512` | o pacote é recusado (400) |
+| bytes descomprimidos | `ZIP_MAX_UNCOMPRESSED_BYTES` | 256 MiB | o pacote é recusado (400) |
+| envelopes de compressão encadeados | — (fixo) | 2 | o pacote é recusado (400) |
+
+O teto de bytes é **um só para o pacote inteiro**, e não um por camada: cada
+envelope aberto desconta do mesmo orçamento e o leitor de dentro fica com o que
+sobrou. Enquanto ele valia de novo a cada camada, o mesmo conteúdo de 250 MB
+custava (maxRSS, Node 26) 346 MB em `.zip`, 653 MB em `.tar.gz` e 871 MB em
+gzip(gzip(tar)) — contra os "~2 × o teto descomprimido + 200 MB" com que o
+`docker-compose.yml` dimensiona o container. A mensagem de recusa continua
+citando o limite **configurado**, e não o resto da conta: quem a lê precisa
+reconhecer o número que ele mesmo pôs na variável.
+
+O orçamento único cobra um preço que o operador precisa conhecer **antes** de
+estranhar: o pacote que chega dentro de um envelope — `.tar.gz`, `.tgz`,
+`.tar.zst` — gasta o mesmo conteúdo **duas vezes**. O envelope materializa o
+`.tar` inteiro, e esses bytes já descontam do teto; só então o leitor de tar
+soma os bytes de cada arquivo, começando a conta no que o envelope gastou
+(`readTarEntries`, em `packages/shared/src/archive.ts`). Logo o conteúdo útil de
+um `.tar.gz` legítimo é **~metade** do teto configurado, enquanto o `.zip`, que
+não tem envelope, usa o teto inteiro. É comportamento esperado, e o teste "o
+teto é do pacote inteiro: cada camada desconta do mesmo orçamento"
+(`archive.test.ts`) o fixa: 3 MB de conteúdo passam crus num teto de 4 MB, são
+recusados em `.tar.gz` e voltam a passar com o teto em 8 MB. Com o padrão de
+256 MiB, um `.tar.gz` de 200 MB de conteúdo é recusado citando "o limite de
+256 MB" — não é defeito, são ~400 MB de orçamento pedidos a um teto de 256. O
+que a assimetria compra é o teto valer como teto de **memória do processo**, que
+é justamente o que faltava quando três envios de 264 KB em paralelo derrubavam o
+container. Quem precisa desse `.tar.gz` sobe `ZIP_MAX_UNCOMPRESSED_BYTES` para
+~2 × o conteúdo e sobe o `APP_MEM_LIMIT` na mesma conta (`.env.example`), ou
+reempacota em `.zip`.
+
+`BUNDLE_MAX_ENTRIES` não é o 512 de `ZIP_MAX_ENTRIES` de propósito: o `.zip` de
+um repositório do GitHub passa das 512 entradas só de código e documentação, e
+o teto que protege o pacote de uma skill fecharia a porta justamente para o
+caso desta seção. O teto **por skill** não mudou. O teto de skills é conferido
+sobre o que o pacote **traz**, não sobre o que sobra: as que seriam puladas por
+tamanho contam, senão um pacote com milhares de diretórios inchados passaria
+pelo limite só porque nenhum deles entraria.
+
+`BUNDLE_MAX_SKILLS` conta **diretórios com `SKILL.md`**, e vale **só no segundo
+ramo** — o pacote que não tem `SKILL.md` na raiz. Quando a raiz é a skill não há
+irmã para contar, e o `fatiarPacote` (`apps/admin/src/api.ts`) **não chama o
+`splitBundle`**: ele monta o envio direto das entradas (`envioDaRaiz`), sem
+fazer a pergunta "quantas skills há aqui" — que é como o teto volta a valer
+inteiro no único ramo onde ele significa alguma coisa, em vez de ser desligado
+para aquela chamada. O que mede aquele pacote é a linha do
+`ZIP_MAX_ENTRIES` por skill, logo abaixo na tabela. É o que faz o número voltar
+a dizer o que a variável promete: quantas skills o pacote traz.
+
+~~Medido — um pacote com `SKILL.md` na raiz e 201 exemplos em subpastas é
+recusado com "o pacote tem skills demais (202 diretórios com SKILL.md)", embora
+fosse virar **uma** skill.~~ — **Era**, até a correção da rota de 20/09/2026, e
+era defeito, não desenho: a conferência acontecia antes de a regra da raiz
+juntar tudo num envio só, então a decisão 27 prometia **uma** skill enquanto o
+teto contava 202. Hoje o pacote entra, e é o que o teste "a skill com mais
+subpastas de exemplo que o teto de skills entra"
+(`apps/admin/src/import.test.ts`) prende.
+
+No ramo em que ele vale, o teto é de **proteção**: mede o trabalho que o pacote
+dá para ser lido, e por isso a mensagem diz "diretórios com SKILL.md" em vez de
+prometer outra coisa — os diretórios que seriam pulados por tamanho contam
+igual, como diz o parágrafo do `BUNDLE_MAX_ENTRIES` mais acima.
+
+O teto **por skill** também muda de resposta conforme o pacote. Com duas ou mais
+skills, a grande é pulada e as irmãs entram (decisão 22). Com uma só — o caso da
+decisão 27, em que o pacote inteiro é a skill — não há irmã para entrar, e aí é
+**400** nos dois destinos: em `production` com o diretório e a contagem, e na
+quarentena com a lista do que foi pulado. O que se soma nessa conta é o envio
+inteiro, subpastas incluídas.
+
+O teto de envelopes encadeados não é configurável: dois cobrem tudo que é
+legítimo — o `.tar.gz` é um, e o segundo sobra para o `.gz` que alguém
+recomprimiu ao baixar. Daí em diante é bomba, porque cada camada multiplica o
+que saiu da anterior.
+
+O pacote **sem `SKILL.md` nenhum** — o pacote torto da decisão 12 — responde ao
+mesmo teto de 512, e essa linha é a única recusa de tamanho que não pula nada:
+ele entra como **um** envio, então é um envio, e a decisão 14 vale para ele
+igual. Não é regra nova, é a decisão 14 fechando uma porta dos fundos: o
+`splitBundle` mede por skill, e aqui não há skill para medir, enquanto o
+`extractArchive` lê até `BUNDLE_MAX_ENTRIES`. Sem a guarda, o mesmo conteúdo
+que é recusado **com** um `SKILL.md` dentro entrava **sem** ele — medido, um
+pacote de 600 arquivos e nenhum `SKILL.md` gravava um envio de 600. Antes do
+bundle o caso era impossível, porque a importação lia com o `extractZip`, cujo
+teto padrão já era 512. O que se conta são as **entradas cruas** do pacote, que
+é o que o envio gravaria: aqui não há pasta raiz aparada — não há skill para
+desembrulhar — e só o lixo de SO já saiu. Truncar está fora de questão pela
+razão da decisão 22: o envio mentiria sobre o pacote de origem.
+
+~~O lixo de SO sai antes de qualquer conta~~ — **ele sai antes de quase todas**,
+e a diferença importa para quem dimensiona os tetos. A ordem real, medida:
+`BUNDLE_MAX_ENTRIES` é conferido **antes** do descarte, sobre tudo o que o
+pacote traz — diretórios e lixo incluídos. No `.zip` o número conferido é o que
+o fim do diretório central declara, antes de materializar seja o que for; no
+`.tar`, cada membro que o leitor abre. Medido: um `.zip` com um `SKILL.md` e
+nove entradas de lixo é recusado com o teto em 9, e a mensagem fala em **10
+entradas**. Os bytes do `._<nome>` solto contam igual, porque a assinatura só se
+prova no conteúdo — ele é lido, somado ao `ZIP_MAX_UNCOMPRESSED_BYTES` e só
+então descartado. Daí para a frente o lixo já saiu, e as contas seguintes veem a
+lista limpa: o teto por skill, o do pacote sem `SKILL.md` e o `fileCount` do
+envio. É onde ele precisava entrar: as duas contas em que o lixo pesa são as de
+**proteção do processo**, e quem manda 20 000 entradas de metadado está mandando
+20 000 entradas.
+
+No `.tar` isso pesa: além de `__MACOSX`, `.DS_Store` e `Thumbs.db`, o irmão
+`._<nome>` que o `tar` do macOS grava para cada arquivo com atributo estendido é
+descartado pela **assinatura** (`00 05 16 07`), nunca pelo nome — `._config` é
+nome legítimo, e descartar por prefixo apagaria arquivo do usuário. Medido na
+verificação deste recurso: **27 dos 41 membros** de um `.tar` feito num Mac eram
+esse metadado, metade deles binário ilegível — sem o descarte seriam 27 dos 512
+arquivos que um envio pode ter. E não adianta conferir com `tar -tf`: o `tar` do
+macOS **esconde** esses membros ao listar, porque os reagrega em atributo
+estendido — é fácil não enxergar. No `.zip` o caso não aparece, porque o `zip`
+junta o metadado em `__MACOSX/`.
+
+### As duas respostas
+
+A rota é a mesma da §7, e com `destination: quarantine` o corpo tem dois
+formatos:
+
+- **uma skill, e nada de fora** → `201` com a ficha do envio
+  (`QuarantineDetail`), o mesmo corpo de antes do bundle, e é isso que mantém de
+  pé a tela e os testes que já existiam. É também o corpo do pacote **sem**
+  `SKILL.md` nenhum, que entra inteiro como um envio só (decisão 12).
+- **duas ou mais, ou alguma pulada com outra entrando** → `201` com o resumo
+  (`QuarantineBundleResult`): `bundle: true`, o `sourceFilename`, a lista
+  `imported` (`uuid`, `name`, `path`, `fileCount`) e a lista `skipped`
+  (`path`, `reason`, `fileCount`).
+
+~~O pacote de uma skill não mudou de comportamento, byte a byte como antes.~~
+**Não é verdade**, e vale dizer onde: o pacote de **uma** skill cujo `SKILL.md`
+está na raiz volta a dar um envio com os mesmos arquivos, nos mesmos caminhos e
+com os mesmos bytes (é a decisão 27, e foi ela que consertou o template com
+exemplo em `references/`); o pacote cuja única skill está numa **subpasta**
+mudou — os arquivos de fora do diretório dela não entram mais, e em `production`
+ele passou a criar a skill em vez de recusar por falta de `SKILL.md`. Está medido
+e registrado na seção "Mudado" do [`CHANGELOG`](../CHANGELOG.md).
+
+Quando **nenhuma** skill entra na fila — a única do pacote passou do teto da
+decisão 22 — a resposta é **400** com a lista do que foi pulado, e não o resumo.
+Um `201` ali era "Created" sem recurso criado, que o painel mostra como
+importação bem sucedida de coisa nenhuma. A pulada só aparece no resumo quando
+alguma **irmã** entrou: aí o resumo é o único corpo com onde dizer o que ficou
+de fora, e numa ficha ela viraria silêncio — quem importou um pacote de quarenta
+teria de contar a fila para descobrir que falta uma.
+
+Quem lê discrimina por `'bundle' in body`. Duas rotas separadas seria o desenho
+alternativo, e cobraria de quem importa saber **antes de abrir o pacote**
+quantas skills ele tem — que é justamente o que só se sabe depois de abrir.
+
+A ordem em que a rota decide, para `quarantine`: pacote vazio → **400**; nenhuma
+skill entrando e alguma pulada → **400** com a lista; duas ou mais skills, ou
+alguma pulada ao lado de outra que entrou → **201** com o resumo; zero skills e
+mais de 512 entradas → **400**, o teto desta seção; o resto → envio único.

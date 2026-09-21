@@ -28,15 +28,17 @@ import {
   setQuarantineFile,
   stats,
   updateSkillWithContent,
+  type CreateQuarantineInput,
 } from '@purple-skills/db';
 import {
   QUARANTINE_APPROVERS,
+  ZipContentError,
   ZipError,
   composeSkillMd,
   createRateLimiter,
   isAccessScope,
   contentDisposition,
-  extractZip,
+  extractArchive,
   isSkillMd,
   isTextualContent,
   isTextualMime,
@@ -45,7 +47,16 @@ import {
   rateLimitKey,
   safeContentType,
   skillMetaFromMarkdown,
+  splitBundle,
   stripFrontmatter,
+  toExtractedFile,
+  type ArchiveEntry,
+  type BundleImported,
+  type BundleSkillDir,
+  type BundleSkippedDir,
+  type MarkdownSkillMeta,
+  type QuarantineBundleResult,
+  type QuarantineDetail,
   type QuarantineSheet,
 } from '@purple-skills/shared';
 import {
@@ -1312,8 +1323,19 @@ api.post(
 );
 
 /**
- * Cria uma skill inteira a partir de um pacote (`.zip` ou `.skill` — é o mesmo
- * ZIP, ver `streamSkillZip`).
+ * Cria uma skill inteira a partir de um pacote, ou enche a fila da quarentena
+ * com as várias skills que ele traz.
+ *
+ * Formatos: `.zip`, `.skill` (é o mesmo ZIP, ver `streamSkillZip`), `.tar`,
+ * `.tar.gz`/`.tgz`/`.gz` e `.tar.zst`/`.tzst`/`.zst`. Quem lê é o
+ * `extractArchive`; o que ele recusa de propósito (RAR, 7z, xz, bz2) sai como
+ * `ZipError`, e o `fail()` já o devolve como 400 com a lista do que serve.
+ *
+ * **Bundle**: `SKILL.md` na raiz do pacote quer dizer uma skill só, com tudo o
+ * que ele traz dentro; só quando a raiz não tem um é que skill passa a ser todo
+ * diretório que tenha (`fatiarPacote`). Um pacote com duas ou mais entra apenas
+ * pela quarentena, uma de cada vez: em produção elas nasceriam no acervo sem
+ * ninguém ter olhado, que é a decisão 1 do `docs/15-quarentena.md` pelo avesso.
  *
  * `destination` escolhe onde o pacote cai (`docs/15-quarentena.md`):
  * `production` (o padrão) cria a skill direto, como sempre; `quarantine`
@@ -1328,7 +1350,7 @@ api.post(
   upload.single('file'),
   route(async (req, res) => {
     if (!req.file) {
-      res.status(400).json({ error: 'bad_request', message: 'Envie um arquivo .zip ou .skill no campo "file"' });
+      res.status(400).json({ error: 'bad_request', message: 'Envie o pacote no campo "file"' });
       return;
     }
 
@@ -1353,40 +1375,133 @@ api.post(
     }
 
     const paraQuarentena = body.destination === 'quarantine';
-    // `allowBinarySkillMd` só na quarentena: lá o arquivo é bytes crus que
-    // ninguém decodifica, e recusar o pacote seria recusar justamente o que o
-    // espaço existe para consertar — o SKILL.md em Windows-1252 ou UTF-16 que
-    // sai de um editor Windows. Quem cobra a codificação é a aprovação.
-    const files = extractZip(req.file.buffer, paraQuarentena ? { allowBinarySkillMd: true } : {});
-    // `.zip` e `.skill` carregam o mesmo ZIP; os dois saem do nome de reserva.
-    const fallbackName = req.file.originalname.replace(/\.(zip|skill)$/i, '');
-    const skillMd = files.find((file) => file.relativePath.toLowerCase() === 'skill.md');
+    // O pacote é lido cru — bytes e caminhos inteiros, sem decidir texto ×
+    // binário e sem cortar pasta nenhuma. Quem acha as skills lá dentro é o
+    // `splitBundle`, e ele parte do diretório de cada uma: onde o
+    // `stripSingleRootDir` do `extractZip` exigia o `SKILL.md` logo abaixo da
+    // raiz única, um `.zip` com `archive/skills/foo/SKILL.md` entrava torto,
+    // com `skills/foo/` grudado em todo caminho do envio.
+    const entries = await extractArchive(req.file.buffer, req.file.originalname);
+    const fallbackName = nomeSemExtensao(req.file.originalname);
+    // O embrulho é aparado **aqui**, antes de fatiar: `extractArchive` e
+    // `splitBundle` são literais sobre o que o arquivo traz, e escolher o que é
+    // embrulho é política de importação, não leitura de arquivo.
+    //
+    // O teto por skill vai explícito: o padrão do `splitBundle` é o mesmo
+    // número, mas escrito aqui a régua da rota e a do envio
+    // (`MAX_FILES_POR_ENVIO`) são uma coisa só, e não duas que podem divergir.
+    const { skills, skipped } = fatiarPacote(semEmbrulho(entries), quarantine.MAX_FILES_POR_ENVIO);
+    // Quantas skills o pacote **trazia**: a pulada por tamanho conta. Um pacote
+    // de duas em que uma passou do teto continua sendo um pacote de duas, e
+    // chamá-lo de "uma só" faria a outra sumir sem aviso.
+    const encontradas = skills.length + skipped.length;
 
     if (paraQuarentena) {
-      if (files.length === 0) {
+      if (entries.length === 0) {
         res.status(400).json({ error: 'bad_request', message: 'O pacote está vazio' });
         return;
       }
 
-      // Sem SKILL.md o pacote **entra** na quarentena: é justamente o lugar de
-      // consertar o que veio torto. Quem cobra o arquivo é a promoção, que sem
-      // ele não sabe que skill criar.
-      const meta = skillMd?.textContent ? skillMetaFromMarkdown(skillMd.textContent) : null;
-      const detail = await createQuarantine(
-        {
-          // O nome do envio é só rótulo, mas não pode ser vazio: sem
-          // SKILL.md e com um arquivo chamado ".zip", os dois candidatos saem
-          // em branco.
-          name: meta?.name?.trim() || fallbackName.trim() || 'pacote sem nome',
-          description: meta?.description?.trim() ?? '',
+      // Nada entrou na fila: é recusa, não criação. Com a única skill do
+      // pacote acima do teto, a resposta era um 201 com `imported: []` — um
+      // "Created" sem recurso criado, que o painel lê como importação bem
+      // sucedida de coisa nenhuma. O 400 diz o que foi pulado e por quê.
+      if (skills.length === 0 && skipped.length > 0) {
+        res.status(400).json({ error: 'bad_request', message: nadaEntrouNaFila(skipped) });
+        return;
+      }
+
+      // A pulada sozinha também responde bundle, mesmo sendo uma skill só: o
+      // `QuarantineBundleResult` é o único corpo com onde dizer o que ficou de
+      // fora, e num `QuarantineDetail` ela viraria silêncio.
+      if (skills.length > 1 || skipped.length > 0) {
+        // Em sequência, nunca em paralelo: cada `createQuarantine` é a sua
+        // própria transação e grava uma linha de `audit_log`. Quarenta de uma
+        // vez embaralhariam a trilha — as linhas sairiam fora da ordem do
+        // pacote — e pressionariam o pool à toa.
+        //
+        // Falha no meio **não** desfaz o que já entrou: a quarentena é uma
+        // fila, não uma transação, e o que já está lá é trabalho aproveitável.
+        // Quem repetir a importação descarta os repetidos, que convivem sem
+        // colidir (decisão 5 do `docs/15`). O que a falha não pode ser é muda —
+        // ver `falhaComParteNaFila`.
+        const imported: BundleImported[] = [];
+        for (const skill of skills) {
+          // O diretório de origem vai no nome do arquivo, entre parênteses
+          // (decisão 25): sem ele os quarenta envios de um repositório aparecem
+          // na fila com o mesmo `pacote.zip`, e não há como dizer qual é qual.
+          const origem = skill.dir ? `${req.file.originalname} (${skill.dir})` : req.file.originalname;
+          let detail: QuarantineDetail;
+          try {
+            detail = await createQuarantine(
+              envioDoPacote(skill, origem, fallbackName),
+              SOURCE,
+              actorFrom(req),
+            );
+          } catch (err) {
+            // Nada gravado ainda: a falha é a de sempre, e quem a traduz é o
+            // `fail()`. Não há nada a dizer sobre a fila.
+            if (imported.length === 0) throw err;
+            throw falhaComParteNaFila(err, imported, skills.length, req.file.originalname);
+          }
+          // O retrato do que foi **gravado**, não do que veio no pacote: o
+          // `uuid` é o endereço do envio no painel e `path` é de onde ele saiu.
+          imported.push({
+            uuid: detail.uuid,
+            name: detail.name,
+            path: skill.dir,
+            fileCount: detail.fileCount,
+          });
+        }
+
+        const resultado: QuarantineBundleResult = {
+          bundle: true,
           sourceFilename: req.file.originalname,
-          // Crus, como chegaram: na quarentena o SKILL.md guarda o próprio
-          // frontmatter, e não há metadado em coluna para contradizê-lo.
-          files: files.map((file) => ({
-            relativePath: file.relativePath,
-            content: file.binaryContent ?? Buffer.from(file.textContent ?? '', 'utf8'),
+          imported,
+          skipped: skipped.map((dir) => ({
+            path: dir.dir,
+            reason: dir.reason,
+            fileCount: dir.fileCount,
           })),
-        },
+        };
+        res.status(201).json(resultado);
+        return;
+      }
+
+      // Sem `SKILL.md` em lugar nenhum o pacote **entra** assim mesmo, inteiro
+      // e como veio: é justamente o lugar de consertar o que chegou torto
+      // (decisão 12). Quem cobra o arquivo é a promoção, que sem ele não sabe
+      // que skill criar.
+      //
+      // Aqui vão as entradas **sem** o aparo de embrulho: aparar é decidir onde
+      // uma skill começa, e neste caso não há skill para começar em lugar
+      // nenhum. O envio é o retrato do pacote, caminhos como chegaram.
+      //
+      // O `sourceFilename` fica só com o nome do arquivo, sem o diretório: no
+      // pacote de uma skill só não há o que desempatar, e é o que já era
+      // gravado antes do bundle.
+      //
+      // O teto por envio (decisão 14) precisa de guarda **própria** neste ramo:
+      // o `splitBundle` mede por skill e aqui não há skill para medir, enquanto
+      // o `extractArchive` lê até `DEFAULT_MAX_BUNDLE_ENTRIES` (20 000) contra
+      // os 512 de um envio. Sem ela, o mesmo conteúdo que seria recusado **com**
+      // um SKILL.md dentro entrava **sem** ele — medido, 600 arquivos e nenhum
+      // SKILL.md gravavam um envio de 600. Truncar está fora de questão: faria o
+      // envio mentir sobre o pacote de origem, como a decisão 22 já recusou.
+      if (skills.length === 0 && entries.length > quarantine.MAX_FILES_POR_ENVIO) {
+        res.status(400).json({
+          error: 'bad_request',
+          message:
+            `O pacote tem ${entries.length} arquivos e nenhum SKILL.md, e o limite é ` +
+            `${quarantine.MAX_FILES_POR_ENVIO} por envio. Separe-o em pacotes menores, ou ` +
+            'acrescente o SKILL.md de cada skill para que entrem como envios separados.',
+        });
+        return;
+      }
+
+      const unica = skills[0] ?? { dir: '', files: entries };
+      const detail = await createQuarantine(
+        envioDoPacote(unica, req.file.originalname, fallbackName),
         SOURCE,
         actorFrom(req),
       );
@@ -1394,26 +1509,106 @@ api.post(
       return;
     }
 
-    if (!skillMd?.textContent) {
+    // Decisão do mantenedor: em produção o pacote de várias é recusado, não
+    // fatiado. Cada skill entraria no acervo pronta para ser publicada sem
+    // ninguém ter olhado, e o portão da quarentena existe para o contrário.
+    if (encontradas > 1) {
+      res.status(400).json({
+        error: 'bad_request',
+        message:
+          `O pacote traz ${encontradas} skills. Um pacote com mais de uma skill só entra pela ` +
+          'quarentena, onde cada uma vira um envio e é aprovada separadamente.',
+      });
+      return;
+    }
+
+    const unica = skills[0];
+    if (!unica) {
+      // A skill pulada por tamanho não é "pacote sem SKILL.md": ele está lá, e
+      // dizer que falta mandaria consertar o que não está quebrado.
+      const grande = skipped[0];
+      res.status(400).json({
+        error: 'bad_request',
+        message: grande
+          ? `A skill "${grande.dir || 'na raiz do pacote'}" tem ${grande.fileCount} arquivos, ` +
+            `acima do limite de ${quarantine.MAX_FILES_POR_ENVIO} por skill.`
+          : 'O pacote precisa conter um SKILL.md',
+      });
+      return;
+    }
+
+    // Em produção o SKILL.md é lido, então ele precisa ser texto. A régua é a
+    // do `toExtractedFile` — a mesma que o `extractZip` aplicava antes de o
+    // destino ser lido —, e a recusa continua com a mensagem de sempre: quem
+    // grava a skill faz `textContent ?? ''`, e um SKILL.md binário viraria
+    // prompt vazio, sem aviso. Na quarentena ele entra byte a byte (decisão 12).
+    const files = unica.files.map((file) => toExtractedFile(file.path, file.data));
+    const skillMd = files.find((file) => isSkillMd(file.relativePath));
+    if (!skillMd) {
       res.status(400).json({ error: 'bad_request', message: 'O pacote precisa conter um SKILL.md' });
+      return;
+    }
+    // `=== null` e não `!textContent`: nulo é o único valor que quer dizer
+    // "estes bytes não são texto" (`toExtractedFile`). Pela verdade da string,
+    // o SKILL.md **vazio** — que é UTF-8 perfeitamente válido — caía aqui e era
+    // recusado como se estivesse em Windows-1252, mandando converter para UTF-8
+    // um arquivo de zero byte.
+    if (skillMd.textContent === null) {
+      throw new ZipContentError(
+        'O SKILL.md do .zip não é um texto UTF-8 válido (tem byte nulo ou está em outra ' +
+          'codificação, como Windows-1252). Converta-o para UTF-8 e envie de novo.',
+      );
+    }
+    // Vazio continua recusado, agora com o diagnóstico certo: o arquivo é o
+    // conteúdo da skill, e ela nasceria sem prompt nenhum. Só espaço em branco
+    // dá exatamente na mesma coisa, então entra na mesma recusa.
+    if (!skillMd.textContent.trim()) {
+      res.status(400).json({
+        error: 'bad_request',
+        message:
+          'O SKILL.md do pacote está vazio. Ele é o conteúdo da skill: escreva o que ela ensina ' +
+          'e envie o pacote de novo.',
+      });
+      return;
+    }
+    // O que vira o prompt da skill é o **corpo**, e não o texto cru: o
+    // frontmatter é descartado na gravação, logo abaixo. Então é o corpo que
+    // decide "vazio". Medido com a guarda sobre o texto cru, que tem o bloco
+    // dentro: `---\nname: so-meta\ndescription: d\n---\n` respondia 201 e a
+    // skill nascia com `skillMd` em branco — exatamente o "sem prompt nenhum"
+    // que a recusa acima existe para evitar. Linha em branco depois do bloco dá
+    // na mesma, e cai aqui também: o `stripFrontmatter` come o espaço da frente.
+    //
+    // A mensagem é a deste caso, e não a de "está vazio": o arquivo tem
+    // conteúdo, e mandar escrever "o que ela ensina" num arquivo que já traz
+    // nome e descrição não diz onde está o problema.
+    const corpo = stripFrontmatter(skillMd.textContent);
+    if (!corpo.trim()) {
+      res.status(400).json({
+        error: 'bad_request',
+        message:
+          'O SKILL.md do pacote só tem o frontmatter: o que vira o prompt da skill é o que vem ' +
+          'depois do bloco entre "---". Escreva abaixo dele o que ela ensina e envie o pacote ' +
+          'de novo.',
+      });
       return;
     }
 
     const meta = skillMetaFromMarkdown(skillMd.textContent);
     const tags = parseTags(body.tags);
-    const attachments = files.filter((file) => file.relativePath.toLowerCase() !== 'skill.md');
+    const attachments = files.filter((file) => !isSkillMd(file.relativePath));
 
     // Skill, SKILL.md e anexos numa transação só: gravar os anexos depois
     // deixava uma skill pela metade quando o segundo passo falhava, e a nova
     // tentativa criava uma duplicata com slug "-2".
     const detail = await createSkill(
       {
-        name: body.name?.trim() || meta.name || fallbackName,
+        name: rotulo(body.name) || rotulo(meta.name) || rotulo(fallbackName),
         // O `name:` do frontmatter é o nome oficial da skill: vira o slug
         // quando já vem em forma de slug.
         slug: meta.slug ?? undefined,
         description: body.description?.trim() || meta.description || '',
-        skillMd: stripFrontmatter(skillMd.textContent),
+        skillMd: corpo,
         tags: tags.length > 0 ? tags : meta.tags,
         icon: body.icon?.trim() || undefined,
         // Onde publicar vem só do formulário: nada no .zip de terceiro decide
@@ -1934,6 +2129,271 @@ api.delete(
     res.json({ deleted: true });
   }),
 );
+
+/**
+ * O nome do arquivo enviado sem a extensão de pacote — o rótulo de reserva do
+ * envio e da skill.
+ *
+ * O `.tar` de `.tar.gz` e `.tar.zst` sai junto: tirando só o último sufixo,
+ * `superpowers.tar.gz` apareceria na fila como `superpowers.tar`.
+ *
+ * `.zstd` e `.gzip` estão na lista porque o `archive.ts` aceita as duas
+ * grafias, e o sufixo que falta aqui não dá erro: ele fica no rótulo. Medido —
+ * um `fping.zstd` sem SKILL.md legível entrava na fila chamado `fping.zstd`,
+ * com a extensão do pacote no meio do nome do envio.
+ */
+function nomeSemExtensao(originalname: string): string {
+  return originalname.replace(/(\.tar)?\.(zip|skill|tar|tgz|tzst|gzip|gz|zstd|zst)$/i, '');
+}
+
+/**
+ * Teto do rótulo que sai de dentro do pacote — o `name:` do SKILL.md, o nome do
+ * diretório, o nome do arquivo enviado.
+ *
+ * A `description` já parava em 500 (`skillMetaFromMarkdown`) e o `name` não: um
+ * SKILL.md hostil gravava um rótulo de qualquer tamanho, e ele vai para a lista
+ * da fila, para o nome do pacote baixado e para a trilha de auditoria. 200 é
+ * folga larga para um título legível com acento e pontuação — o slug, que sai
+ * dele, já para em 96 (`slugify`) — e ainda bem abaixo do teto da descrição.
+ */
+export const MAX_NOME = 200;
+
+/** O rótulo aparado e dentro do teto; o segundo aparo tira o espaço do corte. */
+function rotulo(nome: string | null | undefined): string {
+  return (nome ?? '').trim().slice(0, MAX_NOME).trim();
+}
+
+/**
+ * As entradas sem o diretório de **embrulho** do pacote: o `<repo>-<branch>/`
+ * que o GitHub cria ao entregar o `.zip` de um repositório, e o `pasta/` do
+ * `zip -r pacote.zip pasta/`.
+ *
+ * Um nível só, e só quando **todas** as entradas começam pelo mesmo primeiro
+ * segmento — é a definição honesta de embrulho, e não uma heurística de nome.
+ * Aparar de novo o que sobra comeria arrumação de verdade: num repositório de
+ * skills o `skills/` deixa de ser o primeiro segmento comum assim que o
+ * `README.md` da raiz aparece ao lado dele, e é por isso que ele fica.
+ *
+ * Medido no `.zip` que o GitHub entrega: sem o aparo, cada envio saía com o
+ * nome do arquivo repetido —
+ * `superpowers-main.zip (superpowers-main/skills/brainstorming)` — e o `path`
+ * mostrado na tela não batia com o caminho do repositório, que é
+ * `skills/brainstorming`.
+ *
+ * Mora aqui, e não no `splitBundle` nem no `extractArchive`: aqueles dois
+ * dizem o que o arquivo traz, e decidir o que nele é embrulho é política de
+ * importação. Quando o embrulho é o `<slug>/` com o `SKILL.md` dentro — o
+ * pacote que o painel e o site exportam —, o aparo devolve a skill à raiz, que
+ * é exatamente o que o `stripSingleRootDir` do `extractZip` já fazia.
+ */
+function semEmbrulho(entries: readonly ArchiveEntry[]): readonly ArchiveEntry[] {
+  const raiz = entries[0]?.path.split('/')[0] ?? '';
+  const prefixo = `${raiz}/`;
+  // A barra é o que separa embrulho de arquivo solto na raiz: `SKILL.md` não
+  // começa com `SKILL.md/`, então o pacote de um arquivo só não perde nada.
+  if (!raiz || !entries.every((entry) => entry.path.startsWith(prefixo))) return entries;
+  return entries.map((entry) => ({ path: entry.path.slice(prefixo.length), data: entry.data }));
+}
+
+/**
+ * As skills do pacote, com a regra que o `splitBundle` sozinho não tem:
+ * **`SKILL.md` na raiz quer dizer uma skill só**, e os `SKILL.md` de subpasta
+ * são conteúdo dela, não skills irmãs. Sem `SKILL.md` na raiz vale a regra de
+ * bundle como ela é — skill é todo diretório que tenha um, e o resto do
+ * repositório fica de fora.
+ *
+ * É a leitura do pedido ("um bundle pode ser uma única skill **ou** possuir
+ * skills em sub-diretórios") e o que preserva o formato de template de skill,
+ * que leva um `SKILL.md` de exemplo em `references/`. Medido sem a regra: um
+ * pacote assim contava como duas skills — em produção batia no 400 de "mais de
+ * uma skill só entra pela quarentena", e na quarentena virava um bundle de dois
+ * envios em que o **principal perdia** o arquivo de exemplo.
+ *
+ * Mora aqui pelo mesmo motivo que o `semEmbrulho`: o `splitBundle` é literal
+ * sobre o que o arquivo traz, e o que nele é uma skill só é política de
+ * importação.
+ *
+ * São **dois caminhos que não se cruzam**, e é isso que mantém o
+ * `BUNDLE_MAX_SKILLS` de pé: com a raiz sendo a skill, a divisão em várias nem
+ * é pedida (`envioDaRaiz`); sem ela, o `splitBundle` entra com o teto que o
+ * `shared` configura, inteiro.
+ */
+function fatiarPacote(
+  entries: readonly ArchiveEntry[],
+  maxFilesPerSkill: number,
+): { skills: BundleSkillDir[]; skipped: BundleSkippedDir[] } {
+  // `isSkillMd` compara o caminho **inteiro**, então isto é exatamente "há um
+  // SKILL.md na raiz": o de subpasta traz a barra e não passa.
+  if (entries.some((entry) => isSkillMd(entry.path))) {
+    return envioDaRaiz(entries, maxFilesPerSkill);
+  }
+
+  return splitBundle(entries, { maxFilesPerSkill });
+}
+
+/**
+ * O envio único do pacote cuja raiz é a skill: **todos** os arquivos que ele
+ * traz, nos caminhos em que vieram.
+ *
+ * Montado sem passar pelo `splitBundle`, de propósito. A primeira versão desta
+ * regra remontava o envio a partir da divisão e, para os `SKILL.md` de subpasta
+ * não serem contados como skills irmãs, mandava `maxSkills:
+ * Number.MAX_SAFE_INTEGER` — **desligava** um teto de segurança para contornar
+ * o efeito de uma pergunta que não interessava. Medido com aquele código: um
+ * pacote com `SKILL.md` na raiz e 201 subpastas entrava, mas o
+ * `BUNDLE_MAX_SKILLS` que o operador configurou não valia mais nada naquela
+ * chamada — e o que `.env.example` promete ("quantas skills um único pacote
+ * pode trazer") passava a ser falso. Aqui a pergunta não é feita: o pacote é
+ * uma skill, as subpastas são conteúdo dela, e não há diretório a contar.
+ *
+ * O que a remontagem fazia e continua valendo: `normalizeRelativePath` canoniza
+ * o principal (`skill.md` na raiz vira `SKILL.md`, o porquê está em `paths.ts`)
+ * e derruba o caminho que não sobrevive; caminho repetido fica com o primeiro;
+ * a ordem é determinística, com o `SKILL.md` abrindo a lista; e o teto de
+ * arquivos mede o envio inteiro, raiz e subpastas na mesma conta — a subpasta
+ * não é uma skill à parte para ser pulada sozinha.
+ */
+function envioDaRaiz(
+  entries: readonly ArchiveEntry[],
+  maxFilesPerSkill: number,
+): { skills: BundleSkillDir[]; skipped: BundleSkippedDir[] } {
+  const ordenadas = [...entries].sort((a, b) => {
+    const aPrincipal = isSkillMd(a.path);
+    const bPrincipal = isSkillMd(b.path);
+    if (aPrincipal !== bPrincipal) return aPrincipal ? -1 : 1;
+    // Comparação byte a byte, como a do `splitBundle`: `localeCompare` muda com
+    // a locale do processo, e a mesma lista sairia em ordens diferentes em
+    // máquinas diferentes — e a ordem aqui é a da fila da quarentena.
+    if (a.path < b.path) return -1;
+    return a.path > b.path ? 1 : 0;
+  });
+
+  const vistos = new Set<string>();
+  const files: ArchiveEntry[] = [];
+  for (const entry of ordenadas) {
+    const path = normalizeRelativePath(entry.path);
+    if (!path || vistos.has(path)) continue;
+    vistos.add(path);
+    files.push({ path, data: entry.data });
+  }
+
+  if (files.length > maxFilesPerSkill) {
+    return {
+      skills: [],
+      skipped: [{ dir: '', reason: 'too_many_files', fileCount: files.length }],
+    };
+  }
+
+  return { skills: [{ dir: '', files }], skipped: [] };
+}
+
+/**
+ * A recusa do pacote em que **nenhuma** skill entrou na fila: quais foram as
+ * puladas e por quê.
+ *
+ * Sem ela a resposta era 201 com `imported: []` — "Created" sem ter criado
+ * coisa alguma, que o painel mostra como importação bem sucedida de nada.
+ */
+function nadaEntrouNaFila(skipped: readonly BundleSkippedDir[]): string {
+  const lista = skipped
+    .map((dir) => `"${dir.dir || 'na raiz do pacote'}" (${dir.fileCount} arquivos)`)
+    .join(', ');
+  return (
+    `Nenhuma skill do pacote entrou na fila: ${lista} ${skipped.length > 1 ? 'passam' : 'passa'} ` +
+    `do limite de ${quarantine.MAX_FILES_POR_ENVIO} arquivos por skill. Separe o que não é da ` +
+    'skill, ou traga as subpastas em pacotes menores.'
+  );
+}
+
+/**
+ * A falha no meio do bundle **com parte do pacote já na fila**.
+ *
+ * Não desfazer é de propósito (decisão 26 do `docs/15`): a quarentena é uma
+ * fila, e quem viu o pacote de quarenta morrer na trigésima nona não volta ao
+ * ponto de partida. O que não dava para deixar como estava era o silêncio —
+ * medido com o banco falhando na 2ª de 3 skills, a resposta era
+ * `500 {"error":"internal_error","message":"Erro interno"}` com a 1ª skill
+ * **já gravada**: quem importou não tinha como saber que parte do pacote
+ * entrou, nem que a fila precisava ser conferida antes de tentar de novo.
+ *
+ * Sem contrato novo: o corpo continua sendo o `{ error, message }` do projeto,
+ * montado num `AppError` que o `fail()` já sabe devolver. Status e código são
+ * os que a falha traria sozinha — o 500 de `internal_error` quando ela não é um
+ * `AppError` —, e só a `message` passa a dizer o que aconteceu. A causa interna
+ * continua fora da resposta, como em `fail()`; o que o cliente ganha é a parte
+ * que é sobre ele.
+ *
+ * O log é o outro lado, e tem de sair daqui: o `console.error` do `fail()` só
+ * cobre o que não é `AppError`, e a partir de agora isto é. Vão nele o erro de
+ * origem e os uuids do que já foi gravado — é por eles que se acha o envio.
+ */
+function falhaComParteNaFila(
+  err: unknown,
+  imported: readonly BundleImported[],
+  total: number,
+  sourceFilename: string,
+): AppError {
+  console.error(
+    `[admin] falha no meio do pacote "${sourceFilename}": ${imported.length} de ${total} skills já ` +
+      `estavam na fila e não são desfeitas (${imported.map((skill) => skill.uuid).join(', ')}):`,
+    err,
+  );
+
+  const entraram =
+    imported.length === 1
+      ? 'a skill anterior já está na quarentena'
+      : `as ${imported.length} skills anteriores já estão na quarentena`;
+  return new AppError(
+    `${err instanceof AppError ? err.message : 'Erro interno'} — a importação parou na skill ` +
+      `${imported.length + 1} de ${total}, e ${entraram}: confira a fila antes de enviar o ` +
+      'pacote de novo, para não importar duas vezes o que entrou.',
+    err instanceof AppError ? err.status : 500,
+    err instanceof AppError ? err.code : 'internal_error',
+  );
+}
+
+/**
+ * Os metadados do `SKILL.md` de uma skill do pacote, ou `null` quando ele falta
+ * ou não é texto legível.
+ *
+ * Quem decide texto × binário é o `toExtractedFile`, a mesma régua do banco. Na
+ * quarentena o arquivo entra de qualquer jeito; o que um `SKILL.md` em
+ * Windows-1252 custa aqui é só o rótulo, que cai para o nome do diretório.
+ */
+function metaDoPacote(files: readonly ArchiveEntry[]): MarkdownSkillMeta | null {
+  const principal = files.find((file) => isSkillMd(file.path));
+  if (!principal) return null;
+  const texto = toExtractedFile(principal.path, principal.data).textContent;
+  return texto ? skillMetaFromMarkdown(texto) : null;
+}
+
+/**
+ * Uma skill do pacote na forma que `createQuarantine` recebe.
+ *
+ * Os arquivos vão **crus**, byte a byte: na quarentena o `SKILL.md` guarda o
+ * próprio frontmatter e não há metadado em coluna para contradizê-lo (decisão 3
+ * do `docs/15-quarentena.md`). É o mesmo que deixa entrar o `SKILL.md` que não
+ * é UTF-8 — ninguém o decodifica aqui (decisão 12).
+ */
+function envioDoPacote(
+  skill: BundleSkillDir,
+  sourceFilename: string,
+  fallbackName: string,
+): CreateQuarantineInput {
+  const meta = metaDoPacote(skill.files);
+  const doDiretorio = skill.dir.split('/').pop() ?? '';
+
+  return {
+    // O rótulo não pode ser vazio — o banco recusa `name` em branco. Os
+    // candidatos, em ordem: o `name:` legível do SKILL.md, o nome do diretório
+    // de origem, o nome do arquivo enviado. Um pacote chamado ".zip" com um
+    // SKILL.md ilegível na raiz zera os três.
+    name: rotulo(meta?.name) || rotulo(doDiretorio) || rotulo(fallbackName) || 'pacote sem nome',
+    description: meta?.description?.trim() ?? '',
+    sourceFilename,
+    files: skill.files.map((file) => ({ relativePath: file.path, content: file.data })),
+  };
+}
 
 /** Campo multipart com JSON; ausente ou inválido é "nada", e a lista é conferida depois. */
 function parseJsonList(raw: string | undefined): unknown {

@@ -65,6 +65,22 @@ x-app-env: &app-env
   # Defesa contra zip bomb. Valor inválido derruba o boot (não vira "sem limite").
   ZIP_MAX_UNCOMPRESSED_BYTES: ${ZIP_MAX_UNCOMPRESSED_BYTES:-268435456}
   ZIP_MAX_ENTRIES: ${ZIP_MAX_ENTRIES:-512}
+  # Tetos do pacote com VÁRIAS skills (docs/15-quarentena.md §10). Quem as usa
+  # para decidir alguma coisa é só o admin, que é quem importa pacote — mas elas
+  # ficam aqui, com as irmãs, e não no `environment` daquele serviço: o
+  # `@purple-skills/shared` as lê no carregamento do módulo (`archive.ts` e
+  # `bundle.ts`), e o `@purple-skills/db` arrasta esse barril para os CINCO
+  # serviços. Medido: com BUNDLE_MAX_ENTRIES=abc, `import '@purple-skills/db'`
+  # já morre com "BUNDLE_MAX_ENTRIES inválida". Listadas só no admin, os outros
+  # quatro cairiam por uma variável que o operador julgava não estar mandando
+  # para eles.
+  #
+  # Sem estas duas linhas as variáveis não chegavam a container nenhum (ver o
+  # comentário acima): os dois tetos ficavam travados no padrão e o ajuste do
+  # operador era ignorado em silêncio — inclusive o valor inválido, que o
+  # .env.example promete que derruba o boot.
+  BUNDLE_MAX_ENTRIES: ${BUNDLE_MAX_ENTRIES:-20000}
+  BUNDLE_MAX_SKILLS: ${BUNDLE_MAX_SKILLS:-200}
   # Sessões MCP mantidas em memória.
   MCP_MAX_SESSIONS: ${MCP_MAX_SESSIONS:-500}
   MCP_SESSION_TTL_MS: ${MCP_SESSION_TTL_MS:-1800000}
