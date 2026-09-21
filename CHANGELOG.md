@@ -14,7 +14,7 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
-## [Não lançado]
+## [1.0.0-beta.26] — 2026-09-21
 
 ### Adicionado
 
