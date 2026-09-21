@@ -100,7 +100,13 @@ lista completa estão em [`docs/04-design-system.md`](docs/04-design-system.md).
 
 ## Convenções gerais
 
-- Monorepo com npm workspaces; Node.js 22+ e TypeScript estrito.
+- Monorepo com npm workspaces; Node.js **22.15+** e TypeScript estrito. O
+  `engines` do `package.json` é `>=22.15`, e não o `22+` de antes: o
+  `zstdDecompressSync` do `node:zlib`, que a leitura de pacote importa, só
+  existe a partir do 22.15 — e o que falha num 22.0–22.14 não é o caminho
+  `.zst`, é a **ligação** do módulo, que derruba o `@purple-skills/shared`
+  inteiro e todo serviço que o importa. As imagens não sentem (são
+  `node:24-alpine`); quem roda fora do Docker, sim.
 - Comentários, mensagens de erro, log e documentação em **português**.
 - `npm run typecheck` e `npm test` precisam passar antes de entregar. O
   `typecheck` **inclui os arquivos de teste**: cada workspace tem um

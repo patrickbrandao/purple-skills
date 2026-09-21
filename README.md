@@ -148,7 +148,12 @@ tentativa de login nem trava de conta. Precisa mesmo do banco de outra máquina?
 
 ## Desenvolvimento local
 
-Requer Node.js 22+ (LTS) e um Postgres 18 acessível.
+Requer Node.js **22.15+** (LTS) e um Postgres 18 acessível. Não é o `22+` de
+antes: a leitura de pacote importa `zstdDecompressSync` do `node:zlib`, que só
+existe a partir do 22.15, e um import nomeado que o módulo não exporta é erro de
+**ligação** — num 22.0–22.14 não falha o caminho `.zst`, falha o carregamento de
+`@purple-skills/shared` inteiro, e com ele todo serviço que o importa. As imagens
+não sentem: elas são `node:24-alpine`.
 
 ```bash
 npm install
@@ -528,13 +533,30 @@ verdade. Renomear a skill atualiza o arquivo sozinho, sem reescrever o texto.
 ## Quarentena: aprovar antes de publicar
 
 Um pacote que veio de fora não precisa virar skill na hora. Ao importar um
-`.zip`/`.skill` no painel, quem importa escolhe o destino:
+pacote no painel — `.zip`, `.skill`, `.tar`, `.tar.gz`/`.tgz`, `.gz` ou
+`.tar.zst`/`.tzst`/`.zst`, reconhecidos pela **assinatura** do arquivo e não
+pela extensão —, quem importa escolhe o destino:
 
 - **Direto para produção** — o comportamento de sempre: a skill nasce com nome,
   slug e tags do `SKILL.md`, e com os servidores que a tela oferecer.
 - **Para a quarentena** — os arquivos ficam guardados como chegaram, esperando
   aprovação. Nada é publicado, indexado pela busca semântica nem aparece no
   site; nenhum agente alcança o conteúdo.
+
+Um pacote pode trazer **várias** skills. Quem decide qual caso é o seu é a
+**raiz** do pacote: com um `SKILL.md` nela, o pacote é uma skill só e tudo o
+mais é conteúdo dela — inclusive o `SKILL.md` de exemplo que um template guarda
+em `references/`. Sem `SKILL.md` na raiz, skill passa a ser cada diretório que
+tenha um, levando junto os arquivos dele e das subpastas dele; diretório sem
+`SKILL.md`, e fora de um que tenha, é ignorado por inteiro. Baixar o `.zip` do
+repositório `obra/superpowers` no GitHub e importá-lo põe todas as skills dele
+na fila, uma por diretório, ignorando `.github/`, `docs/` e o resto — e
+"ignorado" é literal: **o que está fora do diretório de uma skill não entra em
+envio nenhum**, nem mesmo quando o pacote traz uma skill só. Um pacote com duas
+ou mais skills vai **sempre** para a quarentena: pedir produção é recusado, com
+a contagem do que foi encontrado e o apontamento para a fila. `.rar`, `.7z`,
+`.xz` e `.bz2` não são suportados, e a recusa diz isso com todas as letras em
+vez de reclamar de arquivo inválido.
 
 A quarentena é deliberadamente simples: um envio não tem slug, tag, ícone nem
 vínculo, e o `SKILL.md` fica com o **frontmatter dentro dele** — é o arquivo
@@ -716,9 +738,18 @@ Documentadas em [`docs/02-architecture-decisions.md`](docs/02-architecture-decis
 
 - Contadores sem deduplicação — infláveis por refresh-spam.
 - Sem limite por skill (soma dos arquivos). Existem tetos por requisição:
-  upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), zip de 256 MB descomprimidos e
-  512 entradas (`ZIP_MAX_UNCOMPRESSED_BYTES`, `ZIP_MAX_ENTRIES`) e 32 MB de
-  base64 no `set_files_bulk` (`MCP_MAX_ZIP_BASE64`).
+  upload de 64 MB (`ADMIN_MAX_UPLOAD_BYTES`), 256 MB descomprimidos por pacote
+  (`ZIP_MAX_UNCOMPRESSED_BYTES` — orçamento **único**, descontado por cada
+  camada de compressão aberta, o que deixa um `.tar.gz` com ~metade desse valor
+  de conteúdo útil, contra o valor inteiro no `.zip`) e 32 MB de base64 no
+  `set_files_bulk` (`MCP_MAX_ZIP_BASE64`). O teto de **entradas** deixou de ser
+  um só: ~~512 entradas por requisição (`ZIP_MAX_ENTRIES`)~~ — a importação
+  passou a usar `BUNDLE_MAX_ENTRIES` (20 000) para o pacote inteiro e
+  `ZIP_MAX_ENTRIES` (512) por skill, com `BUNDLE_MAX_SKILLS` (200) limitando
+  quantas skills traz o pacote **cuja raiz não é skill**, que é o único que vira
+  várias; o `set_files_bulk`, que não passa por esse caminho, continua nos 512.
+  A tabela inteira, com o que acontece ao estourar cada um, está na §10 de
+  [`docs/15-quarentena.md`](docs/15-quarentena.md).
 - Sem versionamento de arquivos (apenas um log de auditoria, sem restore).
 - `audit_log` sem política de retenção.
 - **Busca semântica sem índice vetorial.** A perna vetorial é varredura exata: o

@@ -182,6 +182,18 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
   `scripts/` — e fica nos caminhos (relatório 075 da auditoria de 2026-09-19;
   antes a pasta era removida em qualquer caso, e os arquivos caíam na raiz da
   skill, ao lado dos originais).
+
+  > **Revisado neste ponto pelo [`15`](15-quarentena.md)** (§10): a importação
+  > deixou de ser só de `.zip`/`.skill` — aceita também `.tar`,
+  > `.tar.gz`/`.tgz`, `.gz` e `.tar.zst`/`.tzst`/`.zst`, e o formato é decidido
+  > pela **assinatura**, não pela extensão (`.rar`, `.7z`, `.xz` e `.bz2` são
+  > recusados com o nome do formato). E o embrulho deixou de ser a única
+  > exceção à preservação dos caminhos: quando a **raiz** do pacote não tem
+  > `SKILL.md`, cada diretório que tenha um vira um envio da quarentena e os
+  > arquivos dele são rebaseados para a raiz daquele envio — os que estão fora
+  > de um diretório de skill não entram em envio nenhum. Com `SKILL.md` na raiz
+  > o pacote é uma skill só e os caminhos ficam como vieram (decisão 27 do
+  > [`15`](15-quarentena.md)).
 - MCP admin: `set_file(slug, path, content)` para um arquivo por vez, mais
   uma variante `set_files_bulk(slug, zip_base64)` para importar uma árvore
   inteira.
@@ -603,7 +615,11 @@ argumento a argumento, é a da tabela do
 ## 10. Infraestrutura / Docker
 
 - Node.js: versão **LTS ativa no momento da implementação** (pin explícito
-  no Dockerfile, ex: `node:22-alpine`, atualizado quando a LTS mudar).
+  no Dockerfile — hoje `node:24-alpine` nos sete, atualizado quando a LTS
+  mudar). O **piso** é outro número e vive no `engines` do `package.json`:
+  `>=22.15`, e não o `>=22` de antes, porque a leitura de pacote importa o
+  `zstdDecompressSync` do `node:zlib`, que só existe a partir daquela versão —
+  ver [`15-quarentena.md`](15-quarentena.md) §10.
 - `docker-compose.yml` local orquestra as imagens de app + Postgres + o passo
   `migrate`, em rede Docker interna. O `indexer` **sobe no `up -d`**, como os
   demais: com `rag.driver` em `off`, que é o padrão, ele só publica o próprio
@@ -885,6 +901,11 @@ Desenho em [`15-quarentena.md`](15-quarentena.md). Migration `030`, tabelas
   tela do acervo a aprender a conviver com meia skill.
 - **Só a importação alcança a quarentena**, e o destino é escolha de quem
   importa. O formulário de nova skill continua criando direto em produção.
+  **Era**, até a importação de bundle: ~~a escolha de destino valia para
+  qualquer pacote~~. Hoje ela vale para o pacote de **uma** skill; o pacote com
+  duas ou mais skills vai sempre para a fila, e pedir `production` é **400**,
+  com a contagem do que foi encontrado
+  ([`15-quarentena.md`](15-quarentena.md) decisão 21 e §10).
 - **O arquivo é a única verdade.** Ao contrário da skill de produção, em que os
   metadados moram em colunas e o `SKILL.md` gravado é só o corpo, aqui o
   arquivo fica cru, com o frontmatter dentro, e é isso que se edita. Não há

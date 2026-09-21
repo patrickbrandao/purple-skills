@@ -779,3 +779,56 @@ export type QuarantinePage = {
   limit: number;
   offset: number;
 };
+
+// -------------------------------------------------- importação de bundle ---
+
+/**
+ * Uma skill trazida por um **bundle** — um pacote com várias skills, cada uma
+ * no diretório onde está o seu `SKILL.md` (`docs/15-quarentena.md`, §10).
+ *
+ * O que sai daqui é o retrato do que foi gravado, não do que veio no pacote:
+ * `uuid` é o endereço do envio no painel, e `path` é de onde ele saiu — os dois
+ * juntos são o que deixa alguém conferir a fila contra o `.zip` que enviou.
+ */
+export type BundleImported = {
+  uuid: string;
+  /** Lido do `name:` do SKILL.md; na falta dele, o nome do diretório. */
+  name: string;
+  /** O diretório dentro do pacote (`skills/brainstorming`); vazio na raiz. */
+  path: string;
+  fileCount: number;
+};
+
+/**
+ * Uma skill que o bundle trazia e que **não** entrou na fila, com o motivo.
+ *
+ * Ela existe para que uma skill recusada não vire silêncio: o pacote de 40
+ * skills entra inteiro menos a que passou do teto, e quem importou lê aqui qual
+ * foi e por quê, em vez de contar a fila e descobrir que falta uma.
+ */
+export type BundleSkipped = {
+  path: string;
+  /** `too_many_files`: o diretório passou do teto de arquivos por skill. */
+  reason: 'too_many_files';
+  fileCount: number;
+};
+
+/**
+ * O resultado de importar um pacote com **duas ou mais** skills.
+ *
+ * O bundle vai sempre para a quarentena: cada skill vira um envio, e nenhuma
+ * chega ao acervo sem passar pela aprovação (decisão 1 do `docs/15`). O campo
+ * `bundle` existe para discriminar este corpo do da importação de uma skill
+ * só, que continua respondendo `QuarantineDetail` — a mesma rota, dois
+ * formatos, e quem lê decide por `'bundle' in body`.
+ */
+export type QuarantineBundleResult = {
+  bundle: true;
+  /** O nome do arquivo enviado (`superpowers-main.zip`). */
+  sourceFilename: string;
+  imported: BundleImported[];
+  skipped: BundleSkipped[];
+};
+
+/** O corpo de `POST /api/skills/import` com `destination: 'quarantine'`. */
+export type QuarantineImportResult = QuarantineDetail | QuarantineBundleResult;

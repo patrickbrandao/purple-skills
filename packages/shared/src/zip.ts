@@ -88,6 +88,13 @@ export const DEFAULT_MAX_ZIP_ENTRIES = readIntEnv('ZIP_MAX_ENTRIES', 512);
  */
 const MAX_EXPANSAO_DEFLATE = 1032;
 
+export type ReadZipEntriesOptions = {
+  /** Teto do total descomprimido. Acima disso, a leitura lança. */
+  maxUncompressedBytes?: number;
+  /** Teto do número de entradas do ZIP. */
+  maxEntries?: number;
+};
+
 export type ExtractZipOptions = {
   /**
    * Quando o ZIP tem uma única pasta raiz **que contém o `SKILL.md`** — o padrão
@@ -149,8 +156,9 @@ export class ZipContentError extends ZipError {
 }
 
 /**
- * Extrai um ZIP em memória para a representação usada na tabela `files`.
- * Ignora diretórios, arquivos de metadados de SO e caminhos inseguros.
+ * Lê as entradas de um ZIP em memória: caminho normalizado e bytes crus, na
+ * ordem do arquivo. Ignora diretórios, arquivos de metadados de SO e caminhos
+ * inseguros; não desembrulha pasta raiz e não decide texto × binário.
  *
  * O conteúdo descomprimido é limitado: um ZIP de poucos KB pode expandir para
  * gigabytes ("zip bomb") e derrubar o processo por falta de memória. O tamanho
@@ -160,32 +168,60 @@ export class ZipContentError extends ZipError {
  * desligava o teto do zlib dentro do `adm-zip` —, a entrada só é aberta se os
  * bytes comprimidos não puderem inflar além do que resta do limite.
  *
- * Todo erro causado pelo arquivo enviado é um `ZipError`: limite estourado,
- * ZIP ilegível e o `SKILL.md` que não é texto (`ZipContentError`).
+ * O número de entradas segue a mesma régua e é conferido **antes** de
+ * `getEntries()`: só percorrer o diretório central já custa memória proporcional
+ * ao que ele declara (ver o comentário no corpo).
+ *
+ * É o miolo de `extractZip` e o caminho zip do `extractArchive` (`archive.ts`):
+ * as proteções acima valem igual para o .zip de uma skill e para o bundle.
  */
-export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): ExtractedFile[] {
+export function readZipEntries(
+  buffer: Buffer,
+  options: ReadZipEntriesOptions = {},
+): { path: string; data: Buffer }[] {
   const {
-    stripSingleRootDir = true,
     maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
     maxEntries = DEFAULT_MAX_ZIP_ENTRIES,
-    allowBinarySkillMd = false,
   } = options;
+  const entradasDemais = (quantas: number) =>
+    new ZipLimitError(`O .zip tem entradas demais (${quantas}); o limite é ${maxEntries}.`);
+
   // `adm-zip` lança um Error genérico ("Invalid or unsupported zip format")
   // para qualquer coisa que não seja um ZIP; sem este `catch` isso viraria 500.
   let zip: AdmZip;
-  let entries: ReturnType<AdmZip['getEntries']>;
   try {
     zip = new AdmZip(buffer);
+  } catch (err) {
+    throw new ZipFormatError(`O arquivo não é um .zip válido: ${(err as Error).message}`);
+  }
+
+  // O teto vale sobre o número **declarado** no fim do diretório central, antes
+  // de materializar seja o que for. Conferir depois de `getEntries()` — a ordem
+  // que estava aqui — não protege nada: o `getEntries()` do `adm-zip` 0.6.0
+  // dimensiona a lista por esse mesmo número declarado e cria um `ZipEntry` por
+  // registro, medidos 9 a 10 KB de RSS cada. E o número não para nos 65.535 de
+  // 16 bits, porque o `adm-zip` lê o EOCD ZIP64: um .zip de 9 MB declarando
+  // 200.000 entradas (registros de 47 bytes, todos podendo apontar para o mesmo
+  // cabeçalho local) consumia 1,8 GB e 1,6 s antes de a comparação acontecer. O
+  // teto de bytes descomprimidos não socorre: nada foi descomprimido ainda.
+  // `getEntryCount()` devolve o `diskEntries` do cabeçalho sem carregar entrada
+  // nenhuma — o construtor só lê o fim do diretório central, já que a opção
+  // `readEntries` do `adm-zip` vem desligada.
+  const declaradas = zip.getEntryCount();
+  if (declaradas > maxEntries) throw entradasDemais(declaradas);
+
+  let entries: ReturnType<AdmZip['getEntries']>;
+  try {
     entries = zip.getEntries();
   } catch (err) {
     throw new ZipFormatError(`O arquivo não é um .zip válido: ${(err as Error).message}`);
   }
 
-  if (entries.length > maxEntries) {
-    throw new ZipLimitError(
-      `O .zip tem entradas demais (${entries.length}); o limite é ${maxEntries}.`,
-    );
-  }
+  // O declarado é número do arquivo enviado, como os tamanhos de cada entrada
+  // mais abaixo: serve para recusar, nunca como medida do que existe. Por isso a
+  // contagem do que voltou materializado continua valendo, mesmo hoje, em que o
+  // `adm-zip` entrega exatamente o que foi declarado.
+  if (entries.length > maxEntries) throw entradasDemais(entries.length);
 
   const limitMb = Math.round(maxUncompressedBytes / (1024 * 1024));
   const tooBig = () =>
@@ -234,8 +270,35 @@ export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): Ext
     total += data.byteLength;
     if (total > maxUncompressedBytes) throw tooBig();
 
+    // Depois de descomprimir porque o AppleDouble se prova pelo conteúdo, não
+    // pelo nome (ver `isAppleDoubleFile`). O `.zip` do macOS quase sempre traz
+    // esse metadado dentro de `__MACOSX/`, já descartado acima; solto, ao lado
+    // do arquivo de verdade, é o que o `tar` faz — e o filtro é o mesmo.
+    if (isAppleDoubleFile(path, data)) continue;
+
     raw.push({ path, data });
   }
+
+  return raw;
+}
+
+/**
+ * Extrai um ZIP em memória para a representação usada na tabela `files`.
+ * Ignora diretórios, arquivos de metadados de SO e caminhos inseguros, e aplica
+ * os tetos de zip bomb de `readZipEntries`, que é quem lê as entradas.
+ *
+ * Todo erro causado pelo arquivo enviado é um `ZipError`: limite estourado,
+ * ZIP ilegível e o `SKILL.md` que não é texto (`ZipContentError`).
+ */
+export function extractZip(buffer: Buffer, options: ExtractZipOptions = {}): ExtractedFile[] {
+  const {
+    stripSingleRootDir = true,
+    maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
+    maxEntries = DEFAULT_MAX_ZIP_ENTRIES,
+    allowBinarySkillMd = false,
+  } = options;
+
+  const raw = readZipEntries(buffer, { maxUncompressedBytes, maxEntries });
 
   const prefix = stripSingleRootDir ? commonRootDir(raw.map((e) => e.path)) : null;
 
@@ -283,11 +346,47 @@ export function toExtractedFile(relativePath: string, data: Buffer): ExtractedFi
   };
 }
 
-function isJunkPath(path: string): boolean {
+/**
+ * Lixo de sistema operacional, em qualquer segmento do caminho. Exportado
+ * porque o `.tar` e o envelope de arquivo único (`archive.ts`) precisam da
+ * mesma régua: duas cópias dela começariam iguais e acabariam diferentes.
+ */
+export function isJunkPath(path: string): boolean {
   const segments = path.split('/');
   return segments.some(
     (segment) => segment === '__MACOSX' || segment === '.DS_Store' || segment === 'Thumbs.db',
   );
+}
+
+/** Magic de um arquivo AppleDouble: 00 05 16 07 nos quatro primeiros bytes. */
+const ASSINATURA_APPLEDOUBLE = Buffer.from([0x00, 0x05, 0x16, 0x07]);
+
+/**
+ * O irmão `._<nome>` que o `tar` do macOS grava para cada arquivo e diretório
+ * que tenha atributo estendido — e no macOS quase tudo tem
+ * (`com.apple.provenance`).
+ *
+ * Medido na verificação da importação de bundle: o `.tar.gz` de uma coleção de
+ * skills feita num Mac voltou com `._SKILL.md`, `._diagrama.png` e
+ * `ref/._tecnicas.md` ao lado dos arquivos de verdade — **27 dos 41 membros**
+ * daquele pacote, metade deles binário ilegível, consumindo o teto de 512. E
+ * não adianta conferir com `tar -tf`: o `tar` do macOS **esconde** esses
+ * membros ao listar, porque os reagrega em atributo estendido. Quem os mostra é
+ * um leitor que não faz isso (o `tarfile` do Python, ou este módulo). No `.zip` o
+ * problema não aparece porque o `zip` junta esse metadado em `__MACOSX/`, que
+ * `isJunkPath` já descarta; no tar eles vêm soltos, e por dois caminhos: o
+ * `bsdtar` que grava o irmão quando não tem onde guardar atributo estendido, e
+ * a pasta que passou por um volume não-HFS (pendrive, SMB), onde os `._<nome>`
+ * viram arquivos de verdade no disco e qualquer empacotador os leva junto.
+ *
+ * O nome sozinho não decide: `._config` é nome legítimo, e descartar por
+ * prefixo apagaria o arquivo do usuário. Quem decide é a assinatura — os bytes
+ * já estão em mão em todo ponto onde isto é chamado, e não há falso positivo.
+ */
+export function isAppleDoubleFile(path: string, data: Buffer): boolean {
+  const nome = path.split('/').pop() ?? '';
+  if (!nome.startsWith('._')) return false;
+  return data.subarray(0, ASSINATURA_APPLEDOUBLE.length).equals(ASSINATURA_APPLEDOUBLE);
 }
 
 /**

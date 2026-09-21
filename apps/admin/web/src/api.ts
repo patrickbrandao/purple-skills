@@ -2,8 +2,18 @@
  * Cliente da API do painel e os tipos que ela devolve.
  *
  * Os tipos são cópias manuais dos de `@purple-skills/shared`: este bundle é de
- * navegador e não importa o pacote. Ao mudar um lá, mude aqui.
+ * navegador e não importa o pacote. Ao mudar um lá, mude aqui. A exceção é o
+ * `import type` abaixo: tipo puro, apagado na compilação — nada do pacote entra
+ * no bundle do navegador —, e ele é o corpo que a tela **discrimina em tempo de
+ * execução** (`'bundle' in resposta`), onde uma cópia envelhecida não daria erro
+ * de compilação, daria tela errada.
  */
+import type {
+  BundleImported,
+  BundleSkipped,
+  QuarantineBundleResult,
+  QuarantineImportResult,
+} from '@purple-skills/shared';
 
 /** O mínimo para nomear um catálogo numa referência. */
 export type CatalogRef = { uuid: string; slug: string; name: string };
@@ -923,6 +933,12 @@ export const skillPackageUrl = (slug: string) =>
 /** Onde um pacote importado cai (`docs/15-quarentena.md`). */
 export type ImportDestination = 'production' | 'quarantine';
 
+/**
+ * O resultado de importar um pacote com **várias** skills, direto do pacote
+ * compartilhado. Quem consome é a tela de importação.
+ */
+export type { BundleImported, BundleSkipped, QuarantineBundleResult, QuarantineImportResult };
+
 type ImportFields = {
   name?: string;
   description?: string;
@@ -932,8 +948,15 @@ type ImportFields = {
 };
 
 /**
- * Importa um pacote `.zip`/`.skill` direto para o acervo. Os campos do
- * formulário completam o que o frontmatter do SKILL.md não trouxer.
+ * Importa um pacote direto para o acervo. Quais formatos valem é assunto do
+ * `FORMATOS_ACEITOS` de `packages/shared/src/archive.ts` — aqui a lista não se
+ * repete: era repetida pela metade, sem o `.zstd`, e a tela herdou o engano.
+ * Os campos do formulário completam o que o frontmatter do SKILL.md não
+ * trouxer.
+ *
+ * Um pacote com mais de uma skill — contando as que passaram do teto de
+ * arquivos — é recusado aqui com 400: o caminho delas é a quarentena, e a
+ * mensagem do servidor explica isso por extenso.
  */
 export function importZip(file: File, fields: ImportFields) {
   return request<SkillDetail>('/api/skills/import', {
@@ -947,9 +970,15 @@ export function importZip(file: File, fields: ImportFields) {
  * crus e ninguém publica nada até alguém aprovar. Nome e descrição saem do
  * SKILL.md quando ele existe — os campos do formulário não valem aqui, porque
  * na quarentena não há metadado separado do arquivo.
+ *
+ * Duas respostas na mesma rota: **uma** skill volta como `QuarantineDetail`,
+ * como sempre; **duas ou mais** voltam como `QuarantineBundleResult`, uma linha
+ * por skill. Uma skill só, mas com alguma pulada pelo caminho, também volta como
+ * bundle — é o único corpo com onde dizer o que ficou de fora. Quem chama
+ * discrimina por `'bundle' in resposta`.
  */
 export function importToQuarantine(file: File) {
-  return request<QuarantineDetail>('/api/skills/import', {
+  return request<QuarantineImportResult>('/api/skills/import', {
     method: 'POST',
     body: importForm(file, {}, 'quarantine'),
   });
