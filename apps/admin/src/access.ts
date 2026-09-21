@@ -13,6 +13,7 @@ import {
 import {
   ACCESS_LABEL,
   accessAtLeast,
+  canCreate,
   canManage,
   isAccessLevel,
   normalizeEmail,
@@ -51,6 +52,21 @@ export function assertAccess(access: EffectiveAccess, minimum: AccessLevel | 'ow
       `Seu acesso a este ${what} é "${ACCESS_LABEL[access]}"; esta ação exige "${ACCESS_LABEL[minimum]}"`,
     );
   }
+}
+
+/**
+ * Clonar é criar: além do nível cobrado no original, o papel tem de poder
+ * criar no acervo (`docs/12-acesso-granular.md` decisão 12), porque a cópia é
+ * um objeto novo e quem clonou nasce dono dela.
+ *
+ * É o mesmo `canCreate` — e a mesma mensagem — do `requireCreate`, conferido
+ * aqui e não como guarda na frente da rota: a clonagem também exige acesso ao
+ * original, e as duas metades da decisão ficam lado a lado, como já acontece
+ * com o "só admin deixa sem dono" do `ownerFrom`. A ordem é objeto primeiro:
+ * quem não enxerga o original recebe 404, exista ou não papel para criar.
+ */
+export function assertCanCreate(user: AuthUser): void {
+  if (!canCreate(user.role)) throw forbidden('Seu papel não permite criar no acervo');
 }
 
 /** O que skill, catálogo e vMCP têm em comum numa ficha. */

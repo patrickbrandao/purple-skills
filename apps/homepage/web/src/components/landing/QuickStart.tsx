@@ -5,7 +5,7 @@ const MCP_URL = 'https://mcp.seu-dominio.dev/mcp';
 
 export function QuickStart() {
   return (
-    <section className="how-connect-sec" id="comecar">
+    <section className="how-connect-sec" id="get-started">
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">

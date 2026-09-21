@@ -149,6 +149,83 @@ export function SkillFilesTab({
   );
 }
 
+/* ============================================================
+   OS TETOS DA SEP-2640
+
+   A extensão de skills do MCP fixa dois tetos **por skill**: 512
+   arquivos e 16 MiB somados. Para o servidor são `SHOULD NOT` — uma
+   skill que estoura continua sendo servida, com o manifesto inteiro —,
+   mas para o host são `MUST`, e é por isso que o painel avisa: sem o
+   aviso, o dono da skill descobriria o problema pela recusa de um
+   cliente, sem nenhuma pista de onde ela veio
+   (`docs/17-skills-extension.md` §5.5).
+
+   Os tetos ficam aqui, e não em `packages/shared`, porque hoje há um
+   consumidor só e o projeto prefere a definição enxuta perto do uso — o
+   precedente é `listPublishedSkills`, em `database/src/queries.ts`. Se o
+   mcp-public vier a precisar deles, eles mudam de casa.
+   ============================================================ */
+
+const SEP_MAX_FILES = 512;
+const SEP_MAX_BYTES = 16 * 1024 * 1024;
+
+/** O quanto a skill passa de cada teto da SEP. */
+export type SepOverflow = {
+  /** Quantos arquivos a skill tem. */
+  fileCount: number;
+  /** Arquivos além dos 512; zero quando só o tamanho estourou. */
+  extraFiles: number;
+  /** A soma dos `sizeBytes`. */
+  totalBytes: number;
+  /** Bytes além dos 16 MiB; zero quando só a contagem estourou. */
+  extraBytes: number;
+};
+
+/**
+ * Quanto a skill passa dos tetos da SEP, ou `null` quando cabe nos dois.
+ *
+ * A soma é a dos `sizeBytes` da árvore, e essa medida é aproximada **de
+ * propósito**: o `sizeBytes` do `SKILL.md` no banco é o do corpo *sem*
+ * frontmatter, e o que o MCP serve tem o frontmatter remontado por cima —
+ * alguns bytes a mais. O que sai daqui é, portanto, um piso. Não é bug, e não
+ * vale "corrigir" remontando o frontmatter: isto é um aviso, e a skill que
+ * empata no byte exato da fronteira não muda a decisão de ninguém.
+ */
+export function sepOverflow(files: readonly SkillFileMeta[]): SepOverflow | null {
+  const fileCount = files.length;
+  const totalBytes = files.reduce((soma, file) => soma + file.sizeBytes, 0);
+  const extraFiles = Math.max(0, fileCount - SEP_MAX_FILES);
+  const extraBytes = Math.max(0, totalBytes - SEP_MAX_BYTES);
+  if (extraFiles === 0 && extraBytes === 0) return null;
+  return { fileCount, extraFiles, totalBytes, extraBytes };
+}
+
+/**
+ * O aviso de estouro, acima da árvore. Fica na guia Arquivos, e não no
+ * vínculo, porque o estouro é propriedade **da skill**: repeti-lo em cada vMCP
+ * e cada catálogo que a carrega seria a mesma verdade dita N vezes
+ * (`docs/17-skills-extension.md` §11.2).
+ */
+function SepLimitsAlert({ files }: { files: SkillFileMeta[] }) {
+  const over = useMemo(() => sepOverflow(files), [files]);
+  if (!over) return null;
+
+  const tetos = [
+    ...(over.extraFiles > 0 ? [`${num(over.fileCount)} arquivos (${num(over.extraFiles)} acima dos 512)`] : []),
+    ...(over.extraBytes > 0 ? [`${formatBytes(over.totalBytes)} somados (${formatBytes(over.extraBytes)} acima dos 16 MiB)`] : []),
+  ];
+
+  return (
+    <div className="alert warn mb-4">
+      <AlertTriangle />
+      <span>
+        Esta skill passa {tetos.length === 2 ? 'dos dois tetos' : 'do teto'} que o padrão de skills do MCP fixa por skill:{' '}
+        {tetos.join(' e ')}. Clientes que seguem o padrão <strong>podem recusá-la</strong>.
+      </span>
+    </div>
+  );
+}
+
 /**
  * A guia Arquivos da ficha de leitura: a mesma árvore, sem as ações que
  * gravam, e o arquivo escolhido no leitor, com as cores da linguagem. O
@@ -159,9 +236,12 @@ export function SkillFilesView({ ws, skill }: { ws: SkillFiles; skill: SkillDeta
   const source = useMemo(() => composeSkillMd({ slug, name, description, tags }, skillMd), [slug, name, description, tags, skillMd]);
 
   return (
-    <FilesLayout tree={<FileExplorer ws={ws} slug={slug} canWrite={false} skillMdDirty={false} />}>
-      <ViewPane ws={ws} slug={slug} skillMd={source} />
-    </FilesLayout>
+    <>
+      <SepLimitsAlert files={ws.files} />
+      <FilesLayout tree={<FileExplorer ws={ws} slug={slug} canWrite={false} skillMdDirty={false} />}>
+        <ViewPane ws={ws} slug={slug} skillMd={source} />
+      </FilesLayout>
+    </>
   );
 }
 

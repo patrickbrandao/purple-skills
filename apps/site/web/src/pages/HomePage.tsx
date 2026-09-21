@@ -20,7 +20,7 @@ export function HomePage() {
   }, [meta]);
 
   // Quem volta de uma skill ou de um catálogo chega por `/#skills` ou
-  // `/#catalogos`. A seção dos catálogos só existe depois da busca, e a grade
+  // `/#catalogs`. A seção dos catálogos só existe depois da busca, e a grade
   // de skills acima dela muda de altura ao trocar o esqueleto pelos cartões:
   // espera as duas coisas antes de pular. O salto é seco, como o de uma
   // âncora ao carregar a página — o `smooth` do base.css é para quem já está nela.

@@ -158,7 +158,7 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
               })}
               {mcps.length === 0 && (
                 <EmptyRow colSpan={3}>
-                  Você não edita nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a um
+                  Você não edita nenhum servidor. <Link to="/mcps?new=1" className="link">Crie um</Link>, ou peça a um
                   administrador para publicar a skill.
                 </EmptyRow>
               )}
@@ -294,7 +294,7 @@ export function SkillMcpsPanel({
                           {current.catalogs.map((catalog, index) => (
                             <span key={catalog.uuid}>
                               {index > 0 && ', '}
-                              <Link to={`/catalogos/${catalog.slug}`} className="link">
+                              <Link to={`/catalogs/${catalog.slug}`} className="link">
                                 {catalog.name}
                               </Link>
                             </span>
@@ -352,7 +352,7 @@ export function SkillMcpsPanel({
                     'Em nenhum servidor: a skill está flutuante e não é exibida em lugar nenhum.'
                   ) : (
                     <>
-                      Você não edita nenhum servidor. <Link to="/mcps?novo=1" className="link">Crie um</Link>, ou peça a
+                      Você não edita nenhum servidor. <Link to="/mcps?new=1" className="link">Crie um</Link>, ou peça a
                       um administrador para publicar a skill.
                     </>
                   )}
@@ -488,7 +488,7 @@ export function SkillCatalogsTab({
         <span className="flex items-center gap-2">
           {pending > 0 && <Badge tone="warn">{pending === 1 ? '1 pendência' : `${pending} pendências`}</Badge>}
           {editing && canCreate(user.role) && (
-            <Link to="/catalogos?novo=1" className="btn btn-quiet btn-sm">
+            <Link to="/catalogs?new=1" className="btn btn-quiet btn-sm">
               Novo catálogo
             </Link>
           )}
@@ -547,7 +547,7 @@ export function SkillCatalogsTab({
                       </td>
                     )}
                     <td>
-                      <Link to={`/catalogos/${row.slug}`} className="row-title">
+                      <Link to={`/catalogs/${row.slug}`} className="row-title">
                         {row.name}
                       </Link>
                       <span className="row-sub">
@@ -607,7 +607,7 @@ export function SkillCatalogsTab({
                       'Você não edita nenhum catálogo.'
                     )
                   ) : (
-                    <Link to="/catalogos" className="link">
+                    <Link to="/catalogs" className="link">
                       Ver os catálogos
                     </Link>
                   )}

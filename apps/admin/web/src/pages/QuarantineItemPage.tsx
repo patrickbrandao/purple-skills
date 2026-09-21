@@ -237,7 +237,7 @@ export function QuarantineItemPage() {
     try {
       await deleteQuarantineItem(item.uuid);
       toast.success(`Envio "${item.name}" descartado.`);
-      navigate('/quarentena');
+      navigate('/quarantine');
     } catch (err) {
       toast.error((err as Error).message);
       setOcupado(false);
@@ -252,7 +252,7 @@ export function QuarantineItemPage() {
           title="Envio não encontrado"
           description={erro}
           action={
-            <Link to="/quarentena" className="btn btn-ghost">
+            <Link to="/quarantine" className="btn btn-ghost">
               Voltar à quarentena
             </Link>
           }

@@ -1,6 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 import {
+  Activity,
   BookOpenCheck,
   ExternalLink,
   KeyRound,
@@ -10,7 +11,6 @@ import {
   ListChecks,
   LogOut,
   Moon,
-  Plug,
   Plus,
   Server,
   ShieldQuestion,
@@ -66,7 +66,6 @@ import { CatalogsPage } from './pages/CatalogsPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
 import { CatalogEditorPage } from './pages/CatalogEditorPage.js';
 import {
-  ConnectSettingsPage,
   DefaultMcpSettingsPage,
   EnvironmentSettingsPage,
   QuarantineSettingsPage,
@@ -74,6 +73,7 @@ import {
 } from './pages/SettingsPage.js';
 import { AdminKeysPage } from './pages/AdminKeysPage.js';
 import { MyKeysPage } from './pages/MyKeysPage.js';
+import { ActivityPage } from './pages/ActivityPage.js';
 import { AuditPage } from './pages/AuditPage.js';
 
 // O palco carrega o React Flow: fica num chunk próprio, pago só por quem abre um servidor.
@@ -253,19 +253,22 @@ function Shell({
           path={NEW_SKILL_PATH}
           element={canCreate(user.role) ? <NewSkillPage /> : <Navigate to="/skills" replace />}
         />
-        {/* As fichas têm guias em rotas próprias (`/propriedades`, `/acessos`); a edição fica sob `/editar`. */}
+        {/* As fichas têm guias em rotas próprias (`/properties`, `/accesses`); a edição fica sob `/edit`. */}
         {/* Sem trava de papel: o editor já trava o que o acesso não permite. */}
         <Route path={SKILL_EDIT_ROUTE} element={<SkillEditorPage session={session} user={user} />} />
         <Route path={SKILL_VIEW_ROUTE} element={<SkillRoute session={session} user={user} />} />
         {/* A quarentena (`docs/15-quarentena.md`). O endereço é o uuid: envio não
             tem slug, e dois envios podem ter o mesmo nome. */}
-        <Route path="/quarentena" element={<QuarantinePage user={user} />} />
-        <Route path="/quarentena/:uuid" element={<QuarantineItemPage />} />
-        <Route path="/catalogos" element={<CatalogsPage key="all" user={user} />} />
-        <Route path="/catalogos/:slug/editar/*" element={<CatalogEditorPage user={user} />} />
-        <Route path="/catalogos/:slug/*" element={<CatalogPage session={session} user={user} />} />
+        <Route path="/quarantine" element={<QuarantinePage user={user} />} />
+        <Route path="/quarantine/:uuid" element={<QuarantineItemPage />} />
+        <Route path="/catalogs" element={<CatalogsPage key="all" user={user} />} />
+        <Route path="/catalogs/:slug/edit/*" element={<CatalogEditorPage user={user} />} />
+        <Route path="/catalogs/:slug/*" element={<CatalogPage session={session} user={user} />} />
+        {/* Atividade (`docs/18-atividade.md`): a grade de dias e o relatório de
+            um deles. Só admin, como a Auditoria — e sem recorte por vMCP. */}
+        <Route path="/activity" element={admin ? <ActivityPage /> : <Navigate to="/mcps" replace />} />
         <Route
-          path="/auditoria/*"
+          path="/audit/*"
           element={admin ? <AuditPage session={session} /> : <Navigate to="/mcps" replace />}
         />
         {/* A sessão de bootstrap não tem conta: não há senha para trocar nem chave para emitir. */}
@@ -274,17 +277,17 @@ function Shell({
           element={user.legacy ? <Navigate to="/mcps" replace /> : <AccountPage user={user} onChanged={onRefresh} />}
         />
         <Route
-          path="/account/chaves-adm"
+          path="/account/admin-keys"
           element={user.legacy ? <Navigate to="/mcps" replace /> : <AdminKeysPage user={user} />}
         />
         {/* Ela lista também as `psv_` que a conta emitiu: a sessão de bootstrap entra. */}
-        <Route path="/account/chaves-emitidas" element={<MyKeysPage user={user} />} />
+        <Route path="/account/issued-keys" element={<MyKeysPage user={user} />} />
         <Route
           path="/users"
           element={admin && !user.legacy ? <UsersPage me={user} /> : <Navigate to="/mcps" replace />}
         />
         <Route
-          path="/users/:uuid/editar/*"
+          path="/users/:uuid/edit/*"
           element={admin && !user.legacy ? <UserEditorPage me={user} /> : <Navigate to="/mcps" replace />}
         />
         <Route
@@ -292,34 +295,30 @@ function Shell({
           element={admin && !user.legacy ? <UserPage me={user} /> : <Navigate to="/mcps" replace />}
         />
         {/* Meu espaço: as listas recortadas no que é da conta. */}
-        <Route path="/meu-espaco" element={<Navigate to="/meu-espaco/skills" replace />} />
-        <Route path="/meu-espaco/skills" element={<SkillsPage key="mine" user={user} mine />} />
-        <Route path="/meu-espaco/catalogos" element={<CatalogsPage key="mine" user={user} mine />} />
-        <Route path="/meu-espaco/chaves" element={<Navigate to="/account/chaves-emitidas" replace />} />
+        <Route path="/my-space" element={<Navigate to="/my-space/skills" replace />} />
+        <Route path="/my-space/skills" element={<SkillsPage key="mine" user={user} mine />} />
+        <Route path="/my-space/catalogs" element={<CatalogsPage key="mine" user={user} mine />} />
+        <Route path="/my-space/keys" element={<Navigate to="/account/issued-keys" replace />} />
         {/* Uma tela por assunto da instalação; a raiz leva à primeira. */}
         <Route
-          path="/configuracoes"
-          element={<Navigate to={admin ? '/configuracoes/mcp-padrao' : '/mcps'} replace />}
+          path="/settings"
+          element={<Navigate to={admin ? '/settings/default-mcp' : '/mcps'} replace />}
         />
         <Route
-          path="/configuracoes/mcp-padrao"
+          path="/settings/default-mcp"
           element={admin ? <DefaultMcpSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
         />
         <Route
-          path="/configuracoes/busca-semantica"
+          path="/settings/semantic-search"
           element={admin ? <RagSettingsPage /> : <Navigate to="/mcps" replace />}
         />
         <Route
-          path="/configuracoes/quarentena"
+          path="/settings/quarantine"
           element={admin ? <QuarantineSettingsPage /> : <Navigate to="/mcps" replace />}
         />
         <Route
-          path="/configuracoes/ambiente"
+          path="/settings/environment"
           element={admin ? <EnvironmentSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
-        />
-        <Route
-          path="/configuracoes/conectar"
-          element={admin ? <ConnectSettingsPage session={session} /> : <Navigate to="/mcps" replace />}
         />
         <Route path="*" element={<Navigate to="/mcps" replace />} />
       </Routes>
@@ -393,7 +392,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
               group: 'Criar' as const,
               icon: <Server />,
               keywords: ['vmcp', 'criar', 'servidor'],
-              run: () => navigate('/mcps?novo=1'),
+              run: () => navigate('/mcps?new=1'),
             },
           ]
         : []),
@@ -405,7 +404,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
               group: 'Criar' as const,
               icon: <Library />,
               keywords: ['catalogo', 'grupo', 'criar'],
-              run: () => navigate('/catalogos?novo=1'),
+              run: () => navigate('/catalogs?new=1'),
             },
           ]
         : []),
@@ -439,22 +438,22 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
         : []),
       { id: 'go-mcps', label: 'Servidores MCP', group: 'Ir para', icon: <LayoutGrid />, shortcut: 'g s', run: () => navigate('/mcps') },
       { id: 'go-skills', label: 'Skills', group: 'Ir para', icon: <BookOpenCheck />, shortcut: 'g k', run: () => navigate('/skills') },
-      { id: 'go-my-skills', label: 'Minhas Skills', group: 'Ir para', icon: <BookOpenCheck />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/skills') },
-      { id: 'go-my-catalogs', label: 'Meus catálogos', group: 'Ir para', icon: <Library />, keywords: ['meu espaço', 'dono'], run: () => navigate('/meu-espaco/catalogos') },
-      { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeySquare />, keywords: ['configurações', 'api', 'psk', 'psv'], run: () => navigate('/account/chaves-emitidas') },
-      { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogos') },
+      { id: 'go-my-skills', label: 'Minhas Skills', group: 'Ir para', icon: <BookOpenCheck />, keywords: ['meu espaço', 'dono'], run: () => navigate('/my-space/skills') },
+      { id: 'go-my-catalogs', label: 'Meus catálogos', group: 'Ir para', icon: <Library />, keywords: ['meu espaço', 'dono'], run: () => navigate('/my-space/catalogs') },
+      { id: 'go-my-keys', label: 'Chaves emitidas', group: 'Ir para', icon: <KeySquare />, keywords: ['configurações', 'api', 'psk', 'psv'], run: () => navigate('/account/issued-keys') },
+      { id: 'go-catalogs', label: 'Catálogos', group: 'Ir para', icon: <Library />, shortcut: 'g c', keywords: ['catalogo'], run: () => navigate('/catalogs') },
       ...(canCreate(user.role)
         ? [
-            { id: 'go-quarantine', label: 'Quarentena', group: 'Ir para' as const, icon: <ShieldQuestion />, keywords: ['aprovar', 'envio', 'importado'], run: () => navigate('/quarentena') },
+            { id: 'go-quarantine', label: 'Quarentena', group: 'Ir para' as const, icon: <ShieldQuestion />, keywords: ['aprovar', 'envio', 'importado'], run: () => navigate('/quarantine') },
           ]
         : []),
       ...(admin
         ? [
-            { id: 'go-audit', label: 'Auditoria', group: 'Ir para' as const, icon: <ListChecks />, shortcut: 'g a', run: () => navigate('/auditoria') },
-            { id: 'go-settings', label: 'Configurações: MCP padrão', group: 'Ir para' as const, icon: <Server />, keywords: ['mcp padrão', 'instalação'], run: () => navigate('/configuracoes/mcp-padrao') },
-            { id: 'go-settings-rag', label: 'Configurações: busca semântica', group: 'Ir para' as const, icon: <Sparkles />, keywords: ['rag', 'embeddings', 'instalação'], run: () => navigate('/configuracoes/busca-semantica') },
-            { id: 'go-settings-env', label: 'Configurações: ambiente', group: 'Ir para' as const, icon: <SlidersHorizontal />, keywords: ['env', 'variáveis', 'instalação'], run: () => navigate('/configuracoes/ambiente') },
-            { id: 'go-settings-connect', label: 'Configurações: conectar ao MCP público', group: 'Ir para' as const, icon: <Plug />, keywords: ['mcp.json', 'instalação'], run: () => navigate('/configuracoes/conectar') },
+            { id: 'go-activity', label: 'Atividade', group: 'Ir para' as const, icon: <Activity />, shortcut: 'g t', keywords: ['heatmap', 'dia', 'relatório', 'uso', 'estatística'], run: () => navigate('/activity') },
+            { id: 'go-audit', label: 'Auditoria', group: 'Ir para' as const, icon: <ListChecks />, shortcut: 'g a', run: () => navigate('/audit') },
+            { id: 'go-settings', label: 'Configurações: MCP padrão', group: 'Ir para' as const, icon: <Server />, keywords: ['mcp padrão', 'instalação'], run: () => navigate('/settings/default-mcp') },
+            { id: 'go-settings-rag', label: 'Configurações: busca semântica', group: 'Ir para' as const, icon: <Sparkles />, keywords: ['rag', 'embeddings', 'instalação'], run: () => navigate('/settings/semantic-search') },
+            { id: 'go-settings-env', label: 'Configurações: ambiente', group: 'Ir para' as const, icon: <SlidersHorizontal />, keywords: ['env', 'variáveis', 'instalação'], run: () => navigate('/settings/environment') },
           ]
         : []),
       ...(admin && !user.legacy
@@ -464,7 +463,7 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
         ? [{ id: 'setup-admin', label: 'Sair e criar o primeiro administrador', group: 'Conta' as const, icon: <UserPlus />, keywords: ['bootstrap', 'setup', 'conta', 'admin'], run: () => onLogout('setup') }]
         : [
             { id: 'go-account', label: 'Minha conta', group: 'Conta' as const, icon: <UserRound />, keywords: ['senha'], run: () => navigate('/account') },
-            { id: 'go-admin-keys', label: 'Adm MCP Keys', group: 'Conta' as const, icon: <KeyRound />, keywords: ['chave', 'api', 'psk', 'token', 'emitir'], run: () => navigate('/account/chaves-adm') },
+            { id: 'go-admin-keys', label: 'Adm MCP Keys', group: 'Conta' as const, icon: <KeyRound />, keywords: ['chave', 'api', 'psk', 'token', 'emitir'], run: () => navigate('/account/admin-keys') },
           ]),
       { id: 'site', label: 'Ver o site do catálogo', group: 'Conta', icon: <ExternalLink />, run: () => {
           window.open(session.siteBaseUrl, '_blank', 'noreferrer');
@@ -490,8 +489,10 @@ function GlobalCommands({ session, user, onLogout }: { session: Session; user: S
       const routes: Record<string, string | undefined> = {
         s: '/mcps',
         k: '/skills',
-        c: '/catalogos',
-        a: admin ? '/auditoria' : undefined,
+        c: '/catalogs',
+        // `t` de aTividade: `a` já é a Auditoria, e as duas andam juntas.
+        t: admin ? '/activity' : undefined,
+        a: admin ? '/audit' : undefined,
         u: admin && !user.legacy ? '/users' : undefined,
       };
       const to = routes[event.key];

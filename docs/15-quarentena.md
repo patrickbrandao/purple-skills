@@ -315,16 +315,16 @@ promove em política nenhuma — e para antes disso, no 404.
 **Quarentena** é um item próprio da barra lateral, ao lado do acervo e não
 dentro dele: o que está ali ainda não é skill. Só quem pode criar chega a vê-lo.
 
-- **`/quarentena`** — a fila, mais recentes primeiro: nome, arquivo de origem,
+- **`/quarantine`** — a fila, mais recentes primeiro: nome, arquivo de origem,
   quem enviou, quantos arquivos, tamanho e quando chegou. Daqui se baixa o
   pacote como está e se descarta.
-- **`/quarentena/:uuid`** — os arquivos do envio e o editor **cru**. O
+- **`/quarantine/:uuid`** — os arquivos do envio e o editor **cru**. O
   `SKILL.md` aparece com o frontmatter dentro dele e é gravado assim. Dá para
   criar e remover arquivo — **só texto**, e até o teto da decisão 14; não há
   envio de arquivo aqui — pacote se importa, e um envio é o retrato de um
   pacote. Um binário que veio dentro do pacote abre como binário, para baixar
   ou remover.
-- A importação (`/nova-skill?modo=zip`) ganhou a escolha de destino. Em
+- A importação (`/new-skill?mode=zip`) ganhou a escolha de destino. Em
   "Para a quarentena" o formulário de metadados e o seletor de servidores
   **somem** da tela: eles não teriam onde encostar, e mostrá-los prometeria
   algo que a tela não cumpre. Um pacote com **duas ou mais** skills vai para a

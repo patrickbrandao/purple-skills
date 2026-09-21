@@ -20,7 +20,7 @@ import { initials } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
-type Tab = 'conta' | 'chaves' | 'acessos' | 'atividade';
+type Tab = 'account' | 'keys' | 'accesses' | 'activity';
 
 /**
  * A ficha de uma conta, só leitura (`docs/13-fichas-e-acessos.md` §3.4): o
@@ -37,13 +37,13 @@ export function UserPage({ me }: { me: SessionUser }) {
   const toast = useToast();
   const [user, setUser] = useState<UserSummary | null>(null);
 
-  const tab: Tab = location.pathname.endsWith('/chaves')
-    ? 'chaves'
-    : location.pathname.endsWith('/acessos')
-      ? 'acessos'
-      : location.pathname.endsWith('/atividade')
-        ? 'atividade'
-        : 'conta';
+  const tab: Tab = location.pathname.endsWith('/keys')
+    ? 'keys'
+    : location.pathname.endsWith('/accesses')
+      ? 'accesses'
+      : location.pathname.endsWith('/activity')
+        ? 'activity'
+        : 'account';
 
   // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
   // dependesse dele, cada troca de guia buscaria a conta de novo e piscaria o
@@ -74,7 +74,7 @@ export function UserPage({ me }: { me: SessionUser }) {
   );
 
   useRegisterCommands(
-    user ? [{ id: 'user-edit', label: `Editar "${user.name}"`, group: 'Recurso', icon: <Pencil />, shortcut: 'e', run: () => navigate(`/users/${user.uuid}/editar`) }] : [],
+    user ? [{ id: 'user-edit', label: `Editar "${user.name}"`, group: 'Recurso', icon: <Pencil />, shortcut: 'e', run: () => navigate(`/users/${user.uuid}/edit`) }] : [],
     [user?.uuid],
   );
 
@@ -100,7 +100,7 @@ export function UserPage({ me }: { me: SessionUser }) {
           <UserTitle user={user} me={me} />
         </div>
         <div className="page-actions">
-          <Link to={`${base}/editar`} className="btn btn-primary">
+          <Link to={`${base}/edit`} className="btn btn-primary">
             <Pencil /> Editar
           </Link>
         </div>
@@ -111,18 +111,18 @@ export function UserPage({ me }: { me: SessionUser }) {
       <Tabs
         value={tab}
         items={[
-          { key: 'conta', label: 'Conta', icon: <UserRound />, to: base },
-          { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `${base}/chaves` },
-          { key: 'acessos', label: 'Acessos', icon: <History />, to: `${base}/acessos` },
-          { key: 'atividade', label: 'Atividade', icon: <ListChecks />, to: `${base}/atividade` },
+          { key: 'account', label: 'Conta', icon: <UserRound />, to: base },
+          { key: 'keys', label: 'Chaves', icon: <KeyRound />, to: `${base}/keys` },
+          { key: 'accesses', label: 'Acessos', icon: <History />, to: `${base}/accesses` },
+          { key: 'activity', label: 'Atividade', icon: <ListChecks />, to: `${base}/activity` },
         ]}
       />
 
       <Routes>
         <Route index element={<AccountTab user={user} me={me} />} />
-        <Route path="chaves" element={<KeysTab user={user} />} />
-        <Route path="acessos" element={<AccessLog load={loadAccesses} showSkill />} />
-        <Route path="atividade" element={<ActorTrail actor={user.email} />} />
+        <Route path="keys" element={<KeysTab user={user} />} />
+        <Route path="accesses" element={<AccessLog load={loadAccesses} showSkill />} />
+        <Route path="activity" element={<ActorTrail actor={user.email} />} />
       </Routes>
     </div>
   );

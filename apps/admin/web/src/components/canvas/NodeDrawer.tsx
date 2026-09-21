@@ -170,7 +170,7 @@ export function NodeDrawer({
           </div>
 
           <div className="sec flex flex-wrap gap-2">
-            <Link to={`/catalogos/${catalog.slug}`} className="btn btn-ghost btn-sm">
+            <Link to={`/catalogs/${catalog.slug}`} className="btn btn-ghost btn-sm">
               <ExternalLink /> Abrir catálogo
             </Link>
             {canEdit && (
@@ -258,13 +258,13 @@ export function NodeDrawer({
           </dl>
         </div>
         <div className="sec flex flex-wrap gap-2">
-          <Link to={`/mcps/${detail.slug}/configuracoes`} className="btn btn-ghost btn-sm">
+          <Link to={`/mcps/${detail.slug}/settings`} className="btn btn-ghost btn-sm">
             Configurações
           </Link>
-          <Link to={`/mcps/${detail.slug}/chaves`} className="btn btn-ghost btn-sm">
+          <Link to={`/mcps/${detail.slug}/keys`} className="btn btn-ghost btn-sm">
             Chaves
           </Link>
-          <Link to={`/mcps/${detail.slug}/sessoes`} className="btn btn-ghost btn-sm">
+          <Link to={`/mcps/${detail.slug}/sessions`} className="btn btn-ghost btn-sm">
             Sessões
           </Link>
         </div>

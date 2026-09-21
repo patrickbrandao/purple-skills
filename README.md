@@ -279,7 +279,7 @@ visível só no painel. Cada vínculo escolhe por quais portas a skill sai
 |-------|-----------|
 | `skill` | a skill fica ao alcance das cinco ferramentas — `search_skills`, `get_skill`, `get_skill_file`, `download_skill` e a contagem de `list_tags` |
 | `prompt` | a skill entra em `prompts/list` com o **slug** como nome; `prompts/get` devolve o corpo do SKILL.md, sem frontmatter e sem argumentos. Na maioria dos clientes vira um slash-command |
-| `resource` | a skill ganha a URI `skill://<slug>`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
+| `resource` | a skill ganha a URI `skill://<slug>/SKILL.md`; `resources/read` devolve o SKILL.md canônico (`text/markdown`), idêntico ao do `.zip` |
 
 As três portas **contam acesso** (`view_count`), no vínculo e no total da
 skill. Uma skill fora de uma porta responde por ela o mesmo "não encontrada"
@@ -321,6 +321,10 @@ vários catálogos; um catálogo pode estar em vários servidores.
   O catálogo inteiro também liga e desliga.
 - No canvas o catálogo é um nó só, com o número de skills ativas que ele
   entrega àquele servidor. Cada catálogo tem o próprio contador de acessos.
+- **Clonar** um catálogo copia as propriedades e os membros, cada
+  participação com o ligado/desligado que tinha — e não os servidores em que
+  o original está vinculado. A cópia é de quem clonou e nasce privada
+  ([Clonagem](#clonagem-uma-cópia-fechada)).
 
 O desenho está em [`docs/11-catalogos.md`](docs/11-catalogos.md).
 
@@ -381,6 +385,10 @@ também em `/mcp`.
   skill também soma.
 - Desligar (`ligado` no painel) faz tudo sob `/virtual/<slug>` responder 404
   sem apagar nada; slug inexistente também é 404, chave errada é 401.
+- **Clonar** um servidor copia vínculos, posições do canvas e concessões, e
+  **não** as chaves `psv_`. A cópia nasce fechada, nunca assume o posto de
+  padrão e exige `manage` no original
+  ([Clonagem](#clonagem-uma-cópia-fechada)).
 
 ```json
 {
@@ -416,6 +424,7 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`; só o dono ou um admin) |
 | `share_skill(slug, email, level)` / `unshare_skill(slug, email)` / `transfer_skill(slug, email)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp` |
+| `clone_skill(slug, name?, new_slug?)` / `clone_catalog(slug, name?, new_slug?)` / `clone_virtual_mcp(slug, name?, new_slug?)` | Copia o objeto; quem clona vira o dono e a cópia **nasce fechada** (nunca pública nem aberta). A skill leva arquivos e tags e nasce flutuante; o catálogo leva os membros com a participação de cada um; o servidor leva vínculos, canvas e concessões, **sem** as chaves `psv_`. Sem `name` fica o nome do original, sem `new_slug` o desempate automático (`-2`, `-3`…); `new_slug` já ocupado é 409. Exige `edit` no original e o papel de criar — no servidor, `manage` |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
 | `list_virtual_mcps(scope?)` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance pelo acesso por objeto |
 | `set_virtual_mcp_skills(slug, [{slug, asSkill, asPrompt, asResource}])` | Substitui a lista inteira de skills do MCP virtual |
@@ -585,6 +594,36 @@ um. Imagens e outros binários chegam pelo pacote, na importação — e **troca
 árvore de uma skill que já existe** deixou de ter caminho no painel; quem
 precisa disso usa o `set_files_bulk` do MCP administrativo. O desenho está em
 [`docs/15-quarentena.md`](docs/15-quarentena.md).
+
+## Clonagem: uma cópia fechada
+
+Skill, catálogo e MCP virtual têm um botão **"Clonar"** — na ficha e na linha
+da lista —, e as tools `clone_skill`, `clone_catalog` e `clone_virtual_mcp` no
+MCP administrativo. O diálogo vem com nome e slug preenchidos e editáveis;
+confirmar cria a cópia e abre a ficha dela.
+
+| Tipo | O que a cópia leva |
+|------|--------------------|
+| **Skill** | Propriedades, arquivos e tags. Nasce **flutuante**: sem servidor, sem catálogo |
+| **Catálogo** | Propriedades e os membros, cada participação com o ligado/desligado que tinha |
+| **Servidor MCP** | Propriedades, vínculos de skill e de catálogo (as três portas e as posições do canvas) e as **concessões** |
+
+Três regras valem para os três:
+
+- **A cópia nasce fechada.** Nunca pública, nunca aberta, mesmo que o original
+  seja — expor é um ato à parte, com o aviso de sempre. Ligado/desligado
+  (`is_active`), esse sim, é copiado.
+- **Quem clona é o dono**, e os contadores nascem em zero. O dono do original
+  não ganha acesso à cópia: dono não é uma concessão, então não há o que
+  copiar.
+- **Chave `psv_` não é copiada.** O segredo nunca esteve no banco (só o hash),
+  então uma chave duplicada não abriria nada. A cópia nasce sem chave.
+
+Clonar exige `edit` no original **e** o papel de criar (`editor` ou `admin`);
+no servidor MCP o mínimo é `manage`, porque a cópia leva a lista de concessões
+e ler essa lista já é poder de `manage`. Não há clonagem profunda: clonar um
+servidor não duplica as skills dentro dele. O desenho está em
+[`docs/16-clonagem.md`](docs/16-clonagem.md).
 
 ## Contadores e ranking
 

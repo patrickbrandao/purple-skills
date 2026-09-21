@@ -14,6 +14,7 @@ const { AppError } = vi.hoisted(() => ({
 }));
 
 const db = vi.hoisted(() => ({
+  cloneSkill: vi.fn(),
   createSkill: vi.fn(),
   recordSkillAccess: vi.fn(),
   updateSkill: vi.fn(),
@@ -252,6 +253,83 @@ describe('create_skill', () => {
     );
     expect(semPorta.isError).toBe(true);
     expect(db.createSkill).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A cópia é de quem clonou, nasce fechada e flutuante e leva propriedades,
+ * arquivos e tags — nada de vMCP, catálogo ou concessão. Papel `editor`/`admin`
+ * (é uma skill nova) mais `edit` no original.
+ */
+describe('clone_skill', () => {
+  /** O que o banco devolve: a skill nova, com o slug desempatado. */
+  const copia = { ...detail, uuid: 'uuid-2', slug: 'minha-skill-2' };
+
+  it('clona pelo uuid do original, com quem clonou como dono, e conta o que foi junto', async () => {
+    db.cloneSkill.mockResolvedValue(copia);
+
+    const result = await createHandlers(caller('editor')).clone_skill({ slug: 'minha-skill' });
+
+    expect(db.cloneSkill).toHaveBeenCalledWith(
+      'uuid-1',
+      { name: undefined, slug: undefined, ownerUserUuid: 'uuid-editor' },
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('"Minha Skill" (slug: minha-skill-2)');
+    expect(result.content[0].text).toContain('1 arquivo(s) e 1 tag(s)');
+    expect(result.content[0].text).toContain('privada');
+  });
+
+  it('repassa o nome e o slug da cópia quando vêm; o token global clona para órfã', async () => {
+    db.cloneSkill.mockResolvedValue({ ...copia, name: 'Outro nome', slug: 'outro-nome' });
+
+    await handlers.clone_skill({ slug: 'minha-skill', name: 'Outro nome', new_slug: 'outro-nome' });
+
+    expect(db.cloneSkill).toHaveBeenCalledWith(
+      'uuid-1',
+      { name: 'Outro nome', slug: 'outro-nome', ownerUserUuid: null },
+      'mcp-admin',
+      ADMIN_ACTOR,
+    );
+  });
+
+  it('membro não clona: a cópia é uma skill nova, e criar é do papel', async () => {
+    const negado = await createHandlers(caller('membro')).clone_skill({ slug: 'minha-skill' });
+
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toContain('Clonar uma skill exige papel "editor" ou "admin"');
+    expect(db.cloneSkill).not.toHaveBeenCalled();
+  });
+
+  it('skill que a credencial não vê é 404; quem só a lê não a clona', async () => {
+    const outro = createHandlers(caller('editor', 'uuid-outro'));
+
+    const invisivel = await guard(() => outro.clone_skill({ slug: 'minha-skill' }));
+    expect(invisivel.isError).toBe(true);
+    expect(invisivel.content[0].text).toMatch(/Skill não encontrada/);
+
+    grants['uuid-outro'] = 'view';
+    const soLe = await guard(() => outro.clone_skill({ slug: 'minha-skill' }));
+    expect(soLe.isError).toBe(true);
+    expect(soLe.content[0].text).toMatch(/exige "editar"/);
+
+    expect(db.cloneSkill).not.toHaveBeenCalled();
+  });
+
+  // Sem `new_slug` o banco desempata sozinho (-2, -3…) e não há 409; com um
+  // slug escolhido, quem recusa é o banco — e a mensagem chega inteira.
+  it('repassa o 409 de slug em uso, com a mensagem do banco', async () => {
+    db.cloneSkill.mockRejectedValue(new AppError('Já existe uma skill com o slug "ocupado"', 409, 'conflict'));
+
+    const result = await guard(() =>
+      createHandlers(caller('editor')).clone_skill({ slug: 'minha-skill', new_slug: 'ocupado' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Já existe uma skill com o slug "ocupado"');
+    expect(result.content[0].text).not.toContain('Erro interno');
   });
 });
 

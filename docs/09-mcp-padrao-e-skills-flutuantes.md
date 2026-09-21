@@ -22,6 +22,11 @@
 > `§3.4` dizia que as três variáveis antigas saíam também do compose. Elas
 > voltaram ao `environment` do `mcp-public`, só para a trava de boot enxergar o
 > `.env` — o porquê está marcado lá.
+>
+> **Parcialmente revogado por [`18`](18-atividade.md):** o item "estatísticas
+> por vMCP" da `§6` saiu do fora do escopo — o relatório do dia da tela de
+> Atividade traz os servidores mais chamados e as chamadas por transporte,
+> agregados. A marca está no ponto; o resto da `§6` continua em vigor.
 
 Este documento registra o desenho fechado na entrevista de 12/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra em
@@ -196,7 +201,7 @@ no vínculo, sem porta no MCP, como estava.
 
 ### 3.6 Painel, mcp-admin e site
 
-- **Painel.** Página `/configuracoes` (só admin) com o seletor e o snippet de
+- **Painel.** Página `/settings` (só admin) com o seletor e o snippet de
   `mcp.json` resultante; `GET /api/settings` e `PUT /api/settings/default-mcp`
   atrás de `requireSettingsAdmin`. A lista e a página de cada MCP mostram o
   selo "padrão", e a página avisa, ao desligar ou remover o padrão, que `/mcp`
@@ -330,4 +335,8 @@ mais.
 - Mais de uma chave em `settings` (nome do site, tagline…): a tabela aceita,
   a tela não oferece.
 - Um vMCP que herde de outro, ou uma skill "publicada em todos".
-- Estatísticas por vMCP além dos contadores do vínculo.
+- ~~Estatísticas por vMCP além dos contadores do vínculo.~~ — **Revogado
+  neste ponto por [`18`](18-atividade.md)**: o relatório do dia da tela de
+  Atividade traz os **servidores mais chamados** e as chamadas por transporte,
+  agregados, num dia e só para admin. Leitura por vMCP continua fora, como o
+  `08` (`§9`) e o `13` (`§8`) registram.

@@ -21,6 +21,7 @@ process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 const banco = vi.hoisted(() => ({
   getCatalog: vi.fn(),
   listCatalogs: vi.fn(),
+  cloneCatalog: vi.fn(),
   createCatalog: vi.fn(),
   updateCatalog: vi.fn(),
   setCatalogSkills: vi.fn(),
@@ -41,7 +42,9 @@ vi.mock('@purple-skills/db', async (original) => ({
 }));
 
 const { NAME_MAX } = await import('./mcps.js');
-const { create, detail, listMine, putSkill, removeSkill, setSkills, share, unshare, update } = await import('./catalogs.js');
+const { clone, create, detail, listMine, putSkill, removeSkill, setSkills, share, unshare, update } = await import('./catalogs.js');
+// O `AppError` de verdade, para o caso do 409 que o banco levanta.
+const { conflict } = await import('@purple-skills/db');
 
 type Viewer = { role: AuthUser['role']; userUuid: string | null };
 
@@ -59,6 +62,8 @@ const sessao = (role: AuthUser['role'], uuid: string): AuthUser => ({
 const dona = sessao('editor', DONA);
 const admin = sessao('admin', 'uuid-admin');
 const convidado = sessao('membro', 'uuid-convidado');
+/** A mesma conta convidada, com papel que pode criar: clonar precisa dos dois lados. */
+const convidadoEditor = sessao('editor', 'uuid-convidado');
 
 /** A concessão que o banco encontraria para a conta convidada. */
 let concedido: AccessLevel | null = null;
@@ -122,7 +127,7 @@ function catalogoVisto(viewer?: Viewer) {
   };
 }
 
-const ESCRITAS = ['updateCatalog', 'setCatalogSkills', 'addCatalogSkill', 'setCatalogSkillActive', 'removeCatalogSkill', 'createCatalog'] as const;
+const ESCRITAS = ['updateCatalog', 'setCatalogSkills', 'addCatalogSkill', 'setCatalogSkillActive', 'removeCatalogSkill', 'createCatalog', 'cloneCatalog'] as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -273,6 +278,94 @@ describe('teto de nome de catálogo', () => {
   it.each([[{ toString: 1 }], [123], [['a']]])('criar com name %j é 400, não 500', async (name) => {
     expect(await recusa(create(dona, { name }))).toMatchObject({ status: 400, message: 'O campo "name" deve ser uma string' });
     expect(banco.createCatalog).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Clonar um catálogo (`docs/16-clonagem.md`).
+ *
+ * Os comportamentos que mais custariam caro se mudassem sem querer:
+ *
+ * 1. **são duas exigências, nesta ordem**: `edit` no original — o mesmo corte
+ *    da lista de membros — e papel que possa criar. Quem não enxerga o
+ *    catálogo recebe 404 antes das duas;
+ * 2. **o corte não é `manage`**, como no vMCP: a cópia do catálogo não leva a
+ *    ACL do original, então quem recebeu `edit` para mexer na lista pode
+ *    levá-la para uma cópia sua;
+ * 3. **o desempate do slug é do banco**: corpo sem `slug` nunca dá 409; o
+ *    slug pedido que já existe volta de lá com o 409 inteiro.
+ */
+describe('clonar um catálogo', () => {
+  /** O que `cloneCatalog` devolve: um catálogo novo, fechado, de quem clonou. */
+  const COPIA = { ...catalogoVisto(), uuid: 'uuid-copia', slug: 'dados-2', isPublic: false };
+
+  beforeEach(() => {
+    banco.cloneCatalog.mockResolvedValue(COPIA);
+  });
+
+  it('o dono clona, e o corpo vazio chega ao banco só com o dono da cópia', async () => {
+    const copia = await clone(dona, 'dados', {});
+
+    expect(copia).toMatchObject({ slug: 'dados-2', isPublic: false, access: 'owner' });
+    expect(banco.cloneCatalog).toHaveBeenCalledWith('uuid-catalogo', { ownerUserUuid: DONA }, 'web-admin', expect.objectContaining({ userUuid: DONA }));
+  });
+
+  it('nome e slug pedidos chegam aparados, e o teto do nome vale como na criação', async () => {
+    await clone(dona, 'dados', { name: ' Dados copiados ', slug: ' dados-copia ' });
+    expect(banco.cloneCatalog).toHaveBeenCalledWith(
+      'uuid-catalogo',
+      { name: 'Dados copiados', slug: 'dados-copia', ownerUserUuid: DONA },
+      'web-admin',
+      expect.anything(),
+    );
+
+    expect((await recusa(clone(dona, 'dados', { name: 'x'.repeat(NAME_MAX + 1) }))).status).toBe(400);
+    expect(banco.cloneCatalog).toHaveBeenCalledOnce();
+  });
+
+  it('`edit` concedido basta para quem pode criar', async () => {
+    concedido = 'edit';
+
+    const copia = await clone(convidadoEditor, 'dados', {});
+
+    expect(copia).toMatchObject({ slug: 'dados-2' });
+    expect(banco.cloneCatalog).toHaveBeenCalledWith('uuid-catalogo', { ownerUserUuid: 'uuid-convidado' }, 'web-admin', expect.anything());
+  });
+
+  it('403 para papel membro, mesmo com `edit` no original', async () => {
+    concedido = 'edit';
+
+    expect(await recusa(clone(convidado, 'dados', {}))).toEqual({
+      status: 403,
+      message: 'Seu papel não permite criar no acervo',
+    });
+    expect(banco.cloneCatalog).not.toHaveBeenCalled();
+  });
+
+  it('403 para quem só vê o catálogo: copiar a lista inteira é `edit`', async () => {
+    concedido = 'view';
+
+    const erro = await recusa(clone(convidadoEditor, 'dados', {}));
+
+    expect(erro.status).toBe(403);
+    expect(erro.message).toContain('editar');
+    expect(banco.cloneCatalog).not.toHaveBeenCalled();
+  });
+
+  it('404 para slug que a sessão não enxerga, antes de conferir papel', async () => {
+    banco.getCatalog.mockResolvedValue(null);
+
+    expect((await recusa(clone(convidado, 'sumido', {}))).status).toBe(404);
+    expect(banco.cloneCatalog).not.toHaveBeenCalled();
+  });
+
+  it('o 409 do slug pedido que já existe volta inteiro', async () => {
+    banco.cloneCatalog.mockRejectedValue(conflict('Já existe um catálogo com o slug "dados-copia"'));
+
+    expect(await recusa(clone(dona, 'dados', { slug: 'dados-copia' }))).toEqual({
+      status: 409,
+      message: 'Já existe um catálogo com o slug "dados-copia"',
+    });
   });
 });
 

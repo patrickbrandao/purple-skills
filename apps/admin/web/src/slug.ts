@@ -39,3 +39,30 @@ export function slugEmDigitacao(input: string): string {
     .replace(/^-+/, '')
     .slice(0, 96);
 }
+
+/** O sufixo de desempate cabe **dentro** do teto de 96, como no `withSuffix` do shared. */
+const MAX_SLUG = 96;
+
+/**
+ * O slug **sugerido** para uma cópia: `minha-skill` → `minha-skill-2`.
+ *
+ * É o primeiro candidato do `uniqueSlug` do shared, que é quem escolhe de
+ * verdade. A clonagem deriva o slug do **slug do original** (`cloneSlugTx` do
+ * banco), nunca do nome, e o original sempre ocupa a base — por isso o
+ * desempate começa em `-2` e por isso clonar uma cópia empilha
+ * (`minha-skill-2` → `minha-skill-2-2`) em vez de andar o número. Empilhar é
+ * feio, mas andar mentiria: o endereço sugerido não seria o que nasce, e no
+ * objeto cujo nome termina em número de verdade a cópia de `python-3` é
+ * `python-3-2`, nunca `python-4`.
+ *
+ * Só sugestão: o diálogo **não manda** o campo intocado, então um `-2` já
+ * ocupado vira `-3` no servidor, sem 409 e sem a pessoa precisar saber.
+ */
+export function slugDaCopia(slug: string): string {
+  const base = slug ?? '';
+  if (!base) return base;
+  // Perto do teto o sufixo não cabe: encurta a base e apara o hífen do corte,
+  // senão sai um slug de 98 que o próprio servidor recusa como inválido.
+  const cabe = base.length + 2 <= MAX_SLUG ? base : base.slice(0, MAX_SLUG - 2).replace(/-+$/g, '');
+  return `${cabe}-2`;
+}

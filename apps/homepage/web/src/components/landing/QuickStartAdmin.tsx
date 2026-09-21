@@ -5,7 +5,7 @@ const MCP_ADMIN_URL = 'https://mcp-admin.seu-dominio.dev/mcp';
 
 export function QuickStartAdmin() {
   return (
-    <section className="how-connect-sec" id="administrar">
+    <section className="how-connect-sec" id="administer">
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">

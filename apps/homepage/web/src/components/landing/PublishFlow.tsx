@@ -83,7 +83,7 @@ export function PublishFlow() {
   useVerticalLink(boardRef, topCardRef, bottomCardRef);
 
   return (
-    <section className="diag" id="publicar" style={{ background: 'var(--bg-2)' }}>
+    <section className="diag" id="publish" style={{ background: 'var(--bg-2)' }}>
       <div className="wrap">
         <div className="head center reveal">
           <img

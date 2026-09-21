@@ -67,6 +67,18 @@ describe('papéis exigidos pelas rotas', () => {
     expect(handlers('get', '/api/audit')).toContain(requireAdmin);
   });
 
+  // A Atividade soma a instalação inteira — sessões, chamadas, leituras e
+  // trilha de todo servidor e skill, inclusive os que a sessão não enxerga.
+  // Mesma classe de dado da trilha, mesmo papel (`docs/18-atividade.md`,
+  // decisão 1); sem recorte por vMCP na v1, um membro leria o movimento do
+  // acervo alheio pela soma.
+  it.each([
+    ['get', '/api/activity'],
+    ['get', '/api/activity/:day'],
+  ])('%s %s exige admin: a Atividade soma a instalação inteira', (method, path) => {
+    expect(handlers(method, path)).toContain(requireAdmin);
+  });
+
   // Os números do painel não são de um objeto, mas também não ganham guarda de
   // papel: o recorte é por `viewer`, dentro do handler (`docs/12` §3.1). Um
   // portão de admin tiraria a tela de quem é membro — e a página de servidores,
@@ -113,6 +125,20 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/catalogs'],
   ])('%s %s exige papel de criação', (method, path) => {
     expect(handlers(method, path)).toContain(requireCreate);
+  });
+
+  // Clonar também é criar, mas o papel **não** entra como guarda na frente:
+  // a rota resolve o original primeiro — quem não o enxerga recebe 404 — e
+  // só então cobra `canCreate` (`access.assertCanCreate`). O papel continua
+  // exigido; o que estes casos travam é o guarda voltar para a frente e
+  // transformar o 404 de um slug alheio num 403 de papel.
+  it.each([
+    ['post', '/api/skills/:slug/clone'],
+    ['post', '/api/mcps/:slug/clone'],
+    ['post', '/api/catalogs/:slug/clone'],
+  ])('%s %s confere o papel dentro do handler, depois do objeto', (method, path) => {
+    expect(handlers(method, path)).not.toContain(requireCreate);
+    expect(handlers(method, path)).not.toContain(requireAdmin);
   });
 
   // Tudo o mais é decidido pelo acesso ao objeto, dentro do handler — um
@@ -859,6 +885,38 @@ describe('GET /api/session', () => {
  * e `?offset=1e30` passava inteiro para o `OFFSET` (relatório 086 da auditoria
  * de 2026-09-19). O teto segue sendo do banco: aqui só se cobra o que chega a ele.
  */
+/**
+ * O que a Atividade recusa antes de consultar. A camada é coberta por inteiro
+ * em `activity.test.ts`; o que estes casos travam é o caminho até o cliente —
+ * um `AppError` levantado dentro do handler tem de sair como 400 pelo `route()`,
+ * e não virar 500 nem promessa solta.
+ */
+describe('GET /api/activity: entrada inválida chega ao cliente como 400', () => {
+  it('a série sem `since`/`until` não inventa faixa', async () => {
+    const res = await chamar('get', '/api/activity', { query: {} });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'bad_request' });
+  });
+
+  it.each([['2026-02-31'], ['2026-9-20'], ['hoje']])('o dia %j do caminho é 400', async (day) => {
+    const res = await chamar('get', '/api/activity/:day', { params: { day }, query: {} });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'bad_request' });
+  });
+
+  it.each([
+    ['get', '/api/activity', { since: '2026-09-20T00:00:00Z', until: '2026-09-20T23:59:59Z', tz: 'Marte/Olympus' }],
+    ['get', '/api/activity/:day', { tz: 'Marte/Olympus' }],
+  ])('%s %s com fuso desconhecido é 400, não o 500 de um RangeError', async (method, path, query) => {
+    const res = await chamar(method, path, { params: { day: '2026-09-20' }, query });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ error: 'bad_request' });
+  });
+});
+
 describe('GET /api/audit: paginação vinda da query string', () => {
   const PAGINA = { items: [], total: 0, limit: 50, offset: 0 };
   const paginaPedida = () => db.listAuditPage.mock.calls.at(-1)![0] as { limit: number; offset: number };

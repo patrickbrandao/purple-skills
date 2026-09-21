@@ -28,6 +28,12 @@ as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 > **E, em dois pontos, por [`13`](13-fichas-e-acessos.md):** a `§3.4` e o item
 > de estatísticas da `§9` diziam que não há tabela de eventos. Há —
 > `skill_accesses`, desde a migration `018`, gravada pelo próprio mcp-public.
+>
+> **E aquele mesmo item da `§9`, uma segunda vez, por
+> [`18`](18-atividade.md):** o relatório do dia da tela de Atividade traz
+> número **por vMCP** — os servidores mais chamados e as chamadas por
+> transporte —, agregado e só para admin. A marca está no ponto, com o que
+> continua fora.
 
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive
@@ -406,9 +412,15 @@ Sessões no principal ficam presas à identidade como nos virtuais:
 - Estatísticas por MCP além dos contadores do vínculo ~~(sem tabela de
   eventos)~~ — **revogado neste ponto por [`13`](13-fichas-e-acessos.md)**, só
   na justificativa: a tabela existe (`skill_accesses`, migration `018`, com
-  índice por `virtual_mcp_uuid`). O item **continua fora do escopo** — o painel
+  índice por `virtual_mcp_uuid`). ~~O item **continua fora do escopo** — o painel
   lista as leituras por skill, por catálogo e por conta, não por vMCP, e
-  estatística derivada do registro segue fora também no `13` (`§8`).
+  estatística derivada do registro segue fora também no `13` (`§8`).~~
+  **Revogado uma segunda vez por [`18`](18-atividade.md)**, agora no item: o
+  relatório do dia traz os **servidores mais chamados** e as chamadas por
+  transporte, que são estatística por vMCP — agregada, num dia e só para
+  admin. O que segue fora é a **leitura** por vMCP: o painel continua listando
+  as leituras por skill, por catálogo e por conta, e o `13` (`§8`) marcou lá o
+  que da estatística dele passou a existir.
 - Listar virtuais abertos no site — são privados do time.
 - Chaves com expiração.
 - Um virtual que agregue outros virtuais, ou que herde do principal.

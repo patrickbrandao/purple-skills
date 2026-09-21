@@ -2,6 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import {
   AppError,
   badRequest,
+  cloneSkill,
   countUsers,
   createFile,
   createQuarantine,
@@ -77,6 +78,7 @@ import {
 import * as access from './access.js';
 import { gravarRag, lerPainelRag, limparRecusasRag, reindexarRag } from './rag.js';
 import * as accesses from './accesses.js';
+import * as activity from './activity.js';
 import * as quarantine from './quarantine.js';
 import * as mcps from './mcps.js';
 import * as catalogs from './catalogs.js';
@@ -864,6 +866,16 @@ api.post(
   }),
 );
 
+// Clonar exige `manage` no original **e** papel que possa criar — as duas
+// metades ficam em `mcps.clone`, e por isso a rota não leva `requireCreate`
+// na frente. Responde como a criação: 201 com a ficha da cópia.
+api.post(
+  '/api/mcps/:slug/clone',
+  route(async (req, res) => {
+    res.status(201).json(await mcps.clone(req.user!, param(req, 'slug'), req.body ?? {}));
+  }),
+);
+
 api.get(
   '/api/mcps/:slug',
   route(async (req, res) => {
@@ -956,6 +968,15 @@ api.post(
   requireCreate,
   route(async (req, res) => {
     res.status(201).json(await catalogs.create(req.user!, req.body ?? {}));
+  }),
+);
+
+// Como no vMCP, mas o corte é `edit`, como na skill: a cópia do catálogo não
+// leva a ACL do original. As duas metades ficam em `catalogs.clone`.
+api.post(
+  '/api/catalogs/:slug/clone',
+  route(async (req, res) => {
+    res.status(201).json(await catalogs.clone(req.user!, param(req, 'slug'), req.body ?? {}));
   }),
 );
 
@@ -1229,6 +1250,30 @@ api.get(
         until: date('until'),
       }),
     );
+  }),
+);
+
+// A Atividade soma a instalação inteira: sessões, chamadas, leituras e trilha
+// de **todos** os servidores e skills, inclusive os que a sessão não enxerga.
+// É a mesma classe de dado de `/api/audit` — logo, o mesmo papel: admin
+// (decisão 1 do `docs/18-atividade.md`). Não há recorte por vMCP na v1, e sem
+// ele um membro leria o movimento do acervo alheio pela soma.
+//
+// A faixa chega em instantes, convertidos pelo painel no fuso de quem olha; o
+// `tz` vai junto porque é no fuso que o SQL recorta os dias (`activity.ts`).
+api.get(
+  '/api/activity',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json(await activity.series(req.user!, req.query as Record<string, unknown>));
+  }),
+);
+
+api.get(
+  '/api/activity/:day',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json(await activity.report(req.user!, param(req, 'day'), req.query as Record<string, unknown>));
   }),
 );
 
@@ -1624,6 +1669,55 @@ api.post(
     );
 
     // Quem cria é o dono (`access: 'owner'`); sai como toda ficha, sem uuid de conta.
+    res.status(201).json(bodyOnly(access.withGrants(detail)));
+  }),
+);
+
+/**
+ * Clona uma skill (`docs/16-clonagem.md`). A cópia é uma skill nova, de quem
+ * clonou, e **nasce fechada** — nunca `is_public`, mesmo que a original seja
+ * pública; o conteúdo e os arquivos são copiados pelo banco, que também
+ * audita.
+ *
+ * Exige `edit` na original — quem já edita o conteúdo inteiro pode levá-lo
+ * para uma cópia sua, e a cópia não carrega a ACL — e, depois, papel que
+ * possa criar no acervo (`access.assertCanCreate`): a cópia é uma criação.
+ * Sem `requireCreate` na frente de propósito — a ordem é objeto primeiro,
+ * para quem não enxerga a skill receber 404.
+ *
+ * O corpo é opcional: `name` ausente é o nome da original e `slug` ausente
+ * desempata sozinho no banco (`-2`, `-3`, …), sem 409. O slug **pedido** que
+ * já existe é que volta de lá como 409.
+ *
+ * Responde como `POST /api/skills`: 201 com a ficha da cópia.
+ */
+api.post(
+  '/api/skills/:slug/clone',
+  route(async (req, res) => {
+    const body = (req.body ?? {}) as { name?: unknown; slug?: unknown };
+
+    const current = await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
+    access.assertCanCreate(req.user!);
+
+    // Mesma recusa de tipo do nome de vMCP e de catálogo (`mcps.nameFrom`):
+    // um `name` que não é texto é 400, não 500 no log.
+    const name = mcps.nameFrom(body.name);
+    const wanted = typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined;
+
+    const detail = await cloneSkill(
+      current.uuid,
+      {
+        ...(name ? { name } : {}),
+        ...(wanted ? { slug: wanted } : {}),
+        // Quem clona é o dono. A sessão de bootstrap não tem UUID: a cópia
+        // nasce órfã, administrável só por admin.
+        ownerUserUuid: req.user!.uuid,
+      },
+      SOURCE,
+      actorFrom(req),
+    );
+
+    // Quem clona é o dono (`access: 'owner'`); sai como toda ficha, sem uuid de conta.
     res.status(201).json(bodyOnly(access.withGrants(detail)));
   }),
 );

@@ -51,7 +51,7 @@ export function CatalogPage() {
                 ? 'Ele pode não existir, ser privado ou estar desligado — só os públicos aparecem aqui.'
                 : error}
             </p>
-            <Link to="/#catalogos" className="btn btn-primary" style={{ marginTop: '18px' }}>
+            <Link to="/#catalogs" className="btn btn-primary" style={{ marginTop: '18px' }}>
               <ArrowLeftIcon /> Voltar aos catálogos
             </Link>
           </div>
@@ -77,7 +77,7 @@ export function CatalogPage() {
   return (
     <section className="skill-page">
       <div className="wrap">
-        <Link to="/#catalogos" className="back-link">
+        <Link to="/#catalogs" className="back-link">
           <ArrowLeftIcon /> Catálogos
         </Link>
 

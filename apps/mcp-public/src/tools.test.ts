@@ -26,6 +26,9 @@ const db = vi.hoisted(() => ({
   recordSkillAccess: vi.fn(),
   listTags: vi.fn(),
   readFile: vi.fn(),
+  listFiles: vi.fn(),
+  listSkillsManifest: vi.fn(),
+  readSkillMdBodies: vi.fn(),
 }));
 
 // O teto da consulta é valor, não função, e o `tools.ts` o importa do pacote
@@ -84,6 +87,9 @@ const surfaces = createSurfaces(raiz);
 
 /** O recorte que toda leitura das ferramentas pede: o vínculo com `as_skill`. */
 const recorte = { virtualMcp: { uuid: 'mcp-1', surface: 'skill' } };
+
+/** O que as leituras recortadas recebem, para o mock saber por qual porta perguntaram. */
+type RecorteDeLeitura = { virtualMcp: { uuid: string; surface: string } };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -299,7 +305,7 @@ describe('o teto do texto inline vale nas quatro leituras', () => {
       message: expect.stringContaining('Baixe pela URL: https://mcp.exemplo.dev/skills/minha-skill/files/SKILL.md'),
     };
     await expect(surfaces.getPrompt('minha-skill')).rejects.toMatchObject(recusa);
-    await expect(surfaces.readResource('skill://minha-skill')).rejects.toMatchObject(recusa);
+    await expect(surfaces.readResource('skill://minha-skill/SKILL.md')).rejects.toMatchObject(recusa);
     await registroAssentou();
 
     // O link só vale para o vínculo `as_skill`: é por ele que a recusa pergunta.
@@ -310,10 +316,13 @@ describe('o teto do texto inline vale nas quatro leituras', () => {
   });
 
   it('skill só de prompt ou resource: a recusa não manda para uma URL que responderia 404', async () => {
-    db.getSkillDetail.mockResolvedValue({ ...detail, skillMd: GRANDE });
+    // Fora das ferramentas: a porta de skill não a enxerga, nem para o link.
+    db.getSkillDetail.mockImplementation(async (_slug: string, options: RecorteDeLeitura) =>
+      options.virtualMcp.surface === 'skill' ? null : { ...detail, skillMd: GRANDE },
+    );
     db.getSkillSummary.mockResolvedValue(null);
 
-    const erro = await surfaces.readResource('skill://minha-skill').catch((err: Error) => err);
+    const erro = await surfaces.readResource('skill://minha-skill/SKILL.md').catch((err: Error) => err);
 
     expect((erro as Error).message).toContain('grande demais para vir na resposta');
     expect((erro as Error).message).toContain('não há URL de download aqui');
@@ -325,7 +334,7 @@ describe('o teto do texto inline vale nas quatro leituras', () => {
 
     expect((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text).toContain('Conteúdo.');
     expect((await surfaces.getPrompt('minha-skill')).messages[0].content.text).toContain('Conteúdo.');
-    expect((await surfaces.readResource('skill://minha-skill')).contents[0].text).toBe(
+    expect((await surfaces.readResource('skill://minha-skill/SKILL.md')).contents[0].text).toBe(
       composeSkillMd(detail, detail.skillMd),
     );
     // Nenhuma consulta a mais fora da recusa.
@@ -464,12 +473,15 @@ describe('a skill fora das ferramentas', () => {
   });
 
   // O caso que a feature existe para permitir: vinculada só como prompt e como
-  // resource. As duas superfícies pedem a flag da própria superfície.
+  // resource. O prompt pede a flag dele; o SKILL.md tenta as duas portas que o
+  // leem (§4.2 do `docs/17`), a de skill primeiro.
   it('continua legível como prompt e como resource, pela flag do vínculo', async () => {
-    db.getSkillDetail.mockResolvedValue(detail);
+    db.getSkillDetail.mockImplementation(async (_slug: string, options: RecorteDeLeitura) =>
+      options.virtualMcp.surface === 'skill' ? null : detail,
+    );
 
     const prompt = await surfaces.getPrompt('minha-skill');
-    const resource = await surfaces.readResource('skill://minha-skill');
+    const resource = await surfaces.readResource('skill://minha-skill/SKILL.md');
 
     expect(prompt.messages[0].content.text).toContain('Conteúdo.');
     expect(resource.contents[0].text).toBe(composeSkillMd(detail, detail.skillMd));
@@ -477,6 +489,9 @@ describe('a skill fora das ferramentas', () => {
       virtualMcp: { uuid: 'mcp-1', surface: 'prompt' },
     });
     expect(db.getSkillDetail).toHaveBeenNthCalledWith(2, 'minha-skill', {
+      virtualMcp: { uuid: 'mcp-1', surface: 'skill' },
+    });
+    expect(db.getSkillDetail).toHaveBeenNthCalledWith(3, 'minha-skill', {
       virtualMcp: { uuid: 'mcp-1', surface: 'resource' },
     });
   });
@@ -501,7 +516,7 @@ describe('prompts/list e resources/list', () => {
     ]);
     expect(resources.resources).toEqual([
       {
-        uri: 'skill://minha-skill',
+        uri: 'skill://minha-skill/SKILL.md',
         name: 'minha-skill',
         title: 'Minha Skill',
         description: 'Faz coisas',
@@ -531,10 +546,10 @@ describe('resources/read', () => {
   it('devolve o SKILL.md canônico e conta um acesso no vínculo', async () => {
     db.getSkillDetail.mockResolvedValue(detail);
 
-    const result = await surfaces.readResource('skill://minha-skill');
+    const result = await surfaces.readResource('skill://minha-skill/SKILL.md');
 
     expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-1', origin: 'mcp' }));
-    expect(result.contents[0].uri).toBe('skill://minha-skill');
+    expect(result.contents[0].uri).toBe('skill://minha-skill/SKILL.md');
     expect(result.contents[0].mimeType).toBe('text/markdown');
     // Byte a byte o mesmo do .zip e do /files/SKILL.md.
     expect(result.contents[0].text).toBe(composeSkillMd(detail, detail.skillMd));
@@ -543,7 +558,9 @@ describe('resources/read', () => {
   it('recusa skill fora do vínculo ou sem a flag com um erro só', async () => {
     db.getSkillDetail.mockResolvedValue(null);
 
-    await expect(surfaces.readResource('skill://minha-skill')).rejects.toThrow(/não encontrado/);
+    await expect(surfaces.readResource('skill://minha-skill/SKILL.md')).rejects.toThrow(
+      /não encontrado/,
+    );
     expect(db.recordSkillAccess).not.toHaveBeenCalled();
   });
 
@@ -582,7 +599,7 @@ describe('resources/templates/list', () => {
   // Responder vazio é diferente de não responder: um cliente que sonda o método
   // na inicialização não leva "method not found".
   it('responde com lista vazia', () => {
-    expect(surfaces.listResourceTemplates()).toEqual({ resourceTemplates: [] });
+    expect(surfaces.listResourceTemplates().resourceTemplates).toEqual([]);
   });
 });
 
@@ -693,7 +710,7 @@ describe('escopo de outro MCP virtual', () => {
     await surfacesVirtual.listPrompts();
     await surfacesVirtual.listResources();
     await surfacesVirtual.getPrompt('minha-skill');
-    await surfacesVirtual.readResource('skill://minha-skill');
+    await surfacesVirtual.readResource('skill://minha-skill/SKILL.md');
 
     expect(db.listPublishedSkills).toHaveBeenNthCalledWith(1, 'prompt', 'mcp-2');
     expect(db.listPublishedSkills).toHaveBeenNthCalledWith(2, 'resource', 'mcp-2');
@@ -701,7 +718,7 @@ describe('escopo de outro MCP virtual', () => {
       virtualMcp: { uuid: 'mcp-2', surface: 'prompt' },
     });
     expect(db.getSkillDetail).toHaveBeenNthCalledWith(2, 'minha-skill', {
-      virtualMcp: { uuid: 'mcp-2', surface: 'resource' },
+      virtualMcp: { uuid: 'mcp-2', surface: 'skill' },
     });
     expect(db.recordSkillAccess).toHaveBeenCalledWith(expect.objectContaining({ skillUuid: 'uuid-1', virtualMcpUuid: 'mcp-2', origin: 'mcp' }));
   });
@@ -745,9 +762,9 @@ describe('guard', () => {
     db.getSkillDetail.mockResolvedValue(null);
 
     // A recusa de `naoEncontrado` é escrita para o cliente: passa inteira.
-    await expect(guardSurface(() => surfaces.readResource('skill://nao-existe'))).rejects.toThrow(
-      /Resource não encontrado/,
-    );
+    await expect(
+      guardSurface(() => surfaces.readResource('skill://nao-existe/SKILL.md')),
+    ).rejects.toThrow(/Resource não encontrado/);
 
     const erro = await guardSurface(async () => {
       throw new Error('duplicate key value violates unique constraint "tags_name_key"');

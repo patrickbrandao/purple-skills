@@ -17,6 +17,7 @@ const db = vi.hoisted(() => ({
   getVirtualMcp: vi.fn(),
   getSkillSummary: vi.fn(),
   getUserByEmail: vi.fn(),
+  cloneVirtualMcp: vi.fn(),
   createVirtualMcp: vi.fn(),
   updateVirtualMcp: vi.fn(),
   deleteVirtualMcp: vi.fn(),
@@ -386,6 +387,97 @@ describe('link_skill / unlink_skill', () => {
     expect(foraDaqui.content[0].text).toBe('A skill "alheia" não está vinculada a este MCP virtual');
     expect(db.getSkillSummary).not.toHaveBeenCalled();
     expect(db.unlinkSkill).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A cópia é de quem clonou, nasce fechada e leva as propriedades, os vínculos
+ * (portas e posições do canvas juntas) e as concessões — mas nenhuma chave
+ * `psv_`. Papel `editor`/`admin` (é um vMCP novo) mais `manage` no original:
+ * a cópia leva a ACL, e a ACL só se lê com `manage` (decisão 11 do `docs/12`).
+ */
+describe('clone_virtual_mcp', () => {
+  /** O que o banco devolve: o vMCP novo, com o slug desempatado. */
+  const copia = { ...mcp, uuid: 'mcp-9', slug: 'time-a-2', activeKeyCount: 0 };
+
+  it('clona pelo uuid do original, com quem clonou como dono, e avisa que não há chave', async () => {
+    db.cloneVirtualMcp.mockResolvedValue(copia);
+
+    const result = await createMcpHandlers(caller('editor')).clone_virtual_mcp({ slug: 'time-a' });
+
+    expect(db.cloneVirtualMcp).toHaveBeenCalledWith(
+      'mcp-1',
+      { name: undefined, slug: undefined, ownerUserUuid: 'uuid-editor' },
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('/virtual/time-a-2/mcp');
+    expect(result.content[0].text).toContain('1 skill(s), 0 catálogo(s) e 2 concessão(ões)');
+    expect(result.content[0].text).toContain('As chaves psv_ não são copiadas');
+  });
+
+  it('repassa o nome e o slug da cópia quando vêm; o token global clona para órfão', async () => {
+    db.cloneVirtualMcp.mockResolvedValue({ ...copia, name: 'Time B', slug: 'time-b' });
+
+    await createMcpHandlers(caller('admin', null)).clone_virtual_mcp({
+      slug: 'time-a',
+      name: 'Time B',
+      new_slug: 'time-b',
+    });
+
+    expect(db.cloneVirtualMcp).toHaveBeenCalledWith(
+      'mcp-1',
+      { name: 'Time B', slug: 'time-b', ownerUserUuid: null },
+      'mcp-admin',
+      caller('admin', null).actor,
+    );
+  });
+
+  it('membro não clona: a cópia é um MCP virtual novo, e criar é do papel', async () => {
+    const negado = await createMcpHandlers(caller('membro')).clone_virtual_mcp({ slug: 'time-a' });
+
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toContain('Clonar um MCP virtual faz nascer um MCP virtual novo');
+    expect(db.cloneVirtualMcp).not.toHaveBeenCalled();
+  });
+
+  // Aqui o clone pede mais que as tools de vínculo: quem edita o servidor não
+  // lê a ACL dele, e a cópia leva a ACL (decisão 11 do `docs/12`).
+  it('quem tem só edit não clona: a cópia leva a ACL, que exige manage', async () => {
+    grants['uuid-outro'] = 'edit';
+
+    const negado = await guard(() => createMcpHandlers(caller('editor', 'uuid-outro')).clone_virtual_mcp({ slug: 'time-a' }));
+
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toMatch(/exige "administrar"/);
+    expect(db.cloneVirtualMcp).not.toHaveBeenCalled();
+
+    grants['uuid-outro'] = 'manage';
+    db.cloneVirtualMcp.mockResolvedValue(copia);
+    expect((await createMcpHandlers(caller('editor', 'uuid-outro')).clone_virtual_mcp({ slug: 'time-a' })).isError).toBeUndefined();
+  });
+
+  it('MCP virtual que a credencial não vê é 404', async () => {
+    const invisivel = await guard(() => createMcpHandlers(caller('editor', 'uuid-outro')).clone_virtual_mcp({ slug: 'time-a' }));
+
+    expect(invisivel.isError).toBe(true);
+    expect(invisivel.content[0].text).toMatch(/MCP virtual não encontrado/);
+    expect(db.cloneVirtualMcp).not.toHaveBeenCalled();
+  });
+
+  // Sem `new_slug` o banco desempata sozinho (-2, -3…) e não há 409; com um
+  // slug escolhido, quem recusa é o banco — e a mensagem chega inteira.
+  it('repassa o 409 de slug em uso, com a mensagem do banco', async () => {
+    db.cloneVirtualMcp.mockRejectedValue(new AppError('Já existe um MCP virtual com o slug "ocupado"', 409, 'conflict'));
+
+    const result = await guard(() =>
+      createMcpHandlers(caller('editor')).clone_virtual_mcp({ slug: 'time-a', new_slug: 'ocupado' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Já existe um MCP virtual com o slug "ocupado"');
+    expect(result.content[0].text).not.toContain('Erro interno');
   });
 });
 

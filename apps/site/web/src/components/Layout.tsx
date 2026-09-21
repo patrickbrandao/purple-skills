@@ -7,8 +7,8 @@ import { MoonIcon, SunIcon } from './Icons.js';
 
 const NAV = [
   { hash: '#skills', label: 'Skills' },
-  { hash: '#catalogos', label: 'Catálogos' },
-  { hash: '#comecar', label: 'mcp.json' },
+  { hash: '#catalogs', label: 'Catálogos' },
+  { hash: '#get-started', label: 'mcp.json' },
   { hash: '#enderecos', label: 'Endereços' },
 ];
 
@@ -54,7 +54,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const name = meta?.name ?? 'Purple Skills';
   // Sem catálogo público, a seção não existe: o atalho some junto.
-  const nav = NAV.filter((item) => item.hash !== '#catalogos' || (catalogs?.length ?? 0) > 0);
+  const nav = NAV.filter((item) => item.hash !== '#catalogs' || (catalogs?.length ?? 0) > 0);
 
   return (
     <>
@@ -126,9 +126,9 @@ export function Layout({ children }: { children: ReactNode }) {
               <h5>Explorar</h5>
               <a href={anchor('#skills')}>Skills públicas</a>
               {(catalogs?.length ?? 0) > 0 && (
-                <a href={anchor('#catalogos')}>Catálogos públicos</a>
+                <a href={anchor('#catalogs')}>Catálogos públicos</a>
               )}
-              <a href={anchor('#comecar')}>Configurar o mcp.json</a>
+              <a href={anchor('#get-started')}>Configurar o mcp.json</a>
               <a href={anchor('#enderecos')}>Endereços de acesso</a>
             </div>
 

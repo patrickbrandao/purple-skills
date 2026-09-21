@@ -1,8 +1,7 @@
 import type { ReactNode } from 'react';
-import { ExternalLink, LogOut, Moon, Sun, UserPlus, UserRound } from 'lucide-react';
+import { ExternalLink, LogOut, UserPlus, UserRound } from 'lucide-react';
 import type { Session, SessionUser } from '../../api.js';
 import { Menu, MenuHeading, MenuItem, MenuSeparator } from '../ui.js';
-import { useTheme } from '../../themeStore.js';
 
 /**
  * Pede a saída da sessão. Com `'setup'`, o login abre já no cadastro do
@@ -28,8 +27,6 @@ export function UserMenu({
   up?: boolean;
   className?: string;
 }) {
-  const [theme, toggleTheme] = useTheme();
-
   return (
     <Menu trigger={trigger} align={align} up={up} className={className}>
       <MenuHeading>{user.legacy ? 'sessão de bootstrap' : user.email}</MenuHeading>
@@ -43,9 +40,6 @@ export function UserMenu({
           Minha conta
         </MenuItem>
       )}
-      <MenuItem onSelect={toggleTheme} icon={theme === 'dark' ? <Sun /> : <Moon />}>
-        {theme === 'dark' ? 'Tema claro' : 'Tema escuro'}
-      </MenuItem>
       <MenuItem href={session.siteBaseUrl} icon={<ExternalLink />}>
         Ver o site
       </MenuItem>

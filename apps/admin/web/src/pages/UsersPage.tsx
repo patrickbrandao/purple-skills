@@ -18,12 +18,12 @@ import { initials } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
-type Filter = 'todas' | 'ativas' | 'desativadas' | 'temporaria';
+type Filter = 'all' | 'active' | 'disabled' | 'temporary';
 const FILTER_LABEL: Record<Filter, string> = {
-  todas: 'Todas',
-  ativas: 'Ativas',
-  desativadas: 'Desativadas',
-  temporaria: 'Com senha temporária',
+  all: 'Todas',
+  active: 'Ativas',
+  disabled: 'Desativadas',
+  temporary: 'Com senha temporária',
 };
 
 /**
@@ -40,8 +40,8 @@ export function UsersPage({ me }: { me: SessionUser }) {
   const [reload, setReload] = useState(0);
   const [query, setQuery] = useState('');
   const dq = useDebounced(query, 200);
-  const filter = (params.get('filtro') as Filter | null) ?? 'todas';
-  const creating = params.get('novo') === '1';
+  const filter = (params.get('filter') as Filter | null) ?? 'all';
+  const creating = params.get('new') === '1';
 
   // O cleanup descarta a resposta atrasada: com duas buscas no ar — a da
   // montagem e a recarga de "Nova conta" —, a antiga podia chegar por último e
@@ -64,7 +64,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
   }, [reload, toast]);
 
   useRegisterCommands(
-    [{ id: 'new-user', label: 'Nova conta', group: 'Criar', icon: <UserPlus />, keywords: ['usuário', 'convidar', 'conta'], run: () => setParams({ novo: '1' }) }],
+    [{ id: 'new-user', label: 'Nova conta', group: 'Criar', icon: <UserPlus />, keywords: ['usuário', 'convidar', 'conta'], run: () => setParams({ new: '1' }) }],
     [],
   );
 
@@ -72,9 +72,9 @@ export function UsersPage({ me }: { me: SessionUser }) {
     let list = users ?? [];
     const needle = dq.trim().toLowerCase();
     if (needle) list = list.filter((user) => user.name.toLowerCase().includes(needle) || user.email.toLowerCase().includes(needle));
-    if (filter === 'ativas') list = list.filter((user) => user.isActive);
-    if (filter === 'desativadas') list = list.filter((user) => !user.isActive);
-    if (filter === 'temporaria') list = list.filter((user) => user.mustChangePassword);
+    if (filter === 'active') list = list.filter((user) => user.isActive);
+    if (filter === 'disabled') list = list.filter((user) => !user.isActive);
+    if (filter === 'temporary') list = list.filter((user) => user.mustChangePassword);
     return [...list].sort((a, b) => a.name.localeCompare(b.name));
   }, [users, dq, filter]);
 
@@ -96,7 +96,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
               placeholder="Procurar conta"
             />
           </label>
-          <Button onClick={() => setParams({ novo: '1' })}>
+          <Button onClick={() => setParams({ new: '1' })}>
             <UserPlus /> Nova conta
           </Button>
         </div>
@@ -116,7 +116,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
           )}
         >
           {(Object.keys(FILTER_LABEL) as Filter[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setParams(key === 'todas' ? {} : { filtro: key })}>
+            <MenuItem key={key} onSelect={() => setParams(key === 'all' ? {} : { filter: key })}>
               {FILTER_LABEL[key]}
             </MenuItem>
           ))}
@@ -182,7 +182,7 @@ export function UsersPage({ me }: { me: SessionUser }) {
                 );
               })}
               {visible.length === 0 && (
-                <EmptyRow colSpan={5}>{dq || filter !== 'todas' ? 'Nenhuma conta com esse filtro' : 'Nenhuma conta ainda'}</EmptyRow>
+                <EmptyRow colSpan={5}>{dq || filter !== 'all' ? 'Nenhuma conta com esse filtro' : 'Nenhuma conta ainda'}</EmptyRow>
               )}
             </tbody>
           </table>

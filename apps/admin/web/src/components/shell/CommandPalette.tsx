@@ -221,7 +221,7 @@ export function CommandPalette() {
         {!picking && matchingCatalogs.length > 0 && (
           <Command.Group heading="Catálogos">
             {matchingCatalogs.map((catalog) => (
-              <Command.Item key={catalog.uuid} value={`catalog:${catalog.slug}`} onSelect={() => run(() => navigate(`/catalogos/${catalog.slug}`))}>
+              <Command.Item key={catalog.uuid} value={`catalog:${catalog.slug}`} onSelect={() => run(() => navigate(`/catalogs/${catalog.slug}`))}>
                 <Library />
                 <span className="lbl">{catalog.name}</span>
                 <span className="sub">

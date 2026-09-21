@@ -1,6 +1,7 @@
 /**
- * Teste de integração do **slug gerado** e da **paginação de skills** — exige um
- * PostgreSQL 18 real, com pgvector (a busca híbrida entra na conta).
+ * Teste de integração do **slug gerado**, da **paginação de skills** e da
+ * **clonagem de skill** — exige um PostgreSQL 18 real, com pgvector (a busca
+ * híbrida entra na conta).
  *
  * Fica desligado por padrão: sem `TEST_DATABASE_URL` a suíte inteira é pulada,
  * então `npm test` continua rodando sem banco. Para rodar:
@@ -18,14 +19,23 @@ import { closeDb } from './client.js';
 import type { AppError } from './errors.js';
 import { runMigrations } from './migrate.js';
 import {
+  addCatalogSkill,
+  cloneSkill,
   createCatalog,
   createSkill,
+  createUser,
   createVirtualMcp,
+  getSkillDetail,
+  getSkillSummary,
   insertRagVectors,
+  linkSkill,
+  listAuditPage,
   listPendingRagTexts,
   listSkills,
+  readAllFiles,
   replaceSkillTexts,
   resolveRagSpace,
+  setSkillGrant,
   type ListOptions,
 } from './queries.js';
 
@@ -44,7 +54,7 @@ function outcome(promise: Promise<unknown>): Promise<AppError | null> {
   );
 }
 
-describe.skipIf(!url)('skills: slug gerado no teto e paginação com desempate', () => {
+describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e clonagem', () => {
   let lock: pg.Client;
 
   beforeAll(async () => {
@@ -220,6 +230,193 @@ describe.skipIf(!url)('skills: slug gerado no teto e paginação com desempate',
       // E os 30 vizinhos estão mesmo intercalados, empatados um a um com a perna
       // textual: as 60 primeiras posições são 30 de cada.
       expect(lidos.filter((slug) => slug.startsWith('vetor-'))).toHaveLength(30);
+    });
+  });
+
+  // --------------------------------------------------- clonagem de skill ----
+
+  describe('clonagem: a cópia nasce fechada, flutuante e com os arquivos', () => {
+    /** Um PNG curto de verdade: bytes que não são UTF-8 válido. */
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]);
+    let donaUuid = '';
+    let clonadorUuid = '';
+    let fonteUuid = '';
+    let copiaSlug = '';
+
+    const dona = { userUuid: '', label: 'dona@exemplo.dev' };
+
+    beforeAll(async () => {
+      donaUuid = (await createUser({ email: 'dona@exemplo.dev', name: 'Dona', role: 'admin' })).uuid;
+      clonadorUuid = (
+        await createUser({ email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
+      ).uuid;
+      dona.userUuid = donaUuid;
+
+      // A fonte: pública, **desligada**, com ícone, tags, um anexo de texto e um
+      // binário — e publicada num vMCP, num catálogo e compartilhada.
+      const fonte = await createSkill(
+        {
+          name: 'Fonte da Cópia',
+          slug: 'fonte-da-copia',
+          skillMd: '# fonte\n\nCorpo da fonte.',
+          icon: '🐘',
+          isActive: false,
+          isPublic: true,
+          tags: ['zeta', 'alfa'],
+          files: [
+            { relativePath: 'docs/nota.md', content: 'olá' },
+            { relativePath: 'img/logo.png', content: PNG },
+          ],
+        },
+        SOURCE,
+        dona,
+      );
+      fonteUuid = fonte.uuid;
+
+      const servidor = await createVirtualMcp(
+        { name: 'Servidor da Fonte', isOpen: true, ownerUserUuid: donaUuid },
+        SOURCE,
+        dona,
+      );
+      await linkSkill(
+        'fonte-da-copia',
+        servidor.uuid,
+        { asSkill: true, asPrompt: false, asResource: true },
+        SOURCE,
+        dona,
+      );
+      const grupo = await createCatalog(
+        { name: 'Grupo da Fonte', ownerUserUuid: donaUuid },
+        SOURCE,
+        dona,
+      );
+      await addCatalogSkill(grupo.uuid, 'fonte-da-copia', SOURCE, dona);
+      await setSkillGrant('fonte-da-copia', clonadorUuid, 'edit', SOURCE, dona);
+    }, 60_000);
+
+    it('copia propriedades, arquivos e tags; nasce privada, flutuante, sem concessão e pendente de RAG', async () => {
+      const original = await getSkillDetail('fonte-da-copia', { visibility: 'all' });
+      expect(original?.mcps).toHaveLength(1);
+      expect(original?.catalogs).toHaveLength(1);
+      expect(original?.grants).toHaveLength(1);
+
+      const copia = await cloneSkill(fonteUuid, { ownerUserUuid: clonadorUuid }, SOURCE, {
+        userUuid: clonadorUuid,
+        label: 'clonador@exemplo.dev',
+      });
+      copiaSlug = copia.slug;
+
+      expect(copia).toMatchObject({
+        // O desempate sai do slug do **original**, não do nome.
+        slug: 'fonte-da-copia-2',
+        name: 'Fonte da Cópia',
+        description: '',
+        icon: '🐘',
+        // `is_active` vem como está; `is_public` **nunca** vem.
+        isActive: false,
+        isPublic: false,
+        ownerUserUuid: clonadorUuid,
+        ownerEmail: 'clonador@exemplo.dev',
+        viewCount: 0,
+        downloadCount: 0,
+        tags: ['alfa', 'zeta'],
+        skillMd: '# fonte\n\nCorpo da fonte.',
+      });
+      // Flutuante e sem concessão: o clone não entra em vMCP nem em catálogo,
+      // e quem clonou é o dono — não há a quem conceder.
+      expect(copia.mcps).toEqual([]);
+      expect(copia.catalogs).toEqual([]);
+      expect(copia.grants).toEqual([]);
+
+      // Os arquivos vêm todos, com os bytes intactos e o hash recalculado.
+      const arquivos = await readAllFiles(copia.uuid);
+      expect(arquivos.map((f) => f.relativePath)).toEqual(['SKILL.md', 'docs/nota.md', 'img/logo.png']);
+      expect(arquivos.find((f) => f.relativePath === 'img/logo.png')?.isText).toBe(false);
+      expect(arquivos.find((f) => f.relativePath === 'img/logo.png')?.buffer.equals(PNG)).toBe(true);
+      expect(arquivos.find((f) => f.relativePath === 'docs/nota.md')?.buffer.toString('utf8')).toBe('olá');
+
+      const { rows } = await lock.query<{ hash: string; iguais: string; pendente: boolean }>(
+        `SELECT encode(f.content_sha256, 'hex') AS hash,
+                (SELECT count(*) FROM files o
+                  WHERE o.skill_uuid = $2 AND o.relative_path = f.relative_path
+                    AND o.content_sha256 = f.content_sha256)::text AS iguais,
+                s.rag_stale AS pendente
+           FROM files f JOIN skills s ON s.uuid = f.skill_uuid
+          WHERE f.skill_uuid = $1 ORDER BY f.relative_path`,
+        [copia.uuid, fonteUuid],
+      );
+      expect(rows).toHaveLength(3);
+      expect(rows.every((r) => r.hash.length === 64 && r.iguais === '1')).toBe(true);
+      expect(rows.every((r) => r.pendente)).toBe(true);
+
+      // O criador acompanha o dono (a coluna não sai na ficha).
+      const criador = await lock.query<{ c: string | null }>(
+        'SELECT created_by_user_uuid AS c FROM skills WHERE uuid = $1',
+        [copia.uuid],
+      );
+      expect(criador.rows[0]?.c).toBe(clonadorUuid);
+
+      // Uma linha só na trilha, no objeto novo, com os dois lados no alvo.
+      const trilha = await listAuditPage({ action: 'skill.clone' });
+      expect(trilha.total).toBe(1);
+      expect(trilha.items[0]).toMatchObject({
+        skillSlug: 'fonte-da-copia-2',
+        skillUuid: copia.uuid,
+        targetLabel: 'fonte-da-copia -> fonte-da-copia-2',
+        actorUserUuid: clonadorUuid,
+        actorLabel: 'clonador@exemplo.dev',
+        filePath: null,
+      });
+      // E nenhuma `create` da cópia: a clonagem não aparece duas vezes.
+      expect(
+        (await listAuditPage({ action: 'create', q: 'fonte-da-copia-2' })).total,
+      ).toBe(0);
+    });
+
+    it('o segundo clone é -3; nome pedido não muda o desempate; sem conta a cópia nasce órfã', async () => {
+      const terceira = await cloneSkill(fonteUuid, { name: '  Outro nome  ' }, SOURCE, {
+        userUuid: null,
+        label: 'token-global',
+      });
+      expect(terceira.slug).toBe('fonte-da-copia-3');
+      expect(terceira.name).toBe('Outro nome');
+      expect(terceira.ownerUserUuid).toBeNull();
+      expect(terceira.ownerEmail).toBeNull();
+
+      // Nome vazio é "o mesmo nome do original".
+      const quarta = await cloneSkill(fonteUuid, { name: '   ' }, SOURCE, dona);
+      expect(quarta.slug).toBe('fonte-da-copia-4');
+      expect(quarta.name).toBe('Fonte da Cópia');
+    });
+
+    it('slug pedido: livre grava, ocupado é 409 e inválido é 400; uuid torto ou sumido é 404', async () => {
+      const pedida = await cloneSkill(fonteUuid, { slug: 'copia-escolhida' }, SOURCE, dona);
+      expect(pedida.slug).toBe('copia-escolhida');
+
+      expect(await outcome(cloneSkill(fonteUuid, { slug: copiaSlug }, SOURCE, dona))).toMatchObject({
+        status: 409,
+        message: `Já existe uma skill com o slug "${copiaSlug}"`,
+      });
+      expect(await outcome(cloneSkill(fonteUuid, { slug: 'Com Espaço' }, SOURCE, dona))).toMatchObject({
+        status: 400,
+      });
+      expect(await outcome(cloneSkill('torto', {}, SOURCE, dona))).toMatchObject({ status: 404 });
+      expect(
+        await outcome(cloneSkill('00000000-0000-0000-0000-000000000000', {}, SOURCE, dona)),
+      ).toMatchObject({ status: 404 });
+      // Dono que não existe é o mesmo 404 da criação.
+      expect(
+        await outcome(
+          cloneSkill(fonteUuid, { ownerUserUuid: '00000000-0000-0000-0000-000000000000' }, SOURCE, dona),
+        ),
+      ).toMatchObject({ status: 404 });
+      expect(await outcome(cloneSkill(fonteUuid, { ownerUserUuid: 'torto' }, SOURCE, dona))).toMatchObject({
+        status: 404,
+      });
+
+      // Nenhuma recusa deixou linha na trilha nem skill pela metade.
+      expect((await listAuditPage({ action: 'skill.clone' })).total).toBe(4);
+      expect(await getSkillSummary('com-espaco', { visibility: 'all' })).toBeNull();
     });
   });
 });

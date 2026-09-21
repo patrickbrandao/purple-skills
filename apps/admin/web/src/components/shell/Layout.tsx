@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronRight, PanelLeftOpen, Search } from 'lucide-react';
+import { ChevronRight, Moon, PanelLeftOpen, Search, Sun } from 'lucide-react';
 import type { Session, SessionUser } from '../../api.js';
 import { usePalette } from '../commands.js';
 import { Badge, Kbd, useStored } from '../ui.js';
+import { useTheme } from '../../themeStore.js';
 import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 import { Notifications } from './Notifications.js';
 import { isNewSkillPath } from './routes.js';
@@ -28,26 +29,30 @@ function crumbsFor(pathname: string): Crumb[] {
       return second
         ? [{ label: 'Skills', to: '/skills' }, { label: second, to: `/skills/${second}` }, ...(third ? [{ label: third }] : [])]
         : [{ label: 'Skills' }];
-    case 'catalogos':
-      return second ? [{ label: 'Catálogos', to: '/catalogos' }, { label: second }] : [{ label: 'Catálogos' }];
+    case 'catalogs':
+      return second ? [{ label: 'Catálogos', to: '/catalogs' }, { label: second }] : [{ label: 'Catálogos' }];
     // O segundo nível é o uuid do envio: não há slug legível para pôr na trilha.
-    case 'quarentena':
-      return second ? [{ label: 'Quarentena', to: '/quarentena' }, { label: 'envio' }] : [{ label: 'Quarentena' }];
-    case 'auditoria':
-      return [{ label: 'Auditoria', to: '/auditoria' }, ...(second ? [{ label: 'sessões MCP' }] : [{ label: 'trilha' }])];
+    case 'quarantine':
+      return second ? [{ label: 'Quarentena', to: '/quarantine' }, { label: 'envio' }] : [{ label: 'Quarentena' }];
+    // Só a raiz: a guia `activity` da ficha de usuário é `/users/:uuid/activity`,
+    // e cai no `case 'users'` — o switch olha o **primeiro** segmento.
+    case 'activity':
+      return [{ label: 'Atividade' }];
+    case 'audit':
+      return [{ label: 'Auditoria', to: '/audit' }, ...(second ? [{ label: 'sessões MCP' }] : [{ label: 'trilha' }])];
     case 'users':
       return [{ label: 'Usuários' }];
-    case 'configuracoes': {
+    case 'settings': {
       const section = SETTINGS_SECTIONS.find((item) => item.path === second);
       return [{ label: 'Configurações' }, ...(section ? [{ label: section.label.toLowerCase() }] : [])];
     }
-    case 'meu-espaco': {
-      const label = { skills: 'minhas skills', catalogos: 'meus catálogos' }[second ?? ''];
+    case 'my-space': {
+      const label = { skills: 'minhas skills', catalogs: 'meus catálogos' }[second ?? ''];
       return [{ label: 'Meu espaço' }, ...(label ? [{ label }] : [])];
     }
     // As telas de chave são `/account/…`: o submenu delas é o mesmo "Configurações".
     case 'account': {
-      const label = { 'chaves-adm': 'adm mcp keys', 'chaves-emitidas': 'chaves emitidas' }[second ?? ''] ?? 'minha conta';
+      const label = { 'admin-keys': 'adm mcp keys', 'issued-keys': 'chaves emitidas' }[second ?? ''] ?? 'minha conta';
       return [{ label: 'Configurações' }, { label }];
     }
     default:
@@ -74,6 +79,7 @@ export function Layout({
   // Recolher é preferência de quem usa, por navegador; na tela estreita não se aplica.
   const [collapsed, setCollapsed] = useStored('purple-skills-admin:sidebar-collapsed', false);
   const { open: openPalette } = usePalette();
+  const [theme, toggleTheme] = useTheme();
   const crumbs = crumbsFor(location.pathname);
 
   return (
@@ -122,6 +128,15 @@ export function Layout({
           <Kbd>⌘</Kbd>
           <Kbd>K</Kbd>
         </span>
+        <button
+          type="button"
+          className="icon-btn"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Tema claro' : 'Tema escuro'}
+          aria-label={theme === 'dark' ? 'Tema claro' : 'Tema escuro'}
+        >
+          {theme === 'dark' ? <Sun /> : <Moon />}
+        </button>
         <Notifications session={session} user={user} onLogout={onLogout} />
       </header>
 

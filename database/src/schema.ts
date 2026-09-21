@@ -614,6 +614,55 @@ export const mcpSessions = pgTable(
     ),
     index('mcp_sessions_last_seen_idx').on(table.lastSeenAt.desc()),
     index('mcp_sessions_key_id_idx').on(table.keyId),
+    // A tela de Atividade (`schema/032-atividade.sql`): a série do heatmap
+    // conta sessões **abertas** no dia, e o relatório as **encerradas** nele.
+    index('mcp_sessions_started_at_idx').on(table.startedAt.desc()),
+    index('mcp_sessions_ended_at_idx').on(table.endedAt.desc()),
+  ],
+);
+
+// -------------------------------------------------------- chamadas do MCP ---
+
+/**
+ * Contador de chamadas JSON-RPC do MCP público, por balde de 15 minutos
+ * (`docs/18-atividade.md`, `schema/032-atividade.sql`). É **contador, não
+ * registro**: a menor unidade é "quantas vezes", e nenhuma coluna guarda nome
+ * de tool, argumento, IP, e-mail ou sessão.
+ *
+ * A PK é `(bucket, virtual_mcp_slug, transport, method)` — o slug, e não o
+ * uuid, porque `virtual_mcp_uuid` é `SET NULL` e nulo não fecha chave: depois
+ * que o vMCP some, o UPSERT passaria a inserir linha nova a cada flush em vez
+ * de somar. `family` é derivada de `method` (`mcpCallFamily` de shared) e
+ * gravada junto, para o relatório agrupar sem reimplementar a regra em SQL.
+ * Os CHECKs de `transport` e `family` ficam só no SQL; o teto de `method` é
+ * saneamento de `bumpMcpCallCounters`, não CHECK. Nunca é podada.
+ */
+export const mcpCallCounters = pgTable(
+  'mcp_call_counters',
+  {
+    /** Início do balde de `MCP_CALL_BUCKET_MS`; quem o calcula é quem atendeu a chamada. */
+    bucket: timestamp('bucket', { withTimezone: true }).notNull(),
+    /** Nulo depois que o vMCP é apagado; o slug abaixo é a cópia que fica. */
+    virtualMcpUuid: uuid('virtual_mcp_uuid').references(() => virtualMcps.uuid, {
+      onDelete: 'set null',
+    }),
+    virtualMcpSlug: text('virtual_mcp_slug').notNull(),
+    transport: text('transport').notNull(),
+    /** O método JSON-RPC cru, já limpo e cortado em `MCP_CALL_METHOD_MAX`. */
+    method: text('method').notNull(),
+    family: text('family').notNull(),
+    calls: bigint('calls', { mode: 'number' }).notNull().default(0),
+  },
+  (table) => [
+    primaryKey({
+      name: 'mcp_call_counters_pkey',
+      columns: [table.bucket, table.virtualMcpSlug, table.transport, table.method],
+    }),
+    // A faixa do heatmap e a do relatório do dia; o `DESC` é do índice (`032`).
+    index('mcp_call_counters_bucket_idx').on(table.bucket.desc()),
+    // Só a varredura do SET NULL: a PK começa por `bucket` e não acha as
+    // linhas de um servidor.
+    index('mcp_call_counters_virtual_mcp_idx').on(table.virtualMcpUuid),
   ],
 );
 
@@ -956,6 +1005,7 @@ export type CatalogGrantRow = typeof catalogGrants.$inferSelect;
 export type VirtualMcpGrantRow = typeof virtualMcpGrants.$inferSelect;
 export type SettingRow = typeof settings.$inferSelect;
 export type McpSessionRow = typeof mcpSessions.$inferSelect;
+export type McpCallCounterRow = typeof mcpCallCounters.$inferSelect;
 export type SkillAccessRow = typeof skillAccesses.$inferSelect;
 export type RagSpaceRow = typeof ragSpaces.$inferSelect;
 export type RagTextStatusRow = typeof ragTextStatus.$inferSelect;

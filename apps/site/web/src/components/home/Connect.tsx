@@ -51,7 +51,7 @@ export function Connect() {
   const json = JSON.stringify(config, null, 4);
 
   return (
-    <section className="how-connect-sec" id="comecar">
+    <section className="how-connect-sec" id="get-started">
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">

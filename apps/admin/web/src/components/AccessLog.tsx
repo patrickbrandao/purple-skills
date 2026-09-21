@@ -284,7 +284,7 @@ function AccessRow({ entry, showSkill }: { entry: SkillAccessEntry; showSkill?: 
                     <span key={`${catalog.slug}-${index}`}>
                       {index > 0 && ', '}
                       {catalog.uuid ? (
-                        <Link to={`/catalogos/${catalog.slug}`} className="link">
+                        <Link to={`/catalogs/${catalog.slug}`} className="link">
                           {catalog.name}
                         </Link>
                       ) : (

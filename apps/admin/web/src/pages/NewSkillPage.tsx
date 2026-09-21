@@ -146,7 +146,7 @@ function BundleResult({
                 {imported.map((item) => (
                   <tr key={item.uuid}>
                     <td>
-                      <Link to={`/quarentena/${item.uuid}`} className="flex items-center gap-3 no-underline">
+                      <Link to={`/quarantine/${item.uuid}`} className="flex items-center gap-3 no-underline">
                         <span className="skill-icon sm" aria-hidden="true">
                           <FileArchive size={14} />
                         </span>
@@ -203,7 +203,7 @@ function BundleResult({
         </Button>
         {/* `Link`, não `Button` dentro de `Link`: botão dentro de âncora é
             aninhamento inválido, e o clique do teclado fica ambíguo. */}
-        <Link to="/quarentena" className="btn btn-primary">
+        <Link to="/quarantine" className="btn btn-primary">
           <ShieldQuestion /> Ver a fila da quarentena
         </Link>
       </div>
@@ -216,9 +216,9 @@ export function NewSkillPage() {
   const toast = useToast();
   const [params] = useSearchParams();
 
-  const [mode, setMode] = useState<'form' | 'zip'>(params.get('modo') === 'zip' ? 'zip' : 'form');
+  const [mode, setMode] = useState<'form' | 'zip'>(params.get('mode') === 'zip' ? 'zip' : 'form');
   // O destino só existe na importação: o formulário vai sempre para produção.
-  const [destino, setDestino] = useState<Destino>(params.get('destino') === 'quarentena' ? 'quarentena' : 'producao');
+  const [destino, setDestino] = useState<Destino>(params.get('destination') === 'quarantine' ? 'quarentena' : 'producao');
   const [meta, setMeta] = useState<SkillMetaValues>({ name: '', slug: '', description: '', tags: '', icon: '' });
   // Onde publicar já na criação. Vazio = a skill nasce flutuante.
   const [links, setLinks] = useState<SkillLinkInput[]>([]);
@@ -262,7 +262,7 @@ export function NewSkillPage() {
           return;
         }
         toast.success(`Envio "${envio.name}" está na quarentena, esperando aprovação.`);
-        navigate(`/quarentena/${envio.uuid}`);
+        navigate(`/quarantine/${envio.uuid}`);
         return;
       }
 
@@ -389,7 +389,7 @@ export function NewSkillPage() {
       </Panel>
 
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" onClick={() => navigate(paraQuarentena ? '/quarentena' : '/skills')}>
+        <Button variant="ghost" onClick={() => navigate(paraQuarentena ? '/quarantine' : '/skills')}>
           Cancelar
         </Button>
         <Button type="submit" disabled={submitting || (mode === 'zip' && !file)}>

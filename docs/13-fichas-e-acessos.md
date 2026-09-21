@@ -12,6 +12,13 @@ Revisão de 17/09/2026: **Acesso** vira guia própria nas três fichas,
 > da §3.2 perdeu o "importar `.zip`" e o "substituir a árvore por um `.zip`", e
 > o envio avulso dela passou a aceitar **só texto**. Os trechos estão riscados
 > onde estavam; o resto da guia continua em vigor.
+>
+> **E parcialmente pelo [`18`](18-atividade.md)** — o "leituras por dia" da
+> `§8` saiu do fora do escopo: a tela de Atividade soma as leituras de cada
+> dia e as abre por superfície, por origem e por autenticação. Só isso, e a
+> marca está no ponto — por cliente e por servidor continuam fora, a lista
+> global de acessos em Auditoria também, e nenhuma superfície passou a gravar
+> leitura nova.
 
 Este documento registra o desenho fechado na entrevista de 14/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
@@ -57,7 +64,7 @@ cor do tipo.
 | 1 | Colmeia: o que cada hexágono mostra | **Só a cor**, sem ícone nem texto: `rgb(59, 145, 145)` para skill, `rgb(112, 59, 145)` para catálogo, iguais nos dois temas; o nome vai no tooltip |
 | 2 | Colmeia: quantos hexágonos | **Teto fixo de 19** (1 + 6 + 12, em espiral do centro) e um hexágono neutro **"+N"** com o que não coube |
 | 3 | Colmeia: o que entra | Catálogos primeiro, depois as skills com **vínculo direto**, por nome. Skill que chega só por catálogo não vira hexágono próprio: o catálogo é o hexágono dela |
-| 4 | Fichas | **Lista → visualizar → editar.** A visualização não tem nenhum controle que grave; a edição fica em `/editar`, com a mesma organização de guias |
+| 4 | Fichas | **Lista → visualizar → editar.** A visualização não tem nenhum controle que grave; a edição fica em `/edit`, com a mesma organização de guias |
 | 5 | Guias da skill | **Skill** (descrição na largura da guia; abaixo, a caixa Skill/SKILL.md com a árvore de arquivos à direita), **Propriedades** (metadados, "Publicada em", "Nos catálogos", "Acesso") e **Acessos**. Em Editar, desde a decisão 17: Skill, **Arquivos** e Propriedades |
 | 6 | Guias do catálogo | **Catálogo** (a descrição), **Skills** (os membros), **Propriedades** (configuração, "Vinculado em", "Acesso") e **Acessos** |
 | 7 | O que sai da visualização | Publicar/tirar de servidor, transferir dono, marcar público, conceder/revogar e **Remover** vão todos para **Editar → Propriedades**; Remover fica numa **zona de perigo** no fim, não no cabeçalho |
@@ -70,24 +77,24 @@ cor do tipo.
 | 14 | Registro de acessos: retenção | **Nunca apagar**, como `mcp_sessions` (`10`, decisão 8): a tabela é o histórico |
 | 15 | Registro de acessos: quem vê | **Quem administra** a skill ou o catálogo (dono, `manage`, admin). A lista traz IPs, clientes e nomes de chave de servidores que a conta pode não administrar — o mesmo critério das concessões e das sessões de um vMCP |
 | 16 | Usuários | **O mesmo princípio** (pedido de 14/09/2026, depois da entrega): a lista só navega, "Nova conta" vira modal, a ficha é só leitura e Editar tem as mesmas guias — Conta, Chaves, Acessos, Atividade. Papel, estado, senha temporária e revogação de chave saem da lista e vão para Editar |
-| 17 | Guias da skill em Editar | **Skill, Arquivos e Propriedades** (pedido de 16/09/2026). **Acessos sai de Editar**: quem lê o registro é quem abre a ficha para consultá-la, não quem está editando. `/editar/acessos` leva a `/acessos`. Só a skill mudou: catálogo e conta continuam com Acessos em Editar |
+| 17 | Guias da skill em Editar | **Skill, Arquivos e Propriedades** (pedido de 16/09/2026). **Acessos sai de Editar**: quem lê o registro é quem abre a ficha para consultá-la, não quem está editando. `/edit/accesses` leva a `/accesses`. Só a skill mudou: catálogo e conta continuam com Acessos em Editar |
 | 18 | Onde se edita um arquivo | **Na guia Arquivos** (substitui a 9): a árvore à esquerda, com largura arrastável e guardada no navegador, e o arquivo aberto no resto da largura, na altura da janela. A árvore cria **arquivo vazio** e **pasta** — na raiz (a linha do slug) ou numa pasta (as ações da linha, ou a barra, que age na pasta escolhida) —, envia arquivos (botão ou arrastando para a pasta), importa `.zip` e remove. Texto abre num editor com numeração e é gravado por "Salvar arquivo" (⌘S na guia); binário mostra a imagem ou os dados; o SKILL.md abre o corpo do formulário, com o frontmatter travado, e é gravado pelo Salvar do cabeçalho. A guia Skill mantém a árvore ao lado do SKILL.md, como na leitura; clicar num arquivo o abre em Arquivos |
 | 19 | Pasta nova | **Vive na página até receber o primeiro arquivo.** O banco só guarda arquivos — uma pasta existe porque há arquivo dentro — e o pacote não leva pasta vazia. A árvore a mostra com o selo "vazia"; se a página fechar antes, ela some. A pasta que perde o último arquivo continua à vista, vazia, até sair da página. Sem migration e sem arquivo-marcador (`.gitkeep`) no pacote |
 | 20 | Criar não sobrescreve | "Novo arquivo" é `POST /api/skills/:slug/files/*path` (`createFile`): caminho ocupado em qualquer caixa, prefixo que é arquivo, pasta com o mesmo nome e o SKILL.md são **409**, conferidos numa transação. As outras escritas continuam upsert e sobrescrevem de propósito: salvar (`PUT …/files/*path`) e enviar (`POST …/files`, multipart — que pede confirmação quando o nome já existe) |
-| 21 | Acesso | **Guia própria** (pedido de 17/09/2026) na skill, no catálogo e no servidor, na leitura e na edição — antes era uma caixa à direita de Propriedades (e de Configurações, no servidor). A tela tem, à esquerda, "Quem tem acesso" (o dono e as concessões, com "Compartilhar com") e, à direita, Dono (com transferir), Visibilidade e o que cada nível permite. No servidor, a visibilidade é o "aberto", que continua em Configurações. Rotas `/acesso` e `/editar/acesso`; no servidor, `/mcps/:slug/acesso` |
-| 22 | Auditoria | A guia **Acessos** (o registro de leituras) passa a se chamar **Auditoria**, em `/auditoria`; `/acessos` leva para lá (e, na skill, `/editar/acessos` e `/editar/auditoria` levam à leitura, como na 17). A ficha de conta continua com Acessos — lá a guia são as leituras **feitas** pela conta, ao lado de Atividade |
+| 21 | Acesso | **Guia própria** (pedido de 17/09/2026) na skill, no catálogo e no servidor, na leitura e na edição — antes era uma caixa à direita de Propriedades (e de Configurações, no servidor). A tela tem, à esquerda, "Quem tem acesso" (o dono e as concessões, com "Compartilhar com") e, à direita, Dono (com transferir), Visibilidade e o que cada nível permite. No servidor, a visibilidade é o "aberto", que continua em Configurações. Rotas `/access` e `/edit/access`; no servidor, `/mcps/:slug/access` |
+| 22 | Auditoria | A guia **Acessos** (o registro de leituras) passa a se chamar **Auditoria**, em `/audit`; `/accesses` leva para lá (e, na skill, `/edit/accesses` e `/edit/audit` levam à leitura, como na 17). A ficha de conta continua com Acessos — lá a guia são as leituras **feitas** pela conta, ao lado de Atividade |
 | 23 | Catálogos da skill | **Guia própria** na leitura (os catálogos de que participa, com estado, servidores e dono) e, na edição, a mesma tabela como CRUD da participação: "Adicionar a um catálogo" (a paleta, só com os catálogos que a sessão **edita**), a caixa que liga e desliga a participação e "Tirar do catálogo". Catálogo que a sessão não edita fica em leitura. A permissão é a do catálogo (`edit`), como na ficha dele |
 | 24 | Salvar da edição da skill | **Sempre ativo, e grava tudo** (pedido de 17/09/2026: desmarcar um vínculo ou mudar o acesso não ativava o botão). Portas por servidor, participação nos catálogos, visibilidade, concessões e dono deixam de gravar na hora e viram **pendências**; o Salvar envia, nesta ordem, os arquivos alterados, o formulário (com a visibilidade junto), as portas, os catálogos, as concessões e, por último, a transferência (com confirmação). O que falhar continua pendente e o erro diz qual foi. Sem pendência, o Salvar relê a skill do servidor. Uma faixa acima das guias lista o que vai ser gravado, com Descartar; o botão mostra quantas são. Desmarcar todas as portas de um servidor tira a skill dele. Só a skill mudou: catálogo e servidor continuam gravando membros e acesso na hora |
 | 25 | Arquivos na leitura da skill | **Guia própria, logo depois de Skill** (pedido de 17/09/2026): a mesma árvore e o mesmo layout da guia de Editar (decisão 18), sem nada que grave — só recolher as pastas e recarregar a árvore. O arquivo escolhido abre num **leitor** com as cores da linguagem (o `lowlight` que o markdown já usa, com as classes `sx-*` e os tokens `--syn-*` nos dois temas), numeração que não entra na seleção, quebra de linhas ligável (guardada no navegador), Copiar, Abrir cru e Baixar. A linguagem sai do nome do arquivo e, sem nome que diga, do shebang; o que não se reconhece fica em texto puro. O SKILL.md aparece inteiro, como sai no pacote, com o frontmatter colorido como YAML. Mais de 10 mil linhas mostram as primeiras, com aviso; acima de 250 mil caracteres o trecho sai sem cores. Na guia Skill, clicar num arquivo da árvore o abre aqui (antes abria o cru em outra aba do navegador). Editar e Visualizar levam à mesma guia e, em Arquivos, ao mesmo arquivo. Em Editar, quem não grava o conteúdo vê o mesmo leitor no lugar do editor travado |
 
 Fechadas por derivação:
 
-- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/arquivos` (decisão
-  25), `/skills/:slug/catalogos`,
-  `/skills/:slug/propriedades`, `/skills/:slug/acesso`,
-  `/skills/:slug/auditoria`, e o mesmo sob `/editar` — na skill, desde as
-  decisões 17 e 21 a 23, `/editar/arquivos`, `/editar/catalogos`,
-  `/editar/propriedades` e `/editar/acesso`; no catálogo, mais `/skills`. Uma guia tem endereço e sobrevive a um recarregamento, como as
+- **Guias em rotas.** `/skills/:slug`, `/skills/:slug/files` (decisão
+  25), `/skills/:slug/catalogs`,
+  `/skills/:slug/properties`, `/skills/:slug/access`,
+  `/skills/:slug/audit`, e o mesmo sob `/edit` — na skill, desde as
+  decisões 17 e 21 a 23, `/edit/files`, `/edit/catalogs`,
+  `/edit/properties` e `/edit/access`; no catálogo, mais `/skills`. Uma guia tem endereço e sobrevive a um recarregamento, como as
   abas do servidor. O arquivo aberto em Arquivos não entra no endereço: ele
   é estado da página, como os rascunhos.
 - **O token global não entra no registro.** Ele não é uma conta: como o
@@ -132,7 +139,7 @@ está desligada.
   quem administra), a visibilidade e os níveis.
 - **Auditoria** (só para quem administra) — a tabela da §5.
 
-### 3.2 Skill: editar (`/skills/:slug/editar`)
+### 3.2 Skill: editar (`/skills/:slug/edit`)
 
 O mesmo cabeçalho, com **Visualizar** e **Salvar** no lugar de Editar. Cinco
 guias — Skill, Arquivos, Catálogos, Propriedades e Acesso (decisões 17, 21 e
@@ -183,7 +190,7 @@ Permissões (`12` §3.2): conteúdo, descrição e metadados são `edit`; slug e
 `edit` **no servidor**. Quem entra só por administrar um servidor vê um
 aviso e os campos travados.
 
-### 3.3 Catálogo: visualizar e editar (`/catalogos/:slug`, `…/editar`)
+### 3.3 Catálogo: visualizar e editar (`/catalogs/:slug`, `…/edit`)
 
 Cabeçalho: nome com os selos (desligado, público, origem do acesso), a linha
 com slug, membros ativos, servidores, contadores, dono e datas, e os botões
@@ -203,7 +210,7 @@ catálogo desligado e de skills desligadas ficam acima das guias.
 - **Auditoria** (só para quem administra) — a tabela da §5 com a coluna da
   skill.
 
-### 3.4 Usuário: visualizar e editar (`/users/:uuid`, `…/editar`)
+### 3.4 Usuário: visualizar e editar (`/users/:uuid`, `…/edit`)
 
 Só admin, como a lista. A lista (`/users`) ganha busca por nome ou e-mail, o
 filtro de estado e a coluna de estado; os selects e os links de ação que
@@ -358,7 +365,13 @@ na raiz, como o `.zip` já fazia.
 
 ## 8. Fora do escopo
 
-- Estatísticas derivadas do registro (leituras por dia, por cliente, por
+- Estatísticas derivadas do registro (leituras ~~por dia~~, por cliente, por
   servidor); uma lista global de acessos em Auditoria.
+  **Revogado neste ponto por [`18`](18-atividade.md)**, e só no "por dia": a
+  tela de Atividade soma as leituras de cada dia — na célula da grade e no
+  relatório, abertas por superfície, por origem e por autenticação, com as
+  skills mais lidas. Por cliente e por servidor continuam fora, e a lista
+  global de acessos em Auditoria também: o relatório é agregado, e o evento a
+  evento segue sendo a guia da `§5.3`.
 - Registrar o que o painel lê.
 - Um canvas na página da skill.

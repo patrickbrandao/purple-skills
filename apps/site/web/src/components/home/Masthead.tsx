@@ -43,11 +43,11 @@ export function Masthead() {
               Explorar skills →
             </a>
             {catalogs && catalogs.length > 0 && (
-              <a href="#catalogos" className="btn btn-ghost">
+              <a href="#catalogs" className="btn btn-ghost">
                 Ver catálogos
               </a>
             )}
-            <a href="#comecar" className="btn btn-ghost">
+            <a href="#get-started" className="btn btn-ghost">
               Conectar um agente
             </a>
           </div>

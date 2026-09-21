@@ -5,6 +5,7 @@
 @import './styles/tokens.css';
 @import './styles/base.css';
 @import './styles/shell.css';
+@import './styles/activity.css';
 @import './styles/skill.css';
 @import './styles/canvas.css';
 @import './styles/markdown.css';

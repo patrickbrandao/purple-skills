@@ -21,6 +21,7 @@ import {
 } from '../api.js';
 import { Button, CopyButton, EmptyRow, Field, McpStateBadges, Panel, Skel, Tabs, useConfirm } from '../components/ui.js';
 import { AccessBadge, AccessTab, accessSentence } from '../components/AccessPanel.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { useToast } from '../components/Toast.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { SessionsTable } from '../components/SessionsTable.js';
@@ -38,6 +39,8 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
   const location = useLocation();
   const toast = useToast();
   const [detail, setDetail] = useState<VirtualMcpDetail | null>(null);
+  // O diálogo de clonagem: montado é aberto (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState(false);
 
   // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
   // dependesse dele, cada troca de guia buscaria o servidor de novo, piscaria o
@@ -81,7 +84,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
   }, []);
 
   const tail = location.pathname.slice(`/mcps/${slug}`.length).replace(/^\//, '');
-  const tab = tail === 'sessoes' || tail === 'chaves' || tail === 'acesso' || tail === 'configuracoes' ? tail : 'canvas';
+  const tab = tail === 'sessions' || tail === 'keys' || tail === 'access' || tail === 'settings' ? tail : 'canvas';
   const canEdit = detail ? canEditAccess(detail.access) : false;
   const manages = detail ? canManage(detail.access) : false;
   const base = session.mcpPublicUrl || 'https://<MCP_PUBLIC_URL>';
@@ -93,7 +96,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
   // Falha aqui não importa: o número é informativo.
   const loadedSlug = detail?.slug;
   useEffect(() => {
-    if (!loadedSlug || !manages || tab === 'configuracoes') return;
+    if (!loadedSlug || !manages || tab === 'settings') return;
     let active = true;
     getMcpOnline(loadedSlug)
       .then(({ total }) => {
@@ -111,12 +114,12 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           { id: 'mcp-canvas', label: 'Ir para o canvas', group: 'Ir para', icon: <LayoutTemplate />, run: () => navigate(`/mcps/${detail.slug}`) },
           ...(manages
             ? [
-                { id: 'mcp-sessions', label: 'Sessões deste servidor', group: 'Ir para' as const, icon: <Radio />, run: () => navigate(`/mcps/${detail.slug}/sessoes`) },
-                { id: 'mcp-keys', label: 'Chaves deste servidor', group: 'Ir para' as const, icon: <KeyRound />, run: () => navigate(`/mcps/${detail.slug}/chaves`) },
+                { id: 'mcp-sessions', label: 'Sessões deste servidor', group: 'Ir para' as const, icon: <Radio />, run: () => navigate(`/mcps/${detail.slug}/sessions`) },
+                { id: 'mcp-keys', label: 'Chaves deste servidor', group: 'Ir para' as const, icon: <KeyRound />, run: () => navigate(`/mcps/${detail.slug}/keys`) },
               ]
             : []),
-          { id: 'mcp-access', label: 'Acesso a este servidor', group: 'Ir para', icon: <Users />, keywords: ['dono', 'compartilhar', 'concessão'], run: () => navigate(`/mcps/${detail.slug}/acesso`) },
-          { id: 'mcp-settings', label: 'Configurações deste servidor', group: 'Ir para', icon: <Settings />, run: () => navigate(`/mcps/${detail.slug}/configuracoes`) },
+          { id: 'mcp-access', label: 'Acesso a este servidor', group: 'Ir para', icon: <Users />, keywords: ['dono', 'compartilhar', 'concessão'], run: () => navigate(`/mcps/${detail.slug}/access`) },
+          { id: 'mcp-settings', label: 'Configurações deste servidor', group: 'Ir para', icon: <Settings />, run: () => navigate(`/mcps/${detail.slug}/settings`) },
         ]
       : [],
     [detail?.slug, manages],
@@ -156,6 +159,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             </div>
           </div>
         </div>
+        <CloneButton kind="mcp" object={detail} role={user.role} onClone={() => setClonando(true)} />
         <Tabs
           className="in-stage !mb-0 !border-0"
           value={tab}
@@ -164,12 +168,12 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
             // Sessões (IPs, nomes de chave) e chaves são operação: só `manage`.
             ...(manages
               ? [
-                  { key: 'sessoes', label: 'Sessões', icon: <Radio />, to: `/mcps/${detail.slug}/sessoes`, count: detail.onlineSessions || undefined },
-                  { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `/mcps/${detail.slug}/chaves`, count: detail.activeKeyCount || undefined },
+                  { key: 'sessions', label: 'Sessões', icon: <Radio />, to: `/mcps/${detail.slug}/sessions`, count: detail.onlineSessions || undefined },
+                  { key: 'keys', label: 'Chaves', icon: <KeyRound />, to: `/mcps/${detail.slug}/keys`, count: detail.activeKeyCount || undefined },
                 ]
               : []),
-            { key: 'acesso', label: 'Acesso', icon: <Users />, to: `/mcps/${detail.slug}/acesso` },
-            { key: 'configuracoes', label: 'Configurações', icon: <Settings />, to: `/mcps/${detail.slug}/configuracoes` },
+            { key: 'access', label: 'Acesso', icon: <Users />, to: `/mcps/${detail.slug}/access` },
+            { key: 'settings', label: 'Configurações', icon: <Settings />, to: `/mcps/${detail.slug}/settings` },
           ]}
         />
       </div>
@@ -183,13 +187,13 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
               onDetail={setDetail}
               canEdit={canEdit}
               onlineWindowMs={session.onlineWindowMs}
-              onOpenSessions={() => navigate(`/mcps/${detail.slug}/sessoes`)}
+              onOpenSessions={() => navigate(`/mcps/${detail.slug}/sessions`)}
             />
           }
         />
         {manages && (
           <Route
-            path="sessoes"
+            path="sessions"
             element={
               <div className="stage-body">
                 <div className="page wide">
@@ -201,7 +205,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
         )}
         {manages && (
           <Route
-            path="chaves"
+            path="keys"
             element={
               <div className="stage-body">
                 <div className="page">
@@ -212,7 +216,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           />
         )}
         <Route
-          path="acesso"
+          path="access"
           element={
             <div className="stage-body">
               <div className="page wide">
@@ -230,7 +234,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           }
         />
         <Route
-          path="configuracoes"
+          path="settings"
           element={
             <div className="stage-body">
               <div className="page">
@@ -240,6 +244,8 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
           }
         />
       </Routes>
+
+      {clonando && <CloneDialog kind="mcp" origem={detail} onClose={() => setClonando(false)} />}
     </>
   );
 }
@@ -441,7 +447,7 @@ function OpenState({ mcp, manages }: { mcp: VirtualMcpDetail; manages: boolean }
       <p className="hint">
         {manages ? (
           <>
-            Abrir e fechar é em <Link to={`/mcps/${mcp.slug}/configuracoes`} className="link">Configurações</Link>.
+            Abrir e fechar é em <Link to={`/mcps/${mcp.slug}/settings`} className="link">Configurações</Link>.
           </>
         ) : (
           'Só quem administra o servidor o abre ou fecha.'
@@ -502,7 +508,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
       });
       onSaved(saved);
       toast.success('Servidor salvo.');
-      if (saved.slug !== mcp.slug) navigate(`/mcps/${saved.slug}/configuracoes`, { replace: true });
+      if (saved.slug !== mcp.slug) navigate(`/mcps/${saved.slug}/settings`, { replace: true });
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -589,7 +595,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
             <dt>Dono</dt>
             <dd>
               {mcp.ownerEmail ?? 'nenhum (só administradores)'} ·{' '}
-              <Link to={`/mcps/${mcp.slug}/acesso`} className="link">
+              <Link to={`/mcps/${mcp.slug}/access`} className="link">
                 acesso
               </Link>
             </dd>

@@ -16,18 +16,19 @@ import {
 import { Badge, EmptyRow, McpStateBadges, Panel, Skel, Status, Tabs } from '../components/ui.js';
 import { AccessBadge, AccessTab, accessSentence } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { SURFACES } from '../components/SkillMcps.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
-export type CatalogTab = 'catalogo' | 'skills' | 'propriedades' | 'acesso' | 'auditoria';
+export type CatalogTab = 'catalog' | 'skills' | 'properties' | 'access' | 'audit';
 
-const TABS: readonly CatalogTab[] = ['skills', 'propriedades', 'acesso', 'auditoria'];
+const TABS: readonly CatalogTab[] = ['skills', 'properties', 'access', 'audit'];
 
-/** A guia pelo caminho, a partir da base da ficha (`/catalogos/:slug` ou `…/editar`). */
+/** A guia pelo caminho, a partir da base da ficha (`/catalogs/:slug` ou `…/edit`). */
 export const catalogTabOf = (pathname: string, base: string): CatalogTab =>
-  TABS.find((item) => item === pathname.slice(base.length).split('/')[1]) ?? 'catalogo';
+  TABS.find((item) => item === pathname.slice(base.length).split('/')[1]) ?? 'catalog';
 
 /** O que "público" significa num catálogo, para a guia Acesso. */
 export const CATALOG_PUBLIC_HINT = 'O site lista o catálogo com todos os membros ativos — inclusive skills que não são públicas.';
@@ -47,8 +48,10 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
   const location = useLocation();
   const toast = useToast();
   const [detail, setDetail] = useState<CatalogDetail | null>(null);
+  // O diálogo de clonagem: montado é aberto (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState(false);
 
-  const tab = catalogTabOf(location.pathname, `/catalogos/${slug}`);
+  const tab = catalogTabOf(location.pathname, `/catalogs/${slug}`);
 
   // Fora de um data router, `navigate` muda a cada troca de caminho: se a carga
   // dependesse dele, cada troca de guia buscaria o catálogo de novo e piscaria
@@ -66,7 +69,7 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
       .catch((err) => {
         if (!active) return;
         toast.error((err as Error).message);
-        navigateRef.current('/catalogos');
+        navigateRef.current('/catalogs');
       });
     return () => {
       active = false;
@@ -83,7 +86,7 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
 
   useRegisterCommands(
     detail && canEdit
-      ? [{ id: 'catalog-edit', label: `Editar "${detail.name}"`, group: 'Recurso', icon: <Pencil />, shortcut: 'e', run: () => navigate(`/catalogos/${detail.slug}/editar`) }]
+      ? [{ id: 'catalog-edit', label: `Editar "${detail.name}"`, group: 'Recurso', icon: <Pencil />, shortcut: 'e', run: () => navigate(`/catalogs/${detail.slug}/edit`) }]
       : [],
     [detail?.slug, canEdit],
   );
@@ -98,14 +101,14 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
     );
   }
 
-  const base = `/catalogos/${detail.slug}`;
+  const base = `/catalogs/${detail.slug}`;
   const inactiveSkills = detail.skills.filter((skill) => !skill.skillIsActive).length;
 
   return (
     <div className="page wide">
       <div className="page-head">
         <div className="min-w-0">
-          <Link to="/catalogos" className="back-link">
+          <Link to="/catalogs" className="back-link">
             <ArrowLeft /> Catálogos
           </Link>
           <div className="flex items-center gap-2">
@@ -116,12 +119,13 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
         </div>
         <div className="page-actions">
           {detail.isPublic && (
-            <a href={`${session.siteBaseUrl}/catalogos/${detail.slug}`} target="_blank" rel="noreferrer" className="btn btn-quiet btn-sm">
+            <a href={`${session.siteBaseUrl}/catalogs/${detail.slug}`} target="_blank" rel="noreferrer" className="btn btn-quiet btn-sm">
               <ExternalLink /> ver no site
             </a>
           )}
+          <CloneButton kind="catalog" object={detail} role={user.role} onClone={() => setClonando(true)} />
           {canEdit && (
-            <Link to={`${base}/editar`} className="btn btn-primary">
+            <Link to={`${base}/edit`} className="btn btn-primary">
               <Pencil /> Editar
             </Link>
           )}
@@ -133,24 +137,26 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
       <Tabs
         value={tab}
         items={[
-          { key: 'catalogo', label: 'Catálogo', icon: <Info />, to: base },
+          { key: 'catalog', label: 'Catálogo', icon: <Info />, to: base },
           { key: 'skills', label: 'Skills', icon: <Library />, to: `${base}/skills`, count: detail.skillCount },
-          { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/propriedades` },
-          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${base}/acesso` },
-          ...(manages ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${base}/auditoria` }] : []),
+          { key: 'properties', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/properties` },
+          { key: 'access', label: 'Acesso', icon: <Users />, to: `${base}/access` },
+          ...(manages ? [{ key: 'audit', label: 'Auditoria', icon: <History />, to: `${base}/audit` }] : []),
         ]}
       />
 
       <Routes>
         <Route index element={<CatalogDescription description={detail.description} />} />
         <Route path="skills" element={<MembersTable catalog={detail} />} />
-        <Route path="propriedades" element={<PropertiesTab catalog={detail} />} />
-        <Route path="acesso" element={<AccessTab kind="catalog" object={detail} user={user} mode="read" publicHint={CATALOG_PUBLIC_HINT} />} />
-        {manages && <Route path="auditoria" element={<AccessLog load={loadAccesses} showSkill />} />}
+        <Route path="properties" element={<PropertiesTab catalog={detail} />} />
+        <Route path="access" element={<AccessTab kind="catalog" object={detail} user={user} mode="read" publicHint={CATALOG_PUBLIC_HINT} />} />
+        {manages && <Route path="audit" element={<AccessLog load={loadAccesses} showSkill />} />}
         {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
-        <Route path="acessos" element={<Navigate to={`${base}/auditoria`} replace />} />
+        <Route path="accesses" element={<Navigate to={`${base}/audit`} replace />} />
         <Route path="*" element={<Navigate to={base} replace />} />
       </Routes>
+
+      {clonando && <CloneDialog kind="catalog" origem={detail} onClose={() => setClonando(false)} />}
     </div>
   );
 }

@@ -47,7 +47,7 @@ function Row({ tiles }: { tiles: Tile[] }) {
 
 export function Ecosystem() {
   return (
-    <section className="eco" id="ecossistema">
+    <section className="eco" id="ecosystem">
       <div className="wrap">
         <div className="head reveal">
           <h2 className="display">

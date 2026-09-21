@@ -39,7 +39,7 @@ export function Hero() {
             >
               <GithubIcon /> Ver no GitHub
             </a>
-            <a href="#comecar" className="btn btn-ghost btn-lg">
+            <a href="#get-started" className="btn btn-ghost btn-lg">
               Como funciona
             </a>
           </div>

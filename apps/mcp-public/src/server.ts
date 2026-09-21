@@ -11,19 +11,26 @@ import { SEARCH_QUERY_MAX_LENGTH } from '@purple-skills/db';
 import { config } from './config.js';
 import { createHandlers, createSurfaces, guard, guardSurface, type VirtualScope } from './tools.js';
 
-const FLUXO = `Fluxo recomendado:
-1. search_skills("descreva a tarefa") para descobrir skills relevantes — a busca
-   entende linguagem natural, não só palavras que aparecem no texto.
-2. get_skill("<slug>") para ler o SKILL.md completo da skill escolhida.
-3. get_skill_file("<slug>", "<caminho>") para ler arquivos auxiliares.
-4. download_skill("<slug>") quando o usuário quiser o pacote .zip.
+const FLUXO = `Recommended flow:
+1. search_skills("describe the task") to discover relevant skills — the search
+   understands natural language, not just words that appear in the text.
+2. get_skill("<slug>") to read the full SKILL.md of the chosen skill.
+3. get_skill_file("<slug>", "<path>") to read auxiliary files.
+4. download_skill("<slug>") when the user wants the .zip package.
 
-Algumas skills também estão publicadas como prompt — pelo próprio slug — e como
-resource, na URI skill://<slug>. As ferramentas acima não dizem quais: quem
-mostra são prompts/list e resources/list. As três superfícies são independentes,
-então uma skill pode estar publicada só como prompt ou só como resource e não
-aparecer em search_skills — consulte as três listagens antes de concluir que uma
-skill não existe aqui.`;
+This server also declares the MCP skills extension
+(io.modelcontextprotocol/skills): a host that supports it should prefer
+skills/list, which returns each skill's frontmatter and the digest of every one
+of its files, and read those files with resources/read at
+skill://<slug>/SKILL.md and skill://<slug>/<path>. The tools above stay
+available for hosts that do not.
+
+Some skills are also published as a prompt — under their own slug — and as a
+resource, at the URI skill://<slug>/SKILL.md. The tools above do not say which
+ones: prompts/list and resources/list do. The surfaces are independent, so a
+skill may be published only as a prompt or only as a resource and never show up
+in search_skills or skills/list — check the listings before concluding that a
+skill does not exist here.`;
 
 /**
  * As instruções de um vMCP: o fluxo, mais o que o dono escreveu na descrição
@@ -32,15 +39,15 @@ skill não existe aqui.`;
  * que é o vMCP padrão: não há mais um "catálogo completo" em outro lugar.
  */
 const instrucoes = (scope: VirtualScope) =>
-  `Servidor MCP "${scope.mcp.name}" — um catálogo de skills (instruções
-reutilizáveis) para agentes de IA, servido pelo Purple Skills. As skills aqui
-foram escolhidas por quem administra este servidor.
+  `MCP server "${scope.mcp.name}" — a catalog of skills (reusable instructions)
+for AI agents, served by Purple Skills. The skills here were chosen by whoever
+administers this server.
 
 ${FLUXO}
 
-Os downloads (download_skill e arquivos binários) apontam para este mesmo
-servidor e aceitam a mesma credencial usada para conectar.${
-    scope.mcp.description ? `\n\nSobre este servidor:\n${scope.mcp.description}` : ''
+Downloads (download_skill and binary files) point to this same server and accept
+the same credential used to connect.${
+    scope.mcp.description ? `\n\nAbout this server:\n${scope.mcp.description}` : ''
   }`;
 
 /**
@@ -77,7 +84,7 @@ export function createMcpServer(scope: VirtualScope): McpServer {
   server.registerTool(
     'search_skills',
     {
-      title: 'Buscar skills',
+      title: 'Search skills',
       // A exclusão com hífen é só da perna textual: a vetorial filtra por
       // visibilidade e tag, não por texto, e sem corte por distância devolve a
       // skill excluída entre os vizinhos (relatório 062 da auditoria de
@@ -85,11 +92,11 @@ export function createMcpServer(scope: VirtualScope): McpServer {
       // — prometia a um agente, que age sobre o que lê, o que a híbrida não
       // cumpre. O `mode` da resposta é como ele sabe em qual caso está.
       description:
-        'Busca as skills deste servidor por significado e por texto. Descreva a tarefa em ' +
-        'linguagem natural, em qualquer idioma. Termos entre aspas e exclusão com hífen valem ' +
-        'na busca por texto; quando a resposta vem com mode "hybrid", a busca por significado ' +
-        'também rodou e pode trazer de volta uma skill que o hífen excluiu. Retorna os slugs a ' +
-        'usar em get_skill.',
+        'Searches the skills of this server by meaning and by text. Describe the task in ' +
+        'natural language, in any language. Quoted terms and exclusion with a hyphen apply to ' +
+        'the text search; when the response comes with mode "hybrid", the meaning search also ' +
+        'ran and may bring back a skill that the hyphen excluded. Returns the slugs to use in ' +
+        'get_skill.',
       inputSchema: {
         // Sem `.max()`: passar do teto não é erro, é corte (`consultaDaBusca`,
         // em tools.ts). Recusar a chamada deixaria sem resposta justamente quem
@@ -100,19 +107,19 @@ export function createMcpServer(scope: VirtualScope): McpServer {
         query: z
           .string()
           .describe(
-            'A tarefa em linguagem natural, ou termos. Vazio lista as mais acessadas. ' +
-              `Acima de ${SEARCH_QUERY_MAX_LENGTH} caracteres a consulta é cortada na última palavra inteira: ` +
-              'descreva a tarefa, não cole o arquivo.',
+            'The task in natural language, or terms. Empty lists the most accessed ones. ' +
+              `Above ${SEARCH_QUERY_MAX_LENGTH} characters the query is cut at the last whole word: ` +
+              'describe the task, do not paste the file.',
           )
           .optional(),
-        tag: z.string().describe('Filtra por uma tag exata.').optional(),
-        limit: z.number().int().min(1).max(50).describe('Máximo de resultados (padrão 10).').optional(),
+        tag: z.string().describe('Filters by an exact tag.').optional(),
+        limit: z.number().int().min(1).max(50).describe('Maximum number of results (default 10).').optional(),
         // Sem `.max()` também aqui, e de propósito: `1e20` passa pelo `.int()`
         // (`Number.isInteger` não exige inteiro seguro), mas quem tem o teto é o
         // banco — `pageOffset` satura em `MAX_SAFE_INTEGER` e a resposta é a
         // página vazia de quem paginou além do fim (relatório 086). Um `maximum`
         // no schema só trocaria essa página por um erro de validação.
-        offset: z.number().int().min(0).describe('Deslocamento para paginação.').optional(),
+        offset: z.number().int().min(0).describe('Offset for pagination.').optional(),
       },
     },
     (args) => guard(() => handlers.search_skills(args)),
@@ -121,12 +128,12 @@ export function createMcpServer(scope: VirtualScope): McpServer {
   server.registerTool(
     'get_skill',
     {
-      title: 'Ler skill',
+      title: 'Read skill',
       description:
-        'Retorna o conteúdo completo do SKILL.md, os metadados e a lista de arquivos anexados. ' +
-        'Contabiliza um acesso para a skill. Um SKILL.md grande demais para o resultado vem ' +
-        'como URL de download, como os arquivos binários.',
-      inputSchema: { slug: z.string().describe('Slug da skill, obtido em search_skills.') },
+        'Returns the full content of SKILL.md, the metadata and the list of attached files. ' +
+        'Counts one access for the skill. A SKILL.md too large for the result comes back as a ' +
+        'download URL, like binary files do.',
+      inputSchema: { slug: z.string().describe('Skill slug, obtained from search_skills.') },
     },
     (args) => guard(() => handlers.get_skill(args)),
   );
@@ -134,12 +141,12 @@ export function createMcpServer(scope: VirtualScope): McpServer {
   server.registerTool(
     'get_skill_file',
     {
-      title: 'Ler arquivo da skill',
+      title: 'Read skill file',
       description:
-        'Lê um arquivo auxiliar da skill (ex: "reference/exemplos.md"), listado por get_skill.',
+        'Reads an auxiliary file of the skill (e.g. "reference/examples.md"), listed by get_skill.',
       inputSchema: {
-        slug: z.string().describe('Slug da skill.'),
-        path: z.string().describe('Caminho relativo do arquivo dentro da skill.'),
+        slug: z.string().describe('Skill slug.'),
+        path: z.string().describe('Relative path of the file inside the skill.'),
       },
     },
     (args) => guard(() => handlers.get_skill_file(args)),
@@ -148,10 +155,10 @@ export function createMcpServer(scope: VirtualScope): McpServer {
   server.registerTool(
     'download_skill',
     {
-      title: 'Baixar skill',
+      title: 'Download skill',
       description:
-        'Retorna a URL de download do pacote .zip da skill, com todos os seus arquivos.',
-      inputSchema: { slug: z.string().describe('Slug da skill.') },
+        'Returns the download URL of the skill .zip package, with all of its files.',
+      inputSchema: { slug: z.string().describe('Skill slug.') },
     },
     (args) => guard(() => handlers.download_skill(args)),
   );
@@ -159,8 +166,8 @@ export function createMcpServer(scope: VirtualScope): McpServer {
   server.registerTool(
     'list_tags',
     {
-      title: 'Listar tags',
-      description: 'Lista as tags disponíveis neste servidor, com a quantidade de skills em cada uma.',
+      title: 'List tags',
+      description: 'Lists the tags available on this server, with the number of skills in each one.',
       inputSchema: {},
     },
     () => guard(() => handlers.list_tags()),
@@ -168,6 +175,34 @@ export function createMcpServer(scope: VirtualScope): McpServer {
 
   return server;
 }
+
+/**
+ * Os três métodos da extensão de skills do MCP (SEP-2640), em schemas Zod
+ * escritos à mão: o SDK 1.30.0 não tem nada de skills, e o
+ * `assertRequestHandlerCapability` dele é um `switch` sem `default` que lance,
+ * então método desconhecido passa sem checagem de capability.
+ *
+ * `params` é tolerante (`.passthrough()`) porque a revisão que define estes
+ * métodos é mais nova que a que o SDK fala: campo novo que um cliente mande não
+ * pode virar erro de validação de uma requisição que sabemos responder.
+ */
+const ListSkillsRequestSchema = z.object({
+  method: z.literal('skills/list'),
+  // O `cursor` é aceito e ignorado: a listagem é completa (decisão 7), e não há
+  // segunda página para apontar. Recusá-lo seria pior — um cliente que pagina
+  // por hábito perderia a primeira.
+  params: z.object({ cursor: z.string().optional() }).passthrough().optional(),
+});
+
+const GetSkillRequestSchema = z.object({
+  method: z.literal('skills/get'),
+  params: z.object({ uri: z.string() }).passthrough(),
+});
+
+const ReadDirectoryRequestSchema = z.object({
+  method: z.literal('resources/directory/read'),
+  params: z.object({ uri: z.string(), cursor: z.string().optional() }).passthrough(),
+});
 
 /**
  * Prompts e resources em handlers de baixo nível.
@@ -190,8 +225,13 @@ function registrarSuperficies(server: McpServer, surfaces: ReturnType<typeof cre
   // em processo para disparar a notificação, e um cliente que confiasse na
   // promessa cacharia a lista pela sessão inteira. Precisa vir antes do
   // `connect`, depois do qual o SDK recusa. Vale mesmo sem nenhuma skill
-  // vinculada: a fábrica é síncrona e não consulta o banco.
-  server.server.registerCapabilities({ prompts: {}, resources: {} });
+  // vinculada: a fábrica é síncrona e não consulta o banco — e a SEP-2640
+  // admite listagem vazia, então a extensão é declarada do mesmo jeito.
+  server.server.registerCapabilities({
+    prompts: {},
+    resources: {},
+    extensions: { 'io.modelcontextprotocol/skills': { directoryRead: true } },
+  });
 
   // Embrulhadas como as tools, pelo mesmo motivo: o SDK monta o erro do JSON-RPC
   // com a `message` da exceção, então uma falha do banco iria crua ao cliente.
@@ -211,5 +251,22 @@ function registrarSuperficies(server: McpServer, surfaces: ReturnType<typeof cre
   );
   server.server.setRequestHandler(ListResourceTemplatesRequestSchema, () =>
     surfaces.listResourceTemplates(),
+  );
+
+  // Os três da extensão, pelo mesmo caminho e com o mesmo `guardSurface`.
+  //
+  // `tools/list` fica **de fora** dos campos de 2026-07-28, e é limitação
+  // conhecida, não esquecimento: ele é montado pelo `McpServer` a partir do
+  // `registerTool`, e o SDK lança se registrarmos um handler para um método que
+  // já tem um. Cobri-lo exigiria descer as cinco ferramentas para handler de
+  // baixo nível, perdendo a validação Zod automática — reescrita, não acréscimo.
+  server.server.setRequestHandler(ListSkillsRequestSchema, () =>
+    guardSurface(() => surfaces.listSkills()),
+  );
+  server.server.setRequestHandler(GetSkillRequestSchema, (request) =>
+    guardSurface(() => surfaces.getSkill(request.params.uri)),
+  );
+  server.server.setRequestHandler(ReadDirectoryRequestSchema, (request) =>
+    guardSurface(() => surfaces.readDirectory(request.params.uri)),
   );
 }

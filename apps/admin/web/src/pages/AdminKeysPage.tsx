@@ -127,7 +127,7 @@ export function AdminKeysPage({ user }: { user: SessionUser }) {
           title="Chaves"
           icon={<KeyRound />}
           actions={
-            <Link to="/account/chaves-emitidas" className="btn btn-ghost btn-sm">
+            <Link to="/account/issued-keys" className="btn btn-ghost btn-sm">
               Ver também as de servidor
             </Link>
           }

@@ -93,7 +93,7 @@ export function MyKeysPage({ user }: { user: SessionUser }) {
           icon={<KeyRound />}
           actions={
             !user.legacy && (
-              <Link to="/account/chaves-adm" className="btn btn-ghost btn-sm">
+              <Link to="/account/admin-keys" className="btn btn-ghost btn-sm">
                 Emitir em Adm MCP Keys
               </Link>
             )
@@ -178,7 +178,7 @@ export function MyKeysPage({ user }: { user: SessionUser }) {
                         </span>
                       </td>
                       <td>
-                        <Link to={`/mcps/${key.virtualMcpSlug}/chaves`} className="block no-underline">
+                        <Link to={`/mcps/${key.virtualMcpSlug}/keys`} className="block no-underline">
                           <span className="row-title">{key.virtualMcpName}</span>
                           <span className="row-sub">{key.virtualMcpSlug}</span>
                         </Link>

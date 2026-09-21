@@ -258,7 +258,9 @@ A regra "só o SKILL.md conta" foi aplicada de forma literal:
 | `GET /skills/:slug/download` e `…/download.skill` | `download_count` +1 |
 | admin `GET /api/skills/:slug/download` e `…/download.skill` | não conta (operador baixando a própria skill) |
 | MCP `get_skill` | `view_count` +1 |
-| MCP `resources/read` de `skill://<slug>` | `view_count` +1 |
+| MCP `resources/read` de `skill://<slug>/SKILL.md` | `view_count` +1 |
+| MCP `resources/read` de um arquivo de apoio (`skill://<slug>/<caminho>`) | não conta |
+| MCP `skills/list` e `skills/get` | não contam (catálogo, não leitura) |
 | MCP `prompts/get` | `view_count` +1 |
 | MCP `get_skill_file` | não conta |
 | MCP `download_skill` | não conta (só devolve a URL; quem seguir o link conta) |
@@ -812,7 +814,7 @@ streams, `Buffer`), só no teste.
 
 Clicar numa skill na lista abre `/skills/:slug`, a **tela de leitura**: o
 `SKILL.md` renderizado com a árvore de arquivos ao lado, como o visitante vê no
-site. O editor mora em `/skills/:slug/editar` e só se chega nele pelo botão
+site. O editor mora em `/skills/:slug/edit` e só se chega nele pelo botão
 "Editar" — abrir uma skill deixou de significar estar prestes a mudá-la, e o
 caminho de volta é o botão "Visualizar" ou o link do cabeçalho.
 
@@ -1754,8 +1756,8 @@ separaram:
 
 - **Skills públicas** (`#skills`, antes `#catalogo`): as ligadas que estão
   marcadas públicas, em catálogo público ou em vMCP aberto — a visibilidade
-  `'open'`. **Catálogos públicos** (`#catalogos`) vêm logo depois, e cada
-  cartão leva à página `/catalogos/<slug>`. A seção, o atalho da nav, o botão
+  `'open'`. **Catálogos públicos** (`#catalogs`) vêm logo depois, e cada
+  cartão leva à página `/catalogs/<slug>`. A seção, o atalho da nav, o botão
   do cabeçalho e o link do rodapé somem quando não há catálogo público
   (`usePublicCatalogs`, uma busca só para os quatro).
 - **O que aparece foi tornado público**, e o site diz isso: selo verde
@@ -1768,7 +1770,7 @@ separaram:
   mascote ficaram menores — por sobrescrita no `app.css`, porque `base.css`
   continua cópia da homepage, que usa os títulos grandes. As seções ganharam
   um fio entre si e `scroll-margin-top`, para o título não cair atrás da nav.
-- **Voltar para `/#skills` ou `/#catalogos`** pula para a seção depois que
+- **Voltar para `/#skills` ou `/#catalogs`** pula para a seção depois que
   ela existe e que a grade de skills sai do esqueleto (senão a troca empurra
   a seção para baixo), com `behavior: 'instant'` — o `smooth` global não anda
   com a aba oculta.
@@ -1825,6 +1827,165 @@ separaram:
   commit — sem a promessa em voo, seriam seis `GET /api/meta`. O `inFlight` é
   zerado no `catch`, senão uma falha de rede na primeira carga congelaria a busca
   pelo resto da sessão.
+
+## Clonagem
+
+O desenho e o porquê de cada escolha estão em
+[`16-clonagem.md`](16-clonagem.md). Aqui só o que é desvio ou consequência de
+implementação.
+
+- **A chave `psv_` não é "decidido não copiar": ela não tem como ser
+  copiada.** O banco guarda o `prefix` (público) e o **hash scrypt** do
+  segredo, nunca o segredo (`database/schema/009-mcp-virtual.sql`), e o
+  `prefix` é `UNIQUE` global. Duplicar a linha daria um par de valores que
+  ninguém consegue apresentar numa requisição — o texto completo só existiu
+  uma vez, na emissão — e ainda gastaria um prefixo. A decisão 8 do
+  [`16`](16-clonagem.md) registra a escolha; o que o código faz é simplesmente
+  não ter de onde tirar o dado. Vale o mesmo raciocínio para `psk_` e `psp_`,
+  que nem entram no escopo.
+- **Os arquivos da skill são copiados dentro do banco**, e não lidos pelo app
+  para serem gravados de volta. É o desvio em relação à importação, que
+  materializa bytes em memória porque eles chegam de fora: aqui os dois lados
+  já estão no Postgres, e passar um `.zip` de 200 MB pelo processo do painel
+  seria pagar memória por nada. A cópia inteira — objeto, filhos e a linha de
+  auditoria — é **uma transação**, como a promoção da quarentena.
+- **O `layout` do vMCP tem de ser copiado no banco pelo mesmo motivo, e por
+  mais um**: o que a leitura devolve é um **recorte** do JSONB (só as chaves
+  que o canvas usa), então serializar o objeto lido de volta apagaria em
+  silêncio o que a leitura ignora. `INSERT … SELECT` copia a coluna inteira.
+- **Na cópia das concessões do vMCP, a comparação é `IS DISTINCT FROM`, não
+  `<>`.** A concessão de quem clonou não é copiada — ela seria uma concessão
+  ao dono, que o [`12`](12-acesso-granular.md) recusa como redundante —, mas
+  o clone feito pelo `MCP_ADMIN_TOKEN` ou pela sessão de bootstrap nasce
+  **órfão**, e com o dono nulo um `user_uuid <> NULL` é nulo em **toda** linha:
+  nenhuma concessão seria copiada, e o clone órfão sairia com ACL vazia.
+- **`search_vector` não é copiado, é reconstruído — e a ordem do INSERT
+  importa.** `skills_build_search_vector` lê o corpo do `SKILL.md` **pela
+  `uuid`** (`database/schema/001-init.sql`), então o trigger `BEFORE INSERT`
+  da linha de `skills` roda quando ainda não há arquivo nenhum e produz um
+  vetor só com nome e descrição. Quem o completa é o
+  `files_reindex_skill_tg`, que dispara ao inserir o `SKILL.md` em `files` e
+  reescreve o vetor com o corpo (é o conserto da migration `002`). Nada a
+  fazer no app — mas quem for medir a cópia logo depois do `INSERT` de
+  `skills`, e antes do dos arquivos, encontra um vetor incompleto, e isso não
+  é defeito.
+- **O painel só manda o campo `slug` quando a pessoa o edita.** É o que faz o
+  caminho comum nunca dar 409: sem `slug` no corpo, a rota cai no caminho
+  **derivado** de `uniqueSlug`, que desempata sozinho; com `slug`, cai no
+  caminho **pedido**, que é o que responde 409 ao colidir — a mesma assimetria
+  que `resolveSlug` (`database/src/queries.ts`) já implementa na criação de
+  skill. Mandar sempre o slug preenchido transformaria duas clonagens
+  simultâneas do mesmo objeto num conflito visível ao operador.
+- **O `name:` do frontmatter da cópia não precisa de migração de conteúdo.**
+  O que está em `files` é só o corpo; o frontmatter é remontado na leitura por
+  `composeSkillMd` (`packages/shared/src/frontmatter.ts`), então o slug novo
+  aparece sozinho no download, na leitura crua e nas tools.
+
+## Painel: atividade
+
+O desenho e o porquê de cada escolha estão em
+[`18-atividade.md`](18-atividade.md). Aqui só o que é desvio ou armadilha de
+implementação.
+
+- **O `AT TIME ZONE` vem depois do filtro por instante, nunca dentro dele.** A
+  série da grade filtra a coluna crua — `created_at >= $since AND created_at <=
+  $until`, `started_at` nas sessões — e só então converte para agrupar:
+  `(created_at AT TIME ZONE $tz)::date` no `GROUP BY`. Escrever a conversão no
+  `WHERE` é o caminho natural e mata o índice: a coluna vira expressão, o
+  planejador larga `skill_accesses_created_idx` e `audit_log_created_at_idx` e
+  varre a tabela inteira — três tabelas que, por decisão, **nunca são podadas**.
+  E não há índice de expressão que salve: o fuso é parâmetro de quem está
+  olhando, e um índice teria de congelar um fuso só.
+- **`mcp_sessions` não tinha índice por `started_at`.** Os da `015` olham
+  `last_seen_at` (a pergunta de "online", inclusive a parcial de sessão
+  aberta), a sessão aberta por id e a chave — porque até agora ninguém tinha
+  perguntado "quantas sessões **começaram** neste dia". A `032` acrescenta
+  **dois**: `mcp_sessions_started_at_idx`, para a série, e
+  `mcp_sessions_ended_at_idx`, para o relatório do dia, que conta as sessões
+  **encerradas** nele e as quebra por motivo — uma sessão pode ter começado
+  ontem. `skill_accesses` e `audit_log` já tinham o seu por data.
+- **O despejo dos contadores grava em ordem fixa, e o `ORDER BY` faz parte da
+  correção.** O `ON CONFLICT DO UPDATE` trava as linhas de `mcp_call_counters`
+  na ordem em que elas saem do `VALUES`, e o rastreador despeja todas as
+  sessões num `Promise.all`: duas sessões do mesmo vMCP, transporte e balde
+  trazem os mesmos métodos em ordens diferentes, travam em cruz e uma morre por
+  `40P01` — e o "melhor esforço" da gravação engole o erro **depois** de a
+  colheita já ter esvaziado o mapa, então as chamadas somem em silêncio.
+  Ordenar o array em JavaScript não basta: o plano é um join com `virtual_mcps`
+  e o que sai de um join não tem ordem prometida, então o SELECT leva
+  `ORDER BY` por uma posição materializada. Medido: 6 sessões no mesmo servidor
+  perdiam 41,1 % das chamadas; ordenadas, nenhuma. É a lição de `replaceTagsTx`
+  numa tabela nova.
+- **O fuso viaja como `tz` na query string e como `timezone` no corpo.** As
+  duas rotas leem `tz` (`fusoDe(query.tz)`); quem escrever `?timezone=` não
+  recebe erro nenhum — o parâmetro não é enxergado e o recorte cai no padrão
+  `UTC`, que é uma série certa para um fuso que ninguém pediu. O nome curto é a
+  regra da query string daqui; `timezone` é o campo da função do banco
+  (`listActivityDays`) e o do corpo da resposta, e é essa diferença de nome que
+  o `docs/18` `§10` já tinha errado uma vez.
+- **Os tipos de atividade entram no painel como cópia manual, e o espelho é um
+  teste.** `apps/admin/web/src/api.ts` não importa `@purple-skills/shared` (é
+  bundle de navegador), então `ActivityDay`, `ActivitySeries`, `ActivitySlice`
+  e `ActivityReport` são copiados à mão, como todos os outros. Para a lista de
+  famílias isso não basta: ela é **valor**, não só tipo, e um valor copiado
+  envelhece em silêncio — o teste que compara a cópia do painel com o
+  `MCP_CALL_FAMILIES` do shared é o mesmo padrão de `audit.test.ts` (os testes,
+  ao contrário do bundle, importam o pacote). Família nova sem rótulo no painel
+  é uma fatia sem nome na tela, não um erro de compilação.
+- **"Atividade" já era o nome de outra coisa.** A ficha da conta tem a guia
+  Atividade em `/users/:uuid/activity` (e `/edit/activity`), que é a trilha
+  filtrada pelo e-mail (`ActorTrail`, `GET /api/audit?actor=`) — "o que esta
+  conta fez". A tela nova é `/activity`, `GET /api/activity`, e é "o que
+  aconteceu na instalação". O roteador não se confunde (uma é aninhada em
+  `/users/:uuid/`), mas o rótulo, a conversa e os dois endereços vizinhos sim:
+  ao mexer num, confira se o texto fala do outro. Renomear a guia da conta não
+  entrou no escopo do [`18`](18-atividade.md).
+
+## Endereços em inglês
+
+Os **endereços** — caminho e query string — são em inglês em todas as
+superfícies: painel, site, homepage, MCP público e MCP administrativo. As
+mensagens, os rótulos, os comentários e a documentação continuam em português
+(`AGENTS.md`); o que mudou é só a URL, que é interface de máquina e já era
+inglês no `/api/…` e nos transportes MCP (`/mcp`, `/sse`, `/messages`,
+`/virtual/<slug>/mcp`). O painel era a exceção: o SPA tinha `/catalogos`,
+`/auditoria`, `/configuracoes/mcp-padrao`, e uma guia `/editar/propriedades`
+convivia com um `/api/skills/:slug/files` do outro lado da mesma tela.
+
+O que mudou de nome — **não há redirecionamento do endereço antigo**, então
+favorito e link de fora apontando para os de baixo caem na rota `*`, que leva a
+`/mcps` (no site, à página de 404):
+
+| Antes | Agora |
+|-------|-------|
+| `/catalogos` | `/catalogs` |
+| `/auditoria`, `/auditoria/sessoes` | `/audit`, `/audit/sessions` |
+| `/quarentena` | `/quarantine` |
+| `/nova-skill` | `/new-skill` |
+| `/meu-espaco` | `/my-space` |
+| `/configuracoes` | `/settings` |
+| `/configuracoes/mcp-padrao`, `…/busca-semantica`, `…/ambiente`, `…/conectar` | `/settings/default-mcp`, `…/semantic-search`, `…/environment`, `…/connect` |
+| `/account/chaves-adm`, `/account/chaves-emitidas` | `/account/admin-keys`, `/account/issued-keys` |
+| guias `…/arquivos`, `…/catalogos`, `…/propriedades`, `…/acesso`, `…/auditoria` | `…/files`, `…/catalogs`, `…/properties`, `…/access`, `…/audit` |
+| guias `…/chaves`, `…/acessos`, `…/atividade`, `…/sessoes` | `…/keys`, `…/accesses`, `…/activity`, `…/sessions` |
+| `…/editar` | `…/edit` |
+| `?novo=1`, `?modo=zip`, `&destino=quarentena` | `?new=1`, `?mode=zip`, `&destination=quarantine` |
+| `?filtro=todas`, `?acesso=todos` | `?filter=all`, `?access=all` |
+| site: `/catalogos/<slug>`, âncora `#catalogos`, `#comecar` | `/catalogs/<slug>`, `#catalogs`, `#get-started` |
+| homepage: `#como-funciona`, `#pecas`, `#servicos`, `#recursos`, `#comecar` | `#how-it-works`, `#pieces`, `#services`, `#features`, `#get-started` |
+
+Os identificadores de guia no código (`key`, o `Tab` de cada página, o `case`
+da trilha em `Layout.tsx`) acompanharam o endereço porque **são** a cauda dele:
+a página deriva a guia de `location.pathname`, e um `key` em português com o
+caminho em inglês daria guia nenhuma selecionada. Os rótulos visíveis e os
+`keywords` da paleta de comandos ficaram como estavam — é o que a pessoa lê e
+digita, e continua em português.
+
+Duas coisas de propósito **não** mudaram: o redirecionamento legado
+`…/accesses → …/audit` (a guia se chamava Acessos, decisão 22 do
+[`13`](13-fichas-e-acessos.md)) segue existindo, agora com o nome em inglês; e
+`/skills/new`, que é a ficha da skill de slug `new` e, sem ela, leva ao
+formulário (hoje `/new-skill`) — o desempate do `routes.ts` não foi tocado.
 
 ## Portas
 

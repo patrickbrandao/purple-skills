@@ -1,4 +1,5 @@
 import {
+  cloneCatalog,
   createCatalog,
   deleteCatalog,
   getCatalog,
@@ -165,6 +166,48 @@ export function createCatalogHandlers(caller: Caller) {
       );
       return text(
         `Catálogo criado: "${catalog.name}" (slug: ${catalog.slug}). Use set_catalog_skills para escolher as skills e set_virtual_mcp_catalogs para vinculá-lo a um MCP virtual.`,
+      );
+    },
+
+    /**
+     * Clona o catálogo. A cópia é de quem clonou, nasce fechada (`is_public`
+     * sempre falso) e, sem `new_slug`, o slug do original ganha sufixo (`-2`,
+     * `-3`…) — o desempate é do banco, e nessa forma não há 409; um `new_slug`
+     * já em uso, sim.
+     *
+     * Leva as propriedades e os membros, cada um com o estado da participação;
+     * não leva os vínculos com MCP virtual nem as concessões. Por isso `edit`
+     * basta: é o nível que já lê e mexe na lista de membros.
+     */
+    async clone_catalog(args: { slug: string; name?: string; new_slug?: string }): Promise<ToolResult> {
+      if (!canCreate(caller.role)) {
+        return fail(
+          `Clonar um catálogo faz nascer um catálogo novo: exige papel "editor" ou "admin"; sua credencial é "${caller.role}".`,
+        );
+      }
+      const origem = await managed(args.slug, 'edit');
+      // Só para quem dá nome à cópia: sem `name` ela repete o do original, que
+      // já existe — e nome antigo acima do teto continua válido até alguém mexer.
+      if (args.name !== undefined) assertNameFits(args.name, 'do catálogo');
+
+      const copia = await cloneCatalog(
+        origem.uuid,
+        {
+          name: args.name,
+          slug: args.new_slug,
+          // Quem clona é o dono. O token global não é uma conta: a cópia nasce
+          // órfã, como em `create_catalog`.
+          ownerUserUuid: userUuid,
+        },
+        SOURCE,
+        actor,
+      );
+
+      return text(
+        `Catálogo clonado de "${origem.slug}": "${copia.name}" (slug: ${copia.slug}), com ` +
+          `${copia.skills.length} membro(s), cada um no estado de participação que tinha no original. ` +
+          'A cópia é sua e nasce privada, sem vínculo com MCP virtual nenhum e sem as concessões do ' +
+          'original: use set_virtual_mcp_catalogs para vinculá-la.',
       );
     },
 

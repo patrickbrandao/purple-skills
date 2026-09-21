@@ -1,6 +1,6 @@
 export function Trinity() {
   return (
-    <section className="trinity" id="pecas">
+    <section className="trinity" id="pieces">
       <div className="head center reveal wrap">
         <h2 className="display">
           Três peças.

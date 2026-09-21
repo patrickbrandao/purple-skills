@@ -25,7 +25,7 @@ const CARDS = [
 
 export function Features() {
   return (
-    <section className="solution" id="recursos">
+    <section className="solution" id="features">
       <div className="wrap">
         <div className="head reveal">
           <h2 className="display">

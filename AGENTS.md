@@ -108,6 +108,14 @@ lista completa estão em [`docs/04-design-system.md`](docs/04-design-system.md).
   inteiro e todo serviço que o importa. As imagens não sentem (são
   `node:24-alpine`); quem roda fora do Docker, sim.
 - Comentários, mensagens de erro, log e documentação em **português**.
+- **Endereço e descrição de tool em inglês.** Caminho e query string de toda
+  superfície (painel, site, homepage, MCP público e administrativo) e o
+  `title`/`description`/`describe` das tools dos dois MCPs, mais as
+  `instructions` que eles mandam no `initialize`, são escritos em inglês: são
+  interface de máquina, e o que sai do MCP é lido por cliente e modelo de fora
+  deste repositório. A regra acima continua valendo para todo o resto — inclusive
+  a mensagem de erro que uma tool devolve. O mapa do que foi renomeado está em
+  [`docs/03`](docs/03-implementation-notes.md#endereços-em-inglês).
 - `npm run typecheck` e `npm test` precisam passar antes de entregar. O
   `typecheck` **inclui os arquivos de teste**: cada workspace tem um
   `tsconfig.typecheck.json` (o de build mais `"exclude": []`), porque o Vitest
