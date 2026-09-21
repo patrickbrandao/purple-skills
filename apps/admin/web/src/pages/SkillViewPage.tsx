@@ -31,6 +31,7 @@ import {
 } from '../api.js';
 import { AccessBadge, AccessTab } from '../components/AccessPanel.js';
 import { AccessLog } from '../components/AccessLog.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { Badge, McpChips, Panel, Skel, Tabs, noSite } from '../components/ui.js';
 import { FileTree } from '../components/FileTree.js';
 import { SkillDoc } from '../components/SkillDoc.js';
@@ -41,9 +42,9 @@ import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 import { openFileState, useOpenFileFromState, useSkillFiles } from '../useSkillFiles.js';
 
-type Tab = 'skill' | 'arquivos' | 'catalogos' | 'propriedades' | 'acesso' | 'auditoria';
+type Tab = 'skill' | 'files' | 'catalogs' | 'properties' | 'access' | 'audit';
 
-const TABS: readonly Tab[] = ['arquivos', 'catalogos', 'propriedades', 'acesso', 'auditoria'];
+const TABS: readonly Tab[] = ['files', 'catalogs', 'properties', 'access', 'audit'];
 
 /**
  * A ficha da skill, só leitura (`docs/13-fichas-e-acessos.md`): o título com
@@ -62,6 +63,8 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const toast = useToast();
 
   const [skill, setSkill] = useState<SkillDetail | null>(null);
+  // O diálogo de clonagem: montado é aberto (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState(false);
   // Quem edita a skill entra em Editar; quem só administra um servidor
   // também, para publicá-la lá (vincular exige só `view` na skill —
   // `docs/12-acesso-granular.md` §3.4).
@@ -130,8 +133,8 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   );
 
   // Editar abre a mesma guia (a Auditoria não existe lá) e, em Arquivos, o mesmo arquivo.
-  const editPath = `/skills/${skill?.slug ?? slug}/editar${tab === 'skill' || tab === 'auditoria' ? '' : `/${tab}`}`;
-  const editState = tab === 'arquivos' ? openFileState(files) : undefined;
+  const editPath = `/skills/${skill?.slug ?? slug}/edit${tab === 'skill' || tab === 'audit' ? '' : `/${tab}`}`;
+  const editState = tab === 'files' ? openFileState(files) : undefined;
 
   useRegisterCommands(
     skill
@@ -143,8 +146,8 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
               window.open(skillDownloadUrl(skill.slug), '_self');
             },
           },
-          ...(tab !== 'arquivos'
-            ? [{ id: 'files-tab', label: 'Arquivos da skill', group: 'Ir para' as const, icon: <FolderTree />, keywords: ['arvore', 'ler arquivo', 'código'], run: () => navigate(`/skills/${skill.slug}/arquivos`) }]
+          ...(tab !== 'files'
+            ? [{ id: 'files-tab', label: 'Arquivos da skill', group: 'Ir para' as const, icon: <FolderTree />, keywords: ['arvore', 'ler arquivo', 'código'], run: () => navigate(`/skills/${skill.slug}/files`) }]
             : []),
         ]
       : [],
@@ -164,7 +167,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
   const base = `/skills/${skill.slug}`;
 
   return (
-    <div className={`page wide${tab === 'arquivos' ? ' workbench' : ''}`}>
+    <div className={`page wide${tab === 'files' ? ' workbench' : ''}`}>
       <div className="page-head">
         <div className="min-w-0">
           <Link to="/skills" className="back-link">
@@ -199,6 +202,7 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
           <a href={skillPackageUrl(skill.slug)} className="btn btn-ghost" download>
             <Download /> .skill
           </a>
+          <CloneButton kind="skill" object={skill} role={user.role} onClone={() => setClonando(true)} />
           {podeEditar && (
             <Link to={editPath} state={editState} className="btn btn-primary">
               <Pencil /> Editar
@@ -221,12 +225,12 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
         value={tab}
         items={[
           { key: 'skill', label: 'Skill', icon: <FileText />, to: base },
-          { key: 'arquivos', label: 'Arquivos', icon: <FolderTree />, to: `${base}/arquivos`, count: skill.files.length },
-          { key: 'catalogos', label: 'Catálogos', icon: <Library />, to: `${base}/catalogos`, count: skill.catalogs.length },
-          { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/propriedades` },
-          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${base}/acesso` },
+          { key: 'files', label: 'Arquivos', icon: <FolderTree />, to: `${base}/files`, count: skill.files.length },
+          { key: 'catalogs', label: 'Catálogos', icon: <Library />, to: `${base}/catalogs`, count: skill.catalogs.length },
+          { key: 'properties', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${base}/properties` },
+          { key: 'access', label: 'Acesso', icon: <Users />, to: `${base}/access` },
           // IPs, clientes e nomes de chave: só quem administra a skill.
-          ...(podeAdministrar ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${base}/auditoria` }] : []),
+          ...(podeAdministrar ? [{ key: 'audit', label: 'Auditoria', icon: <History />, to: `${base}/audit` }] : []),
         ]}
       />
 
@@ -236,19 +240,19 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
           element={
             <SkillTab
               skill={skill}
-              filesPath={`${base}/arquivos`}
+              filesPath={`${base}/files`}
               onOpenFile={(path) => {
                 files.open(path);
-                navigate(`${base}/arquivos`);
+                navigate(`${base}/files`);
               }}
             />
           }
         />
-        <Route path="arquivos" element={<SkillFilesView ws={files} skill={skill} />} />
-        <Route path="catalogos" element={<SkillCatalogsTab skill={skill} user={user} />} />
-        <Route path="propriedades" element={<PropertiesTab skill={skill} />} />
+        <Route path="files" element={<SkillFilesView ws={files} skill={skill} />} />
+        <Route path="catalogs" element={<SkillCatalogsTab skill={skill} user={user} />} />
+        <Route path="properties" element={<PropertiesTab skill={skill} />} />
         <Route
-          path="acesso"
+          path="access"
           element={
             <AccessTab
               kind="skill"
@@ -259,11 +263,13 @@ export function SkillViewPage({ session, user }: { session: Session; user: Sessi
             />
           }
         />
-        {podeAdministrar && <Route path="auditoria" element={<AccessLog load={loadAccesses} />} />}
+        {podeAdministrar && <Route path="audit" element={<AccessLog load={loadAccesses} />} />}
         {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
-        <Route path="acessos" element={<Navigate to={`${base}/auditoria`} replace />} />
+        <Route path="accesses" element={<Navigate to={`${base}/audit`} replace />} />
         <Route path="*" element={<Navigate to={base} replace />} />
       </Routes>
+
+      {clonando && <CloneDialog kind="skill" origem={skill} onClose={() => setClonando(false)} />}
     </div>
   );
 }

@@ -5,9 +5,9 @@ import { GithubIcon, MoonIcon, SunIcon } from './Icons.js';
 const REPO = 'https://github.com/patrickbrandao/purple-skills';
 
 const NAV = [
-  { hash: '#comecar', label: 'Começar' },
-  { hash: '#como-funciona', label: 'Como funciona' },
-  { hash: '#servicos', label: 'Serviços' },
+  { hash: '#get-started', label: 'Começar' },
+  { hash: '#how-it-works', label: 'Como funciona' },
+  { hash: '#services', label: 'Serviços' },
   { hash: '#self-host', label: 'Instalar' },
 ];
 
@@ -125,10 +125,10 @@ export function Layout({ children }: { children: ReactNode }) {
 
             <div className="foot-col">
               <h5>O projeto</h5>
-              <a href="#como-funciona">Como funciona</a>
-              <a href="#pecas">As três peças</a>
-              <a href="#servicos">Serviços</a>
-              <a href="#recursos">Recursos</a>
+              <a href="#how-it-works">Como funciona</a>
+              <a href="#pieces">As três peças</a>
+              <a href="#services">Serviços</a>
+              <a href="#features">Recursos</a>
             </div>
 
             <div className="foot-col">

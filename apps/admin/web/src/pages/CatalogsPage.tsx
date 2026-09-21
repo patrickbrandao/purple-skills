@@ -12,6 +12,7 @@ import {
   type SessionUser,
 } from '../api.js';
 import { AccessBadge } from '../components/AccessPanel.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { Badge, Button, EmptyRow, Field, Kbd, Menu, MenuItem, Modal, Skel, Status, useStored } from '../components/ui.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
@@ -23,8 +24,8 @@ const SORT_LABEL: Record<Sort, string> = {
   mcps: 'Servidores',
   updated: 'Atualização',
 };
-type Scope = 'todos' | AccessScope;
-const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Meus', shared: 'Compartilhados comigo', public: 'Públicos' };
+type Scope = 'all' | AccessScope;
+const SCOPE_LABEL: Record<Scope, string> = { all: 'Tudo que vejo', mine: 'Meus', shared: 'Compartilhados comigo', public: 'Públicos' };
 
 /**
  * Os catálogos (`docs/11-catalogos.md` §6.1): admin vê todos, os demais só os
@@ -39,16 +40,18 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
   const { open: openPalette } = usePalette();
   const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<CatalogSummary[] | null>(null);
+  // O catálogo que o diálogo de clonagem está copiando (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState<CatalogSummary | null>(null);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:catalogs-sort', 'name');
-  const creating = params.get('novo') === '1';
-  const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
+  const creating = params.get('new') === '1';
+  const scope: Scope = mine ? 'mine' : ((params.get('access') as Scope | null) ?? 'all');
 
   // Uma busca por recorte. O cleanup descarta a resposta atrasada: trocando de
   // recorte depressa, a consulta antiga podia chegar por último e repor a lista
   // do recorte anterior sob o filtro novo — e aqui nada recarrega sozinho.
   useEffect(() => {
     let active = true;
-    getCatalogs(scope === 'todos' ? '' : scope)
+    getCatalogs(scope === 'all' ? '' : scope)
       .then((data) => active && setItems(data.items))
       .catch((err) => {
         if (!active) return;
@@ -95,7 +98,7 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
             </span>
           </button>
           {podeCriar && (
-            <Button onClick={() => setParams({ novo: '1' })}>
+            <Button onClick={() => setParams({ new: '1' })}>
               <Plus /> Novo catálogo
             </Button>
           )}
@@ -130,7 +133,7 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
             )}
           >
             {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
-              <MenuItem key={key} onSelect={() => setParams(key === 'todos' ? {} : { acesso: key })}>
+              <MenuItem key={key} onSelect={() => setParams(key === 'all' ? {} : { access: key })}>
                 {SCOPE_LABEL[key]}
               </MenuItem>
             ))}
@@ -152,13 +155,14 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
                 <th className="num hidden sm:table-cell">Acessos</th>
                 <th className="hidden md:table-cell">Dono</th>
                 <th className="hidden lg:table-cell">Atualizado</th>
+                <th />
               </tr>
             </thead>
             <tbody>
               {sorted.map((catalog) => (
                 <tr key={catalog.uuid} className={catalog.isActive ? undefined : 'is-off'}>
                   <td>
-                    <Link to={`/catalogos/${catalog.slug}`} className="block no-underline">
+                    <Link to={`/catalogs/${catalog.slug}`} className="block no-underline">
                       <span className="row-title">{catalog.name}</span>
                       <span className="row-sub">{catalog.description || catalog.slug}</span>
                     </Link>
@@ -192,9 +196,12 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
                   <td className="hidden lg:table-cell">
                     <span className="row-sub whitespace-nowrap">{formatRelative(catalog.updatedAt)}</span>
                   </td>
+                  <td className="num">
+                    <CloneButton kind="catalog" object={catalog} role={user.role} shape="linha" onClone={() => setClonando(catalog)} />
+                  </td>
                 </tr>
               ))}
-              {sorted.length === 0 && <EmptyRow colSpan={7}>{mine ? 'Você ainda não é dono de nenhum catálogo' : scope !== 'todos' ? 'Nenhum catálogo nesse recorte' : podeCriar ? 'Nenhum catálogo ainda' : 'Nenhum catálogo é seu, compartilhado com você ou público'}</EmptyRow>}
+              {sorted.length === 0 && <EmptyRow colSpan={8}>{mine ? 'Você ainda não é dono de nenhum catálogo' : scope !== 'all' ? 'Nenhum catálogo nesse recorte' : podeCriar ? 'Nenhum catálogo ainda' : 'Nenhum catálogo é seu, compartilhado com você ou público'}</EmptyRow>}
             </tbody>
           </table>
         </div>
@@ -207,7 +214,9 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
         </p>
       )}
 
-      <NewCatalogModal open={creating && podeCriar} onClose={() => setParams({})} onCreated={(slug) => navigate(`/catalogos/${slug}`)} />
+      <NewCatalogModal open={creating && podeCriar} onClose={() => setParams({})} onCreated={(slug) => navigate(`/catalogs/${slug}`)} />
+
+      {clonando && <CloneDialog kind="catalog" origem={clonando} onClose={() => setClonando(null)} />}
     </div>
   );
 }

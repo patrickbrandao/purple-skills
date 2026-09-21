@@ -17,6 +17,7 @@ import { runMigrations } from './migrate.js';
 import { VIRTUAL_MCP_PREVIEW_SIZE } from '@purple-skills/shared';
 import { AppError } from './errors.js';
 import {
+  cloneVirtualMcp,
   createCatalog,
   createSkill,
   createUser,
@@ -35,6 +36,7 @@ import {
   linkCatalog,
   linkSkill,
   listAudit,
+  listAuditPage,
   listPublishedSkills,
   listSkills,
   listTags,
@@ -42,9 +44,12 @@ import {
   listVirtualMcpKeysByCreator,
   listVirtualMcps,
   recordAccountAudit,
+  resolveDefaultVirtualMcp,
   resolveVirtualMcp,
   revokeVirtualMcpKey,
+  setDefaultVirtualMcp,
   setVirtualMcpCanvas,
+  setVirtualMcpGrant,
   setVirtualMcpSkills,
   touchVirtualMcpKey,
   unlinkSkill,
@@ -876,5 +881,187 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
 
     await deleteVirtualMcp(canvasUuid, SOURCE, ana);
     await deleteSkill('com-icone', SOURCE);
+  });
+
+  // --------------------------------------------------- clonagem (031) ------
+
+  it('clona o vMCP: vínculos com portas e posições, concessões e layout; sem chave, sem contador e sem o posto de padrão', async () => {
+    const clonadorUuid = (
+      await createUser({ email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
+    ).uuid;
+
+    // A fonte: aberta, com uma skill vinculada (com contadores), um catálogo
+    // vinculado, posições no canvas, layout, duas concessões e uma chave —
+    // e ainda por cima é o vMCP **padrão** da instalação.
+    const fonte = await createVirtualMcp(
+      { name: 'Fonte do Clone', description: 'a fonte', isOpen: true, ownerUserUuid: anaUuid },
+      SOURCE,
+      ana,
+    );
+    const skill = await createSkill(
+      { name: 'Skill do Clone', slug: 'skill-do-clone', skillMd: '# c' },
+      SOURCE,
+      ana,
+    );
+    const catalogo = await createCatalog(
+      { name: 'Catálogo do Clone', ownerUserUuid: anaUuid },
+      SOURCE,
+      ana,
+    );
+    await linkSkill(
+      'skill-do-clone',
+      fonte.uuid,
+      { asSkill: true, asPrompt: false, asResource: true },
+      SOURCE,
+      ana,
+    );
+    await linkCatalog(
+      fonte.uuid,
+      catalogo.uuid,
+      { asSkill: false, asPrompt: true, asResource: false },
+      SOURCE,
+      ana,
+    );
+    await setVirtualMcpCanvas(fonte.uuid, {
+      layout: { server: { x: 11, y: 22 }, internet: { x: -3, y: 4 } },
+      positions: [{ slug: 'skill-do-clone', x: 40, y: 50 }],
+      catalogPositions: [{ slug: 'catalogo-do-clone', x: 60, y: 70 }],
+    });
+    await incrementViewCount(skill.uuid, fonte.uuid);
+    await incrementDownloadCount(skill.uuid, fonte.uuid);
+    // Uma concessão para outra conta e outra para quem vai clonar.
+    await setVirtualMcpGrant(fonte.slug, brunoUuid, 'edit', SOURCE, ana);
+    await setVirtualMcpGrant(fonte.slug, clonadorUuid, 'manage', SOURCE, ana);
+    await createVirtualMcpKey({
+      virtualMcpUuid: fonte.uuid,
+      name: 'chave da fonte',
+      prefix: 'ccc98765',
+      keyHash: 'scrypt$hash-da-fonte',
+      createdByUserUuid: anaUuid,
+    });
+    await setDefaultVirtualMcp(fonte.uuid, SOURCE, ana);
+
+    const clonador = { userUuid: clonadorUuid, label: 'clonador@exemplo.dev' };
+    const copia = await cloneVirtualMcp(fonte.uuid, { ownerUserUuid: clonadorUuid }, SOURCE, clonador);
+
+    expect(copia).toMatchObject({
+      // O desempate sai do slug do original.
+      slug: 'fonte-do-clone-2',
+      name: 'Fonte do Clone',
+      description: 'a fonte',
+      // Ligado como o original; **fechado**, mesmo com o original aberto.
+      isActive: true,
+      isOpen: false,
+      ownerUserUuid: clonadorUuid,
+      isDefault: false,
+    });
+    // O layout vai inteiro.
+    expect(copia.layout).toEqual({ server: { x: 11, y: 22 }, internet: { x: -3, y: 4 } });
+    // O vínculo com a skill: as três portas e a posição, com os contadores
+    // zerados — eles contam leituras daquele servidor, e a cópia não teve
+    // nenhuma.
+    expect(copia.skills).toHaveLength(1);
+    expect(copia.skills[0]).toMatchObject({
+      slug: 'skill-do-clone',
+      asSkill: true,
+      asPrompt: false,
+      asResource: true,
+      viewCount: 0,
+      downloadCount: 0,
+      position: { x: 40, y: 50 },
+    });
+    // O vínculo com o catálogo: portas e posição.
+    expect(copia.catalogs).toHaveLength(1);
+    expect(copia.catalogs[0]).toMatchObject({
+      slug: 'catalogo-do-clone',
+      asSkill: false,
+      asPrompt: true,
+      asResource: false,
+      position: { x: 60, y: 70 },
+    });
+    // As concessões vêm, menos a de quem clonou (ela é a dona da cópia), e
+    // quem concede no objeto novo é quem clonou.
+    expect(copia.grants.map((g) => [g.email, g.level, g.grantedByEmail])).toEqual([
+      ['bruno@exemplo.dev', 'edit', 'clonador@exemplo.dev'],
+    ]);
+    // Chave nenhuma: o segredo não é guardado e `prefix` é UNIQUE.
+    expect(await listVirtualMcpKeys(copia.uuid)).toEqual([]);
+    // E o posto de padrão não se move.
+    expect(await resolveDefaultVirtualMcp()).toMatchObject({
+      status: 'ok',
+      mcp: { uuid: fonte.uuid, slug: 'fonte-do-clone' },
+    });
+
+    // O original ficou como estava: aberto, padrão, com a chave e com os
+    // contadores do vínculo.
+    const original = (await getVirtualMcpByUuid(fonte.uuid))!;
+    expect([original.isOpen, original.isDefault]).toEqual([true, true]);
+    expect(await listVirtualMcpKeys(fonte.uuid)).toHaveLength(1);
+    expect(original.skills[0]).toMatchObject({ viewCount: 1, downloadCount: 1 });
+    expect(original.grants).toHaveLength(2);
+
+    // Uma linha só na trilha, com os dois lados no alvo e sem `mcp.create`.
+    const clonagem = (await listAuditPage({ action: 'mcp.clone' })).items;
+    expect(clonagem).toHaveLength(1);
+    expect(clonagem[0]).toMatchObject({
+      skillUuid: null,
+      skillSlug: null,
+      targetLabel: 'fonte-do-clone -> fonte-do-clone-2',
+      actorUserUuid: clonadorUuid,
+      actorLabel: 'clonador@exemplo.dev',
+    });
+    expect((await listAuditPage({ action: 'mcp.create', q: 'fonte-do-clone-2' })).total).toBe(0);
+
+    // O segundo clone é `-3`; sem conta, a cópia nasce órfã e sem concessão
+    // nenhuma a menos (ninguém é dono).
+    const terceiro = await cloneVirtualMcp(fonte.uuid, { name: 'Outro nome' }, SOURCE, {
+      userUuid: null,
+      label: 'token-global',
+    });
+    expect([terceiro.slug, terceiro.name, terceiro.ownerUserUuid]).toEqual([
+      'fonte-do-clone-3',
+      'Outro nome',
+      null,
+    ]);
+    expect(terceiro.grants.map((g) => [g.email, g.grantedByEmail])).toEqual([
+      ['bruno@exemplo.dev', null],
+      ['clonador@exemplo.dev', null],
+    ]);
+
+    // Slug pedido: livre grava, ocupado é 409, inválido é 400; uuid torto ou
+    // sumido é 404, e o dono inexistente também.
+    expect((await cloneVirtualMcp(fonte.uuid, { slug: 'copia-do-servidor' }, SOURCE, ana)).slug).toBe(
+      'copia-do-servidor',
+    );
+    const ocupado = await capture(
+      cloneVirtualMcp(fonte.uuid, { slug: 'fonte-do-clone-2' }, SOURCE, ana),
+    );
+    expect([ocupado.status, ocupado.message]).toEqual([
+      409,
+      'Já existe um MCP virtual com o slug "fonte-do-clone-2"',
+    ]);
+    expect(
+      (await capture(cloneVirtualMcp(fonte.uuid, { slug: 'Com Espaço' }, SOURCE, ana))).status,
+    ).toBe(400);
+    expect((await capture(cloneVirtualMcp('torto', {}, SOURCE, ana))).status).toBe(404);
+    expect(
+      (await capture(cloneVirtualMcp('00000000-0000-0000-0000-000000000000', {}, SOURCE, ana))).status,
+    ).toBe(404);
+    expect(
+      (
+        await capture(
+          cloneVirtualMcp(
+            fonte.uuid,
+            { ownerUserUuid: '00000000-0000-0000-0000-000000000000' },
+            SOURCE,
+            ana,
+          ),
+        )
+      ).status,
+    ).toBe(404);
+
+    // Nenhuma recusa deixou servidor pela metade nem linha na trilha.
+    expect((await listAuditPage({ action: 'mcp.clone' })).total).toBe(3);
+    expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('fonte-do-clone'))).toHaveLength(3);
   });
 });

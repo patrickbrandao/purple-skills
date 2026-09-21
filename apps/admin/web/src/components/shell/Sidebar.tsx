@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import {
+  Activity,
   BookOpen,
   BookOpenCheck,
   Bot,
@@ -14,7 +15,6 @@ import {
   MessageSquare,
   MoreVertical,
   PanelLeftClose,
-  Plug,
   Server,
   Settings,
   ShieldQuestion,
@@ -31,11 +31,10 @@ import { UserMenu, type OnLogout } from './UserMenu.js';
 import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
 
 const SETTINGS_ICON: Record<(typeof SETTINGS_SECTIONS)[number]['path'], ReactNode> = {
-  'mcp-padrao': <Server />,
-  'busca-semantica': <Sparkles />,
-  quarentena: <ShieldQuestion />,
-  ambiente: <SlidersHorizontal />,
-  conectar: <Plug />,
+  'default-mcp': <Server />,
+  'semantic-search': <Sparkles />,
+  quarantine: <ShieldQuestion />,
+  environment: <SlidersHorizontal />,
 };
 
 /** Mesma quebra do CSS: abaixo dela a sidebar é gaveta, não coluna. */
@@ -65,9 +64,9 @@ export function Sidebar({
 }) {
   const location = useLocation();
   const admin = canManageUsers(user.role);
-  const inConfig = location.pathname.startsWith('/configuracoes') || location.pathname.startsWith('/account');
+  const inConfig = location.pathname.startsWith('/settings') || location.pathname.startsWith('/account');
   const [configOpen, setConfigOpen] = useState(inConfig);
-  const inMine = location.pathname.startsWith('/meu-espaco');
+  const inMine = location.pathname.startsWith('/my-space');
   const [mineOpen, setMineOpen] = useState(inMine);
 
   useEffect(() => {
@@ -129,14 +128,14 @@ export function Sidebar({
           >
             <BookOpenCheck /> Skills
           </NavLink>
-          <NavLink to="/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <NavLink to="/catalogs" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
             <Library /> Catálogos
           </NavLink>
           {/* A quarentena fica ao lado do acervo, não dentro dele: o que está
               ali ainda não é skill (`docs/15-quarentena.md`). Só quem pode
               criar chega a submeter ou aprovar algo. */}
           {canCreate(user.role) && (
-            <NavLink to="/quarentena" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+            <NavLink to="/quarantine" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
               <ShieldQuestion /> Quarentena
             </NavLink>
           )}
@@ -151,10 +150,10 @@ export function Sidebar({
           </button>
           {mineOpen && (
             <div className="nav-sub">
-              <NavLink to="/meu-espaco/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <NavLink to="/my-space/skills" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                 <BookOpenCheck /> Minhas Skills
               </NavLink>
-              <NavLink to="/meu-espaco/catalogos" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <NavLink to="/my-space/catalogs" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                 <Library /> Meus catálogos
               </NavLink>
             </div>
@@ -162,8 +161,16 @@ export function Sidebar({
 
           <div className="nav-sep" />
 
+          {/* Atividade e Auditoria são o mesmo assunto visto de dois jeitos: a
+              primeira soma o dia, a segunda lista o evento. Ficam juntas, e
+              com a mesma guarda de admin (`docs/18-atividade.md`). */}
           {admin && (
-            <NavLink to="/auditoria" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+            <NavLink to="/activity" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <Activity /> Atividade
+            </NavLink>
+          )}
+          {admin && (
+            <NavLink to="/audit" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
               <ListChecks /> Auditoria
             </NavLink>
           )}
@@ -187,7 +194,7 @@ export function Sidebar({
                 SETTINGS_SECTIONS.map((section) => (
                   <NavLink
                     key={section.path}
-                    to={`/configuracoes/${section.path}`}
+                    to={`/settings/${section.path}`}
                     className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
                   >
                     {SETTINGS_ICON[section.path]} {section.label}
@@ -199,12 +206,12 @@ export function Sidebar({
                   <NavLink to="/account" end className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                     <UserRound /> Minha conta
                   </NavLink>
-                  <NavLink to="/account/chaves-adm" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                  <NavLink to="/account/admin-keys" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                     <KeyRound /> Adm MCP Keys
                   </NavLink>
                 </>
               )}
-              <NavLink to="/account/chaves-emitidas" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <NavLink to="/account/issued-keys" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
                 <KeySquare /> Chaves emitidas
               </NavLink>
             </div>

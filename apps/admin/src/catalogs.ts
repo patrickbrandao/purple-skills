@@ -1,6 +1,7 @@
 import {
   addCatalogSkill,
   badRequest,
+  cloneCatalog,
   createCatalog,
   deleteCatalog,
   getCatalog,
@@ -29,6 +30,7 @@ import {
 import {
   accountByEmail,
   assertAccess,
+  assertCanCreate,
   assertSkillsViewable,
   grantByEmail,
   grantOf,
@@ -106,6 +108,50 @@ export async function create(
     actorOf(user),
   );
   // Quem cria é o dono, e a escrita já devolve `'owner'`: sai como toda ficha.
+  return withGrants(created);
+}
+
+/**
+ * Clona um catálogo (`docs/16-clonagem.md`): a cópia é um objeto novo, de
+ * quem clonou, e **nasce fechada** — nunca `is_public`, mesmo que o original
+ * seja público. Quem copia decide de novo o que publicar.
+ *
+ * O corte é `edit`, o mesmo da lista de membros: quem já mexe no conteúdo
+ * inteiro pode levá-lo para uma cópia sua, e a cópia não carrega a ACL do
+ * original — é isso que separa este caso do vMCP, que exige `manage` (ver
+ * `clone`, em `mcps.ts`). O papel vem depois do objeto (`assertCanCreate`),
+ * porque a cópia é uma criação.
+ *
+ * `name` ausente é o nome do original; `slug` ausente desempata sozinho no
+ * banco (`-2`, `-3`, …) e nunca dá 409 — o slug **pedido** que já existe é
+ * que volta de lá como 409. Copiar os membros e auditar é do banco.
+ */
+export async function clone(
+  user: AuthUser,
+  slug: string,
+  body: { name?: unknown; slug?: unknown },
+): Promise<CatalogDetail> {
+  const current = await load(user, slug, 'edit');
+  assertCanCreate(user);
+
+  // Mesmo teto e mesma recusa de tipo do nome de vMCP — ver `mcps.ts`.
+  const name = nameFrom(body.name);
+  if (name) assertNameFits(name, 'do catálogo');
+  const wanted = typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined;
+
+  const created = await cloneCatalog(
+    current.uuid,
+    {
+      ...(name ? { name } : {}),
+      ...(wanted ? { slug: wanted } : {}),
+      // Quem clona é o dono. A sessão de bootstrap não tem UUID: a cópia
+      // nasce órfã, administrável só por admin.
+      ownerUserUuid: user.uuid,
+    },
+    SOURCE,
+    actorOf(user),
+  );
+  // Quem clona é o dono, e a escrita já devolve `'owner'`: sai como toda ficha.
   return withGrants(created);
 }
 

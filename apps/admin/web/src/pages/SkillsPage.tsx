@@ -13,6 +13,7 @@ import {
   type SkillSummary,
 } from '../api.js';
 import { AccessBadge } from '../components/AccessPanel.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { Badge, Button, EmptyRow, McpChips, Menu, MenuItem, Skel, noSite, useConfirm, useDebounced, useStored } from '../components/ui.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { useRegisterCommands } from '../components/commands.js';
@@ -20,8 +21,8 @@ import { IMPORT_SKILL_PATH, NEW_SKILL_PATH } from '../components/shell/routes.js
 import { useToast } from '../components/Toast.js';
 
 type Sort = 'recent' | 'score' | 'name';
-type Filter = 'todas' | 'sem-vinculo' | 'no-site' | 'desligadas';
-type Scope = 'todos' | AccessScope;
+type Filter = 'all' | 'unlinked' | 'on-site' | 'disabled';
+type Scope = 'all' | AccessScope;
 
 /**
  * O teto de uma consulta: `listSkills` do banco limita `limit` a 100, então a
@@ -32,9 +33,9 @@ type Scope = 'todos' | AccessScope;
 const PAGE = 100;
 
 const SORT_LABEL: Record<Sort, string> = { recent: 'Atualização', score: 'Mais acessadas', name: 'Nome' };
-const FILTER_LABEL: Record<Filter, string> = { todas: 'Todas', 'sem-vinculo': 'Sem vínculo', 'no-site': 'No site', desligadas: 'Desligadas' };
+const FILTER_LABEL: Record<Filter, string> = { all: 'Todas', unlinked: 'Sem vínculo', 'on-site': 'No site', disabled: 'Desligadas' };
 /** O recorte de acesso (`docs/12-acesso-granular.md` decisão 19): quem vê tudo não precisa dele. */
-export const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Minhas', shared: 'Compartilhadas comigo', public: 'Públicas' };
+export const SCOPE_LABEL: Record<Scope, string> = { all: 'Tudo que vejo', mine: 'Minhas', shared: 'Compartilhadas comigo', public: 'Públicas' };
 
 /**
  * A lista de skills. Com `mine`, é a "Minhas Skills" do Meu espaço: o recorte
@@ -46,6 +47,9 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
   const [params, setParams] = useSearchParams();
   const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<SkillSummary[] | null>(null);
+  // A skill que o diálogo de clonagem está copiando; ele mora **aqui**, e não
+  // no card, que é um `<a>` (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState<SkillSummary | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   // Uma tentativa que falhou deixa o `offset` já no valor pedido: sem este
@@ -56,8 +60,8 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
   const dq = useDebounced(query, 300);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:skills-sort', 'recent');
   const [view, setView] = useStored<'grid' | 'list'>('purple-skills-admin:skills-view', 'grid');
-  const filter = (params.get('filtro') as Filter | null) ?? 'todas';
-  const scope: Scope = mine ? 'mine' : ((params.get('acesso') as Scope | null) ?? 'todos');
+  const filter = (params.get('filter') as Filter | null) ?? 'all';
+  const scope: Scope = mine ? 'mine' : ((params.get('access') as Scope | null) ?? 'all');
 
   // Uma busca por interação: o cleanup descarta a resposta atrasada, senão a
   // consulta antiga chega por último e sobrescreve a nova. Busca, ordem e
@@ -71,7 +75,7 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
       limit: PAGE,
       offset,
       sort: dq ? undefined : sort === 'name' ? undefined : sort,
-      scope: scope === 'todos' ? '' : scope,
+      scope: scope === 'all' ? '' : scope,
     })
       .then((data) => {
         if (!active) return;
@@ -100,16 +104,16 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
   useRegisterCommands(
     [
       { id: 'skills-grid', label: view === 'grid' ? 'Ver skills em lista' : 'Ver skills em cards', group: 'Recurso', icon: view === 'grid' ? <List /> : <LayoutGrid />, run: () => setView(view === 'grid' ? 'list' : 'grid') },
-      { id: 'skills-unlinked', label: 'Mostrar skills sem vínculo', group: 'Recurso', icon: <BookOpenCheck />, run: () => setParams({ filtro: 'sem-vinculo' }) },
+      { id: 'skills-unlinked', label: 'Mostrar skills sem vínculo', group: 'Recurso', icon: <BookOpenCheck />, run: () => setParams({ filter: 'unlinked' }) },
     ],
     [view],
   );
 
   const visible = useMemo(() => {
     let list = items ?? [];
-    if (filter === 'sem-vinculo') list = list.filter((skill) => skill.mcps.length === 0);
-    if (filter === 'no-site') list = list.filter(noSite);
-    if (filter === 'desligadas') list = list.filter((skill) => !skill.isActive);
+    if (filter === 'unlinked') list = list.filter((skill) => skill.mcps.length === 0);
+    if (filter === 'on-site') list = list.filter(noSite);
+    if (filter === 'disabled') list = list.filter((skill) => !skill.isActive);
     if (sort === 'name') list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [items, filter, sort]);
@@ -192,7 +196,7 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
               não volta ao começo — voltar jogaria fora justamente as páginas
               que ele precisa olhar. */}
           {(Object.keys(FILTER_LABEL) as Filter[]).map((key) => (
-            <MenuItem key={key} onSelect={() => setParams({ ...(key === 'todas' ? {} : { filtro: key }), ...(mine || scope === 'todos' ? {} : { acesso: scope }) })}>
+            <MenuItem key={key} onSelect={() => setParams({ ...(key === 'all' ? {} : { filter: key }), ...(mine || scope === 'all' ? {} : { access: scope }) })}>
               {FILTER_LABEL[key]}
             </MenuItem>
           ))}
@@ -209,7 +213,7 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
               <MenuItem
                 key={key}
                 onSelect={() => {
-                  setParams({ ...(filter === 'todas' ? {} : { filtro: filter }), ...(key === 'todos' ? {} : { acesso: key }) });
+                  setParams({ ...(filter === 'all' ? {} : { filter }), ...(key === 'all' ? {} : { access: key }) });
                   setOffset(0);
                 }}
               >
@@ -267,6 +271,7 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
                   <span className="row-title truncate">{skill.name}</span>
                   <span className="row-sub truncate">{skill.slug}</span>
                 </div>
+                <CloneButton kind="skill" object={skill} role={user.role} shape="linha" onClone={() => setClonando(skill)} />
                 {canOwn(skill.access) && (
                   <button
                     type="button"
@@ -345,17 +350,20 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
                     <span className="row-sub">{formatRelative(skill.updatedAt)}</span>
                   </td>
                   <td className="num">
-                    {canOwn(skill.access) && (
-                      <button type="button" className="row-action danger" onClick={() => void remove(skill)} title="Remover skill">
-                        <Trash2 />
-                      </button>
-                    )}
+                    <span className="row-actions">
+                      <CloneButton kind="skill" object={skill} role={user.role} shape="linha" onClone={() => setClonando(skill)} />
+                      {canOwn(skill.access) && (
+                        <button type="button" className="row-action danger" onClick={() => void remove(skill)} title="Remover skill">
+                          <Trash2 />
+                        </button>
+                      )}
+                    </span>
                   </td>
                 </tr>
               ))}
               {visible.length === 0 && (
                 <EmptyRow colSpan={7}>
-                  {query ? 'Nenhuma skill encontrada' : mine && filter === 'todas' ? 'Você ainda não é dono de nenhuma skill' : filter !== 'todas' || scope !== 'todos' ? 'Nenhuma skill com esse filtro' : 'Nenhuma skill ainda'}
+                  {query ? 'Nenhuma skill encontrada' : mine && filter === 'all' ? 'Você ainda não é dono de nenhuma skill' : filter !== 'all' || scope !== 'all' ? 'Nenhuma skill com esse filtro' : 'Nenhuma skill ainda'}
                 </EmptyRow>
               )}
             </tbody>
@@ -384,6 +392,8 @@ export function SkillsPage({ user, mine = false }: { user: SessionUser; mine?: b
           </p>
         </div>
       )}
+
+      {clonando && <CloneDialog kind="skill" origem={clonando} onClose={() => setClonando(null)} />}
     </div>
   );
 }

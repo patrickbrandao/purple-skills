@@ -1,5 +1,6 @@
 import {
   badRequest,
+  cloneVirtualMcp,
   createVirtualMcp,
   createVirtualMcpKey,
   deleteVirtualMcp,
@@ -210,6 +211,52 @@ export function createMcpHandlers(caller: Caller) {
         `MCP virtual criado: "${mcp.name}" em /virtual/${mcp.slug}/mcp (${
           mcp.isOpen ? 'aberto' : 'exige chave'
         }). Use set_virtual_mcp_skills para escolher as skills e create_virtual_mcp_key para emitir uma chave.`,
+      );
+    },
+
+    /**
+     * Clona o MCP virtual. A cópia é de quem clonou, nasce fechada (`is_open`
+     * sempre falso) e, sem `new_slug`, o slug do original ganha sufixo (`-2`,
+     * `-3`…) — o desempate é do banco, e nessa forma não há 409; um `new_slug`
+     * já em uso, sim.
+     *
+     * Leva as propriedades, os vínculos com skills e com catálogos — com as
+     * portas e as posições do canvas — e as concessões. **Não** leva as chaves
+     * `psv_`: a cópia nasce sem chave nenhuma, e quem clona precisa saber
+     * disso antes de apontar um cliente para ela.
+     *
+     * Exige `manage` no original, e não o `edit` que basta para clonar skill e
+     * catálogo: a cópia leva a ACL, e ler a ACL é poder de `manage` (decisão
+     * 11 do `docs/12-acesso-granular.md`).
+     */
+    async clone_virtual_mcp(args: { slug: string; name?: string; new_slug?: string }): Promise<ToolResult> {
+      if (!canCreate(caller.role)) {
+        return fail(
+          `Clonar um MCP virtual faz nascer um MCP virtual novo: exige papel "editor" ou "admin"; sua credencial é "${caller.role}".`,
+        );
+      }
+      const origem = await managed(args.slug, 'manage');
+      // Só para quem dá nome à cópia: sem `name` ela repete o do original.
+      if (args.name !== undefined) assertNameFits(args.name, 'do MCP virtual');
+
+      const copia = await cloneVirtualMcp(
+        origem.uuid,
+        {
+          name: args.name,
+          slug: args.new_slug,
+          // Quem clona é o dono. O token global não é uma conta: a cópia nasce
+          // órfã, como em `create_virtual_mcp`.
+          ownerUserUuid: userUuid,
+        },
+        SOURCE,
+        actor,
+      );
+
+      return text(
+        `MCP virtual clonado de "${origem.slug}": "${copia.name}" em /virtual/${copia.slug}/mcp, com ` +
+          `${copia.skills.length} skill(s), ${copia.catalogs.length} catálogo(s) e ${copia.grants.length} ` +
+          'concessão(ões). A cópia é sua e nasce fechada. As chaves psv_ não são copiadas: ela não tem ' +
+          'chave nenhuma, e nada chega a ela até create_virtual_mcp_key emitir uma.',
       );
     },
 

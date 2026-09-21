@@ -149,7 +149,8 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 
 - O frontmatter é **gerado na leitura**, sempre que o arquivo é materializado:
   download do `.zip`, leitura crua em `/files/SKILL.md`, `get_skill_file` do
-  MCP público, `get_file` do MCP admin e o `resources/read` de `skill://<slug>`.
+  MCP público, `get_file` do MCP admin e o `resources/read` de
+  `skill://<slug>/SKILL.md`.
   O `prompts/get`, ao contrário, entrega **só o corpo**: nome e descrição já
   viajam nos metadados do `prompts/list`, e repeti-los no texto é ruído que o
   modelo lê como instrução.
@@ -169,7 +170,7 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
 ## 4. Upload/gestão de arquivos
 
 - Painel admin: upload de **.zip** (extraído no servidor, preservando
-  `relative_path`) **ou** formulário para adicionar/editar um arquivo por
+  `relative_path`) **ou** formulário para adicionar/edit um arquivo por
   vez. **Era**, até a quarentena
   ([`15-quarentena.md`](15-quarentena.md) §6): o `.zip` entrava também
   ~~dentro da edição de uma skill já cadastrada~~. Hoje o pacote tem um
@@ -239,7 +240,8 @@ fonte da verdade. O que fica gravado na linha `SKILL.md` de `files` é só o
   Redis/cache extra) — risco de inflação por refresh-spam aceito no v1.
 - **A mesma lógica incrementa os contadores em qualquer superfície de
   acesso**: página do site, API REST pública do site, e MCP público —
-  `get_skill`, `resources/read` de `skill://<slug>` e `prompts/get` incrementam
+  `get_skill`, `resources/read` de `skill://<slug>/SKILL.md` e `prompts/get`
+  incrementam
   `view_count`; seguir a URL de download do `download_skill` incrementa
   `download_count`. Ler a skill por resource ou invocá-la por prompt é acesso
   do mesmo jeito que chamar a ferramenta. Não há tentativa de distinguir "SPA"
@@ -794,7 +796,7 @@ Desenho em [`12-acesso-granular.md`](12-acesso-granular.md). Migration `017`.
   no contêiner; catálogo↔vMCP, `edit` no vMCP e `view` no catálogo.
 - **`leitor` virou `membro`**: a única diferença para `editor` é criar.
 - **Site**: lista também skills públicas sem vMCP aberto e os catálogos
-  públicos, com página própria (`/catalogos/<slug>`).
+  públicos, com página própria (`/catalogs/<slug>`).
 - Auditoria: `skill.share` / `skill.unshare`, `catalog.share` /
   `catalog.unshare`, `mcp.share` / `mcp.unshare`; transferência e flag
   público são `update` do objeto.
@@ -813,7 +815,7 @@ Desenho em [`13-fichas-e-acessos.md`](13-fichas-e-acessos.md). Migration `018`.
 
 - **Lista → visualizar → editar.** A ficha de uma skill ou de um catálogo é
   só leitura; toda alteração — conteúdo, metadados, publicação, acesso,
-  remover — mora em `/editar`, com a mesma organização de guias: Skill,
+  remover — mora em `/edit`, com a mesma organização de guias: Skill,
   Catálogos, Propriedades, Acesso e Auditoria na skill (Editar troca
   Auditoria por Arquivos); Catálogo, Skills, Propriedades, Acesso e
   Auditoria no catálogo. O servidor tem a guia Acesso ao lado de
@@ -931,6 +933,166 @@ Desenho em [`15-quarentena.md`](15-quarentena.md). Migration `030`, tabelas
 - **O que a entrega não trouxe**: varredura do conteúdo, prazo ou cota da fila,
   notificação de envio pendente, rascunho sem importação e promoção que já
   publica num servidor.
+
+## 12.7 Clonagem
+
+Desenho em [`16-clonagem.md`](16-clonagem.md). Migration `031`, que só
+acrescenta três ações ao CHECK de `audit_log.action` — clonar não pediu tabela
+nem coluna nova.
+
+- **Três tipos, um botão.** Skill, catálogo e MCP virtual ganham "Clonar" na
+  ficha e na linha da lista; o diálogo vem com nome e slug preenchidos e
+  editáveis, e confirmar leva à ficha da cópia. Fica **fora** da paleta de
+  comandos, por escolha do mantenedor: clonar é sempre sobre um objeto
+  determinado.
+- **A cópia nasce fechada.** `is_public` e `is_open` são falsos mesmo quando o
+  original é público ou aberto; `is_active` é copiado. Um clone que nascesse
+  aberto publicaria o conteúdo do original num endereço novo, sem passar pelo
+  aviso de exposição da decisão 15 do
+  [`12-acesso-granular.md`](12-acesso-granular.md). Pelo mesmo motivo o clone
+  de vMCP não toca `settings.default_virtual_mcp`.
+- **O que cada tipo leva.** Skill: propriedades, arquivos e tags — nasce
+  flutuante e sem concessão. Catálogo: propriedades e membros, com o
+  `is_active` de cada participação. vMCP: propriedades, vínculos de skill e de
+  catálogo (as três portas e as posições do canvas), o `layout` e as
+  **concessões**. Contadores zerados nos três, inclusive os do vínculo em
+  `virtual_mcp_skills`.
+- **Chave `psv_` não é copiável**, e por isso não é copiada: o segredo nunca
+  esteve no banco (só o hash scrypt) e `prefix` é `UNIQUE` global. A cópia
+  nasce sem chave.
+- **Quem clona precisa de `edit` no objeto e do papel de criar** (`editor` ou
+  `admin`) — um `membro` não clona nem o que é dele. No vMCP o mínimo sobe
+  para **`manage`**, porque a cópia leva a ACL e ler a ACL é poder de `manage`
+  (decisão 11 do [`12-acesso-granular.md`](12-acesso-granular.md)).
+- **O dono é quem clonou**, e o dono do original não ganha nada na cópia —
+  dono não tem linha na ACL, então não há o que copiar. Consequência aceita:
+  quando alguém clona o servidor de outro, os convidados entram na cópia e o
+  dono original, não.
+- **Slug pelo desempate de sempre** (`-2`, `-3`… pelo `uniqueSlug`, o mesmo da
+  promoção da quarentena); slug **pedido** e ocupado é 409, slug **derivado**
+  nunca conflita.
+- **Clonar não custa embedding.** `rag_vectors` é endereçado por
+  `(space_uuid, text_sha256)` e o texto de metadados é nome, descrição e tags:
+  conteúdo idêntico reaproveita os vetores que já existem, e a cópia só gera
+  texto novo se a pessoa mudar o nome. A skill clonada nasce `rag_stale`
+  mesmo assim — refatiar é de graça.
+- **Auditoria**: `skill.clone`, `catalog.clone` e `mcp.clone`, a linha no
+  objeto **novo**, com `target_label` em `<slug de origem> -> <slug da cópia>`,
+  a gramática de `quarantine.promote`.
+- **O que a entrega não trouxe**: clonagem profunda (clonar um servidor não
+  duplica as skills dentro dele), clonar envio da quarentena, clonagem em
+  lote, e qualquer vínculo entre original e cópia depois do `INSERT`.
+
+## 12.8 A extensão de skills do MCP (SEP-2640)
+
+Desenho em [`17-skills-extension.md`](17-skills-extension.md). **Sem
+migration**: `files.content_sha256` veio da `020` e `size_bytes` da `001`, e
+nenhuma decisão criou coluna, CHECK ou valor de enum.
+
+- **Três métodos novos no mcp-public**, em handlers de baixo nível com schemas
+  Zod escritos à mão (o SDK 1.30.0 não tem nada de skills): `skills/list`,
+  `skills/get` e `resources/directory/read`. A capability sai como
+  `extensions: { 'io.modelcontextprotocol/skills': { directoryRead: true } }`,
+  incondicional e antes do `connect`, como as duas atuais.
+- **A URI mudou.** `skill://<slug>` era o SKILL.md e passou a ser o
+  **diretório** da skill; o arquivo é `skill://<slug>/SKILL.md`, e cada anexo é
+  um resource irmão em `skill://<slug>/<caminho>`. Não havia como conviver: sob
+  a SEP a mesma URI significaria arquivo numa porta e diretório na outra. Isso
+  revoga a decisão 5 do [`06`](06-publicacao-mcp.md).
+- **A extensão ficou na porta `as_skill`**, não numa quarta flag. Aquela porta
+  já entrega todo arquivo por `get_skill_file` e pela URL de download, então a
+  extensão é uma segunda porta, conformante, sobre o mesmo conjunto — nenhuma
+  exposição nova. `as_resource` continua servindo **só** o `SKILL.md`, agora no
+  endereço novo, e governa sozinha o `resources/list`.
+- **O manifesto é real, e o digest do `SKILL.md` é calculado na hora.** O
+  `content_sha256` daquela linha é o hash do **corpo gravado, sem frontmatter**,
+  e o que a leitura devolve é o composto: publicar aquele hash faria toda skill
+  falhar na verificação de todo host, em silêncio. O digest sai do mesmo
+  `composeSkillMd` que serve o conteúdo, e o `frontmatter` da entrada, do
+  `frontmatterObject` que espelha o `buildFrontmatter`.
+- **Um cache de processo** guarda `{digest, size}` por `(uuid, updated_at)`,
+  com teto de entradas. Sem ele, `skills/list` leria o corpo de todo `SKILL.md`
+  do vMCP a cada chamada — e num vMCP aberto não há credencial que segure a
+  repetição.
+- **Binário passou a sair em `blob`** base64 no `resources/read`, sob o mesmo
+  `MCP_MAX_FILE_TEXT_BYTES`. A URL de download que as ferramentas devolvem não
+  serve ali: sob a SEP o arquivo está no manifesto, e recusá-lo é falha de
+  verificação.
+- **Contadores inalterados na prática**: o `resources/read` do `SKILL.md` conta
+  `view`/`resource`, como já contava; arquivo de apoio não conta, e
+  `skills/list`/`skills/get` não contam nada — são catálogo, não leitura.
+- **Campos da revisão 2026-07-28 escritos à mão**: `resultType: "complete"` em
+  todo resultado, mais `ttlMs: 0` e `cacheScope` (`public`/`private` conforme
+  `is_open`) nas listagens e leituras que aquela revisão enumera. `ttlMs` é
+  zero de propósito — é a mesma promessa que a `§5.2` do `06` recusou ao não
+  declarar `listChanged`. `tools/list` fica de fora: é montado pelo `McpServer`
+  e o SDK lança se registrarmos um handler para um método que já tem um.
+- **O painel avisa** quando a skill passa dos tetos da SEP (512 arquivos ou
+  16 MiB somados), na guia Arquivos da ficha. A skill continua sendo servida —
+  o teto é `SHOULD NOT` para o servidor —, mas hosts conformantes podem
+  recusá-la.
+- **Fora do v1**: o lado cliente (importar skills de MCP externo), `license` e
+  `compatibility` como colunas, skills aninhadas publicadas, paginação de
+  `skills/list`, e a subida para o protocolo 2026-07-28 — que remove as sessões
+  de protocolo e é projeto próprio.
+
+## 12.9 Painel: a tela de Atividade
+
+Desenho em [`18-atividade.md`](18-atividade.md). Migration `032-atividade.sql`,
+que cria `mcp_call_counters` e **quatro** índices: os dois dela
+(`mcp_call_counters_bucket_idx`, a faixa das duas leituras, e
+`mcp_call_counters_virtual_mcp_idx`, a varredura do `ON DELETE SET NULL`) e os
+dois que faltavam em `mcp_sessions` — `started_at`, para as sessões abertas no
+dia, e `ended_at`, para as encerradas nele.
+
+- **Uma grade de dias e o relatório de um deles.** Uma célula por dia, a cor
+  pela soma das quatro fontes do dia — sessões abertas, chamadas MCP, leituras
+  de skill e eventos da trilha —, e o dia clicado abre abaixo o relatório
+  agregado. **Só admin**, como a Auditoria, e no mesmo bloco da sidebar; sem
+  recorte por vMCP na v1.
+- **Três tabelas que já existiam, lidas por dia pela primeira vez**:
+  `mcp_sessions` (`015`), `skill_accesses` (`018`) e `audit_log` (`001`). A
+  quarta parcela é nova: nada contava **quantas chamadas** o MCP público
+  atendia — `request_count` conta requisições por sessão sem dizer o quê, e
+  `initialize`, `tools/list` e `ping` não deixavam rastro nenhum.
+- **A escala de cor é relativa ao período**, não absoluta: não existe um
+  "muito" que sirva a uma instalação de time e a um MCP aberto ao mesmo tempo,
+  e faixas fixas deixariam a grade apagada num caso e saturada no outro. O
+  nível é o **quartil da posição** do dia entre os dias com atividade da grade,
+  com o maior total sempre no tom cheio — e não a razão pelo maior total, que
+  bastaria um pico raro para pintar o ano inteiro de quase-vazio (`18` `§3.2`).
+- **O dia é o de quem olha**, e a conversão de dia em instantes é a mesma
+  `auditRange` da trilha — uma segunda convenção de data no painel foi o que
+  produziu a janela de 27 horas do `tasks/044`. O fuso IANA vai ao SQL **só**
+  na série, que é onde o `GROUP BY` recorta o dia; o relatório recebe dois
+  instantes e devolve contagens.
+- **A contagem de chamadas é um contador agregado em balde de 15 minutos**
+  (`MCP_CALL_BUCKET_MS`), acumulado em memória pelo rastreador do mcp-public e
+  despejado no mesmo flush que já grava `request_count`. Quinze minutos porque
+  todo deslocamento IANA é múltiplo disso (o `+05:45` do Nepal é o extremo):
+  a meia-noite de qualquer fuso cai numa borda de balde. Uma linha por chamada
+  seria a maior tabela da instalação — `tools/list` e `ping` são o caminho
+  quente — numa promessa de "nunca apagar".
+- **As famílias são por prefixo** — `tools`, `resources`, `prompts`, `skills`,
+  `session`, `other` —, e não por lista fechada: método novo do protocolo tem
+  de **aparecer**, não sumir. `resources/directory/read` conta como `skills`,
+  porque lê a árvore de uma skill.
+- **Nada identifica ninguém.** A contagem nova não guarda nome de tool,
+  argumento, IP, e-mail nem `session_id`, e o relatório inteiro é agregado: a
+  menor unidade é "quantas vezes". Quem precisa do evento a evento tem a
+  trilha, as sessões e a guia Auditoria da skill.
+- **Os números têm limites escritos** (`18` §7): chamada recebida não é chamada
+  bem-sucedida, o que é recusado antes do rastreador (429, lote, 403/404 de
+  sessão) não entra, o agrupamento do stateless faz a contagem de clientes ser
+  um piso, o mcp-admin não tem rastreador de sessões e a contagem de chamadas
+  só existe a partir da migration.
+- **Revoga o "fora do escopo" de quatro documentos**, cada um marcado no ponto:
+  o item de estatísticas de uso do [`10`](10-admin-canvas-e-sessoes.md) (`§9`),
+  o "leituras por dia" do [`13`](13-fichas-e-acessos.md) (`§8`) e a estatística
+  por vMCP do [`08`](08-mcp-virtual.md) (`§9`) e do
+  [`09`](09-mcp-padrao-e-skills-flutuantes.md) (`§6`).
+- **Fora do escopo**: nome de tool e argumentos na contagem, poda automática,
+  E2E da tela, série por hora, número por cliente e recorte por vMCP.
 
 ## 13. Riscos aceitos conscientemente (v1)
 

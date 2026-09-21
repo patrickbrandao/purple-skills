@@ -22,7 +22,7 @@ import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 import { KeysTable, UserAlerts, UserTitle, useUserKeys } from './UserPage.js';
 
-type Tab = 'conta' | 'chaves' | 'acessos' | 'atividade';
+type Tab = 'account' | 'keys' | 'accesses' | 'activity';
 
 /**
  * A ficha de uma conta em edição (`docs/13-fichas-e-acessos.md` §3.4): a
@@ -49,13 +49,13 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
   const [secret, setSecret] = useState<string | null>(null);
   const self = user?.uuid === me.uuid;
 
-  const tab: Tab = location.pathname.endsWith('/chaves')
-    ? 'chaves'
-    : location.pathname.endsWith('/acessos')
-      ? 'acessos'
-      : location.pathname.endsWith('/atividade')
-        ? 'atividade'
-        : 'conta';
+  const tab: Tab = location.pathname.endsWith('/keys')
+    ? 'keys'
+    : location.pathname.endsWith('/accesses')
+      ? 'accesses'
+      : location.pathname.endsWith('/activity')
+        ? 'activity'
+        : 'account';
 
   const hydrate = useCallback((fresh: UserSummary) => {
     setUser(fresh);
@@ -163,7 +163,7 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
   }
 
   const base = `/users/${user.uuid}`;
-  const editBase = `${base}/editar`;
+  const editBase = `${base}/edit`;
 
   return (
     <div className="page wide">
@@ -189,10 +189,10 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
       <Tabs
         value={tab}
         items={[
-          { key: 'conta', label: 'Conta', icon: <UserRound />, to: editBase },
-          { key: 'chaves', label: 'Chaves', icon: <KeyRound />, to: `${editBase}/chaves` },
-          { key: 'acessos', label: 'Acessos', icon: <History />, to: `${editBase}/acessos` },
-          { key: 'atividade', label: 'Atividade', icon: <ListChecks />, to: `${editBase}/atividade` },
+          { key: 'account', label: 'Conta', icon: <UserRound />, to: editBase },
+          { key: 'keys', label: 'Chaves', icon: <KeyRound />, to: `${editBase}/keys` },
+          { key: 'accesses', label: 'Acessos', icon: <History />, to: `${editBase}/accesses` },
+          { key: 'activity', label: 'Atividade', icon: <ListChecks />, to: `${editBase}/activity` },
         ]}
       />
 
@@ -256,9 +256,9 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
             </div>
           }
         />
-        <Route path="chaves" element={<KeysEditor user={user} />} />
-        <Route path="acessos" element={<AccessLog load={loadAccesses} showSkill />} />
-        <Route path="atividade" element={<ActorTrail actor={user.email} />} />
+        <Route path="keys" element={<KeysEditor user={user} />} />
+        <Route path="accesses" element={<AccessLog load={loadAccesses} showSkill />} />
+        <Route path="activity" element={<ActorTrail actor={user.email} />} />
       </Routes>
     </div>
   );

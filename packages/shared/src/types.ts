@@ -228,6 +228,14 @@ export type AuditAction =
   | 'catalog.unshare'
   | 'mcp.share'
   | 'mcp.unshare'
+  // Clonagem (`docs/16-clonagem.md`). A linha fica no objeto **novo** e o
+  // `target_label` é `<slug de origem> -> <slug da cópia>`, a mesma gramática
+  // de `quarantine.promote`. A cópia nasce fechada (nunca `is_public` nem
+  // `is_open`) e o clone de vMCP não leva chave, então nenhum evento de
+  // exposição ou de chave acompanha esta linha.
+  | 'skill.clone'
+  | 'catalog.clone'
+  | 'mcp.clone'
   // Busca semântica (`docs/14-rag.md` §9).
   // `rag.settings` leva `chave=valor`; `rag.reindex` leva a quantidade de
   // skills marcadas. O estado do indexador **não** é auditado: ele é
@@ -725,6 +733,171 @@ export type AdminLinks = { docs: string | null; support: string | null; chat: st
 
 /** A marca do painel: o nome e o ícone da sidebar, do login e da aba do navegador. */
 export type AdminBrand = { name: string; iconUrl: string };
+
+// --------------------------------------------------------- atividade ------
+
+/**
+ * A tela de Atividade do painel (`docs/18-atividade.md`): a grade de dias e o
+ * relatório agregado de um deles.
+ *
+ * Ela junta três fontes que já existiam e nunca tinham sido lidas por dia —
+ * `mcp_sessions` (quem se conectou), `skill_accesses` (o que foi lido) e
+ * `audit_log` (o que mudou no catálogo) — mais a contagem de chamadas por
+ * método, que nasceu com esta tela. **Tudo agregado**: nenhum corpo daqui
+ * carrega IP, e-mail, `session_id` nem qualquer identificador de uma operação
+ * individual. Quem precisa do evento a evento tem a trilha (`/api/audit`), as
+ * sessões (`/api/sessions`) e a guia de acessos da skill.
+ */
+
+/**
+ * O passo em que as chamadas MCP são acumuladas antes de ir ao banco: 15
+ * minutos.
+ *
+ * É o maior balde que ainda permite recortar o dia em **qualquer** fuso: todo
+ * deslocamento da base IANA é múltiplo de 15 minutos (o +05:45 do Nepal é o
+ * caso extremo). Com balde de uma hora, um relatório em Katmandu somaria 45
+ * minutos do dia vizinho; com balde diário, o fuso teria de ser congelado na
+ * gravação e o número nunca fecharia com o das outras três fontes, que são
+ * instantes exatos.
+ */
+export const MCP_CALL_BUCKET_MS = 900_000;
+
+/**
+ * A família de uma chamada, que é como o painel a agrupa — e como o canvas já
+ * nomeia as portas de um vMCP (`--port-tools`, `--port-resources`,
+ * `--port-prompts`).
+ *
+ * `skills` são os três métodos da extensão SEP-2640 (`skills/list`,
+ * `skills/get`, `resources/directory/read`), que o `docs/17` trouxe;
+ * `session` é o que abre e mantém a conversa (`initialize`, `ping`,
+ * `notifications/*`) e não é consumo de conteúdo; `other` recolhe o que um
+ * cliente mandar fora disso, para que um método novo do protocolo apareça na
+ * conta em vez de sumir.
+ */
+export type McpCallFamily = 'tools' | 'resources' | 'prompts' | 'skills' | 'session' | 'other';
+
+export const MCP_CALL_FAMILIES: readonly McpCallFamily[] = ['tools', 'resources', 'prompts', 'skills', 'session', 'other'];
+
+/**
+ * A que família pertence um método JSON-RPC.
+ *
+ * Pelo prefixo, e não por uma lista fechada: o protocolo ganha método novo
+ * (foi o que a SEP-2640 fez), e um `tools/algo` que ainda não existe é mais
+ * honesto dentro de `tools` do que dentro de `other`. `resources/directory/read`
+ * é a exceção que a extensão criou — ele lê a árvore de uma skill, então conta
+ * como `skills`, não como `resources`.
+ */
+export function mcpCallFamily(method: string): McpCallFamily {
+  if (method === 'resources/directory/read' || method.startsWith('skills/')) return 'skills';
+  if (method.startsWith('tools/')) return 'tools';
+  if (method.startsWith('resources/')) return 'resources';
+  if (method.startsWith('prompts/')) return 'prompts';
+  if (method === 'initialize' || method === 'ping' || method.startsWith('notifications/') || method.startsWith('completion/')) {
+    return 'session';
+  }
+  return 'other';
+}
+
+/** Um balde de chamadas fechado pelo rastreador do MCP público, pronto para somar no banco. */
+export type McpCallBucketInput = {
+  /** O início do balde de `MCP_CALL_BUCKET_MS`, em ISO; quem o calcula é quem atendeu a chamada. */
+  bucket: string;
+  /** Nulo nunca aqui: sem vMCP resolvido não há contabilidade (é o mesmo `scopeOf` das sessões). */
+  virtualMcpUuid: string;
+  virtualMcpSlug: string;
+  transport: McpSessionTransport;
+  /** O método JSON-RPC cru, como o cliente o mandou (já validado como texto curto). */
+  method: string;
+  calls: number;
+};
+
+/** Um dia da grade. Dia sem linha é dia sem atividade — aqui, ao contrário de `Stats`, faltar É zero. */
+export type ActivityDay = {
+  /** `AAAA-MM-DD` no fuso pedido na consulta. */
+  day: string;
+  /** Sessões abertas no dia (uma por cliente conectado a um vMCP). */
+  sessions: number;
+  /** Mensagens JSON-RPC recebidas pelo MCP público. */
+  calls: number;
+  /** Leituras de skill por qualquer superfície, inclusive o site e o mcp-admin. */
+  reads: number;
+  /** Eventos da trilha de auditoria (o que mudou no catálogo). */
+  events: number;
+  /** A soma das quatro — é ela que dá a cor da célula. */
+  total: number;
+};
+
+/** A série que o heatmap desenha. */
+export type ActivitySeries = {
+  /** Só os dias com alguma atividade, em ordem crescente; o painel completa a grade com zeros. */
+  days: ActivityDay[];
+  /** A faixa efetivamente consultada, `AAAA-MM-DD` no fuso abaixo. */
+  since: string;
+  until: string;
+  /** O fuso IANA em que os dias foram recortados — o do navegador, quando o painel o informa. */
+  timezone: string;
+};
+
+/** Uma fatia nomeada de um total. `label` sai do banco quando o nome vale mais que a chave (um vMCP, uma skill). */
+export type ActivitySlice = { key: string; label: string | null; count: number };
+
+/**
+ * O relatório de um dia. Tudo somado: a menor unidade é "quantas vezes", nunca
+ * "quem" ou "qual operação".
+ */
+export type ActivityReport = {
+  day: string;
+  timezone: string;
+  /** Quem se conectou ao MCP público. */
+  clients: {
+    /** Sessões abertas no dia. */
+    sessions: number;
+    /** Identidades distintas por trás delas (o `session_id`, que no stateless já é IP+agente+credencial+vMCP). */
+    distinct: number;
+    /** Nomes de agente distintos declarados no `initialize` (`clientInfo.name`). */
+    agents: number;
+    /** Sessões encerradas no dia, por motivo. */
+    ended: number;
+    byTransport: ActivitySlice[];
+    byAuth: ActivitySlice[];
+    byEndReason: ActivitySlice[];
+    /** Os agentes mais vistos, por nome declarado — sem versão, sem IP. */
+    topAgents: ActivitySlice[];
+  };
+  /** O que foi chamado no MCP público. */
+  calls: {
+    total: number;
+    byFamily: ActivitySlice[];
+    /** Os métodos mais chamados, com a família de cada um no `label`. */
+    topMethods: ActivitySlice[];
+    byTransport: ActivitySlice[];
+    /** Os servidores mais chamados; `key` é o slug e `label`, o nome. */
+    byServer: ActivitySlice[];
+  };
+  /** O que foi lido do acervo. */
+  reads: {
+    total: number;
+    /** Quantas leituras foram entrega de pacote (`kind = 'download'`). */
+    downloads: number;
+    /** Skills distintas lidas no dia. */
+    skills: number;
+    bySurface: ActivitySlice[];
+    byOrigin: ActivitySlice[];
+    byAuth: ActivitySlice[];
+    /** As skills mais lidas; `key` é o slug e `label`, o nome. */
+    topSkills: ActivitySlice[];
+  };
+  /** O que mudou no catálogo, pela trilha. */
+  catalog: {
+    total: number;
+    /** Atores distintos (contas, tokens e o `ambiente`), contados sem identificar. */
+    actors: number;
+    /** Por ação da trilha; `key` é o `AuditAction`. */
+    byAction: ActivitySlice[];
+    /** Por origem do evento: `web-admin` ou `mcp-admin`. */
+    bySource: ActivitySlice[];
+  };
+};
 
 // ---------------------------------------------------------- quarentena -----
 

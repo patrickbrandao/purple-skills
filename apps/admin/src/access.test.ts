@@ -15,6 +15,7 @@ process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 const banco = vi.hoisted(() => ({
   getSkillSummary: vi.fn(),
   getSkillDetail: vi.fn(),
+  cloneSkill: vi.fn(),
   listSkills: vi.fn(),
   listSkillGrants: vi.fn(),
   setSkillGrant: vi.fn(),
@@ -39,6 +40,9 @@ vi.mock('@purple-skills/db', async (original) => ({
 
 const { grantByEmail, grantOf, ownerByEmail, shareSkill, unshareSkill, withGrants } = await import('./access.js');
 const { api } = await import('./api.js');
+// O `AppError` de verdade, para o caso do 409: o `fail()` do `api.ts` só
+// reconhece a classe, e um objeto com `status: 409` viraria 500.
+const { conflict } = await import('@purple-skills/db');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -352,6 +356,92 @@ describe('as outras rotas de skill que devolvem ficha', () => {
         { id: 'a2', userUuid: null, userEmail: null, ip: '198.51.100.8' },
       ]);
     }
+  });
+});
+
+/**
+ * Clonar uma skill (`docs/16-clonagem.md`).
+ *
+ * O que mais custaria caro se mudasse sem querer:
+ *
+ * 1. **a resposta é a mesma de `POST /api/skills`** — 201 com a ficha da
+ *    cópia, sem frontmatter e sem uuid de conta —, para o painel não precisar
+ *    de um caminho novo;
+ * 2. **são duas exigências, nesta ordem**: `edit` na original e papel que
+ *    possa criar. Quem não enxerga a skill recebe 404 antes de tudo, e um
+ *    `membro` é recusado mesmo sendo dono do que está copiando;
+ * 3. **o slug pedido que colide é 409 do banco**, repassado inteiro; sem slug
+ *    pedido não há colisão — o desempate é de lá.
+ */
+describe('POST /api/skills/:slug/clone', () => {
+  /** O que `cloneSkill` devolve: uma skill nova, fechada, de quem clonou. */
+  const COPIA = { ...FICHA_DO_ADMIN, uuid: 'skill-alfa-2', slug: 'alfa-2', isPublic: false };
+
+  beforeEach(() => {
+    banco.cloneSkill.mockResolvedValue(COPIA);
+  });
+
+  it('201 com a ficha da cópia, na mesma forma da criação', async () => {
+    const res = await chamar('post', '/api/skills/:slug/clone', { user: ana, params: { slug: 'alfa' }, body: {} });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body).toMatchObject({ slug: 'alfa-2', access: 'owner', isPublic: false, skillMd: '# alfa\n' });
+    expect((res.body.grants as unknown[]).length).toBe(2);
+    expect(res.body.ownerUserUuid).toBe('ana@exemplo.dev');
+    semUuidDeConta(res.body);
+  });
+
+  // Sem nome e sem slug o banco decide os dois: mesmo nome da original e
+  // sufixo `-2`, `-3`… O dono da cópia é a conta da sessão.
+  it('o corpo vazio chega ao banco só com o dono; nome e slug pedidos vão junto', async () => {
+    await chamar('post', '/api/skills/:slug/clone', { user: ana, params: { slug: 'alfa' }, body: {} });
+    expect(banco.cloneSkill).toHaveBeenCalledWith('skill-alfa', { ownerUserUuid: 'uuid-ana' }, 'web-admin', expect.objectContaining({ userUuid: 'uuid-ana' }));
+
+    await chamar('post', '/api/skills/:slug/clone', { user: ana, params: { slug: 'alfa' }, body: { name: ' Alfa copiada ', slug: ' alfa-copia ' } });
+    expect(banco.cloneSkill).toHaveBeenLastCalledWith(
+      'skill-alfa',
+      { name: 'Alfa copiada', slug: 'alfa-copia', ownerUserUuid: 'uuid-ana' },
+      'web-admin',
+      expect.objectContaining({ userUuid: 'uuid-ana' }),
+    );
+  });
+
+  it('403 para papel membro, mesmo com `edit` na original', async () => {
+    banco.getSkillSummary.mockResolvedValue({ ...FICHA_DO_LEITOR, access: 'edit' });
+
+    const res = await chamar('post', '/api/skills/:slug/clone', { user: leitor, params: { slug: 'alfa' }, body: {} });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'forbidden', message: 'Seu papel não permite criar no acervo' });
+    expect(banco.cloneSkill).not.toHaveBeenCalled();
+  });
+
+  it('403 para quem só vê a skill: copiar o conteúdo inteiro é `edit`', async () => {
+    banco.getSkillSummary.mockResolvedValue(FICHA_DO_LEITOR);
+
+    const res = await chamar('post', '/api/skills/:slug/clone', { user: ana, params: { slug: 'alfa' }, body: {} });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.message).toContain('editar');
+    expect(banco.cloneSkill).not.toHaveBeenCalled();
+  });
+
+  it('404 para slug que a sessão não enxerga, antes de conferir papel', async () => {
+    banco.getSkillSummary.mockResolvedValue(null);
+
+    const res = await chamar('post', '/api/skills/:slug/clone', { user: leitor, params: { slug: 'sumida' }, body: {} });
+
+    expect(res.statusCode).toBe(404);
+    expect(banco.cloneSkill).not.toHaveBeenCalled();
+  });
+
+  it('o 409 do slug pedido que já existe volta inteiro de quem chamou', async () => {
+    banco.cloneSkill.mockRejectedValue(conflict('Já existe uma skill com o slug "alfa-copia"'));
+
+    const res = await chamar('post', '/api/skills/:slug/clone', { user: ana, params: { slug: 'alfa' }, body: { slug: 'alfa-copia' } });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'conflict', message: 'Já existe uma skill com o slug "alfa-copia"' });
   });
 });
 

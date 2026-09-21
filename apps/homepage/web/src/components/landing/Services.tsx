@@ -173,7 +173,7 @@ export function Services() {
   useServiceWires(stageRef, svgRef);
 
   return (
-    <section className="diag" id="servicos">
+    <section className="diag" id="services">
       <div className="wrap">
         <div className="head center reveal">
           <img

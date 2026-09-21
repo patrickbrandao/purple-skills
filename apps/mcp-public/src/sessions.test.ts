@@ -1,16 +1,27 @@
 import type { Request } from 'express';
+import type { McpCallBucketInput } from '@purple-skills/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-// Do pacote só entra a regra do rótulo, e entra **de verdade**: é ela que os
-// testes de `clientInfoOf` conferem (teto, controle, cópia), e um dublê aqui
-// testaria o dublê. As queries seguem de fora — o rastreador recebe o `store`
-// falso — e nada no pacote abre conexão em tempo de import.
+// Do pacote só entram as regras de saneamento, e entram **de verdade**: são
+// elas que os testes de `clientInfoOf` e da contagem conferem (teto, controle,
+// cópia), e um dublê aqui testaria o dublê. As queries seguem de fora — o
+// rastreador recebe o `store` falso — e nada no pacote abre conexão em tempo de
+// import.
 vi.mock('@purple-skills/db', async (original) => {
   const real = await original<typeof import('@purple-skills/db')>();
-  return { normalizeSessionLabel: real.normalizeSessionLabel };
+  return {
+    normalizeSessionLabel: real.normalizeSessionLabel,
+    MCP_CALL_METHOD_MAX: real.MCP_CALL_METHOD_MAX,
+    // Só existe para o `store` padrão poder apontar para alguma coisa: todo
+    // teste injeta o dublê, e chegar aqui é defeito do teste.
+    bumpMcpCallCounters: async () => {
+      throw new Error('o teste precisa injetar o store');
+    },
+  };
 });
 
-const { MCP_SESSION_LABEL_MAX } = await vi.importActual<typeof import('@purple-skills/db')>('@purple-skills/db');
+const { MCP_CALL_METHOD_MAX, MCP_SESSION_LABEL_MAX } = await vi.importActual<typeof import('@purple-skills/db')>('@purple-skills/db');
+const { MCP_CALL_BUCKET_MS } = await vi.importActual<typeof import('@purple-skills/shared')>('@purple-skills/shared');
 const { clientInfoOf, createSessionTracker, statelessSessionId } = await import('./sessions.js');
 type Store = NonNullable<Parameters<typeof createSessionTracker>[0]['store']>;
 
@@ -31,6 +42,7 @@ function fakeStore(): Store & { calls: Record<keyof Store, ReturnType<typeof vi.
     closeMcpSessions: vi.fn(async (ids: readonly string[]) => ids.length),
     findOpenMcpSession: vi.fn(async () => null),
     expireMcpSessions: vi.fn(async () => 0),
+    bumpMcpCallCounters: vi.fn(async () => undefined),
   };
   return { ...calls, calls } as never;
 }
@@ -39,7 +51,10 @@ function request(overrides: { body?: unknown; ip?: string; agent?: string; baseU
   const headers: Record<string, string> = { 'user-agent': overrides.agent ?? 'claude-code/1.0' };
   return {
     ip: overrides.ip ?? '203.0.113.7',
-    body: overrides.body ?? {},
+    // `'body' in overrides` distingue "não passei corpo" de "passei
+    // `undefined`": é o segundo que o `GET /mcp`, o `DELETE /mcp` e o `GET /sse`
+    // entregam, onde o `express.json` nem roda.
+    body: 'body' in overrides ? overrides.body : {},
     baseUrl: overrides.baseUrl ?? '',
     get: (name: string) => headers[name.toLowerCase()],
     virtual: overrides.virtual === false ? undefined : {},
@@ -341,6 +356,294 @@ describe('stateless', () => {
       clientName: 'claude-code',
       clientVersion: '2.1.0',
     });
+  });
+});
+
+/**
+ * A contagem por método da tela de Atividade (`docs/18-atividade.md`). O que
+ * ela mede não é o que `request_count` mede: aqui a unidade é a **mensagem**
+ * JSON-RPC, e um lote de 20 num POST soma 20 chamadas contra uma requisição.
+ */
+describe('contagem de chamadas por método', () => {
+  const chamada = (method: string, calls: number, extra: Partial<McpCallBucketInput> = {}): McpCallBucketInput => ({
+    bucket: '1970-01-01T00:15:00.000Z',
+    virtualMcpUuid: 'u-1',
+    virtualMcpSlug: 'time-a',
+    transport: 'streamable',
+    method,
+    calls,
+    ...extra,
+  });
+
+  const chamadasDe = (store: ReturnType<typeof fakeStore>, i = 0) =>
+    store.calls.bumpMcpCallCounters.mock.calls[i][0] as McpCallBucketInput[];
+
+  /**
+   * As **linhas** que `mcp_call_counters` teria no fim, e não o que cada
+   * despejo levou: a gravação é um UPSERT que soma, então o mesmo (balde,
+   * transporte, método) que aparece em dois despejos é uma linha só. É essa a
+   * medida dos testes de teto — o que ele protege é a tabela, que não tem poda.
+   */
+  const linhasDe = (store: ReturnType<typeof fakeStore>): McpCallBucketInput[] => {
+    const linhas = new Map<string, McpCallBucketInput>();
+    for (const [itens] of store.calls.bumpMcpCallCounters.mock.calls as [McpCallBucketInput[]][]) {
+      for (const item of itens) {
+        const chave = `${item.bucket}|${item.transport}|${item.method}`;
+        const atual = linhas.get(chave);
+        if (atual) atual.calls += item.calls;
+        else linhas.set(chave, { ...item });
+      }
+    }
+    return [...linhas.values()];
+  };
+
+  it('conta uma chamada por mensagem: o lote de 20 soma 20, e a requisição continua sendo uma', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const lote = Array.from({ length: 20 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'tools/call' }));
+
+    t.opened('streamable', 'sess-1', request({ body: INITIALIZE }));
+    t.seen('streamable', 'sess-1', request({ body: lote }));
+    await t.flush();
+
+    expect(store.calls.bumpMcpCallCounters).toHaveBeenCalledTimes(1);
+    expect(chamadasDe(store)).toEqual([chamada('initialize', 1), chamada('tools/call', 20)]);
+    expect(store.calls.touchMcpSession).toHaveBeenCalledWith('row-1', { requests: 1 });
+  });
+
+  it('requisição sem corpo não conta nada e não quebra (GET /mcp, DELETE /mcp, GET /sse)', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+
+    t.opened('sse', 'sse-1', request({ body: undefined }));
+    t.seen('sse', 'sse-1', request({ body: undefined }));
+    await t.flush();
+
+    expect(store.calls.bumpMcpCallCounters).not.toHaveBeenCalled();
+    expect(store.calls.openMcpSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('mensagem sem method que seja texto é ignorada: resposta, lixo, nulo e method que não é string', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const corpo = [{ jsonrpc: '2.0', id: 1, result: {} }, 'lixo', null, { method: 42 }, { method: 'ping' }];
+
+    t.stateless(request({ body: corpo }));
+    await t.flush();
+
+    expect(chamadasDe(store)).toEqual([chamada('ping', 1, { transport: 'stateless' })]);
+  });
+
+  // O método é texto de quem chama, como o `clientInfo`: o nulo derrubaria o
+  // INSERT (relatório 038) e o método de 1 MB ficaria no mapa da entrada por um
+  // intervalo inteiro (relatório 047). O corte é o do banco, não o do rótulo.
+  it('o método é limpo e cortado com a regra do banco antes de virar chave', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const NUL = String.fromCharCode(0);
+
+    t.stateless(request({ body: [{ method: `tools/${NUL}call` }, { method: 'm'.repeat(1024 * 1024) }, { method: `${NUL}${NUL}` }] }));
+    await t.flush();
+
+    expect(MCP_CALL_METHOD_MAX).toBe(128);
+    expect(chamadasDe(store)).toEqual([
+      chamada('tools/ call', 1, { transport: 'stateless' }),
+      chamada('m'.repeat(MCP_CALL_METHOD_MAX), 1, { transport: 'stateless' }),
+    ]);
+  });
+
+  it('passado o teto de métodos distintos, o excedente é contado em "other"', async () => {
+    const store = fakeStore();
+    const log = vi.fn();
+    const t = tracker(store, { maxMethodsPerEntry: 2, log });
+    const corpo = [{ method: 'a/1' }, { method: 'b/2' }, { method: 'c/3' }, { method: 'd/4' }, { method: 'c/3' }];
+
+    t.stateless(request({ body: corpo }));
+    await t.flush();
+
+    expect(chamadasDe(store)).toEqual([
+      chamada('a/1', 1, { transport: 'stateless' }),
+      chamada('b/2', 1, { transport: 'stateless' }),
+      chamada('other', 3, { transport: 'stateless' }),
+    ]);
+    // O aviso é um por janela de "online", como o do teto de identidades.
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('teto de 2 métodos distintos'));
+  });
+
+  /**
+   * O despejo agrupado pode atravessar a virada dos 15 minutos — aqui com o
+   * intervalo largo, para as duas chamadas ainda estarem na memória quando ele
+   * acontece. O que foi chamado antes não pode aparecer no balde novo: é dele
+   * que sai o dia do relatório.
+   */
+  it('o que foi chamado antes da virada do balde não vai para o balde novo', async () => {
+    const store = fakeStore();
+    const clock = { now: 900_000 };
+    const t = tracker(store, { touchIntervalMs: 3_600_000 }, clock);
+
+    t.opened('streamable', 'sess-1', request({ body: { method: 'tools/call' } }));
+    clock.now += MCP_CALL_BUCKET_MS;
+    t.seen('streamable', 'sess-1', request({ body: { method: 'tools/call' } }));
+    await t.flush();
+
+    expect(MCP_CALL_BUCKET_MS).toBe(900_000);
+    expect(chamadasDe(store)).toEqual([
+      chamada('tools/call', 1, { bucket: '1970-01-01T00:15:00.000Z' }),
+      chamada('tools/call', 1, { bucket: '1970-01-01T00:30:00.000Z' }),
+    ]);
+  });
+
+  /**
+   * O teto de métodos distintos protege `mcp_call_counters`, que nunca é
+   * podada: o que ele limita é quantas **linhas** uma entrada chega a criar.
+   * Medido em `calls.size`, ele reiniciava a cada despejo — e o despejo é a
+   * cada `touchIntervalMs` (10 s na produção), enquanto a linha é por balde de
+   * 15 minutos. Aqui o intervalo é de 1 ms para o despejo cair entre uma
+   * requisição e a outra, que é como ele cai sob carga.
+   */
+  it('o teto vale por balde: um despejo no meio não dá direito a métodos novos', async () => {
+    const store = fakeStore();
+    const clock = { now: 900_000 };
+    const t = tracker(store, { maxMethodsPerEntry: 2, touchIntervalMs: 1 }, clock);
+
+    for (const metodo of ['a/1', 'b/2', 'c/3', 'd/4']) {
+      clock.now += 10;
+      const req = request({ body: { method: metodo } });
+      if (metodo === 'a/1') t.opened('streamable', 'sess-1', req);
+      else t.seen('streamable', 'sess-1', req);
+      await flushMicrotasks();
+    }
+    await t.flush();
+
+    // Três despejos no caminho e ainda assim duas linhas de método mais a do
+    // excedente: sem o conserto, cada despejo esvaziava o mapa e os quatro
+    // métodos inventados viravam quatro linhas.
+    expect(store.calls.bumpMcpCallCounters.mock.calls.length).toBeGreaterThan(1);
+    expect(linhasDe(store)).toEqual([chamada('a/1', 1), chamada('b/2', 1), chamada('other', 2)]);
+  });
+
+  /**
+   * O outro lado do mesmo teto: ele é **por balde**, então o balde novo começa
+   * do zero. Sem isto, uma sessão longa que já tivesse estourado o teto às 10h
+   * contaria todo o resto do dia em `other` — e o relatório perderia o método
+   * de cada chamada sem que nada estivesse sendo abusado.
+   */
+  it('balde novo recomeça o teto: o método visto no anterior não conta contra ele', async () => {
+    const store = fakeStore();
+    const clock = { now: 900_000 };
+    const t = tracker(store, { maxMethodsPerEntry: 2, touchIntervalMs: 3_600_000 }, clock);
+    const BALDE_2 = '1970-01-01T00:30:00.000Z';
+
+    t.opened('streamable', 'sess-1', request({ body: [{ method: 'a/1' }, { method: 'b/2' }, { method: 'c/3' }] }));
+    clock.now += MCP_CALL_BUCKET_MS;
+    t.seen('streamable', 'sess-1', request({ body: [{ method: 'd/4' }, { method: 'e/5' }, { method: 'f/6' }] }));
+    await t.flush();
+
+    // A ordem é a do mapa da entrada (método → balde): `other` já existia como
+    // chave do balde anterior, e por isso vem antes de `d/4`.
+    expect(linhasDe(store)).toEqual([
+      chamada('a/1', 1),
+      chamada('b/2', 1),
+      chamada('other', 1),
+      chamada('other', 1, { bucket: BALDE_2 }),
+      chamada('d/4', 1, { bucket: BALDE_2 }),
+      chamada('e/5', 1, { bucket: BALDE_2 }),
+    ]);
+  });
+
+  /**
+   * O despejo sai do caminho quente e a soma das chamadas é um `INSERT`
+   * multilinha: sob contenção ela espera o timeout do banco inteiro. Com
+   * `lastFlush` marcado só no fim, ele seguia velho durante toda a espera e
+   * **cada** requisição que chegasse disparava outro despejo da mesma entrada —
+   * a tempestade de `INSERT` concorrentes que alimenta o deadlock em
+   * `mcp_call_counters`. Aqui o primeiro `INSERT` fica preso até o teste soltar.
+   */
+  it('requisição que chega com o INSERT em voo não dispara um segundo despejo', async () => {
+    const store = fakeStore();
+    const clock = { now: 1_000_000 };
+    let soltar: () => void = () => undefined;
+    const preso = new Promise<void>((resolve) => {
+      soltar = resolve;
+    });
+    store.calls.bumpMcpCallCounters.mockImplementationOnce(async () => {
+      await preso;
+    });
+    const t = tracker(store, {}, clock);
+    const req = () => request({ body: { method: 'tools/call' } });
+
+    t.opened('streamable', 'sess-1', req());
+    clock.now += 10_000;
+    t.seen('streamable', 'sess-1', req());
+    await flushMicrotasks();
+    expect(store.calls.bumpMcpCallCounters).toHaveBeenCalledTimes(1);
+
+    // Três requisições com o primeiro INSERT ainda preso: nenhuma delas pode
+    // disparar outro. Sem a marca antecipada, a primeira já disparava.
+    for (let i = 0; i < 3; i += 1) {
+      clock.now += 1_000;
+      t.seen('streamable', 'sess-1', req());
+      await flushMicrotasks();
+    }
+    expect(store.calls.bumpMcpCallCounters).toHaveBeenCalledTimes(1);
+
+    soltar();
+    await flushMicrotasks();
+    clock.now += 10_000;
+    t.seen('streamable', 'sess-1', req());
+    await flushMicrotasks();
+
+    // O que chegou durante a espera vai no despejo seguinte, no mesmo balde, e
+    // `request_count` não muda: as cinco requisições continuam somando cinco.
+    expect(store.calls.bumpMcpCallCounters).toHaveBeenCalledTimes(2);
+    expect(chamadasDe(store, 1)).toEqual([chamada('tools/call', 4)]);
+    expect(store.calls.touchMcpSession.mock.calls).toEqual([
+      ['row-1', { requests: 4 }],
+      ['row-1', { requests: 1 }],
+    ]);
+  });
+
+  /**
+   * O `POST /messages` do SSE legado não passa pelo middleware `lote` do
+   * `http.ts` — não tem teto nenhum — e o `handlePostMessage` do SDK recusa um
+   * array com 400, sem processar mensagem alguma. Contar o lote inteiro punha
+   * 5 000 chamadas que nunca aconteceram na tela de Atividade.
+   */
+  it('no SSE legado o lote não vira N chamadas; no Streamable ele continua valendo', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const lote = Array.from({ length: 5_000 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'tools/call' }));
+
+    t.opened('sse', 'sse-1', request({ body: undefined }));
+    t.seen('sse', 'sse-1', request({ body: lote }));
+    // O corpo de um cliente de verdade — objeto solto — conta como sempre.
+    t.seen('sse', 'sse-1', request({ body: { method: 'ping' } }));
+    t.opened('streamable', 'sess-1', request({ body: lote }));
+    await t.flush();
+
+    expect(linhasDe(store)).toEqual([
+      chamada('tools/call', 1, { transport: 'sse' }),
+      chamada('ping', 1, { transport: 'sse' }),
+      chamada('tools/call', 5_000),
+    ]);
+    // A requisição segue sendo uma: o lote recusado não some da contagem de
+    // requisições, só deixa de virar chamada.
+    expect(store.calls.touchMcpSession).toHaveBeenCalledWith('row-1', { requests: 2 });
+  });
+
+  it('sem escopo (requisição sem vMCP) não conta chamada nenhuma', async () => {
+    const store = fakeStore();
+    const t = tracker(store);
+    const corpo = { method: 'tools/call' };
+
+    t.stateless(request({ body: corpo, virtual: false }));
+    t.opened('streamable', 'sess-1', request({ body: corpo, virtual: false }));
+    // A sessão nunca entrou no mapa: o toque dela também não acha nada.
+    t.seen('streamable', 'sess-1', request({ body: corpo }));
+    await t.flush();
+
+    expect(store.calls.bumpMcpCallCounters).not.toHaveBeenCalled();
   });
 });
 

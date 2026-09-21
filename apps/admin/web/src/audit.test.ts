@@ -95,6 +95,22 @@ describe('espelho de AuditAction no painel', () => {
     const rotulos = Object.values(ACTION_LABEL);
     expect(rotulos.filter((rotulo, indice) => rotulos.indexOf(rotulo) !== indice)).toEqual([]);
   });
+
+  /**
+   * As três da clonagem (`docs/16-clonagem.md`). O tom é `ok` porque clonar é
+   * criação: não mexe no original, e a cópia nasce fechada — nada foi exposto
+   * nem perdido. É o mesmo tom de `quarantine.promote`, que tem a mesma
+   * gramática de alvo (`<origem> -> <cópia>`).
+   */
+  it('clonar é criação, e o vMCP se chama "servidor" aqui como nas outras linhas de mcp.*', () => {
+    for (const acao of ['skill.clone', 'catalog.clone', 'mcp.clone'] as const) {
+      expect(doShared, `${acao} no shared`).toContain(acao);
+      expect(ACTION_LABEL[acao], acao).toMatch(/^clonou /);
+      expect(ACTION_TONE[acao], acao).toBe(ACTION_TONE['quarantine.promote']);
+      expect(ACTION_TONE[acao], acao).toBe('ok');
+    }
+    expect(ACTION_LABEL['mcp.clone']).toBe('clonou servidor');
+  });
 });
 
 describe('leitor do union (unionAuditAction)', () => {

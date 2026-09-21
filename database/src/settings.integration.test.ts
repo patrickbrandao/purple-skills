@@ -286,9 +286,11 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
              WHERE tablename IN ('mcp_sessions', 'catalogs', 'catalog_skills', 'virtual_mcp_catalogs'))
        )::int AS n`,
     );
-    // 5 colunas + 4 CHECKs + 13 índices (6 de `015`: pkey e os cinco; 7 de
+    // 5 colunas + 4 CHECKs + 15 índices (6 de `015`: pkey e os cinco; 7 de
     // `016`: pkey, slug único e dono em `catalogs`, pkey e skill em
-    // `catalog_skills`, pkey e catálogo em `virtual_mcp_catalogs`), sem duplicata.
-    expect(objetos[0]?.n).toBe(22);
+    // `catalog_skills`, pkey e catálogo em `virtual_mcp_catalogs`; 2 de `032`
+    // em `mcp_sessions`: `started_at` e `ended_at`, que a tela de Atividade
+    // lê), sem duplicata.
+    expect(objetos[0]?.n).toBe(24);
   });
 });

@@ -58,9 +58,9 @@ export function Notifications({
     if (settings) {
       const status = settings.defaultMcp.status;
       if (status === 'none') {
-        next.push({ id: 'default-none', text: 'Nenhum MCP padrão: /mcp responde 404 até você escolher um servidor.', to: '/configuracoes/mcp-padrao', tone: 'warn' });
+        next.push({ id: 'default-none', text: 'Nenhum MCP padrão: /mcp responde 404 até você escolher um servidor.', to: '/settings/default-mcp', tone: 'warn' });
       } else if (status === 'deleted') {
-        next.push({ id: 'default-deleted', text: 'O MCP padrão foi removido: /mcp responde 404 até escolher outro.', to: '/configuracoes/mcp-padrao', tone: 'warn' });
+        next.push({ id: 'default-deleted', text: 'O MCP padrão foi removido: /mcp responde 404 até escolher outro.', to: '/settings/default-mcp', tone: 'warn' });
       } else if (status === 'inactive') {
         next.push({ id: 'default-off', text: `O MCP padrão "${settings.defaultMcp.slug}" está desligado: /mcp responde 404.`, to: `/mcps/${settings.defaultMcp.slug}`, tone: 'warn' });
       }
@@ -72,7 +72,7 @@ export function Notifications({
       next.push({
         id: 'unlinked',
         text: `${unlinked} skill${unlinked === 1 ? '' : 's'} sem vínculo: não aparece${unlinked === 1 ? '' : 'm'} em servidor nenhum.`,
-        to: '/skills?filtro=sem-vinculo',
+        to: '/skills?filter=unlinked',
         tone: 'info',
       });
     }
@@ -83,7 +83,7 @@ export function Notifications({
       }
     }
     if (!session.mcpPublicUrl) {
-      next.push({ id: 'public-url', text: 'MCP_PUBLIC_URL não está configurada: os endereços de conexão saem incompletos.', to: '/configuracoes/ambiente', tone: 'info' });
+      next.push({ id: 'public-url', text: 'MCP_PUBLIC_URL não está configurada: os endereços de conexão saem incompletos.', to: '/settings/environment', tone: 'info' });
     }
     setWarnings(next);
     if (trail) setAudit(trail.items);
@@ -156,7 +156,7 @@ export function Notifications({
             {audit.map((entry) => (
               <Link
                 key={entry.id}
-                to={entry.skillSlug ? `/skills/${entry.skillSlug}` : '/auditoria'}
+                to={entry.skillSlug ? `/skills/${entry.skillSlug}` : '/audit'}
                 className={`ni${!seenAt || entry.createdAt > seenAt ? ' unread' : ''}`}
                 onClick={close}
               >

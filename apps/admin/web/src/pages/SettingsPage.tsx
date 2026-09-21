@@ -20,17 +20,16 @@ import { useToast } from '../components/Toast.js';
 /**
  * Configuração da instalação, uma tela por assunto (o submenu
  * "Configurações" da sidebar): o MCP padrão
- * (`docs/09-mcp-padrao-e-skills-flutuantes.md`), a busca semântica, o que o
- * painel recebe do ambiente e o `mcp.json` do MCP público. Só admin chega aqui.
+ * (`docs/09-mcp-padrao-e-skills-flutuantes.md`) com o `mcp.json` do MCP público,
+ * a busca semântica, a quarentena e o que o painel recebe do ambiente. Só admin chega aqui.
  */
 
 /** As telas de configuração, na ordem do submenu. */
 export const SETTINGS_SECTIONS = [
-  { path: 'mcp-padrao', label: 'MCP padrão' },
-  { path: 'busca-semantica', label: 'Busca semântica' },
-  { path: 'quarentena', label: 'Quarentena' },
-  { path: 'ambiente', label: 'Ambiente' },
-  { path: 'conectar', label: 'Conectar ao MCP público' },
+  { path: 'default-mcp', label: 'MCP padrão' },
+  { path: 'semantic-search', label: 'Busca semântica' },
+  { path: 'quarantine', label: 'Quarentena' },
+  { path: 'environment', label: 'Ambiente' },
 ] as const;
 
 function SettingsHead({ title, sub }: { title: string; sub: string }) {
@@ -121,6 +120,21 @@ export function DefaultMcpSettingsPage({ session }: { session: Session }) {
   const current = settings.defaultMcp;
   const dirty = chosen !== savedUuid;
   const url = publicMcpUrl(session);
+  const snippet = JSON.stringify(
+    {
+      mcpServers: {
+        'purple-skills': {
+          type: 'http',
+          url,
+          ...(current.status === 'ok' && !current.isOpen
+            ? { headers: { Authorization: 'Bearer <cole aqui uma chave psv_ do MCP padrão>' } }
+            : {}),
+        },
+      },
+    },
+    null,
+    2,
+  );
 
   return (
     <div className="page">
@@ -174,9 +188,25 @@ export function DefaultMcpSettingsPage({ session }: { session: Session }) {
 
           {mcps.length === 0 && (
             <p className="panel-hint mt-3">
-              Ainda não há servidor nenhum. <Link to="/mcps?novo=1" className="link">Crie o primeiro</Link> e volte aqui para torná-lo o padrão.
+              Ainda não há servidor nenhum. <Link to="/mcps?new=1" className="link">Crie o primeiro</Link> e volte aqui para torná-lo o padrão.
             </p>
           )}
+        </Panel>
+
+        <Panel title="Conectar ao MCP público" icon={<Plug />} actions={<CopyButton text={snippet} label="Copiar" />}>
+          <p className="panel-hint">
+            O que o site mostra como <code>mcp.json</code> do MCP público.
+            {current.status !== 'ok' && ' Enquanto não houver um padrão em pé, este endereço responde 404.'}
+            {!session.mcpPublicUrl && (
+              <>
+                {' '}
+                Defina <code>MCP_PUBLIC_URL</code> no <code>.env</code> para o endereço sair completo.
+              </>
+            )}
+          </p>
+          <div className="snippet">
+            <pre>{snippet}</pre>
+          </div>
         </Panel>
       </Column>
     </div>
@@ -311,56 +341,6 @@ export function EnvironmentSettingsPage({ session }: { session: Session }) {
             <dt>Versão</dt>
             <dd className="mono">{session.version || '—'}</dd>
           </dl>
-        </Panel>
-      </Column>
-    </div>
-  );
-}
-
-export function ConnectSettingsPage({ session }: { session: Session }) {
-  const [settings] = useInstallationSettings();
-
-  if (!settings) return <Loading />;
-
-  const current = settings.defaultMcp;
-  const snippet = JSON.stringify(
-    {
-      mcpServers: {
-        'purple-skills': {
-          type: 'http',
-          url: publicMcpUrl(session),
-          ...(current.status === 'ok' && !current.isOpen
-            ? { headers: { Authorization: 'Bearer <cole aqui uma chave psv_ do MCP padrão>' } }
-            : {}),
-        },
-      },
-    },
-    null,
-    2,
-  );
-
-  return (
-    <div className="page">
-      <SettingsHead title="Conectar ao MCP público" sub="O mcp.json que um cliente usa para falar com esta instalação." />
-      <Column>
-        <Panel title="Conectar ao MCP público" icon={<Plug />} actions={<CopyButton text={snippet} label="Copiar" />}>
-          <p className="panel-hint">
-            O que o site mostra como <code>mcp.json</code> do MCP público.
-            {current.status !== 'ok' && (
-              <>
-                {' '}Enquanto não houver um <Link to="/configuracoes/mcp-padrao" className="link">padrão</Link> em pé, este endereço responde 404.
-              </>
-            )}
-            {!session.mcpPublicUrl && (
-              <>
-                {' '}
-                Defina <code>MCP_PUBLIC_URL</code> no <code>.env</code> para o endereço sair completo.
-              </>
-            )}
-          </p>
-          <div className="snippet">
-            <pre>{snippet}</pre>
-          </div>
         </Panel>
       </Column>
     </div>

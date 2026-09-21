@@ -60,7 +60,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
   const manages = detail ? canManage(detail.access) : false;
   const owns = detail ? canOwn(detail.access) : false;
 
-  const tab = catalogTabOf(location.pathname, `/catalogos/${slug}/editar`);
+  const tab = catalogTabOf(location.pathname, `/catalogs/${slug}/edit`);
 
   const hydrate = useCallback((fresh: CatalogDetail) => {
     setDetail(fresh);
@@ -88,7 +88,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
       .catch((err) => {
         if (!active) return;
         toast.error((err as Error).message);
-        navigateRef.current('/catalogos');
+        navigateRef.current('/catalogs');
       });
     return () => {
       active = false;
@@ -117,7 +117,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
       hydrate(saved);
       toast.success('Catálogo salvo.');
       if (saved.slug !== detail.slug) {
-        navigate(location.pathname.replace(`/catalogos/${detail.slug}/`, `/catalogos/${saved.slug}/`), { replace: true });
+        navigate(location.pathname.replace(`/catalogs/${detail.slug}/`, `/catalogs/${saved.slug}/`), { replace: true });
       }
     } catch (err) {
       toast.error((err as Error).message);
@@ -204,7 +204,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
     try {
       await deleteCatalog(detail.slug);
       toast.success('Catálogo removido.');
-      navigate('/catalogos');
+      navigate('/catalogs');
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -225,8 +225,8 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
     );
   }
 
-  const base = `/catalogos/${detail.slug}`;
-  const editBase = `${base}/editar`;
+  const base = `/catalogs/${detail.slug}`;
+  const editBase = `${base}/edit`;
   const inactiveSkills = detail.skills.filter((skill) => !skill.skillIsActive).length;
 
   return (
@@ -264,11 +264,11 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
       <Tabs
         value={tab}
         items={[
-          { key: 'catalogo', label: 'Catálogo', icon: <Info />, to: editBase },
+          { key: 'catalog', label: 'Catálogo', icon: <Info />, to: editBase },
           { key: 'skills', label: 'Skills', icon: <Library />, to: `${editBase}/skills`, count: detail.skillCount },
-          { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/propriedades` },
-          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${editBase}/acesso` },
-          ...(manages ? [{ key: 'auditoria', label: 'Auditoria', icon: <History />, to: `${editBase}/auditoria` }] : []),
+          { key: 'properties', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/properties` },
+          { key: 'access', label: 'Acesso', icon: <Users />, to: `${editBase}/access` },
+          ...(manages ? [{ key: 'audit', label: 'Auditoria', icon: <History />, to: `${editBase}/audit` }] : []),
         ]}
       />
 
@@ -372,7 +372,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
           }
         />
         <Route
-          path="propriedades"
+          path="properties"
           element={
             <div className="grid gap-4">
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -415,7 +415,7 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
           }
         />
         <Route
-          path="acesso"
+          path="access"
           element={
             <AccessTab
               kind="catalog"
@@ -429,9 +429,9 @@ export function CatalogEditorPage({ user }: { user: SessionUser }) {
             />
           }
         />
-        {manages && <Route path="auditoria" element={<AccessLog load={loadAccesses} showSkill />} />}
+        {manages && <Route path="audit" element={<AccessLog load={loadAccesses} showSkill />} />}
         {/* A guia se chamava Acessos: um link antigo vai para a Auditoria. */}
-        <Route path="acessos" element={<Navigate to={`${editBase}/auditoria`} replace />} />
+        <Route path="accesses" element={<Navigate to={`${editBase}/audit`} replace />} />
         <Route path="*" element={<Navigate to={editBase} replace />} />
       </Routes>
     </div>

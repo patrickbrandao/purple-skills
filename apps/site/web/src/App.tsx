@@ -11,7 +11,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/skills/:slug" element={<SkillPage />} />
-        <Route path="/catalogos/:slug" element={<CatalogPage />} />
+        <Route path="/catalogs/:slug" element={<CatalogPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </Layout>

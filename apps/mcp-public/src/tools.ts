@@ -4,27 +4,35 @@ import {
   AppError,
   getSkillDetail,
   getSkillSummary,
+  listFiles,
   listPublishedSkills,
   listSkills,
+  listSkillsManifest,
   listTags,
   readFile,
+  readSkillMdBodies,
   SEARCH_QUERY_MAX_LENGTH,
+  type SkillManifestEntry,
+  type SkillManifestFile,
   type VirtualMcpRuntime,
 } from '@purple-skills/db';
 import {
   SKILL_MD,
   composeSkillMd,
+  frontmatterObject,
   isSkillMd,
   normalizeRelativePath,
   readIntEnv,
   stripFrontmatter,
   type SkillDetail,
+  type SkillFileMeta,
   type SkillSummary,
 } from '@purple-skills/shared';
 import { logDaBusca } from '@purple-skills/rag';
 import { config } from './config.js';
 import { buscaSemantica } from './rag.js';
 import { registrarAcesso, type AccessContext } from './access.js';
+import { cacheDeDigesto, medirSkillMd, type SkillMdMedido } from './digest.js';
 
 export type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -414,13 +422,70 @@ export type Handlers = ReturnType<typeof createHandlers>;
 // ------------------------------------------- prompts e resources -----------
 
 /**
- * Esquema das URIs de resource. `skill://<slug>` analisa limpo: o slug é o
- * host, o caminho fica vazio e nada é normalizado — por isso o match é um
- * `startsWith` e o resto é o slug, sem `new URL`.
+ * Esquema das URIs desta instalação, no endereço que a SEP-2640 define
+ * (`docs/17-skills-extension.md` §4.1): cada **arquivo** da skill é um resource,
+ * e o último segmento do caminho da skill é o `name` do frontmatter — que aqui
+ * é o slug, por construção.
+ *
+ * ```
+ * skill://<slug>/SKILL.md      o SKILL.md
+ * skill://<slug>/<caminho>     um arquivo de apoio
+ * skill://<slug>               o diretório-raiz
+ * skill://<slug>/<sub>         um subdiretório
+ * ```
+ *
+ * `skill://<slug>` **deixou de ser o SKILL.md** e passou a ser o diretório
+ * (decisão 5, que revoga a decisão 5 do `docs/06`): sob a SEP a raiz da skill é
+ * um diretório, e conviver com o significado antigo faria a mesma URI ser
+ * arquivo numa porta e diretório na outra.
  */
 const RESOURCE_SCHEME = 'skill://';
 
-export const resourceUriFor = (slug: string) => `${RESOURCE_SCHEME}${slug}`;
+/** Uma URI desta instalação: a skill e, dentro dela, um arquivo — ou o diretório, no caminho vazio. */
+export type SkillUriAlvo = { slug: string; path: string };
+
+/**
+ * Monta a URI de um arquivo da skill; sem caminho, a do diretório-raiz, sem
+ * barra final, como a SEP escreve diretório.
+ *
+ * A codificação é **por segmento**, e não do caminho inteiro, para que `#`, `?`
+ * ou espaço num nome de arquivo sobrevivam à ida e à volta sem cortar a URI
+ * (o `/` continua sendo separador, não conteúdo). Para o slug, que é `a-z0-9-`,
+ * a codificação é identidade; fica assim mesmo, por simetria com a análise.
+ */
+export function skillUri(slug: string, path = ''): string {
+  const segmentos = path === '' ? [slug] : [slug, ...path.split('/')];
+  return `${RESOURCE_SCHEME}${segmentos.map(encodeURIComponent).join('/')}`;
+}
+
+/**
+ * O par de `skillUri`: devolve a skill e o caminho, ou `null` quando a URI não
+ * é desta instalação — esquema errado, percentual malformado, travessia de
+ * diretório, caminho que o `normalizeRelativePath` recusa. Quem chama responde
+ * a **mesma** recusa indistinta de sempre (`§5.5` do `docs/06`), sem dizer qual
+ * dos casos foi.
+ */
+export function parseSkillUri(uri: string): SkillUriAlvo | null {
+  if (typeof uri !== 'string' || !uri.startsWith(RESOURCE_SCHEME)) return null;
+
+  let segmentos: string[];
+  try {
+    segmentos = uri.slice(RESOURCE_SCHEME.length).split('/').map(decodeURIComponent);
+  } catch {
+    // `%zz` e companhia: o `decodeURIComponent` lança em vez de devolver nada.
+    return null;
+  }
+
+  const [slug, ...resto] = segmentos;
+  if (!slug) return null;
+
+  // `skill://<slug>` e `skill://<slug>/` são a raiz — o caminho vazio.
+  const caminho = resto.join('/');
+  if (caminho === '') return { slug, path: '' };
+
+  const path = normalizeRelativePath(caminho);
+  return path ? { slug, path } : null;
+}
 
 /**
  * Mesma recusa para skill fora do vínculo, inexistente e vinculada sem a flag
@@ -429,11 +494,197 @@ export const resourceUriFor = (slug: string) => `${RESOURCE_SCHEME}${slug}`;
  */
 const naoEncontrado = (mensagem: string) => new McpError(ErrorCode.InvalidParams, mensagem);
 
+/** Um arquivo no manifesto de uma entrada: a URI, o digest dos bytes servidos e o tamanho deles. */
+type RecursoDaEntrada = { uri: string; digest: string; size: number };
+
 /**
- * As duas superfícies em que uma skill é oferecida além das ferramentas:
- * *prompt* (pelo slug) e *resource* (`skill://<slug>`). Quem decide é o
- * vínculo (`as_prompt` / `as_resource`), independente de `as_skill`: uma
- * skill pode viver só aqui.
+ * A entrada de uma skill, igual em `skills/list` e em `skills/get` (§6.2 do
+ * `docs/17-skills-extension.md`): a URI do `SKILL.md`, o frontmatter como JSON e
+ * o inventário **completo** dos arquivos — ou o marcador `"dynamic"`, quando o
+ * manifesto não pode ser verificável.
+ */
+type EntradaDeSkill = {
+  uri: string;
+  frontmatter: Record<string, unknown>;
+  resources: RecursoDaEntrada[] | 'dynamic';
+};
+
+/** A skill que tem o que publicar: a linha do `SKILL.md` é a URI da entrada. */
+type SkillPublicavel = { skill: SkillManifestEntry; skillMd: SkillManifestFile };
+
+/**
+ * Mede o `SKILL.md` **composto**, que é o que o `resources/read` devolve.
+ *
+ * O frontmatter remontado acrescenta bytes, então um corpo que cabia no teto
+ * pode não caber depois de composto — e a entrada só é verificável quando a
+ * leitura entrega o mesmo conteúdo (decisão 25).
+ */
+const medirComposto = (skill: SkillManifestEntry, corpo: string): SkillMdMedido => {
+  const medida = medirSkillMd(composeSkillMd(skill, corpo));
+  return medida.size > MAX_TEXTO_INLINE_BYTES ? 'dynamic' : medida;
+};
+
+/**
+ * Monta as entradas de um manifesto, com uma consulta de corpo só para os furos
+ * do cache — é o que impede `skills/list` de ler todo `SKILL.md` do vMCP a cada
+ * chamada (decisão 24; num vMCP aberto não há credencial que segure a repetição).
+ *
+ * A ordem é a que vem do banco (por slug) e não é refeita aqui: lista
+ * reembaralhada entre duas chamadas é ruído para quem compara.
+ */
+async function entradasDoManifesto(skills: SkillManifestEntry[]): Promise<EntradaDeSkill[]> {
+  const publicaveis: SkillPublicavel[] = [];
+  for (const skill of skills) {
+    const skillMd = skill.files.find((file) => isSkillMd(file.relativePath));
+    // Skill sem linha de `SKILL.md` não é publicável: a entrada da SEP **é** a
+    // URI do SKILL.md, e a leitura dela não teria o que devolver. Fica fora da
+    // listagem, em vez de entrar quebrada.
+    if (skillMd) publicaveis.push({ skill, skillMd });
+  }
+
+  const medidas = new Map<string, SkillMdMedido>();
+  const furos: SkillPublicavel[] = [];
+  for (const { skill, skillMd } of publicaveis) {
+    const conhecida = cacheDeDigesto.ler(skill.uuid, skill.updatedAt);
+    if (conhecida) {
+      medidas.set(skill.uuid, conhecida);
+      continue;
+    }
+
+    // O corpo sozinho já passa do teto: o composto passa também, e a leitura o
+    // recusaria. **Não ler é o ponto** — hashear 200 MB para publicar o digest
+    // de algo que o `resources/read` recusa em seguida é carregar o arquivo à
+    // toa, a pedido de quem quiser, num servidor que pode estar aberto (§5.4).
+    if (skillMd.sizeBytes > MAX_TEXTO_INLINE_BYTES) {
+      medidas.set(skill.uuid, cacheDeDigesto.guardar(skill.uuid, skill.updatedAt, 'dynamic'));
+      continue;
+    }
+
+    furos.push({ skill, skillMd });
+  }
+
+  if (furos.length > 0) {
+    const corpos = new Map(
+      // Sem ordem definida: o lote é fatiado no banco, e o casamento é pelo uuid.
+      (await readSkillMdBodies(furos.map(({ skill }) => skill.uuid))).map((linha) => [
+        linha.skillUuid,
+        linha.body,
+      ]),
+    );
+    for (const { skill } of furos) {
+      const corpo = corpos.get(skill.uuid);
+      // Corpo que não veio é `SKILL.md` gravado como binário (ou apagado entre
+      // as duas consultas): não dá para compor, e publicar digest de uma
+      // composição que ninguém mediu é exatamente a falha silenciosa da §5.2.
+      const medida = corpo === undefined ? 'dynamic' : medirComposto(skill, corpo);
+      medidas.set(skill.uuid, cacheDeDigesto.guardar(skill.uuid, skill.updatedAt, medida));
+    }
+  }
+
+  return publicaveis.map(({ skill, skillMd }) =>
+    // O `?? 'dynamic'` não tem caso: toda publicável passou por uma das pernas
+    // acima. Se um dia tiver, publicar manifesto sem medida é que seria errado.
+    entradaDaSkill(skill, skillMd, medidas.get(skill.uuid) ?? 'dynamic'),
+  );
+}
+
+/**
+ * A entrada de uma skill. O digest dos arquivos de apoio vem pronto do banco —
+ * é o `content_sha256` da `020`, dos mesmos bytes que a leitura devolve —, e o
+ * do `SKILL.md` **não**: aquele hash é o do corpo gravado, sem frontmatter, e
+ * publicá-lo faria toda skill falhar na verificação de todo host, em silêncio
+ * (§5.2). Por isso ele chega medido de fora, do composto.
+ */
+function entradaDaSkill(
+  skill: SkillManifestEntry,
+  skillMd: SkillManifestFile,
+  medida: SkillMdMedido,
+): EntradaDeSkill {
+  return {
+    uri: skillUri(skill.slug, skillMd.relativePath),
+    // O espelho do YAML que o `resources/read` devolve, montado da mesma fonte
+    // (`frontmatterObject`, no shared): a SEP exige identidade campo a campo.
+    frontmatter: frontmatterObject(skill),
+    resources:
+      medida === 'dynamic'
+        ? 'dynamic'
+        : skill.files.map((file) => ({
+            uri: skillUri(skill.slug, file.relativePath),
+            ...(isSkillMd(file.relativePath)
+              ? medida
+              : { digest: `sha256:${file.sha256}`, size: file.sizeBytes }),
+          })),
+  };
+}
+
+/** Um filho de diretório, na forma de `Resource` que a SEP devolve no `directory/read`. */
+type FilhoDeDiretorio = { uri: string; name: string; mimeType: string };
+
+/** O mimeType que marca diretório, na SEP e no resto do mundo POSIX. */
+const MIME_DIRETORIO = 'inode/directory';
+
+/**
+ * Os filhos **diretos** de um diretório da skill, derivados em TypeScript da
+ * lista de arquivos (decisão 11) — nada de consulta por prefixo, que neste
+ * repositório é terreno da armadilha do `LIKE` (`_` e `%` num nome de arquivo
+ * são literais). Aqui a comparação é exata, em memória, sobre caminhos vindos
+ * da mesma tabela.
+ *
+ * Exata inclusive na caixa, e é uma escolha: as URIs que este servidor publica
+ * carregam a grafia gravada, e os 409 de árvore do `createFile` impedem duas
+ * entradas que só diferem na caixa — então comparar exato não esconde irmão
+ * nenhum. A leitura de arquivo, que compara com `lower()`, é mais tolerante
+ * que isto; o preço é um `-32602` para quem digita o diretório com outra caixa.
+ *
+ * `null` = o diretório não existe (nenhum arquivo sob o prefixo). A raiz de uma
+ * skill válida sempre existe, mesmo vazia — é o diretório da skill.
+ */
+function filhosDiretos(
+  slug: string,
+  dir: string,
+  arquivos: SkillFileMeta[],
+): FilhoDeDiretorio[] | null {
+  const prefixo = dir === '' ? '' : `${dir}/`;
+  const porNome = new Map<string, FilhoDeDiretorio>();
+
+  for (const arquivo of arquivos) {
+    if (!arquivo.relativePath.startsWith(prefixo)) continue;
+    const resto = arquivo.relativePath.slice(prefixo.length);
+    if (resto === '') continue;
+
+    const corte = resto.indexOf('/');
+    const nome = corte < 0 ? resto : resto.slice(0, corte);
+    if (porNome.has(nome)) continue;
+
+    porNome.set(
+      nome,
+      corte < 0
+        ? { uri: skillUri(slug, arquivo.relativePath), name: nome, mimeType: arquivo.mimeType }
+        : { uri: skillUri(slug, `${prefixo}${nome}`), name: nome, mimeType: MIME_DIRETORIO },
+    );
+  }
+
+  if (prefixo !== '' && porNome.size === 0) return null;
+
+  // Ordem por nome, comparando unidade de código — e não `localeCompare`, que
+  // depende do locale do processo: o mesmo diretório tem de listar igual em
+  // qualquer instalação. Arquivo e subdiretório entram na mesma ordenação; um
+  // critério só é mais fácil de prever que dois.
+  return [...porNome.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * As superfícies em que uma skill é oferecida além das ferramentas: *prompt*
+ * (pelo slug), *resource* (`skill://<slug>/SKILL.md` e os arquivos de apoio) e
+ * a extensão de skills do MCP — `skills/list`, `skills/get` e
+ * `resources/directory/read` (SEP-2640, `docs/17-skills-extension.md`).
+ *
+ * Quem decide o que cada uma enxerga é o vínculo, e são portas diferentes:
+ * `as_prompt` e `as_resource` valem para as duas primeiras, e `as_skill` — a
+ * mesma porta das ferramentas — governa a extensão, a leitura de arquivo de
+ * apoio e a leitura de diretório (§4.2 do `17`). O `SKILL.md` é a exceção
+ * deliberada: legível pelas **duas** portas, senão `skills/list` anunciaria uma
+ * URI que o `resources/read` recusa.
  *
  * As listas saem do banco a **cada requisição**. Não há `listChanged` para
  * avisar o cliente, então uma skill vinculada agora precisa aparecer na
@@ -444,8 +695,34 @@ export function createSurfaces(scope: VirtualScope) {
   const urls = urlsFor(scope);
 
   /** A skill oferecida na superfície, ou nada — a consulta já filtra pelo vínculo. */
-  const skillPublicada = (slug: string, surface: 'prompt' | 'resource'): Promise<SkillDetail | null> =>
+  const skillPublicada = (
+    slug: string,
+    surface: 'prompt' | 'resource' | 'skill',
+  ): Promise<SkillDetail | null> =>
     getSkillDetail(slug, { virtualMcp: { uuid: mcpUuid, surface } });
+
+  /**
+   * Os campos de cache da revisão **2026-07-28** do protocolo (decisões 17 a
+   * 19). O SDK 1.30.0 fala `2025-11-25` e não os tem, então eles vão escritos à
+   * mão no resultado; são aditivos e inofensivos para cliente antigo.
+   *
+   * `ttlMs` é **zero**, e o valor não é detalhe: a `§5.2` do `docs/06` recusou
+   * declarar `listChanged` justamente para não autorizar um cliente a cachear
+   * pela sessão inteira uma lista que muda sem aviso. `ttlMs` é a mesma promessa
+   * com número — zero é conformante e é verdade, porque a lista é recomputada a
+   * cada requisição, e é por isso que um vínculo criado há um segundo aparece na
+   * chamada seguinte.
+   *
+   * `cacheScope` sai de `is_open`: num vMCP aberto a listagem já é pública por
+   * construção; num fechado, um intermediário compartilhado não pode servi-la a
+   * quem não tem chave.
+   */
+  const camposDeCache = () =>
+    ({
+      resultType: 'complete',
+      ttlMs: 0,
+      cacheScope: scope.mcp.isOpen ? 'public' : 'private',
+    }) as const;
 
   /**
    * A recusa do SKILL.md que não cabe na resposta (`MAX_TEXTO_INLINE_BYTES`).
@@ -471,11 +748,90 @@ export function createSurfaces(scope: VirtualScope) {
     );
   };
 
+  /**
+   * A recusa do arquivo de apoio que não cabe na resposta.
+   *
+   * Mesma disciplina do `SKILL.md`, com uma simplificação: aqui a skill já foi
+   * resolvida pelo vínculo `as_skill`, que é o mesmo que a rota de download
+   * atende — então a URL sempre responde, e não há o caso de mandar o cliente
+   * para um 404.
+   */
+  const arquivoGrandeDemais = (slug: string, path: string, bytes: number): McpError =>
+    new McpError(
+      ErrorCode.InvalidParams,
+      `O arquivo "${path}" de "${slug}" é grande demais para vir na resposta ` +
+        `(${bytes} bytes; o teto é ${MAX_TEXTO_INLINE_BYTES}). ` +
+        `Baixe pela URL: ${urls.file(slug, path)}`,
+    );
+
+  /**
+   * O `SKILL.md` canônico — o mesmo byte a byte que o `.zip` e o
+   * `/files/SKILL.md` entregam, com o frontmatter gerado dos metadados. Conta
+   * um acesso, `view`/`resource`, como sempre contou.
+   *
+   * Lido pelas duas portas (§4.2): a de skill primeiro, que é por onde o
+   * `skills/list` anuncia esta URI, e a de resource depois. A segunda consulta
+   * só acontece quando a skill não está na primeira porta.
+   */
+  const lerSkillMd = async (slug: string, uri: string) => {
+    const detail = (await skillPublicada(slug, 'skill')) ?? (await skillPublicada(slug, 'resource'));
+    if (!detail) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+
+    // Antes do acesso e do `composeSkillMd`, que é mais uma cópia do texto.
+    const excedeu = excedeTetoInline(detail.skillMd);
+    if (excedeu !== null) throw await grandeDemais(detail, excedeu);
+
+    registrarAcesso(scope, detail.uuid, 'view', 'resource');
+
+    return {
+      ...camposDeCache(),
+      contents: [{ uri, mimeType: 'text/markdown', text: composeSkillMd(detail, detail.skillMd) }],
+    };
+  };
+
+  /**
+   * Um arquivo de apoio. Só `as_skill` (§4.2): pendurar isto em `as_resource`
+   * ampliaria em silêncio a exposição de toda base que já tem aquela flag
+   * ligada — hoje ela entrega o `SKILL.md`, e só ele.
+   *
+   * **Não conta acesso** (decisão 13), espelhando o par que já existe nas
+   * ferramentas: `get_skill` conta, `get_skill_file` não. Contar aqui
+   * transformaria um único carregamento de skill em N linhas na ficha.
+   */
+  const lerArquivoDeApoio = async (slug: string, path: string, uri: string) => {
+    const skill = await getSkillSummary(slug, recorteDasFerramentas(scope));
+    if (!skill) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+
+    const file = await readFile(skill.uuid, path);
+    if (!file) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+
+    // Nos bytes **lidos**, não no `sizeBytes` gravado — a lição do `004`. Vale
+    // para texto e para binário, e no binário são os bytes crus: medir o base64
+    // recusaria, por um terço a mais, arquivo que cabe.
+    if (file.buffer.byteLength > MAX_TEXTO_INLINE_BYTES) {
+      throw arquivoGrandeDemais(skill.slug, path, file.buffer.byteLength);
+    }
+
+    return {
+      ...camposDeCache(),
+      contents: [
+        file.isText
+          ? { uri, mimeType: file.mimeType, text: file.buffer.toString('utf8') }
+          : // Binário sai em `blob` base64 (decisão 9). A URL de download que as
+            // ferramentas devolvem não serve aqui: sob a SEP o arquivo está no
+            // manifesto, o host vai lê-lo, e uma recusa é falha de verificação —
+            // a skill chega quebrada.
+            { uri, mimeType: file.mimeType, blob: file.buffer.toString('base64') },
+      ],
+    };
+  };
+
   return {
     async listPrompts() {
       const skills = await listPublishedSkills('prompt', mcpUuid);
 
       return {
+        ...camposDeCache(),
         prompts: skills.map((skill) => ({
           // O slug já é o nome oficial da skill e já é validado como `a-z0-9-`,
           // que é a forma de que um nome de prompt precisa. Prefixar seria
@@ -507,6 +863,10 @@ export function createSurfaces(scope: VirtualScope) {
       registrarAcesso(scope, detail.uuid, 'view', 'prompt');
 
       return {
+        // Sem `ttlMs`/`cacheScope`: os campos de cache da revisão 2026-07-28
+        // valem para as listagens e as leituras que ela enumera, e `prompts/get`
+        // não é uma delas. O `resultType`, sim — ele é exigido em todo resultado.
+        resultType: 'complete' as const,
         description: detail.description || undefined,
         messages: [
           {
@@ -517,12 +877,20 @@ export function createSurfaces(scope: VirtualScope) {
       };
     },
 
+    /**
+     * Uma entrada por skill `as_resource`: o `SKILL.md` dela. Os arquivos de
+     * apoio **não** entram, e a SEP autoriza — resource é endereçável esteja ou
+     * não listado, e o manifesto de `skills/list` já é o inventário completo.
+     * Listar N skills vezes M arquivos numa resposta sem paginação é o pior caso
+     * que isto evita (§4.3 do `17`).
+     */
     async listResources() {
       const skills = await listPublishedSkills('resource', mcpUuid);
 
       return {
+        ...camposDeCache(),
         resources: skills.map((skill) => ({
-          uri: resourceUriFor(skill.slug),
+          uri: skillUri(skill.slug, SKILL_MD),
           name: skill.slug,
           title: skill.name,
           description: skill.description || undefined,
@@ -532,40 +900,89 @@ export function createSurfaces(scope: VirtualScope) {
     },
 
     /**
-     * O SKILL.md canônico — o mesmo byte a byte que o `.zip` e o
-     * `/files/SKILL.md` entregam, com o frontmatter gerado dos metadados. Conta
-     * um acesso.
+     * A leitura por **arquivo**: o `SKILL.md` de uma skill ou um arquivo de
+     * apoio dela.
+     *
+     * O diretório é recusado aqui de propósito — a SEP não define leitura de
+     * diretório pelo método comum, e é o `resources/directory/read` que a faz.
+     * É também o que acontece com a URI antiga `skill://<slug>`, que virou o
+     * diretório-raiz (decisão 5).
      */
     async readResource(uri: string) {
-      const slug = uri.startsWith(RESOURCE_SCHEME) ? uri.slice(RESOURCE_SCHEME.length) : '';
-      const detail = slug ? await skillPublicada(slug, 'resource') : null;
-      if (!detail) throw naoEncontrado(`Resource não encontrado: "${uri}"`);
+      const alvo = parseSkillUri(uri);
+      if (!alvo || alvo.path === '') throw naoEncontrado(`Resource não encontrado: "${uri}"`);
 
-      // Antes do acesso e do `composeSkillMd`, que é mais uma cópia do texto.
-      const excedeu = excedeTetoInline(detail.skillMd);
-      if (excedeu !== null) throw await grandeDemais(detail, excedeu);
-
-      registrarAcesso(scope, detail.uuid, 'view', 'resource');
-
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: 'text/markdown',
-            text: composeSkillMd(detail, detail.skillMd),
-          },
-        ],
-      };
+      return isSkillMd(alvo.path)
+        ? await lerSkillMd(alvo.slug, uri)
+        : await lerArquivoDeApoio(alvo.slug, alvo.path, uri);
     },
 
     /**
      * Vazia de propósito. Responde ao método — nada de *method not found* para o
      * cliente que sonda na inicialização — sem anunciar que `skill://` qualquer
-     * é legível: só as vinculadas são, e essas já saem uma a uma em
-     * `resources/list`.
+     * é legível: só arquivo de skill vinculada é, e o motivo ficou mais forte
+     * com a extensão, não mais fraco.
      */
     listResourceTemplates() {
-      return { resourceTemplates: [] };
+      return { ...camposDeCache(), resourceTemplates: [] };
+    },
+
+    /**
+     * `skills/list` — o registro autoritativo das skills que este servidor
+     * publica (SEP-2640).
+     *
+     * Sem cursor e sem teto, como as outras duas listagens e pelo mesmo
+     * argumento (decisão 7): truncar em silêncio esconde skill de quem a
+     * vinculou. Um `cursor` que o cliente mande é ignorado — não há segunda
+     * página para apontar.
+     */
+    async listSkills() {
+      const manifesto = await listSkillsManifest(mcpUuid);
+
+      return { ...camposDeCache(), skills: await entradasDoManifesto(manifesto) };
+    },
+
+    /**
+     * `skills/get` — a **mesma** entrada de `skills/list`, por URI. Como a
+     * listagem é completa, ele responde exatamente pelo mesmo conjunto.
+     *
+     * A URI tem de ser a de um `SKILL.md`. Todo o resto — o diretório, um
+     * arquivo de apoio, skill de outro vMCP, skill sem `as_skill`, skill
+     * inativa, slug inexistente — é o mesmo `-32602` com a mesma mensagem, pela
+     * `§5.5` do `docs/06`: distinguir os casos entregaria slugs a quem sonda um
+     * servidor que pode estar aberto.
+     */
+    async getSkill(uri: string) {
+      const alvo = parseSkillUri(uri);
+      if (!alvo || !isSkillMd(alvo.path)) throw naoEncontrado(`Skill não encontrada: "${uri}"`);
+
+      const manifesto = await listSkillsManifest(mcpUuid, { slug: alvo.slug });
+      const [entrada] = await entradasDoManifesto(manifesto);
+      if (!entrada) throw naoEncontrado(`Skill não encontrada: "${uri}"`);
+
+      return { ...camposDeCache(), skill: entrada };
+    },
+
+    /**
+     * `resources/directory/read` — os filhos diretos de um diretório da skill,
+     * não recursivo, com subdiretório marcado `inode/directory`.
+     *
+     * Sem cursor na resposta: o teto de arquivos por skill da SEP são 512, e o
+     * que volta é metadado. Só skill `as_skill` (decisão 12) — sem isso uma
+     * skill só-`as_resource` teria a árvore revelada enquanto os arquivos dela
+     * seguem irrecuperáveis, que é vazamento de estrutura sem contrapartida.
+     */
+    async readDirectory(uri: string) {
+      const alvo = parseSkillUri(uri);
+      if (!alvo) throw naoEncontrado(`Diretório não encontrado: "${uri}"`);
+
+      const skill = await getSkillSummary(alvo.slug, recorteDasFerramentas(scope));
+      if (!skill) throw naoEncontrado(`Diretório não encontrado: "${uri}"`);
+
+      const filhos = filhosDiretos(skill.slug, alvo.path, await listFiles(skill.uuid));
+      if (!filhos) throw naoEncontrado(`Diretório não encontrado: "${uri}"`);
+
+      return { ...camposDeCache(), resources: filhos };
     },
   };
 }

@@ -9,6 +9,14 @@ Migrations `013-skill-icon.sql`, `014-canvas-do-vmcp.sql` e
 > passou ao nível `edit` do acesso granular — a marca está no ponto, com o
 > alcance disso. O resto — o canvas e seus gestos, a gaveta, a paleta, as
 > sessões e a contabilidade de clientes — continua sendo o desenho em vigor.
+>
+> **Parcialmente revogado por [`18`](18-atividade.md):** o item "Estatísticas
+> de uso derivadas das sessões" da `§9` saiu do fora do escopo — a tela de
+> Atividade conta as sessões abertas de cada dia na grade do ano e as abre por
+> transporte, por autenticação e por motivo de fim no relatório do dia. A
+> marca está no ponto, com o alcance: é por **dia** e agregado, e os dois
+> recortes que aquele item nomeava entre parênteses continuam não existindo.
+> O resto da `§9` segue fora do escopo.
 
 Este documento registra o desenho fechado na entrevista de 12/09/2026 e é a
 referência de *por que* cada peça é assim; o resumo do que está no ar entra
@@ -152,14 +160,14 @@ abertura contam como não lidos (`localStorage`). Nada disso é tabela nova.
 |------|---------|
 | `/mcps` | Servidores MCP, a home: cards (ou lista) com a colmeia de skills e catálogos (`13` §4), selos, estado e clientes online; ordenação; "Novo vMCP" num modal |
 | `/mcps/:slug` | O servidor: abas Canvas, Sessões, Chaves, Configurações |
-| `/skills`, `/skills/:slug/*`, `/skills/:slug/editar/*`, `/nova-skill` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação. A criação **era** `/skills/new`, até 19/09/2026: uma rota estática sob `/skills/` ganha do `:slug` no ranking do react-router, em qualquer ordem, e a skill de slug `new` abria o formulário em vez da ficha. Hoje `/skills/new` é a ficha dessa skill e, quando ela não existe, leva ao formulário (com o `?modo=zip` que veio) — favoritos antigos continuam valendo |
-| `/auditoria`, `/auditoria/sessoes` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
-| `/users`, `/users/:uuid/*`, `/users/:uuid/editar/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
-| `/meu-espaco/skills`, `/meu-espaco/catalogos` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` |
-| `/configuracoes/mcp-padrao`, `/configuracoes/busca-semantica`, `/configuracoes/ambiente`, `/configuracoes/conectar` | Configurações da instalação (admin), uma tela por assunto e um item por tela no submenu; `/configuracoes` leva à primeira |
+| `/skills`, `/skills/:slug/*`, `/skills/:slug/edit/*`, `/new-skill` | O catálogo (cards ou lista, filtro "sem vínculo"/"no site"), a ficha só leitura e a ficha de edição — as duas com as guias Skill, Propriedades e Acessos (`13` §3) — e criação/importação. A criação **era** `/skills/new`, até 19/09/2026: uma rota estática sob `/skills/` ganha do `:slug` no ranking do react-router, em qualquer ordem, e a skill de slug `new` abria o formulário em vez da ficha. Hoje `/skills/new` é a ficha dessa skill e, quando ela não existe, leva ao formulário (com o `?mode=zip` que veio) — favoritos antigos continuam valendo |
+| `/audit`, `/audit/sessions` | A trilha (filtros por ação, ator, texto e período; paginada) e as sessões MCP de todos os servidores |
+| `/users`, `/users/:uuid/*`, `/users/:uuid/edit/*` | Usuários (admin): a lista, a ficha só leitura e a ficha de edição, com as guias Conta, Chaves, Acessos e Atividade (`13` §3.4) |
+| `/my-space/skills`, `/my-space/catalogs` | Meu espaço (grupo recolhível na sidebar): as listas de skills e catálogos presas no recorte `mine` |
+| `/settings/default-mcp`, `/settings/semantic-search`, `/settings/environment` | Configurações da instalação (admin), uma tela por assunto e um item por tela no submenu; `/settings` leva à primeira |
 | `/account` | Minha conta: só a senha; fechada na sessão de bootstrap, que não tem conta |
-| `/account/chaves-adm` | Adm MCP Keys: emitir, listar e revogar as `psk_` da própria conta — o `token` aparece uma vez só; fechada na sessão de bootstrap |
-| `/account/chaves-emitidas` | Chaves emitidas: tudo o que a conta emitiu — as `psk_` dela e as `psv_` dos servidores que ainda enxerga (`GET /api/me/mcp-keys`). Era `/meu-espaco/chaves`, que redireciona |
+| `/account/admin-keys` | Adm MCP Keys: emitir, listar e revogar as `psk_` da própria conta — o `token` aparece uma vez só; fechada na sessão de bootstrap |
+| `/account/issued-keys` | Chaves emitidas: tudo o que a conta emitiu — as `psk_` dela e as `psv_` dos servidores que ainda enxerga (`GET /api/me/mcp-keys`). Era `/my-space/keys`, que redireciona |
 
 ## 4. O canvas
 
@@ -357,6 +365,10 @@ mas o padrão compilado nos dois MCPs segue congelado em `1.0.0-beta.1`.
 
 - Viewport (pan/zoom) persistido, agrupamento de nós, undo/redo no canvas.
 - Um canvas na página da skill (a skill no centro e os servidores em volta).
-- Estatísticas de uso derivadas das sessões (requisições por hora, por
-  cliente).
+- ~~Estatísticas de uso derivadas das sessões (requisições por hora, por
+  cliente).~~ — **Revogado neste ponto por [`18`](18-atividade.md)**: a tela
+  de Atividade deriva, sim, estatística de uso das sessões — por **dia** e
+  agregada, na grade do ano e no relatório do dia. O que o parêntese nomeia
+  continua fora: não há série por hora nem número por cliente, e o relatório
+  não carrega IP, e-mail nem `session_id` (`18` §8 e §12).
 - Migração do site e da homepage para a rampa espelhada.

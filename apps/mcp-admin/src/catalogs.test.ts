@@ -15,6 +15,7 @@ const { AppError } = vi.hoisted(() => ({
 const db = vi.hoisted(() => ({
   listCatalogs: vi.fn(),
   getCatalog: vi.fn(),
+  cloneCatalog: vi.fn(),
   createCatalog: vi.fn(),
   updateCatalog: vi.fn(),
   deleteCatalog: vi.fn(),
@@ -176,6 +177,80 @@ describe('alcance por acesso', () => {
 
     expect(db.createCatalog).toHaveBeenNthCalledWith(1, expect.objectContaining({ ownerUserUuid: 'uuid-editor', isPublic: true }), 'mcp-admin', caller('editor').actor);
     expect(db.createCatalog).toHaveBeenNthCalledWith(2, expect.objectContaining({ ownerUserUuid: null, isPublic: false }), 'mcp-admin', caller('admin', null).actor);
+  });
+});
+
+/**
+ * A cópia é de quem clonou, nasce privada e leva as propriedades e os membros
+ * com o estado de cada participação — nada de vMCP nem de concessão. Papel
+ * `editor`/`admin` (é um catálogo novo) mais `edit` no original.
+ */
+describe('clone_catalog', () => {
+  /** O que o banco devolve: o catálogo novo, com o slug desempatado. */
+  const copia = { ...catalog, uuid: 'cat-9', slug: 'dados-2' };
+
+  it('clona pelo uuid do original, com quem clonou como dono; o token global clona para órfão', async () => {
+    db.cloneCatalog.mockResolvedValue(copia);
+
+    const result = await createCatalogHandlers(caller('editor')).clone_catalog({ slug: 'dados' });
+    await createCatalogHandlers(caller('admin', null)).clone_catalog({ slug: 'dados', name: 'Cópia', new_slug: 'copia' });
+
+    expect(db.cloneCatalog).toHaveBeenNthCalledWith(
+      1,
+      'cat-1',
+      { name: undefined, slug: undefined, ownerUserUuid: 'uuid-editor' },
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    expect(db.cloneCatalog).toHaveBeenNthCalledWith(
+      2,
+      'cat-1',
+      { name: 'Cópia', slug: 'copia', ownerUserUuid: null },
+      'mcp-admin',
+      caller('admin', null).actor,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('"Dados" (slug: dados-2)');
+    expect(result.content[0].text).toContain('2 membro(s)');
+    expect(result.content[0].text).toContain('privada');
+  });
+
+  it('membro não clona: a cópia é um catálogo novo, e criar é do papel', async () => {
+    const negado = await createCatalogHandlers(caller('membro')).clone_catalog({ slug: 'dados' });
+
+    expect(negado.isError).toBe(true);
+    expect(negado.content[0].text).toContain('Clonar um catálogo faz nascer um catálogo novo');
+    expect(db.cloneCatalog).not.toHaveBeenCalled();
+  });
+
+  it('catálogo que a credencial não vê é 404; quem só o lê não o clona', async () => {
+    // Nem dono de `dados` nem de `publico` (que é de `uuid-outro`).
+    const outro = createCatalogHandlers(caller('editor', 'uuid-terceiro'));
+
+    const invisivel = await guard(() => outro.clone_catalog({ slug: 'dados' }));
+    expect(invisivel.isError).toBe(true);
+    expect(invisivel.content[0].text).toMatch(/Catálogo não encontrado/);
+
+    // `publico` é de outra conta: view chega pelo flag, e view não clona.
+    const soLe = await guard(() => outro.clone_catalog({ slug: 'publico' }));
+    expect(soLe.isError).toBe(true);
+    expect(soLe.content[0].text).toMatch(/exige "editar"/);
+
+    expect(db.cloneCatalog).not.toHaveBeenCalled();
+  });
+
+  // Sem `new_slug` o banco desempata sozinho (-2, -3…) e não há 409; com um
+  // slug escolhido, quem recusa é o banco — e a mensagem chega inteira.
+  it('repassa o 409 de slug em uso, com a mensagem do banco', async () => {
+    db.cloneCatalog.mockRejectedValue(new AppError('Já existe um catálogo com o slug "ocupado"', 409, 'conflict'));
+
+    const result = await guard(() =>
+      createCatalogHandlers(caller('editor')).clone_catalog({ slug: 'dados', new_slug: 'ocupado' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Já existe um catálogo com o slug "ocupado"');
+    expect(result.content[0].text).not.toContain('Erro interno');
   });
 });
 

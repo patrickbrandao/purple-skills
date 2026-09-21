@@ -218,6 +218,13 @@ export type AuditAction =
   | 'catalog.unshare'
   | 'mcp.share'
   | 'mcp.unshare'
+  // Clonagem (`docs/16-clonagem.md`): a linha fica no objeto **novo** e o
+  // alvo é `<slug de origem> -> <slug da cópia>`, a mesma gramática de
+  // `quarantine.promote`. A cópia nasce fechada e o clone de vMCP não leva
+  // chave, então nenhum evento de exposição ou de chave acompanha a linha.
+  | 'skill.clone'
+  | 'catalog.clone'
+  | 'mcp.clone'
   // Busca semântica (`docs/14-rag.md` §9): o alvo é `chave=valor` em
   // `rag.settings` e a quantidade de skills marcadas em `rag.reindex`.
   | 'rag.settings'
@@ -259,6 +266,9 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'catalog.unshare',
   'mcp.share',
   'mcp.unshare',
+  'skill.clone',
+  'catalog.clone',
+  'mcp.clone',
   'rag.settings',
   'rag.reindex',
   'quarantine.create',
@@ -664,6 +674,117 @@ export type AccessLogQuery = {
   offset?: number;
 };
 
+// ------------------------------------------------------------- atividade ---
+
+/**
+ * A tela de Atividade (`docs/18-atividade.md`): a grade de dias e o relatório
+ * agregado de um deles. Cópia manual da seção "atividade" de
+ * `@purple-skills/shared` — o cabeçalho deste arquivo diz por quê. O espelho de
+ * `McpCallFamily`/`MCP_CALL_FAMILIES` é conferido por `activity.test.ts`, como
+ * o de `AuditAction` é por `audit.test.ts`.
+ *
+ * Tudo aqui é soma. Nenhum corpo desta seção carrega IP, e-mail, `session_id`
+ * nem identificador de operação: a menor unidade é "quantas vezes". Quem
+ * precisa do evento a evento tem a trilha (`/api/audit`), as sessões
+ * (`/api/sessions`) e a guia de acessos da skill.
+ */
+
+/**
+ * A família de uma chamada, que é como o painel a agrupa — e como o canvas já
+ * nomeia as portas de um vMCP (`--port-tools`, `--port-resources`,
+ * `--port-prompts`). `skills` são os três métodos da extensão SEP-2640;
+ * `session` é o que abre e mantém a conversa e não é consumo de conteúdo;
+ * `other` recolhe o que um cliente mandar fora disso.
+ */
+export type McpCallFamily = 'tools' | 'resources' | 'prompts' | 'skills' | 'session' | 'other';
+
+export const MCP_CALL_FAMILIES: readonly McpCallFamily[] = ['tools', 'resources', 'prompts', 'skills', 'session', 'other'];
+
+/** Um dia da grade. Dia sem linha é dia sem atividade — aqui, ao contrário de `Stats`, faltar É zero. */
+export type ActivityDay = {
+  /** `AAAA-MM-DD` no fuso pedido na consulta. */
+  day: string;
+  /** Sessões abertas no dia (uma por cliente conectado a um vMCP). */
+  sessions: number;
+  /** Mensagens JSON-RPC recebidas pelo MCP público. */
+  calls: number;
+  /** Leituras de skill por qualquer superfície, inclusive o site e o mcp-admin. */
+  reads: number;
+  /** Eventos da trilha de auditoria (o que mudou no catálogo). */
+  events: number;
+  /** A soma das quatro — é ela que dá a cor da célula. */
+  total: number;
+};
+
+/** A série que o heatmap desenha. */
+export type ActivitySeries = {
+  /** Só os dias com alguma atividade, em ordem crescente; o painel completa a grade com zeros. */
+  days: ActivityDay[];
+  /** A faixa efetivamente consultada, `AAAA-MM-DD` no fuso abaixo. */
+  since: string;
+  until: string;
+  /** O fuso IANA em que os dias foram recortados — o do navegador, quando o painel o informa. */
+  timezone: string;
+};
+
+/** Uma fatia nomeada de um total. `label` sai do banco quando o nome vale mais que a chave (um vMCP, uma skill). */
+export type ActivitySlice = { key: string; label: string | null; count: number };
+
+/** O relatório de um dia. Tudo somado: a menor unidade é "quantas vezes", nunca "quem" ou "qual operação". */
+export type ActivityReport = {
+  day: string;
+  timezone: string;
+  /** Quem se conectou ao MCP público. */
+  clients: {
+    /** Sessões abertas no dia. */
+    sessions: number;
+    /** Identidades distintas por trás delas. */
+    distinct: number;
+    /** Nomes de agente distintos declarados no `initialize` (`clientInfo.name`). */
+    agents: number;
+    /** Sessões encerradas no dia, por motivo. */
+    ended: number;
+    byTransport: ActivitySlice[];
+    byAuth: ActivitySlice[];
+    byEndReason: ActivitySlice[];
+    /** Os agentes mais vistos, por nome declarado — sem versão, sem IP. */
+    topAgents: ActivitySlice[];
+  };
+  /** O que foi chamado no MCP público. */
+  calls: {
+    total: number;
+    byFamily: ActivitySlice[];
+    /** Os métodos mais chamados, com a família de cada um no `label`. */
+    topMethods: ActivitySlice[];
+    byTransport: ActivitySlice[];
+    /** Os servidores mais chamados; `key` é o slug e `label`, o nome. */
+    byServer: ActivitySlice[];
+  };
+  /** O que foi lido do acervo. */
+  reads: {
+    total: number;
+    /** Quantas leituras foram entrega de pacote (`kind = 'download'`). */
+    downloads: number;
+    /** Skills distintas lidas no dia. */
+    skills: number;
+    bySurface: ActivitySlice[];
+    byOrigin: ActivitySlice[];
+    byAuth: ActivitySlice[];
+    /** As skills mais lidas; `key` é o slug e `label`, o nome. */
+    topSkills: ActivitySlice[];
+  };
+  /** O que mudou no catálogo, pela trilha. */
+  catalog: {
+    total: number;
+    /** Atores distintos (contas, tokens e o `ambiente`), contados sem identificar. */
+    actors: number;
+    /** Por ação da trilha; `key` é o `AuditAction`. */
+    byAction: ActivitySlice[];
+    /** Por origem do evento: `web-admin` ou `mcp-admin`. */
+    bySource: ActivitySlice[];
+  };
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -814,6 +935,21 @@ export const share = (kind: AccessKind, slug: string, email: string, level: Acce
 export const unshare = (kind: AccessKind, slug: string, email: string) =>
   request<{ revoked: true }>(accessPath(kind, slug, email), { method: 'DELETE' });
 
+// -------------------------------------------------------------- clonagem ---
+
+/**
+ * O corpo das três rotas de clonagem (`docs/16-clonagem.md`). Os dois campos
+ * são opcionais **de propósito**: sem `slug`, quem desempata é o servidor
+ * (`uniqueSlug`), e esse é o único caminho que nunca responde 409. O painel só
+ * manda o que a pessoa mudou — ver `corpoDaClonagem`, em `CloneDialog.tsx`.
+ *
+ * O que a cópia leva e o que ela não leva é decisão do servidor: ela nasce
+ * fechada (nunca pública, nunca aberta) e de quem clonou; skill e catálogo não
+ * levam concessão, e o vMCP leva as concessões, os vínculos e o canvas, mas
+ * **não** leva chaves.
+ */
+export type CloneBody = { name?: string; slug?: string };
+
 // ------------------------------------------------- redefinição de senha -----
 
 export const requestPasswordReset = (email: string) =>
@@ -846,6 +982,40 @@ export const getAudit = (query: AuditQuery = {}) =>
   request<AuditPage>(`/api/audit${qs(query)}`);
 
 export const getTags = () => request<{ items: { name: string; count: number }[] }>('/api/tags');
+
+// ------------------------------------------------------------- atividade ---
+
+/**
+ * A série do heatmap (`docs/18-atividade.md`).
+ *
+ * `since`/`until` são **instantes**: o dia do calendário de quem olha, virado
+ * em borda por `activityInstants` (o `auditRange` da trilha). O fuso IANA vai
+ * junto — e só aqui — porque é no SQL desta consulta que os instantes são
+ * agrupados por dia; no relatório de um dia a janela já chega recortada e o
+ * fuso não muda nada.
+ */
+export const getActivity = (query: { since?: string; until?: string; timezone?: string }) =>
+  request<ActivitySeries>(`/api/activity${qs({ since: query.since, until: query.until, tz: query.timezone })}`);
+
+/**
+ * O relatório de um dia.
+ *
+ * O dia vai no caminho (`AAAA-MM-DD`) e a janela dele, em instantes, na query:
+ * é ela que o servidor compara. O dia no caminho é **rótulo** — sem o fuso de
+ * quem olha ele não delimita nada, e foi por confundir as duas coisas que a
+ * trilha já abriu uma janela de 27 horas (`tasks/044`).
+ *
+ * O `tz` vai junto mesmo sem mudar recorte nenhum — aqui não há agrupamento
+ * por dia, e a janela já chega pronta. Ele existe porque o corpo **ecoa** o
+ * fuso em `ActivityReport.timezone`: sem mandá-lo, o servidor caía no padrão e
+ * todo relatório afirmava "UTC" ao lado de números recortados em São Paulo. O
+ * campo não é lido pela tela hoje, e era justamente isso que deixava a mentira
+ * passar despercebida.
+ */
+export const getActivityDay = (day: string, query: { since?: string; until?: string; top?: number; timezone?: string }) =>
+  request<ActivityReport>(
+    `/api/activity/${encodeURIComponent(day)}${qs({ since: query.since, until: query.until, top: query.top, tz: query.timezone })}`,
+  );
 
 // ----------------------------------------------------------------- skills ---
 
@@ -898,6 +1068,10 @@ export const linkSkillToMcp = (slug: string, mcp: string, flags: LinkFlags & { p
 
 export const unlinkSkillFromMcp = (slug: string, mcp: string) =>
   request<SkillDetail>(skillMcpPath(slug, mcp), { method: 'DELETE' });
+
+/** Uma cópia da skill, com os arquivos: responde o mesmo corpo de `createSkill`. */
+export const cloneSkill = (slug: string, body: CloneBody = {}) =>
+  request<SkillDetail>(`/api/skills/${encodeURIComponent(slug)}/clone`, { method: 'POST', body: json(body) });
 
 export const deleteSkill = (slug: string) =>
   request<unknown>(`/api/skills/${encodeURIComponent(slug)}`, { method: 'DELETE' });
@@ -1131,6 +1305,10 @@ export type UpdateMcpBody = {
 export const updateMcp = (slug: string, body: UpdateMcpBody) =>
   request<VirtualMcpDetail>(mcpPath(slug), { method: 'PATCH', body: json(body) });
 
+/** Uma cópia do servidor, com as concessões, os vínculos e o canvas — sem as chaves. */
+export const cloneMcp = (slug: string, body: CloneBody = {}) =>
+  request<VirtualMcpDetail>(`${mcpPath(slug)}/clone`, { method: 'POST', body: json(body) });
+
 export const deleteMcp = (slug: string) => request<unknown>(mcpPath(slug), { method: 'DELETE' });
 
 export const setMcpSkills = (slug: string, skills: VirtualMcpSkillInput[]) =>
@@ -1180,6 +1358,10 @@ export type UpdateCatalogBody = {
 
 export const updateCatalog = (slug: string, body: UpdateCatalogBody) =>
   request<CatalogDetail>(catalogPath(slug), { method: 'PATCH', body: json(body) });
+
+/** Uma cópia do catálogo, com os mesmos membros: responde o mesmo corpo de `createCatalog`. */
+export const cloneCatalog = (slug: string, body: CloneBody = {}) =>
+  request<CatalogDetail>(`${catalogPath(slug)}/clone`, { method: 'POST', body: json(body) });
 
 export const deleteCatalog = (slug: string) => request<unknown>(catalogPath(slug), { method: 'DELETE' });
 

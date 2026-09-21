@@ -212,12 +212,15 @@ export type SkillMeta = {
   tags?: readonly string[];
 };
 
+/** O valor como o YAML o escreve: uma linha só, espaços em branco colapsados. */
+const yamlFlat = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
 /**
  * Escreve um valor como escalar YAML, citando quando o texto puder ser lido
  * como outra coisa (`chave: valor`, comentário, lista, número, vazio…).
  */
 function yamlScalar(value: string): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
+  const flat = yamlFlat(value);
   const ambiguous =
     flat === '' ||
     /[:#]/.test(flat) ||
@@ -229,25 +232,73 @@ function yamlScalar(value: string): string {
 }
 
 /**
+ * Os campos do frontmatter já aparados e filtrados, uma vez só: é daqui que
+ * saem as **duas** formas em que eles são servidos — o YAML de
+ * `buildFrontmatter` e o objeto de `frontmatterObject`. Separar as duas
+ * decisões (quais chaves existem; como cada valor é escrito) é o que impede as
+ * formas de divergirem quando uma delas muda.
+ *
+ * `tags` sai já juntada por vírgula porque é uma **string** no YAML, e o objeto
+ * tem de dizer o mesmo (decisão 14 do `docs/17-skills-extension.md`). Valor
+ * vazio significa chave ausente nas duas.
+ */
+function frontmatterFields(meta: SkillMeta) {
+  const tags = (meta.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+  return {
+    name: meta.slug.trim(),
+    description: meta.description ?? '',
+    title: meta.name?.trim() ?? '',
+    tags: tags.join(', '),
+  };
+}
+
+/**
  * Monta o frontmatter canônico da skill, no formato Agent Skills: `name` é o
  * slug (o nome oficial, `a-z0-9-`) e `description` diz o que a skill faz. O
  * nome legível e as tags — que a especificação não define — vão em `metadata`.
  */
 export function buildFrontmatter(meta: SkillMeta): string {
-  const slug = meta.slug.trim();
-  const name = meta.name?.trim() ?? '';
-  const tags = (meta.tags ?? []).map((tag) => tag.trim()).filter(Boolean);
+  const { name, description, title, tags } = frontmatterFields(meta);
 
-  const lines = ['---', `name: ${yamlScalar(slug)}`, `description: ${yamlScalar(meta.description ?? '')}`];
+  const lines = ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(description)}`];
 
-  if (name || tags.length > 0) {
+  if (title || tags) {
     lines.push('metadata:');
-    if (name) lines.push(`  title: ${yamlScalar(name)}`);
-    if (tags.length > 0) lines.push(`  tags: ${yamlScalar(tags.join(', '))}`);
+    if (title) lines.push(`  title: ${yamlScalar(title)}`);
+    if (tags) lines.push(`  tags: ${yamlScalar(tags)}`);
   }
 
   lines.push('---');
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * O **mesmo** frontmatter em forma de objeto, para o `skills/list` e o
+ * `skills/get` da extensão de skills do MCP (SEP-2640): a entrada de uma skill
+ * leva o frontmatter como JSON, e a SEP exige que ele bata campo a campo com o
+ * bloco YAML que o `resources/read` devolve — o host que encontrar diferença
+ * trata como falha de verificação e recusa a skill.
+ *
+ * Por isso ele é o espelho de `buildFrontmatter`, e não uma segunda leitura dos
+ * metadados: mesmos campos, mesmo critério de ausência e o mesmo valor já
+ * achatado que o escalar YAML escreve — quem lê o YAML de volta recebe o texto
+ * numa linha só, então é esse texto que o objeto tem de trazer.
+ *
+ * O que **não** é espelhado são as aspas: elas são sintaxe do YAML, não valor,
+ * e um parser as tira ao ler.
+ */
+export function frontmatterObject(meta: SkillMeta): Record<string, unknown> {
+  const { name, description, title, tags } = frontmatterFields(meta);
+
+  const metadata: Record<string, string> = {};
+  if (title) metadata.title = yamlFlat(title);
+  if (tags) metadata.tags = yamlFlat(tags);
+
+  return {
+    name: yamlFlat(name),
+    description: yamlFlat(description),
+    ...(title || tags ? { metadata } : {}),
+  };
 }
 
 /**

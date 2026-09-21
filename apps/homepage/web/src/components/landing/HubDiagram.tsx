@@ -116,7 +116,7 @@ export function HubDiagram() {
   useHubWires(stageRef, svgRef, hubRef);
 
   return (
-    <section className="diag" id="como-funciona">
+    <section className="diag" id="how-it-works">
       <div className="wrap">
         <div className="head center reveal">
           <h2 className="display">

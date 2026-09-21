@@ -1,6 +1,6 @@
 # Catálogos: grupos de skills com dono, vinculados a um vMCP de uma vez
 
-**Status: implementado**, num PR (`feat/catalogos`), sobre o `10`.
+**Status: implementado**, num PR (`feat/catalogs`), sobre o `10`.
 Migration `016-catalogos.sql`.
 
 > **Parcialmente revogado por [`12`](12-acesso-granular.md):** a decisão 6
@@ -210,9 +210,9 @@ vezes, e o total do servidor deixaria de bater com o que se vê.
 
 | Rota | O que é |
 |------|---------|
-| `/catalogos` | Lista (~~todos para admin, os próprios para os demais~~ — **revogado pelo [`12`](12-acesso-granular.md) `§3.1`:** tudo para admin; para os demais, os seus, os concedidos **e os públicos**, com o filtro meus / compartilhados comigo / públicos): nome, dono, membros ativos/total, vMCPs, acessos, estado; "Novo catálogo" num modal com nome, slug e descrição |
-| `/catalogos/:slug/*` | A ficha só leitura (`13` §3.3): guias Catálogo (descrição), Skills (os membros com o estado), Propriedades (configuração, "Vinculado em" com os vMCPs e as portas, acesso) e Acessos |
-| `/catalogos/:slug/editar/*` | A ficha de edição, mesmas guias: a tabela de skills com a participação como caixa e "Remover", a busca "Adicionar skill" (paleta), a configuração (nome, slug, descrição, ligado), o acesso e a zona de perigo |
+| `/catalogs` | Lista (~~todos para admin, os próprios para os demais~~ — **revogado pelo [`12`](12-acesso-granular.md) `§3.1`:** tudo para admin; para os demais, os seus, os concedidos **e os públicos**, com o filtro meus / compartilhados comigo / públicos): nome, dono, membros ativos/total, vMCPs, acessos, estado; "Novo catálogo" num modal com nome, slug e descrição |
+| `/catalogs/:slug/*` | A ficha só leitura (`13` §3.3): guias Catálogo (descrição), Skills (os membros com o estado), Propriedades (configuração, "Vinculado em" com os vMCPs e as portas, acesso) e Acessos |
+| `/catalogs/:slug/edit/*` | A ficha de edição, mesmas guias: a tabela de skills com a participação como caixa e "Remover", a busca "Adicionar skill" (paleta), a configuração (nome, slug, descrição, ligado), o acesso e a zona de perigo |
 
 Na página da skill, o painel "Publicada em" ganha as linhas indiretas: um
 vMCP alcançado só por catálogo aparece com as portas em selos e "via

@@ -7,6 +7,13 @@ superfícies continuam existindo, decididas **por vínculo** com um MCP virtual
 fecha sobre prompt e resource — identidade, conteúdo, handlers de baixo nível,
 listas por requisição, erro indistinto — segue valendo em todo servidor.
 
+> **Também revogado em dois pontos por [`17`](17-skills-extension.md):** a
+> decisão 5 (a URI do resource) e a decisão 15 (anexos como resource, fora do
+> v1), com o item correspondente da `§9`. A URI passou a ser
+> `skill://<slug>/SKILL.md`, no formato da SEP-2640, e cada arquivo da skill
+> virou um resource irmão. As passagens da `§1`, da `§3.3` e da `§5.6` que
+> citam a URI antiga estão marcadas no ponto.
+
 Este documento registrava o desenho fechado para os
 dois campos de `skills` — `use_as_prompt` e `use_as_resource` — que controlavam
 **como** uma skill pública é oferecida no MCP, além de *se* ela aparece. É a
@@ -39,8 +46,10 @@ O protocolo MCP tem duas superfícies melhores para o caso:
 - **prompt** — o cliente lista os prompts do servidor e o usuário invoca a
   skill diretamente (na maioria dos clientes, como *slash-command*). O corpo
   entra no contexto sem o agente precisar decidir chamar uma ferramenta.
-- **resource** — a skill vira um endereço estável, `skill://<slug>`, que o
-  cliente lê e referencia como qualquer outro documento.
+- **resource** — a skill vira um endereço estável, ~~`skill://<slug>`~~
+  (**revogado pela decisão 5 do [`17`](17-skills-extension.md)**:
+  `skill://<slug>/SKILL.md`), que o cliente lê e referencia como qualquer outro
+  documento.
 
 Ligar isso para o catálogo inteiro seria pior que não ligar: um catálogo com
 centenas de skills entope a lista de slash-commands de todo cliente conectado.
@@ -55,7 +64,7 @@ não um detalhe de conveniência.
 | 2 | MCP administrativo | Não expõe prompts nem resources — segue 100% ferramentas |
 | 3 | Valor inicial | `false` nas duas, para skill nova, seed e base existente |
 | 4 | Nome do prompt | O **slug puro** |
-| 5 | URI do resource | `skill://<slug>` |
+| 5 | URI do resource | ~~`skill://<slug>`~~ — **revogada pela decisão 5 do [`17`](17-skills-extension.md)**: é `skill://<slug>/SKILL.md`, e `skill://<slug>` passou a ser o diretório da skill |
 | 6 | Conteúdo do resource | `composeSkillMd` — o SKILL.md canônico, `text/markdown` |
 | 7 | Conteúdo do prompt | Uma mensagem `role=user` com o corpo sem frontmatter |
 | 8 | Argumentos do prompt | Nenhum |
@@ -65,7 +74,7 @@ não um detalhe de conveniência.
 | 12 | `listChanged` | Não declarado — não há notificação |
 | 13 | Teto da lista | Sem teto; query dedicada e enxuta no `@purple-skills/db` |
 | 14 | `resources/templates/list` | Handler presente, lista vazia |
-| 15 | Anexos como resource | Fora do v1 |
+| 15 | Anexos como resource | ~~Fora do v1~~ — **revogada pela decisão 3 do [`17`](17-skills-extension.md)**: cada arquivo é um resource, e o manifesto de `skills/list` os enumera com digest e tamanho |
 | 16 | Erro no `resources/read` | Um só, indistinto |
 | 17 | `search_skills` | Inalterado |
 | 18 | `INSTRUCTIONS` | Fluxo de ferramentas intacto + parágrafo novo |
@@ -108,9 +117,12 @@ validado como `a-z0-9-`, que é a forma que um nome de prompt precisa ter.
 Prefixar seria redundante: os clientes já qualificam os prompts pelo nome do
 servidor.
 
-A URI do resource é `skill://<slug>`. Verificado: `new URL()` do Node analisa
-`skill://conventional-commits` sem normalizar nada — host é o slug, path vazio,
-nenhuma barra sobrando.
+~~A URI do resource é `skill://<slug>`.~~ **Revogado neste ponto por
+[`17`](17-skills-extension.md)**: é `skill://<slug>/SKILL.md`, e
+`skill://<slug>` passou a ser o diretório da skill. Verificado na época:
+`new URL()` do Node analisa `skill://conventional-commits` sem normalizar nada
+— host é o slug, path vazio, nenhuma barra sobrando. A forma nova mantém o slug
+no host e leva o arquivo no path.
 
 ## 4. O que trafega
 
@@ -230,8 +242,9 @@ por padrão roda sem autenticação.
 
 O fluxo de quatro passos que começa em `search_skills` continua inteiro, e
 ganha abaixo um parágrafo dizendo que algumas skills também estão publicadas
-como prompt (pelo slug) e como resource `skill://<slug>`, e que `prompts/list`
-e `resources/list` mostram quais.
+como prompt (pelo slug) e como resource ~~`skill://<slug>`~~
+(**[`17`](17-skills-extension.md)**: `skill://<slug>/SKILL.md`), e que
+`prompts/list` e `resources/list` mostram quais.
 
 Esse texto carrega mais peso do que parece: `search_skills` fica **inalterado**
 (decisão 17), sem mencionar as flags nos resultados. Ferramentas e prompts são
@@ -381,10 +394,14 @@ Mais as fixtures dos dois apps e o teste de round-trip do `shared` (`§6.4`).
 
 ## 9. Fora do v1
 
-- **Anexos como resource** (`skill://{slug}/{path}`). A ferramenta
+- ~~**Anexos como resource** (`skill://{slug}/{path}`). A ferramenta
   `get_skill_file` já cobre o caso, e um resource por arquivo multiplicaria a
   listagem — sem teto (`§5.3`), a resposta cresceria rápido. Um segundo
-  template somado depois não quebra o primeiro.
+  template somado depois não quebra o primeiro.~~ **Revogado por
+  [`17`](17-skills-extension.md)**, que traz o endereço por arquivo no formato
+  da SEP-2640. A objeção do tamanho da listagem ficou de pé e foi atendida de
+  outro jeito: `resources/list` continua com uma entrada por skill, e os
+  arquivos passaram a ser endereçáveis sem estarem listados.
 - **`notifications/*/list_changed`** — ver `§5.2`.
 - **Argumentos de prompt declarados pela skill** — parser, validação, campo no
   banco e UI no painel: é uma feature inteira, não um acréscimo a esta.

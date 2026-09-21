@@ -64,10 +64,10 @@ import { useToast } from '../components/Toast.js';
 import { useRegisterCommands, type Command } from '../components/commands.js';
 import { DescriptionBox } from './SkillViewPage.js';
 
-type Tab = 'skill' | 'arquivos' | 'catalogos' | 'propriedades' | 'acesso';
+type Tab = 'skill' | 'files' | 'catalogs' | 'properties' | 'access';
 type DocPane = 'render' | 'source';
 
-const TABS: readonly Tab[] = ['arquivos', 'catalogos', 'propriedades', 'acesso'];
+const TABS: readonly Tab[] = ['files', 'catalogs', 'properties', 'access'];
 
 const VAZIO = '_Esta skill ainda não tem conteúdo em SKILL.md._';
 
@@ -119,7 +119,7 @@ async function applyChange(slug: string, change: PlannedChange): Promise<void> {
  * descrição e o SKILL.md), Arquivos (a árvore com o editor de cada arquivo),
  * Catálogos (a participação), Propriedades (metadados e onde está publicada)
  * e Acesso (dono, visibilidade e concessões). O registro de leituras fica só
- * na leitura, na guia Auditoria — `/editar/auditoria` leva para lá.
+ * na leitura, na guia Auditoria — `/edit/audit` leva para lá.
  *
  * O Salvar do cabeçalho está sempre ativo e grava **tudo** o que está
  * pendente (decisão 21): os arquivos alterados, a descrição, o SKILL.md, os
@@ -152,7 +152,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   const [owned, setOwned] = useState<OwnedDrafts>({ uuid: null, drafts: EMPTY_DRAFTS });
   const drafts = owned.drafts;
 
-  const tail = location.pathname.slice(`/skills/${slug}/editar`.length).split('/')[1] ?? '';
+  const tail = location.pathname.slice(`/skills/${slug}/edit`.length).split('/')[1] ?? '';
   const tab: Tab = TABS.find((item) => item === tail) ?? 'skill';
 
   /**
@@ -391,7 +391,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         go('/skills');
       } else {
         // Sessão vencida (401), 5xx ou rede: **fica**. Sair desmonta o editor
-        // (`/skills/:slug/editar/*` e `/skills/:slug/*` são rotas de elementos
+        // (`/skills/:slug/edit/*` e `/skills/:slug/*` são rotas de elementos
         // diferentes) e leva junto tudo o que ainda não foi gravado — e era o
         // que acontecia, em qualquer erro, no clique de Salvar. A página não
         // reconfere a sessão sozinha: dá para entrar de novo em outra aba.
@@ -436,15 +436,15 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
     hydrate(skill);
   }
 
-  const editBase = `/skills/${skill?.slug ?? slug}/editar`;
-  const filesPath = `${editBase}/arquivos`;
+  const editBase = `/skills/${skill?.slug ?? slug}/edit`;
+  const filesPath = `${editBase}/files`;
 
   /** O arquivo que ⌘S grava na guia Arquivos; o SKILL.md é do formulário. */
-  const openFile = tab === 'arquivos' && files.selected && !isSkillMdPath(files.selected) ? files.selected : null;
+  const openFile = tab === 'files' && files.selected && !isSkillMdPath(files.selected) ? files.selected : null;
   const openFileDirty = openFile !== null && dirtyPaths.has(openFile);
 
   const toFiles = useCallback(() => {
-    if (!location.pathname.endsWith('/arquivos')) navigate(filesPath);
+    if (!location.pathname.endsWith('/files')) navigate(filesPath);
   }, [location.pathname, navigate, filesPath]);
 
   const commands: Command[] = [];
@@ -480,14 +480,14 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
       commands.push({ id: 'file-delete', label: `Remover ${openFile}`, group: 'Perigo', icon: <Trash2 />, danger: true, run: () => removeFile(openFile) });
     }
   }
-  if (skill && tab !== 'arquivos') {
+  if (skill && tab !== 'files') {
     commands.push({ id: 'files-tab', label: 'Arquivos da skill', group: 'Ir para', icon: <FolderTree />, keywords: ['arvore', 'editar arquivo'], run: () => navigate(filesPath) });
   }
-  if (skill && tab !== 'catalogos') {
-    commands.push({ id: 'catalogs-tab', label: 'Catálogos da skill', group: 'Ir para', icon: <Library />, keywords: ['catalogo', 'participação'], run: () => navigate(`${editBase}/catalogos`) });
+  if (skill && tab !== 'catalogs') {
+    commands.push({ id: 'catalogs-tab', label: 'Catálogos da skill', group: 'Ir para', icon: <Library />, keywords: ['catalogo', 'participação'], run: () => navigate(`${editBase}/catalogs`) });
   }
-  if (skill && tab !== 'acesso') {
-    commands.push({ id: 'access-tab', label: 'Acesso à skill', group: 'Ir para', icon: <Users />, keywords: ['dono', 'compartilhar', 'público'], run: () => navigate(`${editBase}/acesso`) });
+  if (skill && tab !== 'access') {
+    commands.push({ id: 'access-tab', label: 'Acesso à skill', group: 'Ir para', icon: <Users />, keywords: ['dono', 'compartilhar', 'público'], run: () => navigate(`${editBase}/access`) });
   }
   useRegisterCommands(commands, [
     skill?.slug,
@@ -564,7 +564,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
   const base = `/skills/${skill.slug}`;
 
   return (
-    <div className={`page wide${tab === 'arquivos' ? ' workbench' : ''}`}>
+    <div className={`page wide${tab === 'files' ? ' workbench' : ''}`}>
       <div className="page-head">
         <div className="min-w-0">
           <Link to={base} className="back-link">
@@ -592,7 +592,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           {/* A leitura tem as mesmas guias: Visualizar fica na guia e, em Arquivos, no arquivo aberto. */}
           <Link
             to={tab === 'skill' ? base : `${base}/${tab}`}
-            state={tab === 'arquivos' ? openFileState(files) : undefined}
+            state={tab === 'files' ? openFileState(files) : undefined}
             className="btn btn-ghost"
           >
             <Eye /> Visualizar
@@ -642,10 +642,10 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         value={tab}
         items={[
           { key: 'skill', label: 'Skill', icon: <FileText />, to: editBase },
-          { key: 'arquivos', label: 'Arquivos', icon: <FolderTree />, to: filesPath, count: skill.files.length },
-          { key: 'catalogos', label: 'Catálogos', icon: <Library />, to: `${editBase}/catalogos`, count: skill.catalogs.length },
-          { key: 'propriedades', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/propriedades` },
-          { key: 'acesso', label: 'Acesso', icon: <Users />, to: `${editBase}/acesso` },
+          { key: 'files', label: 'Arquivos', icon: <FolderTree />, to: filesPath, count: skill.files.length },
+          { key: 'catalogs', label: 'Catálogos', icon: <Library />, to: `${editBase}/catalogs`, count: skill.catalogs.length },
+          { key: 'properties', label: 'Propriedades', icon: <SlidersHorizontal />, to: `${editBase}/properties` },
+          { key: 'access', label: 'Acesso', icon: <Users />, to: `${editBase}/access` },
         ]}
       />
 
@@ -670,7 +670,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           }
         />
         <Route
-          path="arquivos"
+          path="files"
           element={
             <SkillFilesTab
               ws={files}
@@ -689,11 +689,11 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           }
         />
         <Route
-          path="catalogos"
+          path="catalogs"
           element={<SkillCatalogsTab skill={skill} user={user} drafts={drafts.catalogs} onDrafts={onCatalogDrafts} />}
         />
         <Route
-          path="propriedades"
+          path="properties"
           element={
             <PropertiesTab
               skill={skill}
@@ -711,7 +711,7 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           }
         />
         <Route
-          path="acesso"
+          path="access"
           element={
             <AccessTab
               kind="skill"
@@ -725,8 +725,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           }
         />
         {/* O registro de leituras mora na ficha de leitura; um link antigo para cá vai para lá. */}
-        <Route path="auditoria" element={<Navigate to={`${base}/auditoria`} replace />} />
-        <Route path="acessos" element={<Navigate to={`${base}/auditoria`} replace />} />
+        <Route path="audit" element={<Navigate to={`${base}/audit`} replace />} />
+        <Route path="accesses" element={<Navigate to={`${base}/audit`} replace />} />
         <Route path="*" element={<Navigate to={editBase} replace />} />
       </Routes>
 

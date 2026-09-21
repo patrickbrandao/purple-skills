@@ -7,7 +7,7 @@ import { useToast } from '../components/Toast.js';
 
 /**
  * Minha conta: a troca de senha. As chaves `psk_` saíram daqui para a tela
- * própria, Configurações → Adm MCP Keys (`/account/chaves-adm`) — a caixa já não
+ * própria, Configurações → Adm MCP Keys (`/account/admin-keys`) — a caixa já não
  * cabia ao lado do formulário e a tabela pedia a largura da página.
  */
 export function AccountPage({ user, onChanged }: { user: SessionUser; onChanged: () => void }) {
@@ -77,7 +77,7 @@ export function AccountPage({ user, onChanged }: { user: SessionUser; onChanged:
             As chaves <code>psk_</code> desta conta ganharam tela própria: emitir e revogar agora é em
             Adm MCP Keys, no mesmo submenu.
           </p>
-          <Link to="/account/chaves-adm" className="btn btn-ghost btn-sm">
+          <Link to="/account/admin-keys" className="btn btn-ghost btn-sm">
             Abrir Adm MCP Keys
           </Link>
         </Panel>

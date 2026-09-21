@@ -40,6 +40,12 @@ export const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   'catalog.unshare': 'revogou acesso ao catálogo',
   'mcp.share': 'compartilhou servidor',
   'mcp.unshare': 'revogou acesso ao servidor',
+  // Clonagem: o alvo é `<slug de origem> -> <slug da cópia>`, como em
+  // `quarantine.promote`. "servidor" e não "MCP virtual" para casar com os
+  // outros rótulos de `mcp.*`, que é como o painel chama o vMCP na trilha.
+  'skill.clone': 'clonou skill',
+  'catalog.clone': 'clonou catálogo',
+  'mcp.clone': 'clonou servidor',
   // Busca semântica: o alvo é `chave=valor` em `rag.settings` (a semeadura do
   // boot grava com o ator `ambiente`) e a quantidade de skills em `rag.reindex`.
   'rag.settings': 'alterou a busca semântica',
@@ -88,6 +94,11 @@ export const ACTION_TONE: Record<AuditEntry['action'], 'ok' | 'accent' | 'danger
   'catalog.unshare': 'danger',
   'mcp.share': 'ok',
   'mcp.unshare': 'danger',
+  // `ok`: clonar é criação, como `create` e `quarantine.promote`. Não mexe no
+  // original e a cópia nasce fechada — não há exposição nova a sinalizar.
+  'skill.clone': 'ok',
+  'catalog.clone': 'ok',
+  'mcp.clone': 'ok',
   // `accent`: as duas alteram a instalação e não apagam nada — reindexar só
   // marca o acervo para refatiar (`docs/14-rag.md` §9).
   'rag.settings': 'accent',
@@ -111,8 +122,12 @@ const DIA = /^(\d{4})-(\d{2})-(\d{2})$/;
  * `dias` no calendário. Pelos campos de data, e não por texto nem por soma de
  * 24 h: `new Date('AAAA-MM-DD')` é meia-noite UTC, há dia de 23 e de 25 horas,
  * e onde o horário de verão começa à meia-noite o dia começa à 01:00.
+ *
+ * Exportada porque a grade da Atividade anda de dia em dia com ela
+ * (`activity.ts`): reimplementar o passo do calendário é reabrir este defeito
+ * numa segunda tela.
  */
-function inicioDoDia(valor: string, dias = 0): Date | null {
+export function inicioDoDia(valor: string, dias = 0): Date | null {
   const partes = DIA.exec(valor);
   if (!partes) return null;
   const inicio = new Date(0);

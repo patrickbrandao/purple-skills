@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
+  MCP_CALL_BUCKET_MS,
   QUARANTINE_APPROVERS,
   QUARANTINE_APPROVERS_DEFAULT,
   QUARANTINE_APPROVERS_SETTING,
@@ -12,6 +13,7 @@ import {
   isSkillMd,
   isTextualContent,
   isValidSlug,
+  mcpCallFamily,
   mimeTypeFor,
   normalizeRelativePath,
   normalizeSkillIcon,
@@ -22,6 +24,9 @@ import {
   uniqueSlug,
   type AccessLevel,
   type AccessScope,
+  type ActivityDay,
+  type ActivityReport,
+  type ActivitySlice,
   type ApiKeySummary,
   type AuditAction,
   type AuditActor,
@@ -36,6 +41,7 @@ import {
   type CatalogSummary,
   type EffectiveAccess,
   type Grant,
+  type McpCallBucketInput,
   type McpSessionAuth,
   type McpSessionEndReason,
   type McpSessionMount,
@@ -922,6 +928,171 @@ export async function listPublishedSkills(
     name: row.name,
     description: row.description ?? '',
   }));
+}
+
+/** Um arquivo da skill, como o manifesto da extensão precisa dele. */
+export type SkillManifestFile = {
+  relativePath: string;
+  sizeBytes: number;
+  /** SHA-256 do conteúdo gravado, em hexadecimal minúsculo (64 caracteres). */
+  sha256: string;
+};
+
+/** Uma skill servida por um vMCP, com o inventário completo dos arquivos. */
+export type SkillManifestEntry = {
+  uuid: string;
+  slug: string;
+  name: string;
+  description: string;
+  tags: string[];
+  /** A chave de cache do SKILL.md composto, no formato que o resto do pacote usa para timestamp. */
+  updatedAt: string;
+  files: SkillManifestFile[];
+};
+
+/**
+ * O manifesto da extensão de skills do MCP (SEP-2640,
+ * `docs/17-skills-extension.md` §9): as skills `as_skill` expostas no vMCP,
+ * cada uma com o inventário **completo** dos arquivos — caminho, tamanho e o
+ * `files.content_sha256` da `020` em hexadecimal, que é exatamente o `digest`
+ * que a SEP pede, sem nenhum hash novo. Com `options.slug`, uma skill só: é o
+ * `skills/get`; sem ele, o catálogo inteiro do servidor (`skills/list`).
+ *
+ * **Nenhum corpo de arquivo entra aqui** — é o ponto inteiro da consulta. O
+ * `SKILL.md` composto (o corpo mais o frontmatter remontado) é medido e
+ * hasheado na hora pelo servidor, por `composeSkillMd`, e o corpo dele vem por
+ * `readSkillMdBodies`, só para os furos do cache (§5.2 e §5.3). Publicar o
+ * `content_sha256` da linha do `SKILL.md` como digest do que o `resources/read`
+ * devolve faria **toda** skill falhar na verificação de **todo** host: aquele
+ * hash é o do corpo gravado, sem frontmatter.
+ *
+ * Não reusa `listSkills` pelo mesmo motivo de `listPublishedSkills` (o teto de
+ * 100 numa listagem que o protocolo entrega inteira, e agregações por linha que
+ * o manifesto descarta), e não estende `listFiles` porque `SkillFileMeta` é
+ * tipo do shared, lido pelo painel e pelo site, que não têm o que fazer com um
+ * hash. A ordem por slug é estável entre chamadas, como lá.
+ *
+ * Uma consulta só: os arquivos vêm agregados numa subconsulta correlacionada,
+ * no estilo de `mcps` e `catalogs` em `skillColumns`. Duas consultas (as skills
+ * e depois `skill_uuid = ANY(...)`) fariam o mesmo trabalho no banco e ainda
+ * pediriam o casamento das listas no JS.
+ */
+export async function listSkillsManifest(
+  virtualMcpUuid: string,
+  options: { slug?: string } = {},
+): Promise<SkillManifestEntry[]> {
+  if (!isUuid(virtualMcpUuid)) return [];
+  // `undefined` é o catálogo inteiro; qualquer outra coisa filtra — inclusive
+  // o vazio, que não casa com slug nenhum. Um `skills/get` sem slug pedindo a
+  // lista toda e ficando com a primeira entrada seria a skill errada.
+  const slugFilter =
+    options.slug === undefined || options.slug === null
+      ? sql``
+      : sql`AND s.slug = ${options.slug}`;
+
+  const result = await db().execute(sql`
+    SELECT s.uuid, s.slug, s.name, s.description, s.updated_at,
+           -- O ORDER BY t.name abaixo é invariante, não preferência: o
+           -- buildFrontmatter do shared escreve metadata.tags na ordem que
+           -- recebe, e o servidor publica o SHA-256 do texto composto. Tag fora
+           -- de ordem faz o digest divergir do conteúdo entre duas chamadas, de
+           -- forma intermitente e praticamente irreproduzível. Não tire.
+           COALESCE((
+             SELECT array_agg(t.name ORDER BY t.name)
+             FROM skill_tags st JOIN tags t ON t.id = st.tag_id
+             WHERE st.skill_uuid = s.uuid
+           ), '{}') AS tags,
+           COALESCE((
+             SELECT json_agg(json_build_object(
+               'relativePath', f.relative_path,
+               'sizeBytes', f.size_bytes,
+               'sha256', encode(f.content_sha256, 'hex')
+             ) ORDER BY (lower(f.relative_path) = 'skill.md') DESC, f.relative_path ASC)
+             FROM files f WHERE f.skill_uuid = s.uuid
+           ), '[]'::json) AS files
+    FROM skills s
+    WHERE s.is_active AND ${exposedIn(sql`${virtualMcpUuid}::uuid`, 'skill')} ${slugFilter}
+    ORDER BY s.slug ASC
+  `);
+
+  return (result.rows as Row[]).map((row) => ({
+    uuid: row.uuid as string,
+    slug: row.slug as string,
+    name: row.name as string,
+    description: (row.description as string) ?? '',
+    tags: (row.tags ?? []) as string[],
+    updatedAt: new Date(row.updated_at).toISOString(),
+    files: toManifestFiles(row.files),
+  }));
+}
+
+/** O JSON de `files` do manifesto, na ordem que o SQL já fixou. */
+function toManifestFiles(value: unknown): SkillManifestFile[] {
+  const rows = (typeof value === 'string' ? JSON.parse(value) : value) as Row[] | null;
+  return (rows ?? []).map((file) => ({
+    relativePath: file.relativePath as string,
+    sizeBytes: Number(file.sizeBytes ?? 0),
+    sha256: file.sha256 as string,
+  }));
+}
+
+/** O corpo gravado do SKILL.md (sem frontmatter — o frontmatter é remontado na leitura). */
+export type SkillMdBody = { skillUuid: string; body: string };
+
+/**
+ * Quantos `SKILL.md` por statement. Diferente de `FILE_BATCH_ROWS`, aqui o
+ * teto é só de linha: quem chama não sabe o tamanho dos corpos antes de lê-los,
+ * e um lote de 50 `SKILL.md` grandes já é uma mensagem respeitável — o teto de
+ * leitura do servidor são 4 MiB **por arquivo**, e nada impede um corpo maior
+ * no banco. Cinquenta furos de cache numa listagem só é o pior caso de um vMCP
+ * recém-aberto; em regime o lote é de um ou dois.
+ */
+const SKILL_MD_BATCH_ROWS = 50;
+
+/**
+ * Os corpos gravados do `SKILL.md` de várias skills, em lote — os furos do
+ * cache de `skills/list` (`docs/17-skills-extension.md` §5.3). Quem compõe o
+ * frontmatter por cima é o servidor (`composeSkillMd`), com os metadados que
+ * `listSkillsManifest` já trouxe.
+ *
+ * **Sem ordem definida**: acima do teto o lote é fatiado, e cada fatia é uma
+ * statement. Quem chama casa pelo `skillUuid` — é um preenchimento de cache,
+ * não uma listagem.
+ *
+ * Skill sem linha de `SKILL.md`, ou com ela gravada como binário, simplesmente
+ * não aparece no resultado: não é erro, é uma skill que o `resources/read`
+ * também não serviria. Quem chama trata a ausência — a entrada vira
+ * `"dynamic"` (§5.4).
+ *
+ * Uuid torto é filtrado aqui, e não deixado estourar no driver: a lista vem de
+ * um cache em memória do servidor, e um valor sujo derrubaria a listagem
+ * inteira em vez de faltar uma entrada.
+ */
+export async function readSkillMdBodies(skillUuids: readonly string[]): Promise<SkillMdBody[]> {
+  if (!Array.isArray(skillUuids)) throw badRequest('O campo "skillUuids" deve ser uma lista');
+  // Sem repetição: a mesma skill pedida duas vezes voltaria em duas linhas
+  // iguais, e o corpo é a parte cara da resposta.
+  const valid = [...new Set(skillUuids.filter(isUuid))];
+  if (valid.length === 0) return [];
+
+  const bodies: SkillMdBody[] = [];
+  for (let start = 0; start < valid.length; start += SKILL_MD_BATCH_ROWS) {
+    const batch = valid.slice(start, start + SKILL_MD_BATCH_ROWS);
+    const result = await db().execute(sql`
+      SELECT skill_uuid, text_content
+      FROM files
+      WHERE skill_uuid = ANY(${sql.param(batch)}::uuid[])
+        AND lower(relative_path) = 'skill.md'
+        AND text_content IS NOT NULL
+    `);
+    for (const row of result.rows as Row[]) {
+      bodies.push({
+        skillUuid: row.skill_uuid as string,
+        body: (row.text_content as string) ?? '',
+      });
+    }
+  }
+  return bodies;
 }
 
 export async function getSkillSummary(
@@ -2917,6 +3088,9 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'catalog.unshare',
   'mcp.share',
   'mcp.unshare',
+  'skill.clone',
+  'catalog.clone',
+  'mcp.clone',
   'public.key.create',
   'public.key.revoke',
   'rag.settings',
@@ -3905,9 +4079,12 @@ export async function listOpenVirtualMcps(): Promise<PublicVirtualMcp[]> {
   }));
 }
 
-/** Linha de auditoria de um MCP virtual: sem skill, com o slug do servidor como alvo. */
+/**
+ * Linha de auditoria de um MCP virtual: sem skill, com o slug do servidor como
+ * alvo. Em `mcp.clone` o alvo é o par `<origem> -> <cópia>` (ver `cloneVirtualMcp`).
+ */
 function virtualMcpAudit(
-  action: 'mcp.create' | 'mcp.update' | 'mcp.delete',
+  action: 'mcp.create' | 'mcp.update' | 'mcp.delete' | 'mcp.clone',
   slug: string,
   source: AuditSource,
   actor: AuditActor,
@@ -4705,9 +4882,12 @@ export async function setVirtualMcpCatalogs(
   return virtualMcpAfterWrite(uuid, 'atualizado');
 }
 
-/** Linha de auditoria de um catálogo: sem skill, com o slug do catálogo como alvo. */
+/**
+ * Linha de auditoria de um catálogo: sem skill, com o slug do catálogo como
+ * alvo. Em `catalog.clone` o alvo é o par `<origem> -> <cópia>` (ver `cloneCatalog`).
+ */
 function catalogAudit(
-  action: 'catalog.create' | 'catalog.update' | 'catalog.delete',
+  action: 'catalog.create' | 'catalog.update' | 'catalog.delete' | 'catalog.clone',
   slug: string,
   source: AuditSource,
   actor: AuditActor,
@@ -6193,6 +6373,541 @@ export async function listSkillAccesses(
   `);
 
   return { items: (result.rows as Row[]).map(toSkillAccessEntry), total, limit, offset };
+}
+
+// -------------------------------------------------------------- atividade ---
+
+/**
+ * A tela de Atividade (`docs/18-atividade.md`): a escrita que dá a quarta
+ * fonte (`bumpMcpCallCounters`), a grade de dias (`listActivityDays`) e o
+ * relatório agregado de um dia (`activityOfDay`).
+ *
+ * As duas leituras são **agregadas**: nada que saia delas carrega IP, e-mail,
+ * `session_id`, nome de tool nem identificador de operação — a menor unidade é
+ * "quantas vezes". Quem precisa do evento a evento tem `listAuditPage`,
+ * `listMcpSessions` e `listSkillAccesses`.
+ *
+ * O dia é o de **quem olha**: o painel converte o dia do calendário do
+ * navegador em dois instantes e manda `since`/`until`. O fuso IANA só
+ * acompanha a **série**, porque é lá que o SQL agrupa por dia; o relatório de
+ * um dia é uma faixa de instantes e não depende de fuso nenhum. As quatro
+ * fontes são sempre filtradas por instante (`coluna >= since AND coluna <=
+ * until`) e só depois agrupadas por `(coluna AT TIME ZONE …)::date` — na
+ * ordem inversa o índice morreria e cada leitura varreria a tabela inteira.
+ */
+
+/**
+ * Teto do método JSON-RPC gravado em `mcp_call_counters`.
+ *
+ * Exportado como `MCP_SESSION_LABEL_MAX`, para o rastreador do mcp-public
+ * cortar **na memória** com o mesmo número do banco: quem acumula o balde
+ * chaveia o mapa pelo método cru, e dois métodos que só diferem depois do
+ * corte viram a mesma linha aqui. 128 é folga larga — o maior método do
+ * protocolo hoje é `resources/directory/read`, com 23 caracteres; o que passa
+ * disso é texto que um cliente inventou.
+ */
+export const MCP_CALL_METHOD_MAX = 128;
+
+/**
+ * Quantas linhas por `INSERT` do flush. O despejo de 15 minutos de um servidor
+ * movimentado é da ordem de dezenas de linhas (vMCPs × transportes × métodos);
+ * o corte existe pelo mesmo motivo de `FILE_BATCH_ROWS` — uma statement com
+ * milhares de linhas e sete parâmetros cada é um pacote enorme para o driver.
+ */
+const MCP_CALL_BATCH_ROWS = 500;
+
+/** Padrão e teto do top-N das fatias do relatório. */
+const ACTIVITY_TOP_DEFAULT = 5;
+const ACTIVITY_TOP_MAX = 50;
+
+/**
+ * Teto da faixa consultada, em dias: 400.
+ *
+ * A grade desenha um ano (como todo heatmap de contribuições) e o fuso de quem
+ * olha empurra as pontas; 400 dias cobrem isso com folga e impedem que alguém
+ * peça dez anos e faça o banco agrupar o histórico inteiro. Passar do teto não
+ * é erro — a faixa **satura** puxando o `since` para `until - 400 dias`, como
+ * o `clamp` de `limit` das listagens: quem pediu demais recebe o fim da faixa,
+ * que é o que a tela mostra.
+ */
+export const ACTIVITY_RANGE_MAX_DAYS = 400;
+
+const DIA_MS = 86_400_000;
+
+/**
+ * Nome de fuso IANA, na forma que o navegador manda
+ * (`Intl.DateTimeFormat().resolvedOptions().timeZone`): `UTC`,
+ * `America/Sao_Paulo`, `America/Argentina/Buenos_Aires`, `Etc/GMT+5`.
+ *
+ * O primeiro caractere é uma letra de propósito: isso recusa deslocamento cru
+ * (`+05:45`), que o Postgres aceita com convenção de sinal **diferente** da do
+ * ISO em algumas formas e daria um dia recortado ao contrário sem ninguém
+ * perceber.
+ */
+const TIMEZONE_RE = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/;
+const TIMEZONE_MAX = 64;
+
+/**
+ * Fusos já confirmados contra o `pg_timezone_names` **deste** servidor, por
+ * processo. A lista é a autoridade (é a tzdata que o `AT TIME ZONE` usa), mas
+ * lê-la custa ~10 ms — ela é uma varredura do diretório de fusos, não uma
+ * tabela. Só o positivo é guardado: um nome recusado é reconferido na chamada
+ * seguinte, então um fuso acrescentado à tzdata do servidor passa a valer sem
+ * reiniciar ninguém. O conjunto é limitado pelos ~500 nomes reais — o lixo
+ * morre antes, no `TIMEZONE_RE`.
+ */
+const fusosConferidos = new Set<string>(['UTC']);
+
+/**
+ * O fuso pedido, conferido. Ausente é `'UTC'`.
+ *
+ * Nome desconhecido é **400**, e não o 500 que o Postgres daria: `AT TIME ZONE
+ * 'Marte/Olympus'` lança `invalid_parameter_value` no meio da consulta, e o
+ * fuso vem do navegador de quem abriu a tela — é entrada, não bug nosso.
+ */
+async function activityTimezone(value: unknown): Promise<string> {
+  if (value === undefined || value === null) return 'UTC';
+  if (typeof value !== 'string') throw badRequest('O campo "timezone" deve ser uma string');
+  const tz = value.trim();
+  if (fusosConferidos.has(tz)) return tz;
+  if (tz.length > TIMEZONE_MAX || !TIMEZONE_RE.test(tz)) {
+    throw badRequest(`Fuso horário desconhecido: ${tz.slice(0, TIMEZONE_MAX)}`);
+  }
+  // `lower()` dos dois lados: o `AT TIME ZONE` não diferencia caixa e a coluna
+  // guarda a grafia canônica (`UTC`, não `utc`).
+  const conferido = await db().execute(
+    sql`SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE lower(name) = lower(${tz})) AS ok`,
+  );
+  if (!(conferido.rows as Row[])[0]?.ok) throw badRequest(`Fuso horário desconhecido: ${tz}`);
+  fusosConferidos.add(tz);
+  return tz;
+}
+
+/** A faixa de instantes das duas leituras, conferida e saturada em `ACTIVITY_RANGE_MAX_DAYS`. */
+function activityRange(options: { since: unknown; until: unknown }): { since: Date; until: Date } {
+  const since = requireDate(options.since, 'since');
+  const until = requireDate(options.until, 'until');
+  if (until.getTime() < since.getTime()) {
+    throw badRequest('A faixa de atividade termina antes de começar');
+  }
+  const teto = ACTIVITY_RANGE_MAX_DAYS * DIA_MS;
+  if (until.getTime() - since.getTime() <= teto) return { since, until };
+  return { since: new Date(until.getTime() - teto), until };
+}
+
+/** Uma `Date` obrigatória; ausente ou inválida é 400. */
+function requireDate(value: unknown, field: string): Date {
+  const date = optionalDate(value, field);
+  if (!date) throw badRequest(`O campo "${field}" é obrigatório`);
+  return date;
+}
+
+/**
+ * Um método JSON-RPC pronto para gravar, ou `null` quando não sobra nada.
+ *
+ * É `normalizeSessionLabel` com outro teto e sem o espaço no meio: as
+ * categorias `Cc` (o `text` do Postgres recusa U+0000 com 22021 antes de olhar
+ * a consulta, `tasks/038`) e `Cf`, mais os separadores de linha, **somem**, as
+ * pontas são aparadas e o resto é cortado em `MCP_CALL_METHOD_MAX`. Limpar, e
+ * não recusar, porque o flush é um INSERT com várias linhas: um `CHECK`
+ * violado por um cliente torto derrubaria a statement inteira e levaria junto
+ * as chamadas de todos os outros servidores daquele despejo.
+ *
+ * **Por que `Cf` também — e por que só aqui.** `Cf` é o formatador invisível:
+ * o override bidi U+202E, o espaço de largura zero U+200B e o BOM U+FEFF.
+ * Sem ele, `"tools/call" + U+202E + "evil"` chegava intacto à coluna `method`
+ * e subia para "Métodos mais chamados", onde o override inverte a leitura do
+ * que está ao redor dele na tela; e o U+200B cria dois métodos visualmente
+ * idênticos que nunca somam na mesma linha, porque o agrupamento é por
+ * igualdade de bytes. Um método JSON-RPC é identificador de máquina
+ * (`tools/call`): `Cf` nenhum é legítimo dentro dele. Num rótulo de tela é o
+ * contrário — `Cf` traz o ZWJ (U+200D) e o ZWNJ (U+200C), que montam emoji
+ * composto e ligam letras em persa e em hindi, e `normalizeSessionLabel` troca
+ * o que remove por **espaço**: aplicá-lo lá partiria ao meio o nome legítimo
+ * de quem se apresenta. Por isso o rótulo continua como está, e a defesa
+ * contra o bidi na tela de sessões é de quem desenha, não do banco.
+ */
+function callMethod(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim();
+  if (!text) return null;
+  return Buffer.from(text.slice(0, MCP_CALL_METHOD_MAX).trimEnd(), 'utf8').toString('utf8');
+}
+
+/** Uma linha do flush, já saneada e somada com as suas iguais. */
+type McpCallRow = {
+  bucket: Date;
+  uuid: string;
+  slug: string;
+  transport: McpSessionTransport;
+  method: string;
+  calls: number;
+};
+
+/**
+ * Soma no banco os baldes de chamadas fechados pelo rastreador do MCP público
+ * (`docs/18-atividade.md`).
+ *
+ * Um `INSERT` com várias linhas por lote, nunca um por item: o flush de 15
+ * minutos chega com dezenas deles e é disparado do caminho de quem está
+ * atendendo. Lista vazia devolve sem consultar.
+ *
+ * - **O balde é achatado aqui** (`floor(t / MCP_CALL_BUCKET_MS)`), ainda que
+ *   quem chama já o mande alinhado: a PK é `(bucket, slug, transporte,
+ *   método)`, e um instante fora do passo fragmentaria a linha que deveria
+ *   somar. Achatar o que já está achatado não muda nada.
+ * - **O método é saneado e o lote deduplicado** — dois métodos crus que virem
+ *   o mesmo texto limpo na mesma statement dariam 21000 ("ON CONFLICT DO
+ *   UPDATE command cannot affect row a second time"), a armadilha já medida em
+ *   `upsertFilesTx`. Item sem método que sobreviva ao saneamento, ou com
+ *   `calls` zero, é descartado: não é chamada nenhuma.
+ * - **O uuid do vMCP é resolvido por `LEFT JOIN`**, como as cópias de
+ *   `recordSkillAccess`. Um servidor apagado entre a chamada e o flush faria a
+ *   FK recusar o INSERT (23503) e o lote inteiro se perderia; assim a linha
+ *   entra com o uuid nulo e o `virtual_mcp_slug`, que é a identidade histórica
+ *   — a mesma regra de `015` e `018`.
+ * - **As linhas são ordenadas pela chave antes de virarem `VALUES`**, e o
+ *   INSERT as emite nessa ordem — ver o bloco de ordenação, abaixo.
+ * - `bucket` que não é data, uuid torto, slug vazio, transporte fora do
+ *   `CHECK` e `calls` negativo são **400**: esses campos são nossos, não do
+ *   cliente, e um valor errado neles é bug de quem chama.
+ */
+export async function bumpMcpCallCounters(items: readonly McpCallBucketInput[]): Promise<void> {
+  if (items.length === 0) return;
+
+  // Chave = a PK. `JSON.stringify` e não um separador qualquer: o método é
+  // texto do cliente e pode conter o separador que se escolhesse.
+  const somados = new Map<string, McpCallRow>();
+
+  for (const item of items) {
+    const instante = requireDate(new Date(String(item.bucket ?? '')), 'bucket');
+    const bucket = new Date(Math.floor(instante.getTime() / MCP_CALL_BUCKET_MS) * MCP_CALL_BUCKET_MS);
+    if (!isUuid(item.virtualMcpUuid)) throw badRequest('O campo "virtualMcpUuid" precisa ser um uuid');
+    const slug = requireText(item.virtualMcpSlug, 'virtualMcpSlug');
+    const transport = oneOf(item.transport, MCP_SESSION_TRANSPORTS, 'transport');
+    const calls = requireCount(item.calls, 'calls');
+    const method = callMethod(item.method);
+    if (!method || calls === 0) continue;
+
+    const chave = JSON.stringify([bucket.toISOString(), slug, transport, method]);
+    const anterior = somados.get(chave);
+    if (anterior) anterior.calls += calls;
+    else somados.set(chave, { bucket, uuid: item.virtualMcpUuid, slug, transport, method, calls });
+  }
+
+  // **A ordem é a da chave, e não a de chegada** — a mesma lição de
+  // `replaceTagsTx` e do `ORDER BY` da clonagem: o `ON CONFLICT DO UPDATE`
+  // trava as linhas de `mcp_call_counters` uma a uma, na ordem em que elas
+  // saem do `VALUES`, e cada uma fica travada até o COMMIT de quem a tocou.
+  // O rastreador do mcp-public despeja **todas** as sessões num `Promise.all`
+  // a cada varredura (`sessions.ts`), e duas sessões do mesmo vMCP, mesmo
+  // transporte e mesmo balde de 15 min trazem os mesmos métodos em ordens
+  // diferentes — a ordem em que cada sessão viu cada método pela primeira vez.
+  // Elas travavam em cruz e o Postgres matava uma: deadlock (40P01), que
+  // `colherChamadas` engole depois de já ter feito `calls.clear()`, então as
+  // chamadas do despejo morto **somem sem deixar rastro** e o dia mais
+  // movimentado é o mais subcontado. Medido contra um Postgres de verdade, com
+  // os 8 métodos ordinários: 6 sessões → 37 mortes em 90 despejos e 41,1% das
+  // chamadas perdidas; 10 sessões → 173 em 250 e 69,2% perdidas; com as linhas
+  // ordenadas, nenhuma morte e nenhuma chamada perdida nos dois casos.
+  //
+  // Qual ordem é, não importa — importa ser a **mesma** em todo chamador. É a
+  // da chave do `Map`, que é a própria PK serializada, comparada por unidade
+  // de código (`<`/`>`, nunca `localeCompare`, que depende da locale do
+  // processo e daria ordens diferentes em máquinas diferentes). Ordenar antes
+  // de fatiar faz a ordem valer também **entre** os lotes de
+  // `MCP_CALL_BATCH_ROWS`.
+  const ordenadas = [...somados.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const linhas = ordenadas.map(
+    ([, linha], pos) => sql`(
+      ${pos}::int, ${linha.bucket}::timestamptz, ${linha.uuid}::uuid, ${linha.slug}::text,
+      ${linha.transport}::text, ${linha.method}::text, ${mcpCallFamily(linha.method)}::text,
+      ${linha.calls}::bigint
+    )`,
+  );
+
+  for (let i = 0; i < linhas.length; i += MCP_CALL_BATCH_ROWS) {
+    const lote = linhas.slice(i, i + MCP_CALL_BATCH_ROWS);
+    // `ORDER BY v.pos` — a posição no array ordenado — porque ordenar em
+    // JavaScript **não basta**: o plano deste INSERT é um `Hash Right Join`
+    // com `virtual_mcps` do lado externo e o `VALUES` do lado da tabela hash,
+    // e o que sai de um join não tem ordem prometida nenhuma. Medido com o
+    // trigger de observação do teste: sem o `ORDER BY`, seis métodos saíam do
+    // join numa terceira ordem — nem a de entrada, nem a da chave. Com ele o
+    // plano ganha um `Sort` no topo do SELECT, e é esse `Sort` que fixa a
+    // ordem em que o INSERT trava as linhas, qualquer que seja o plano de
+    // amanhã.
+    await db().execute(sql`
+      INSERT INTO mcp_call_counters (bucket, virtual_mcp_uuid, virtual_mcp_slug, transport, method, family, calls)
+      SELECT v.bucket, m.uuid, v.slug, v.transport, v.method, v.family, v.calls
+      FROM (VALUES ${sql.join(lote, sql`, `)}) AS v (pos, bucket, virtual_mcp_uuid, slug, transport, method, family, calls)
+      LEFT JOIN virtual_mcps m ON m.uuid = v.virtual_mcp_uuid
+      ORDER BY v.pos
+      ON CONFLICT (bucket, virtual_mcp_slug, transport, method)
+      DO UPDATE SET calls = mcp_call_counters.calls + EXCLUDED.calls
+    `);
+  }
+}
+
+export type ListActivityDaysOptions = {
+  /** Instante inicial, inclusive. */
+  since: Date;
+  /** Instante final, inclusive. */
+  until: Date;
+  /** Fuso IANA em que os dias são recortados; padrão `'UTC'`. Nome desconhecido é 400. */
+  timezone?: string;
+};
+
+/**
+ * A série do heatmap: um item por dia **com alguma atividade**, em ordem
+ * crescente, com o dia em `AAAA-MM-DD` no fuso pedido.
+ *
+ * Uma consulta só, com as quatro fontes em `UNION ALL` de agregados — e não
+ * quatro idas ao banco nem quatro `LEFT JOIN` sobre uma série de dias: cada
+ * ramo lê o seu índice por instante e devolve, no máximo, um punhado de linhas
+ * (um dia cada). Dia sem linha é dia sem atividade; o painel completa a grade
+ * com zeros, e `total` (a soma das quatro) é o que dá a cor da célula.
+ *
+ * As chamadas entram pelo `bucket`, que é o início do balde de 15 minutos —
+ * como todo deslocamento IANA é múltiplo de 15 minutos, nenhum balde fica
+ * partido entre dois dias em fuso nenhum (é o porquê de `MCP_CALL_BUCKET_MS`).
+ */
+export async function listActivityDays(options: ListActivityDaysOptions): Promise<ActivityDay[]> {
+  const { since, until } = activityRange(options);
+  const tz = await activityTimezone(options.timezone);
+
+  const result = await db().execute(sql`
+    WITH dias AS (
+      SELECT (ms.started_at AT TIME ZONE ${tz}::text)::date AS dia,
+             count(*)::bigint AS sessions, 0::bigint AS calls, 0::bigint AS reads, 0::bigint AS events
+        FROM mcp_sessions ms
+       WHERE ms.started_at >= ${since}::timestamptz AND ms.started_at <= ${until}::timestamptz
+       GROUP BY 1
+      UNION ALL
+      SELECT (c.bucket AT TIME ZONE ${tz}::text)::date, 0, COALESCE(sum(c.calls), 0), 0, 0
+        FROM mcp_call_counters c
+       WHERE c.bucket >= ${since}::timestamptz AND c.bucket <= ${until}::timestamptz
+       GROUP BY 1
+      UNION ALL
+      SELECT (a.created_at AT TIME ZONE ${tz}::text)::date, 0, 0, count(*), 0
+        FROM skill_accesses a
+       WHERE a.created_at >= ${since}::timestamptz AND a.created_at <= ${until}::timestamptz
+       GROUP BY 1
+      UNION ALL
+      SELECT (l.created_at AT TIME ZONE ${tz}::text)::date, 0, 0, 0, count(*)
+        FROM audit_log l
+       WHERE l.created_at >= ${since}::timestamptz AND l.created_at <= ${until}::timestamptz
+       GROUP BY 1
+    )
+    SELECT to_char(dia, 'YYYY-MM-DD') AS day,
+           sum(sessions)::bigint AS sessions,
+           sum(calls)::bigint AS calls,
+           sum(reads)::bigint AS reads,
+           sum(events)::bigint AS events
+      FROM dias
+     GROUP BY dia
+    HAVING sum(sessions) + sum(calls) + sum(reads) + sum(events) > 0
+     ORDER BY dia
+  `);
+
+  return (result.rows as Row[]).map((row) => {
+    const sessions = Number(row.sessions);
+    const calls = Number(row.calls);
+    const reads = Number(row.reads);
+    const events = Number(row.events);
+    return { day: row.day, sessions, calls, reads, events, total: sessions + calls + reads + events };
+  });
+}
+
+export type ActivityOfDayOptions = {
+  /** Instante inicial do dia, inclusive — já convertido pelo painel. */
+  since: Date;
+  /** Instante final do dia, inclusive. */
+  until: Date;
+  /** Tamanho dos top-N (agentes, métodos, servidores, skills); padrão 5, clamp 1..50. */
+  top?: number;
+};
+
+/**
+ * O relatório de um dia, agregado. `day` e `timezone` são de quem perguntou —
+ * o banco não os reinventa.
+ *
+ * Sete consultas pequenas em `Promise.all`, uma por fonte e por natureza
+ * (escalares × fatias), em vez de um monstro de uma consulta só: cada uma usa
+ * o índice por instante da sua tabela e nenhuma depende do resultado da outra.
+ *
+ * **Os totais saem das fatias**, sem consulta própria: `transport`, `family`,
+ * `surface` e `action` são `NOT NULL` com `CHECK` nas quatro tabelas, então
+ * toda linha da faixa cai em exatamente uma fatia e a soma delas é o total
+ * exato. O que não dá para derivar — contagens distintas, downloads e as
+ * sessões encerradas — é que vai nas consultas de escalares.
+ *
+ * Três recortes valem a pena ser ditos:
+ *
+ * - `clients.ended` e `byEndReason` contam pelo **`ended_at`** dentro do dia,
+ *   não pelo `started_at`: a sessão pode ter começado ontem e terminado hoje.
+ *   É o índice `mcp_sessions_ended_at_idx` da `032`;
+ * - `reads.skills` e `topSkills` agrupam pelo **`skill_slug`**, a cópia que
+ *   sobrevive à remoção da skill, e não pelo uuid, que vai a nulo (`018`);
+ * - `catalog.actors` conta `COALESCE(actor_user_uuid, actor_label)`: a conta
+ *   removida deixa o uuid nulo e o rótulo fica, e quem nunca foi conta (o
+ *   token global, o bootstrap) só tem rótulo. Ninguém é identificado — o que
+ *   sai é quantos foram.
+ */
+export async function activityOfDay(
+  options: ActivityOfDayOptions,
+): Promise<Omit<ActivityReport, 'day' | 'timezone'>> {
+  const { since, until } = activityRange(options);
+  const top = clamp(options.top ?? ACTIVITY_TOP_DEFAULT, 1, ACTIVITY_TOP_MAX);
+  const faixa = (coluna: SQL) => sql`${coluna} >= ${since}::timestamptz AND ${coluna} <= ${until}::timestamptz`;
+  const abertas = faixa(sql`ms.started_at`);
+
+  const [clientes, fatiasClientes, fatiasChamadas, leituras, fatiasLeituras, catalogo, fatiasCatalogo] =
+    await Promise.all([
+      db().execute(sql`
+        SELECT count(DISTINCT ms.session_id)::bigint AS distintas,
+               count(DISTINCT ms.client_name)::bigint AS agentes,
+               (SELECT count(*) FROM mcp_sessions e WHERE ${faixa(sql`e.ended_at`)})::bigint AS encerradas
+          FROM mcp_sessions ms
+         WHERE ${abertas}
+      `),
+      db().execute(sql`
+        SELECT 'transport' AS dim, ms.transport AS chave, NULL::text AS rotulo, count(*)::bigint AS n
+          FROM mcp_sessions ms WHERE ${abertas} GROUP BY ms.transport
+        UNION ALL
+        SELECT 'auth', ms.auth, NULL, count(*)::bigint
+          FROM mcp_sessions ms WHERE ${abertas} GROUP BY ms.auth
+        UNION ALL
+        SELECT 'end_reason', ms.end_reason, NULL, count(*)::bigint
+          FROM mcp_sessions ms WHERE ${faixa(sql`ms.ended_at`)} AND ms.end_reason IS NOT NULL
+         GROUP BY ms.end_reason
+        UNION ALL
+        SELECT * FROM (
+          SELECT 'agent' AS dim, ms.client_name AS chave, NULL::text AS rotulo, count(*)::bigint AS n
+            FROM mcp_sessions ms WHERE ${abertas} AND ms.client_name IS NOT NULL
+           GROUP BY ms.client_name ORDER BY n DESC, chave LIMIT ${top}
+        ) agentes
+      `),
+      db().execute(sql`
+        SELECT 'family' AS dim, c.family AS chave, NULL::text AS rotulo, sum(c.calls)::bigint AS n
+          FROM mcp_call_counters c WHERE ${faixa(sql`c.bucket`)} GROUP BY c.family
+        UNION ALL
+        SELECT 'transport', c.transport, NULL, sum(c.calls)::bigint
+          FROM mcp_call_counters c WHERE ${faixa(sql`c.bucket`)} GROUP BY c.transport
+        UNION ALL
+        SELECT * FROM (
+          SELECT 'method' AS dim, c.method AS chave, min(c.family) AS rotulo, sum(c.calls)::bigint AS n
+            FROM mcp_call_counters c WHERE ${faixa(sql`c.bucket`)}
+           GROUP BY c.method ORDER BY n DESC, chave LIMIT ${top}
+        ) metodos
+        UNION ALL
+        SELECT * FROM (
+          SELECT 'server' AS dim, c.virtual_mcp_slug AS chave, max(m.name) AS rotulo, sum(c.calls)::bigint AS n
+            FROM mcp_call_counters c
+            LEFT JOIN virtual_mcps m ON m.uuid = c.virtual_mcp_uuid
+           WHERE ${faixa(sql`c.bucket`)}
+           GROUP BY c.virtual_mcp_slug ORDER BY n DESC, chave LIMIT ${top}
+        ) servidores
+      `),
+      db().execute(sql`
+        SELECT (count(*) FILTER (WHERE a.kind = 'download'))::bigint AS downloads,
+               count(DISTINCT a.skill_slug)::bigint AS skills
+          FROM skill_accesses a
+         WHERE ${faixa(sql`a.created_at`)}
+      `),
+      db().execute(sql`
+        SELECT 'surface' AS dim, a.surface AS chave, NULL::text AS rotulo, count(*)::bigint AS n
+          FROM skill_accesses a WHERE ${faixa(sql`a.created_at`)} GROUP BY a.surface
+        UNION ALL
+        SELECT 'origin', a.origin, NULL, count(*)::bigint
+          FROM skill_accesses a WHERE ${faixa(sql`a.created_at`)} GROUP BY a.origin
+        UNION ALL
+        SELECT 'auth', a.auth, NULL, count(*)::bigint
+          FROM skill_accesses a WHERE ${faixa(sql`a.created_at`)} GROUP BY a.auth
+        UNION ALL
+        SELECT * FROM (
+          SELECT 'skill' AS dim, a.skill_slug AS chave, max(a.skill_name) AS rotulo, count(*)::bigint AS n
+            FROM skill_accesses a WHERE ${faixa(sql`a.created_at`)}
+           GROUP BY a.skill_slug ORDER BY n DESC, chave LIMIT ${top}
+        ) skills
+      `),
+      db().execute(sql`
+        SELECT count(DISTINCT COALESCE(l.actor_user_uuid::text, l.actor_label))::bigint AS atores
+          FROM audit_log l
+         WHERE ${faixa(sql`l.created_at`)}
+      `),
+      db().execute(sql`
+        SELECT 'action' AS dim, l.action AS chave, NULL::text AS rotulo, count(*)::bigint AS n
+          FROM audit_log l WHERE ${faixa(sql`l.created_at`)} GROUP BY l.action
+        UNION ALL
+        SELECT 'source', l.source, NULL, count(*)::bigint
+          FROM audit_log l WHERE ${faixa(sql`l.created_at`)} GROUP BY l.source
+      `),
+    ]);
+
+  const umClientes = (clientes.rows as Row[])[0] ?? {};
+  const umLeituras = (leituras.rows as Row[])[0] ?? {};
+  const umCatalogo = (catalogo.rows as Row[])[0] ?? {};
+
+  const byTransport = activitySlices(fatiasClientes.rows as Row[], 'transport');
+  const byFamily = activitySlices(fatiasChamadas.rows as Row[], 'family');
+  const bySurface = activitySlices(fatiasLeituras.rows as Row[], 'surface');
+  const byAction = activitySlices(fatiasCatalogo.rows as Row[], 'action');
+
+  return {
+    clients: {
+      sessions: somaDeFatias(byTransport),
+      distinct: Number(umClientes.distintas ?? 0),
+      agents: Number(umClientes.agentes ?? 0),
+      ended: Number(umClientes.encerradas ?? 0),
+      byTransport,
+      byAuth: activitySlices(fatiasClientes.rows as Row[], 'auth'),
+      byEndReason: activitySlices(fatiasClientes.rows as Row[], 'end_reason'),
+      topAgents: activitySlices(fatiasClientes.rows as Row[], 'agent'),
+    },
+    calls: {
+      total: somaDeFatias(byFamily),
+      byFamily,
+      topMethods: activitySlices(fatiasChamadas.rows as Row[], 'method'),
+      byTransport: activitySlices(fatiasChamadas.rows as Row[], 'transport'),
+      byServer: activitySlices(fatiasChamadas.rows as Row[], 'server'),
+    },
+    reads: {
+      total: somaDeFatias(bySurface),
+      downloads: Number(umLeituras.downloads ?? 0),
+      skills: Number(umLeituras.skills ?? 0),
+      bySurface,
+      byOrigin: activitySlices(fatiasLeituras.rows as Row[], 'origin'),
+      byAuth: activitySlices(fatiasLeituras.rows as Row[], 'auth'),
+      topSkills: activitySlices(fatiasLeituras.rows as Row[], 'skill'),
+    },
+    catalog: {
+      total: somaDeFatias(byAction),
+      actors: Number(umCatalogo.atores ?? 0),
+      byAction,
+      bySource: activitySlices(fatiasCatalogo.rows as Row[], 'source'),
+    },
+  };
+}
+
+/**
+ * As fatias de uma dimensão, da maior para a menor. A ordem é decidida aqui,
+ * e não no SQL: os `UNION ALL` das consultas de fatias trazem as dimensões
+ * misturadas, e o `ORDER BY` de cada ramo só existe onde há `LIMIT` (os
+ * top-N). Empate desempata pela chave, para a tela não dançar entre dois
+ * carregamentos iguais.
+ */
+function activitySlices(rows: Row[], dim: string): ActivitySlice[] {
+  return rows
+    .filter((row) => row.dim === dim)
+    .map((row) => ({ key: String(row.chave), label: row.rotulo ?? null, count: Number(row.n) }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
+/** O total de uma dimensão **completa** (sem top-N) — ver `activityOfDay`. */
+function somaDeFatias(slices: readonly ActivitySlice[]): number {
+  return slices.reduce((soma, slice) => soma + slice.count, 0);
 }
 
 // -------------------------------------------------------------------- RAG ---
@@ -8294,6 +9009,425 @@ function toFileContent(row: Row): FileContent {
     isText,
     buffer: isText ? Buffer.from(row.text_content, 'utf8') : Buffer.from(row.binary_content),
   };
+}
+
+// --------------------------------------------------------------- clonagem ---
+//
+// Copiar uma skill, um catálogo ou um MCP virtual (`docs/16-clonagem.md`). As
+// três funções recebem o **uuid do original** (a convenção do módulo: leitura por slug, escrita por
+// uuid), fazem tudo numa transação só e devolvem a ficha da **cópia** — o
+// mesmo tipo que a criação devolve. Uuid torto ou inexistente é 404.
+//
+// O que vale para as três:
+//
+//   * **a cópia nasce fechada**: `is_public` (skill e catálogo) e `is_open`
+//     (vMCP) são `false` mesmo quando o original é público ou aberto. Publicar
+//     é um ato à parte, com trilha; um clone que herdasse a publicação
+//     escancararia num clique um objeto que ninguém revisou. `is_active` é
+//     copiado como está — a cópia de uma skill desligada nasce desligada;
+//   * **o dono é quem clonou** (`input.ownerUserUuid`), nulo quando o ator não
+//     tem conta (token global, bootstrap): a cópia nasce órfã, como tudo o que
+//     eles criam. Na skill, `created_by_user_uuid` recebe o mesmo valor;
+//     catálogo e vMCP não têm essa coluna;
+//   * **o slug tem dois caminhos** (`cloneSlugTx`). Sem `input.slug`, a base é
+//     o slug do **original** — não o nome — e o desempate é automático (`-2`,
+//     `-3`…): por esse caminho clonar nunca responde 409. Com `input.slug`, ele
+//     passa pela validação do tipo e, se já existir, é 409, como em
+//     `resolveSlug` e `createCatalog`: foi um endereço pedido, e escolher outro
+//     em silêncio devolveria um objeto em lugar que o chamador não pediu;
+//   * **uma linha só na trilha**, no objeto novo, com `target_label` =
+//     `<slug de origem> -> <slug da cópia>` — a gramática de
+//     `quarantine.promote`. Sem a `create` do objeto junto: a mesma operação
+//     apareceria duas vezes, e quem filtra criações contaria o dobro;
+//   * **contador, sessão, acesso e histórico não são copiados.** A cópia nasce
+//     zerada: os números são do original, não da forma dele.
+//
+// O que **não** é copiado, por tipo, está na documentação de cada função.
+
+export type CloneInput = {
+  /** Nome da cópia. Ausente ou vazio: o mesmo nome do original. */
+  name?: string;
+  /** Slug pedido. Ausente: desempate automático a partir do slug do ORIGINAL. */
+  slug?: string;
+  /** Dono da cópia. Nulo: órfã (token global, bootstrap). */
+  ownerUserUuid?: string | null;
+};
+
+/**
+ * Clona uma skill. A cópia leva as propriedades (`name`, `description`,
+ * `icon`, `is_active`), **todos os arquivos** — texto e binário — e as
+ * **tags**; nasce privada (`is_public = false`) e **flutuante**.
+ *
+ * Não são copiados: os vínculos com vMCP (`virtual_mcp_skills`), a
+ * participação em catálogos (`catalog_skills`), as concessões
+ * (`skill_grants`), os contadores e o histórico. Onde a skill é exibida é
+ * decisão de quem publica, e um clone que entrasse sozinho em todo servidor
+ * onde o original está publicaria conteúdo novo sem que ninguém o pedisse
+ * (`docs/09` §4.3: a publicação é um ato à parte). As concessões ficam de fora
+ * pelo mesmo motivo: quem clonou é o dono da cópia, e é ele quem decide de
+ * novo com quem compartilhar.
+ *
+ * A cópia nasce **pendente de RAG**, como toda skill nova: o trigger de
+ * `skills` marca `rag_stale` no INSERT e o de `files` marca a cada arquivo de
+ * texto. O `search_vector` é montado pelo mesmo caminho da criação.
+ *
+ * **As travas**, na ordem em que a transação as toma:
+ *
+ *   1. `lockSkillFilesTx` no **original**, como primeira statement — a mesma
+ *      fila de `createFile`/`setFiles`/`deleteSkill`. É ela que dá uma foto
+ *      estável dos arquivos a copiar (um `setFiles` concorrente espera o fim
+ *      da cópia) e, por ser a primeira, não segura linha nenhuma enquanto
+ *      espera: é o que a impede de fechar ciclo. A cópia **não** toma a fila
+ *      da skill nova — o uuid dela ainda não existe e ninguém pode disputá-lo;
+ *   2. `SELECT … FOR KEY SHARE` no original, nunca `FOR UPDATE`: em `skills` o
+ *      `FOR UPDATE` entra em deadlock com o `UPDATE` do trigger
+ *      `files_rag_stale_trg` e com o `FOR KEY SHARE` que todo INSERT em tabela
+ *      filha pede pela FK (a lição de `createFile`). O que ele faz aqui é
+ *      segurar um `deleteSkill` até o fim da cópia e ser o 404 de quem sumiu.
+ */
+export async function cloneSkill(
+  uuid: string,
+  input: CloneInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<SkillDetail> {
+  if (!isUuid(uuid)) throw notFound(`Skill não encontrada: ${uuid}`);
+  const requested = cloneSlugRequest(input, (slug) => {
+    if (!isValidSlug(slug)) throw badRequest(`Slug inválido: "${slug}"`);
+  });
+  const name = optionalText(input.name, 'name')?.trim() || undefined;
+  const owner = ownerOrNull(input.ownerUserUuid ?? null);
+
+  let slug = '';
+
+  // O slug é escolhido lendo os ocupados e gravado depois: duas clonagens (ou
+  // uma clonagem e uma criação) simultâneas podem escolher o mesmo. Derivado,
+  // a intenção é "qualquer slug livre" e vale repetir a transação inteira —
+  // nada foi materializado fora do banco. Pedido, o conflito é a resposta.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await db().transaction(async (tx) => {
+        await lockSkillFilesTx(tx, uuid);
+
+        const found = await tx.execute(
+          sql`SELECT slug, name FROM skills WHERE uuid = ${uuid} FOR KEY SHARE`,
+        );
+        const original = (found.rows as Row[])[0];
+        if (!original) throw notFound(`Skill não encontrada: ${uuid}`);
+        const origem = original.slug as string;
+
+        slug = await cloneSlugTx(tx, 'skills', origem, requested, 'uma skill');
+
+        // `INSERT … SELECT` a partir da própria linha travada: `description` e
+        // `icon` não precisam ir e voltar pelo processo, e o que não está na
+        // lista nasce no DEFAULT — contadores em zero, `is_public` falso.
+        const inserted = await tx.execute(sql`
+          INSERT INTO skills
+            (slug, name, description, icon, is_active, is_public,
+             created_by_user_uuid, owner_user_uuid)
+          SELECT ${slug}, ${name ?? (original.name as string)}, description, icon, is_active, false,
+                 ${owner}::uuid, ${owner}::uuid
+            FROM skills WHERE uuid = ${uuid}
+          RETURNING uuid
+        `);
+        const novo = (inserted.rows as Row[])[0].uuid as string;
+
+        // Os bytes ficam dentro do banco: uma statement copia texto e binário
+        // de todos os arquivos, e um pacote de 200 imagens não passa pela
+        // memória do Node (a lição de `upsertFilesTx`). Sem `ON CONFLICT`: a
+        // skill acabou de nascer, ninguém mais tem o uuid dela e o original já
+        // respeita `files_skill_path_lower_uniq`. O hash (`content_sha256`) é
+        // recalculado pelo trigger do `020`, como em qualquer gravação.
+        await tx.execute(sql`
+          INSERT INTO files
+            (skill_uuid, relative_path, text_content, binary_content, mime_type, size_bytes)
+          SELECT ${novo}::uuid, relative_path, text_content, binary_content, mime_type, size_bytes
+            FROM files WHERE skill_uuid = ${uuid}
+           ORDER BY relative_path
+        `);
+
+        // `ORDER BY` pela mesma razão de `replaceTagsTx`: o INSERT trava as
+        // linhas de `tags` que a FK confere, e duas clonagens com as mesmas
+        // tags em ordens diferentes travariam em cruz. Nenhuma tag é criada
+        // aqui — o vínculo aponta para as que já existem.
+        await tx.execute(sql`
+          INSERT INTO skill_tags (skill_uuid, tag_id)
+          SELECT ${novo}::uuid, tag_id FROM skill_tags WHERE skill_uuid = ${uuid}
+           ORDER BY tag_id
+        `);
+
+        await auditTx(tx, {
+          skillUuid: novo,
+          skillSlug: slug,
+          filePath: null,
+          action: 'skill.clone',
+          source,
+          actor,
+          previousContent: null,
+          targetLabel: `${origem} -> ${slug}`,
+        });
+      });
+      break;
+    } catch (err) {
+      if (ownerGone(err, SKILL_OWNER_FKS)) throw notFound(`Conta não encontrada: ${owner}`);
+      if (!isUniqueViolation(err, 'skills_slug_key')) throw err;
+      if (requested !== undefined || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe uma skill com o slug "${slug}"`);
+      }
+    }
+  }
+
+  const detail = await getSkillDetail(slug, { visibility: 'all' });
+  if (!detail) throw new Error('Skill clonada mas não encontrada');
+  return detail;
+}
+
+/**
+ * Clona um catálogo. A cópia leva as propriedades (`name`, `description`,
+ * `is_active`) e os **membros** (`catalog_skills`), apontando para as **mesmas
+ * skills** e preservando o `is_active` de cada participação — a desativação de
+ * um membro é parte da forma do catálogo, não um acidente. Nasce privada
+ * (`is_public = false`).
+ *
+ * Não são copiados: os vínculos com vMCP (`virtual_mcp_catalogs`), as
+ * concessões (`catalog_grants`) e os contadores. Como na skill, publicar o
+ * grupo num servidor é um ato à parte.
+ *
+ * **A trava** é a de `lockCatalogTx` (`FOR UPDATE`), a mesma de toda escrita
+ * nos membros: ela é o 404 do original e faz a cópia enxergar um estado só —
+ * um `setCatalogSkills` concorrente espera o fim da clonagem em vez de entrar
+ * no meio dela. Ela não cruza com o `UPDATE` de contador de
+ * `recordSkillAccess`: o registro de acesso é uma statement só, que não segura
+ * nada de que esta transação precise (o INSERT em `catalog_skills` pede
+ * `FOR KEY SHARE` nas skills, que não conflita com o `FOR NO KEY UPDATE` do
+ * contador).
+ */
+export async function cloneCatalog(
+  uuid: string,
+  input: CloneInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<CatalogDetail> {
+  if (!isUuid(uuid)) throw notFound(`Catálogo não encontrado: ${uuid}`);
+  const requested = cloneSlugRequest(input, assertCatalogSlug);
+  const name = optionalText(input.name, 'name')?.trim() || undefined;
+  const owner = ownerOrNull(input.ownerUserUuid ?? null);
+
+  let slug = '';
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const novo = await db().transaction(async (tx) => {
+        // A trava de `lockCatalogTx`, com as duas colunas que a cópia precisa
+        // ler — o slug para o rótulo da trilha e o nome para o padrão.
+        const found = await tx.execute(
+          sql`SELECT slug, name FROM catalogs WHERE uuid = ${uuid} FOR UPDATE`,
+        );
+        const original = (found.rows as Row[])[0];
+        if (!original) throw notFound(`Catálogo não encontrado: ${uuid}`);
+        const origem = original.slug as string;
+
+        slug = await cloneSlugTx(tx, 'catalogs', origem, requested, 'um catálogo');
+
+        const inserted = await tx.execute(sql`
+          INSERT INTO catalogs (slug, name, description, is_active, is_public, owner_user_uuid)
+          SELECT ${slug}, ${name ?? (original.name as string)}, description, is_active, false,
+                 ${owner}::uuid
+            FROM catalogs WHERE uuid = ${uuid}
+          RETURNING uuid
+        `);
+        const criado = (inserted.rows as Row[])[0].uuid as string;
+
+        // `is_active` da participação vem junto; `created_at` é o de agora — a
+        // participação é nova, o que se preserva é o estado dela. `ORDER BY`
+        // pelo mesmo motivo das tags: a FK trava as linhas de `skills` que ela
+        // confere, e duas clonagens em ordens diferentes travariam em cruz.
+        await tx.execute(sql`
+          INSERT INTO catalog_skills (catalog_uuid, skill_uuid, is_active)
+          SELECT ${criado}::uuid, skill_uuid, is_active
+            FROM catalog_skills WHERE catalog_uuid = ${uuid}
+           ORDER BY skill_uuid
+        `);
+
+        await auditTx(tx, catalogAudit('catalog.clone', `${origem} -> ${slug}`, source, actor));
+        return criado;
+      });
+      return catalogAfterWrite(novo, 'clonado');
+    } catch (err) {
+      if (ownerGone(err, CATALOG_OWNER_FKS)) throw notFound(`Conta não encontrada: ${owner}`);
+      if (!isUniqueViolation(err, 'catalogs_slug_key')) throw err;
+      if (requested !== undefined || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe um catálogo com o slug "${slug}"`);
+      }
+    }
+  }
+}
+
+/**
+ * Clona um MCP virtual. A cópia leva as propriedades (`name`, `description`,
+ * `is_active`), o `layout` do canvas, os vínculos com **skills** e com
+ * **catálogos** — as três portas (`as_skill`/`as_prompt`/`as_resource`) e o par
+ * `pos_x`/`pos_y` de cada um — e as **concessões** (`virtual_mcp_grants`).
+ * Nasce fechada (`is_open = false`).
+ *
+ * O que não vai junto:
+ *
+ *   * **as chaves `psv_`**, e não por escolha: o segredo não é guardado (só o
+ *     prefixo e o hash) e `prefix` é UNIQUE, então não há o que copiar — uma
+ *     chave "clonada" não abriria a porta de ninguém. O servidor novo começa
+ *     sem credencial; emitir é `mcp.key.create`, com trilha;
+ *   * **os contadores do vínculo** (`view_count`/`download_count` de
+ *     `virtual_mcp_skills`), que nascem em zero: eles contam leituras daquele
+ *     servidor, e a cópia ainda não teve nenhuma;
+ *   * **as sessões e os acessos**, que são história do original;
+ *   * **o posto de vMCP padrão**: `settings.default_virtual_mcp` não é tocado.
+ *     Quem responde em `/mcp` continua sendo quem respondia — trocar isso é
+ *     `setDefaultVirtualMcp`, e um clone que se promovesse sozinho derrubaria
+ *     o servidor público da instalação.
+ *
+ * Nas concessões copiadas, `granted_by_user_uuid` passa a ser **quem clonou**:
+ * é ele quem concede no objeto novo. A linha da própria pessoa que clonou
+ * **não** é copiada — ela é a dona da cópia, e conceder ao dono é recusado
+ * como redundante (`docs/12` decisão 10 — é o que `setGrant` recusa).
+ *
+ * **As travas.** A ordem é a única que não gera ciclo no recorte de um vMCP
+ * (`tasks/023`): travar o servidor com `FOR NO KEY UPDATE` — nunca
+ * `FOR UPDATE`, que barra o `FOR KEY SHARE` que a FK de `skill_accesses` pede
+ * e mata `recordSkillAccess` — e só então mexer nos vínculos. Aqui o original
+ * é **só lido**: não há `UPDATE` no servidor para deixar por último, e as
+ * linhas escritas pendem todas da cópia, cujo uuid ninguém mais conhece.
+ */
+export async function cloneVirtualMcp(
+  uuid: string,
+  input: CloneInput,
+  source: AuditSource,
+  actor: AuditActor,
+): Promise<VirtualMcpDetail> {
+  if (!isUuid(uuid)) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+  const requested = cloneSlugRequest(input, assertVirtualMcpSlug);
+  const name = optionalText(input.name, 'name')?.trim() || undefined;
+  const owner = ownerOrNull(input.ownerUserUuid ?? null);
+
+  let slug = '';
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const novo = await db().transaction(async (tx) => {
+        // A trava de `lockVirtualMcpTx`, com as duas colunas que a cópia lê.
+        const found = await tx.execute(
+          sql`SELECT slug, name FROM virtual_mcps WHERE uuid = ${uuid} FOR NO KEY UPDATE`,
+        );
+        const original = (found.rows as Row[])[0];
+        if (!original) throw notFound(`MCP virtual não encontrado: ${uuid}`);
+        const origem = original.slug as string;
+
+        slug = await cloneSlugTx(tx, 'virtual_mcps', origem, requested, 'um MCP virtual');
+
+        // O `layout` (JSONB) é copiado dentro do banco, sem passar pelo
+        // processo: o que a leitura devolve é um recorte (só `server` e
+        // `internet`), e serializá-lo de volta apagaria o que ela ignora.
+        const inserted = await tx.execute(sql`
+          INSERT INTO virtual_mcps (slug, name, description, is_active, is_open, owner_user_uuid, layout)
+          SELECT ${slug}, ${name ?? (original.name as string)}, description, is_active, false,
+                 ${owner}::uuid, layout
+            FROM virtual_mcps WHERE uuid = ${uuid}
+          RETURNING uuid
+        `);
+        const criado = (inserted.rows as Row[])[0].uuid as string;
+
+        // Portas e posição de cada vínculo; os contadores ficam no DEFAULT (0).
+        // `ORDER BY` como nas tags: a FK trava as linhas de `skills` e de
+        // `catalogs` na ordem em que elas entram.
+        await tx.execute(sql`
+          INSERT INTO virtual_mcp_skills
+            (virtual_mcp_uuid, skill_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y)
+          SELECT ${criado}::uuid, skill_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y
+            FROM virtual_mcp_skills WHERE virtual_mcp_uuid = ${uuid}
+           ORDER BY skill_uuid
+        `);
+        await tx.execute(sql`
+          INSERT INTO virtual_mcp_catalogs
+            (virtual_mcp_uuid, catalog_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y)
+          SELECT ${criado}::uuid, catalog_uuid, as_skill, as_prompt, as_resource, pos_x, pos_y
+            FROM virtual_mcp_catalogs WHERE virtual_mcp_uuid = ${uuid}
+           ORDER BY catalog_uuid
+        `);
+
+        // `IS DISTINCT FROM`, e não `<>`: com dono nulo (a cópia órfã do token
+        // global) o `<>` seria nulo para toda linha e nenhuma concessão seria
+        // copiada.
+        await tx.execute(sql`
+          INSERT INTO virtual_mcp_grants (virtual_mcp_uuid, user_uuid, level, granted_by_user_uuid)
+          SELECT ${criado}::uuid, user_uuid, level, ${owner}::uuid
+            FROM virtual_mcp_grants
+           WHERE virtual_mcp_uuid = ${uuid}
+             AND user_uuid IS DISTINCT FROM ${owner}::uuid
+           ORDER BY user_uuid
+        `);
+
+        await auditTx(tx, virtualMcpAudit('mcp.clone', `${origem} -> ${slug}`, source, actor));
+        return criado;
+      });
+      return virtualMcpAfterWrite(novo, 'clonado');
+    } catch (err) {
+      if (ownerGone(err, MCP_OWNER_FKS)) throw notFound(`Conta não encontrada: ${owner}`);
+      if (!isUniqueViolation(err, 'virtual_mcps_slug_key')) throw err;
+      if (requested !== undefined || attempt >= SLUG_ATTEMPTS) {
+        throw conflict(`Já existe um MCP virtual com o slug "${slug}"`);
+      }
+    }
+  }
+}
+
+/**
+ * O slug pedido na clonagem, aparado e validado pela regra do tipo. Vazio é
+ * "escolha para mim", como em `createVirtualMcp` e `createCatalog`.
+ */
+function cloneSlugRequest(input: CloneInput, assert: (slug: string) => void): string | undefined {
+  const asked = optionalText(input.slug, 'slug')?.trim() || undefined;
+  if (asked !== undefined) assert(asked);
+  return asked;
+}
+
+/**
+ * O slug de uma cópia, **dentro da transação** que a grava (nada de `db()`
+ * aqui: a segunda conexão do pool pode não vir — ver `readFileFrom`).
+ *
+ * Sem slug pedido, a base é o slug do **original**, e não o nome: clonar
+ * `deploy-docker` dá `deploy-docker-2`, mesmo que o nome tenha virado outro.
+ * É o caminho derivado de `freeSkillSlugTx`, que nunca devolve 409. Com slug
+ * pedido, o desempate é justamente o que não se quer: se `uniqueSlug` precisou
+ * mudar o que veio, o endereço está ocupado e a resposta é 409, como em
+ * `resolveSlug`.
+ */
+async function cloneSlugTx(
+  tx: Tx,
+  table: 'skills' | 'catalogs' | 'virtual_mcps',
+  sourceSlug: string,
+  requested: string | undefined,
+  subject: string,
+): Promise<string> {
+  const desired = requested ?? sourceSlug;
+  const slug = uniqueSlug(desired, await takenSlugs(table, desired, tx));
+  if (requested !== undefined && slug !== desired) {
+    throw conflict(`Já existe ${subject} com o slug "${desired}"`);
+  }
+  return slug;
+}
+
+/**
+ * As chaves estrangeiras que apontam para a conta **dona** da cópia, por tipo:
+ * violá-las é "o dono sumiu entre a sessão e a clonagem", o 404 de
+ * `createCatalog`/`createVirtualMcp`. Qualquer outra FK (uma skill, um
+ * catálogo ou um concedido removido no meio da cópia) sobe como está — são
+ * corridas de outra natureza, e traduzi-las em "conta não encontrada" mentiria.
+ */
+const SKILL_OWNER_FKS = ['skills_owner_user_uuid_fkey', 'skills_created_by_user_uuid_fkey'] as const;
+const CATALOG_OWNER_FKS = ['catalogs_owner_user_uuid_fkey'] as const;
+const MCP_OWNER_FKS = ['virtual_mcps_owner_user_uuid_fkey'] as const;
+
+function ownerGone(err: unknown, fks: readonly string[]): boolean {
+  return fks.some((constraint) => isForeignKeyViolation(err, constraint));
 }
 
 // --------------------------------------------------------------- internos ---

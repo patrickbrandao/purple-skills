@@ -18,6 +18,7 @@ import { runMigrations } from './migrate.js';
 import { AppError } from './errors.js';
 import {
   addCatalogSkill,
+  cloneCatalog,
   createCatalog,
   createSkill,
   createUser,
@@ -43,6 +44,7 @@ import {
   listTags,
   listVirtualMcps,
   removeCatalogSkill,
+  setCatalogGrant,
   setCatalogSkillActive,
   setCatalogSkills,
   setVirtualMcpCanvas,
@@ -759,5 +761,122 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
             + (SELECT count(*) FROM pg_constraint WHERE conname = 'audit_log_action_check')::int AS n`,
     );
     expect(rows[0]?.n).toBe(2);
+  });
+
+  // --------------------------------------------------- clonagem (031) ------
+
+  it('clona o catálogo: membros com o is_active de cada participação, cópia privada e sem vínculo', async () => {
+    // **Depois** da re-execução do `016`, de propósito: ela reescreveu o CHECK
+    // de `audit_log.action` com a lista da época dela, e as três ações de
+    // clonagem (`031`) saíram junto — é o efeito que o README descreve em
+    // "Reaplicar migration antiga". Reaplicar a `031` as devolve, e de quebra
+    // prova que ela é idempotente.
+    await expect(
+      raw.query(
+        `INSERT INTO audit_log (action, source, actor_label, target_label)
+         VALUES ('catalog.clone', 'web-admin', 'x', 'a -> b')`,
+      ),
+    ).rejects.toThrow(/audit_log_action_check/);
+    await raw.query("DELETE FROM schema_migrations WHERE name = '031-clonagem.sql'");
+    expect(await runMigrations(url!)).toEqual(['031-clonagem.sql']);
+
+    // A fonte: pública, com três membros — um deles com a participação
+    // desativada — e vinculada a um servidor, com uma concessão.
+    const fonte = await createCatalog(
+      { name: 'Fonte do Clone', description: 'a fonte', isPublic: true, ownerUserUuid: anaUuid },
+      SOURCE,
+      ana,
+    );
+    const servidor = await createVirtualMcp(
+      { name: 'Servidor do Clone', isOpen: true, ownerUserUuid: anaUuid },
+      SOURCE,
+      ana,
+    );
+    await setCatalogSkills(
+      fonte.uuid,
+      [{ slug: 'alfa' }, { slug: 'gama' }, { slug: 'delta', isActive: false }],
+      SOURCE,
+      ana,
+    );
+    await linkCatalog(servidor.uuid, fonte.uuid, TOOLS, SOURCE, ana);
+    await setCatalogGrant('fonte-do-clone', brunoUuid, 'view', SOURCE, ana);
+
+    const antes = await auditedRows();
+    const copia = await cloneCatalog(fonte.uuid, { ownerUserUuid: brunoUuid }, SOURCE, {
+      userUuid: brunoUuid,
+      label: 'bruno@exemplo.dev',
+    });
+
+    expect(copia).toMatchObject({
+      // O desempate sai do slug do original.
+      slug: 'fonte-do-clone-2',
+      name: 'Fonte do Clone',
+      description: 'a fonte',
+      // Ligado como o original; fechado, mesmo com o original público.
+      isActive: true,
+      isPublic: false,
+      ownerUserUuid: brunoUuid,
+      ownerEmail: 'bruno@exemplo.dev',
+      viewCount: 0,
+      downloadCount: 0,
+      skillCount: 3,
+      activeSkillCount: 2,
+      mcpCount: 0,
+    });
+    // Os mesmos membros, apontando para as mesmas skills, com o `is_active`
+    // da participação preservado um a um.
+    expect(copia.skills.map((s) => [s.slug, s.isActive])).toEqual([
+      ['alfa', true],
+      ['delta', false],
+      ['gama', true],
+    ]);
+    // Nada de vínculo com vMCP nem de concessão herdada.
+    expect(copia.mcps).toEqual([]);
+    expect(copia.grants).toEqual([]);
+    // E o original ficou como estava.
+    const original = await getCatalogByUuid(fonte.uuid);
+    expect(original?.isPublic).toBe(true);
+    expect(original?.mcps.map((m) => m.slug)).toEqual(['servidor-do-clone']);
+    expect(original?.grants.map((g) => g.email)).toEqual(['bruno@exemplo.dev']);
+
+    // Uma linha só na trilha, com os dois lados no alvo e sem `catalog.create`.
+    expect(await auditedRows()).toBe(antes + 1);
+    const clonagem = (await listAuditPage({ action: 'catalog.clone' })).items;
+    expect(clonagem).toHaveLength(1);
+    expect(clonagem[0]).toMatchObject({
+      skillUuid: null,
+      skillSlug: null,
+      targetLabel: 'fonte-do-clone -> fonte-do-clone-2',
+      actorUserUuid: brunoUuid,
+      actorLabel: 'bruno@exemplo.dev',
+    });
+
+    // O segundo clone é `-3`; o nome pedido não mexe no desempate.
+    const terceiro = await cloneCatalog(fonte.uuid, { name: 'Outro rótulo' }, SOURCE, ana);
+    expect([terceiro.slug, terceiro.name, terceiro.ownerUserUuid]).toEqual([
+      'fonte-do-clone-3',
+      'Outro rótulo',
+      null,
+    ]);
+
+    // Slug pedido: livre grava, ocupado é 409, inválido é 400.
+    expect((await cloneCatalog(fonte.uuid, { slug: 'copia-do-grupo' }, SOURCE, ana)).slug).toBe(
+      'copia-do-grupo',
+    );
+    const ocupado = await capture(
+      cloneCatalog(fonte.uuid, { slug: 'fonte-do-clone-2' }, SOURCE, ana),
+    );
+    expect([ocupado.status, ocupado.message]).toEqual([
+      409,
+      'Já existe um catálogo com o slug "fonte-do-clone-2"',
+    ]);
+    expect((await capture(cloneCatalog(fonte.uuid, { slug: 'Com Espaço' }, SOURCE, ana))).status).toBe(400);
+    expect((await capture(cloneCatalog('torto', {}, SOURCE, ana))).status).toBe(404);
+    expect(
+      (await capture(cloneCatalog('00000000-0000-0000-0000-000000000000', {}, SOURCE, ana))).status,
+    ).toBe(404);
+    expect(
+      (await capture(cloneCatalog(fonte.uuid, { ownerUserUuid: 'torto' }, SOURCE, ana))).status,
+    ).toBe(404);
   });
 });

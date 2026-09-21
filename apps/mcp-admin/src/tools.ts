@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   AppError,
+  cloneSkill,
   createSkill,
   deleteFile,
   deleteSkill,
@@ -236,12 +237,16 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
       });
   };
 
-  /** `null` quando pode criar; um `ToolResult` de recusa quando não. */
-  const denyCreate = (): ToolResult | null =>
+  /**
+   * `null` quando pode criar; um `ToolResult` de recusa quando não. `oQue` é a
+   * ação por extenso: clonar também faz nascer uma skill, e o papel decide
+   * igual — o que muda é só o verbo na recusa.
+   */
+  const denyCreate = (oQue = 'Criar skill'): ToolResult | null =>
     canCreate(caller.role)
       ? null
       : fail(
-          `Criar skill exige papel "editor" ou "admin"; sua credencial é "${caller.role}". ` +
+          `${oQue} exige papel "editor" ou "admin"; sua credencial é "${caller.role}". ` +
             'Um membro edita o que é seu ou lhe foi concedido, mas não cria.',
         );
 
@@ -418,6 +423,43 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
           : 'sem vínculo — use link_skill para publicá-la em um MCP virtual';
       const page = pageUrl(detail);
       return text(`Skill criada: "${detail.name}" (slug: ${detail.slug}, ${onde}).${page ? `\n${page}` : ''}`);
+    },
+
+    /**
+     * Clona a skill. A cópia é de quem clonou, nasce fechada (`is_public`
+     * sempre falso) e, sem `new_slug`, o slug do original ganha sufixo (`-2`,
+     * `-3`…) — o desempate é do banco, então essa forma nunca dá 409; um
+     * `new_slug` já em uso, sim.
+     *
+     * Leva propriedades, arquivos e tags; nasce flutuante (sem vMCP e sem
+     * catálogo) e sem as concessões do original. É por isso que `edit` basta:
+     * tudo o que a cópia leva já é o que quem edita a skill lê e escreve — ao
+     * contrário do vMCP, cuja cópia leva a ACL e por isso exige `manage`.
+     */
+    async clone_skill(args: { slug: string; name?: string; new_slug?: string }): Promise<ToolResult> {
+      const denied = denyCreate('Clonar uma skill');
+      if (denied) return denied;
+
+      const origem = await skillWith(args.slug, 'edit');
+      const copia = await cloneSkill(
+        origem.uuid,
+        {
+          name: args.name,
+          slug: args.new_slug,
+          // Quem clona é o dono, como em `create_skill`. O token global não é
+          // uma conta: a cópia nasce órfã, administrável só por admin.
+          ownerUserUuid: actor.userUuid,
+        },
+        SOURCE,
+        actor,
+      );
+
+      return text(
+        `Skill clonada de "${origem.slug}": "${copia.name}" (slug: ${copia.slug}), com ` +
+          `${copia.files.length} arquivo(s) e ${copia.tags.length} tag(s). A cópia é sua e nasce privada e ` +
+          'flutuante, sem MCP virtual, sem catálogo e sem as concessões do original: use link_skill para ' +
+          'publicá-la e edit_skill para torná-la pública.',
+      );
     },
 
     async edit_skill(args: {

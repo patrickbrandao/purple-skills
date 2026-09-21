@@ -19,7 +19,7 @@ export function PublicCatalogs() {
   if (!items || items.length === 0) return null;
 
   return (
-    <section className="endpoints" id="catalogos">
+    <section className="endpoints" id="catalogs">
       <div className="wrap">
         <div className="head reveal">
           <h2 className="display">
@@ -34,7 +34,7 @@ export function PublicCatalogs() {
         <div className="endpoint-grid">
           {items.map((catalog, index) => (
             <Link
-              to={`/catalogos/${catalog.slug}`}
+              to={`/catalogs/${catalog.slug}`}
               className={`endpoint-card catalog-card reveal d${(index % 3) + 1}`}
               key={catalog.uuid}
             >

@@ -24,7 +24,7 @@ const PAGE = 50;
  */
 export function AuditPage({ session }: { session: Session }) {
   const location = useLocation();
-  const tab = location.pathname.endsWith('/sessoes') ? 'sessoes' : 'trilha';
+  const tab = location.pathname.endsWith('/sessions') ? 'sessions' : 'trail';
 
   return (
     <div className="page wide">
@@ -38,14 +38,14 @@ export function AuditPage({ session }: { session: Session }) {
       <Tabs
         value={tab}
         items={[
-          { key: 'trilha', label: 'Trilha', icon: <History />, to: '/auditoria' },
-          { key: 'sessoes', label: 'Sessões MCP', icon: <Radio />, to: '/auditoria/sessoes' },
+          { key: 'trail', label: 'Trilha', icon: <History />, to: '/audit' },
+          { key: 'sessions', label: 'Sessões MCP', icon: <Radio />, to: '/audit/sessions' },
         ]}
       />
 
       <Routes>
         <Route index element={<Trail />} />
-        <Route path="sessoes" element={<Sessions session={session} />} />
+        <Route path="sessions" element={<Sessions session={session} />} />
       </Routes>
     </div>
   );

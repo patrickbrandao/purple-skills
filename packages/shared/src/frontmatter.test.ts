@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFrontmatter,
   composeSkillMd,
+  frontmatterObject,
   parseFrontmatter,
   skillMetaFromMarkdown,
   stripFrontmatter,
+  type SkillMeta,
 } from './frontmatter.js';
 
 describe('parseFrontmatter', () => {
@@ -302,6 +304,71 @@ describe('buildFrontmatter', () => {
 
   it('mantém a descrição vazia como escalar citado', () => {
     expect(buildFrontmatter({ slug: 'x' })).toContain('description: ""');
+  });
+});
+
+/**
+ * A exigência que este bloco segura é da SEP-2640
+ * (`docs/17-skills-extension.md` §6.1): o `frontmatter` da entrada de
+ * `skills/list` tem de bater **campo a campo** com o bloco YAML que o
+ * `resources/read` devolve, e o host que achar diferença recusa a skill. Como
+ * nada neste repositório lê o JSON de volta, uma divergência passaria em
+ * silêncio daqui até o host de outra pessoa.
+ *
+ * Por isso a comparação é do resultado de um lado com o **parse** do outro, e
+ * com `toEqual` no mapa inteiro: mexer só numa das funções — acrescentar campo,
+ * mudar critério de ausência, parar de achatar um valor — derruba estes casos.
+ */
+describe('frontmatterObject espelha o frontmatter servido', () => {
+  /**
+   * O objeto no mesmo mapa raso que `parseFrontmatter` devolve: o parser do
+   * projeto não tem hierarquia, e lê `title` e `tags` do bloco `metadata:` como
+   * chaves de primeiro nível. A linha `metadata:` em si, que abre o bloco e não
+   * tem valor, sobra no mapa como chave vazia — é artefato do parser, e está
+   * aqui para a comparação poder ser do mapa inteiro.
+   */
+  const achatado = (objeto: Record<string, unknown>): Record<string, unknown> => {
+    const { metadata, ...raiz } = objeto;
+    return metadata ? { ...raiz, metadata: '', ...(metadata as Record<string, unknown>) } : raiz;
+  };
+
+  const casos: [string, SkillMeta][] = [
+    ['completo', { slug: 'commit-conventional', name: 'Conventional Commits', description: 'Escreve commits.', tags: ['git', 'workflow'] }],
+    ['sem nome de exibição', { slug: 'x', description: 'Faz X', tags: ['git'] }],
+    ['sem tags', { slug: 'x', name: 'Título', description: 'Faz X' }],
+    ['sem nome e sem tags', { slug: 'x', description: 'Faz X' }],
+    ['sem descrição', { slug: 'x' }],
+    ['descrição com dois-pontos e aspas', { slug: 'x', description: 'Diz "olá": \\ fim', name: 'Um: dois' }],
+    ['tag com vírgula', { slug: 'x', description: 'Faz X', tags: ['a, b', 'c'] }],
+    ['descrição em várias linhas', { slug: 'x', description: 'linha um\n  linha dois' }],
+    ['campos só com espaço', { slug: 'x', name: '  ', description: '  ', tags: ['  ', 'git'] }],
+    ['descrição que parece número', { slug: 'x', description: '42' }],
+  ];
+
+  it.each(casos)('%s: o YAML lido de volta é o objeto', (_nome, meta) => {
+    expect(achatado(frontmatterObject(meta))).toEqual(parseFrontmatter(buildFrontmatter(meta)).data);
+  });
+
+  it('o bloco metadata do YAML é um objeto aninhado no JSON, não duas chaves soltas', () => {
+    expect(frontmatterObject({ slug: 'x', name: 'Título', description: 'Faz X', tags: ['git'] })).toEqual({
+      name: 'x',
+      description: 'Faz X',
+      metadata: { title: 'Título', tags: 'git' },
+    });
+  });
+
+  // `tags` é string, como o YAML a escreve, e não lista: o objeto e o bloco têm
+  // de dizer a mesma coisa, e virar lista mudaria os bytes do SKILL.md que o
+  // `.zip` e o `/files/SKILL.md` já entregam (decisão 14 do `docs/17`).
+  it('tags sai como string separada por vírgula, nunca como lista', () => {
+    const { metadata } = frontmatterObject({ slug: 'x', tags: ['git', 'ci'] }) as {
+      metadata: Record<string, unknown>;
+    };
+    expect(metadata.tags).toBe('git, ci');
+  });
+
+  it('não emite metadata vazio quando não há nome de exibição nem tag', () => {
+    expect(frontmatterObject({ slug: 'x', description: 'Faz X' })).not.toHaveProperty('metadata');
   });
 });
 

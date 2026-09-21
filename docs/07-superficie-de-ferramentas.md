@@ -18,6 +18,9 @@ sobre ortogonalidade (`§3.1`), erro indistinto (`§5.5`), leitura por requisiç
 (`§5.1`) e canal de mão única do frontmatter (`§6.4`) continua valendo aqui, e
 não é repetido.
 
+> **Revogado em um ponto por [`17`](17-skills-extension.md):** o item da `§7`
+> que punha o endereço por anexo fora do escopo. Está marcado lá.
+
 O schema saiu na migration `008-publicacao-como-skill.sql`; o recorte das
 ferramentas, em [`apps/mcp-public/src/tools.ts`](../apps/mcp-public/src/tools.ts).
 
@@ -220,6 +223,12 @@ Testes acrescentados:
 
 - **Filtro por superfície no `search_skills`.** Continua valendo a decisão 17
   de `06`: a busca não conta ao agente por quais portas cada skill também sai.
-- **Uma quarta superfície para anexos** (`skill://{slug}/{path}`) — `06 §9`.
+- ~~**Uma quarta superfície para anexos** (`skill://{slug}/{path}`) — `06 §9`.~~
+  **Revogado em parte por [`17`](17-skills-extension.md)**: o **endereço** existe
+  — cada arquivo da skill é um resource em `skill://<slug>/<caminho>` —, mas a
+  **quarta superfície** continua não existindo, e de propósito. Quem governa o
+  endereço novo é a porta `as_skill`, a mesma que já entrega o arquivo por
+  `get_skill_file`; foi para não ampliar exposição nenhuma que a extensão ficou
+  nela em vez de ganhar flag própria (`17 §4.2`).
 - **Despublicar em massa por tag ou filtro.** A flag é por skill, como as
   outras duas; uma operação em lote é UI, não schema.

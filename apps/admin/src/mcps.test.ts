@@ -31,6 +31,7 @@ const { lerMcp, gravarCanvas, gravarSkills, atualizar, lerSkill } = vi.hoisted((
 
 /** O resto do banco que os casos de vínculo, chave, concessão e nome tocam — pelo nome da função. */
 const banco = vi.hoisted(() => ({
+  cloneVirtualMcp: vi.fn(),
   createVirtualMcp: vi.fn(),
   listVirtualMcps: vi.fn(),
   linkSkill: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock('@purple-skills/db', async (original) => ({
 
 const {
   NAME_MAX,
+  clone,
   create,
   detail,
   issueKey,
@@ -74,6 +76,8 @@ const {
   unshare,
   update,
 } = await import('./mcps.js');
+// O `AppError` de verdade, para o caso do 409 que o banco levanta.
+const { conflict } = await import('@purple-skills/db');
 
 const DONO = 'uuid-dono';
 
@@ -89,6 +93,8 @@ const sessao = (role: AuthUser['role'], uuid: string | null): AuthUser => ({
 const dono = sessao('editor', DONO);
 const admin = sessao('admin', 'uuid-admin');
 const convidado = sessao('membro', 'uuid-convidado');
+/** A mesma conta convidada, com papel que pode criar: clonar precisa dos dois lados. */
+const convidadoEditor = sessao('editor', 'uuid-convidado');
 
 /** A concessão que o banco encontraria para a conta convidada. */
 let concedido: AccessLevel | null = null;
@@ -201,6 +207,92 @@ describe('abrir um vMCP (docs/09 decisão 9)', () => {
     await update(dono, 'time-a', { isOpen: true });
 
     expect(atualizar).toHaveBeenCalledWith('uuid-mcp', { isOpen: true }, 'web-admin', expect.objectContaining({ userUuid: DONO }));
+  });
+});
+
+/**
+ * Clonar um MCP virtual (`docs/16-clonagem.md`).
+ *
+ * Os comportamentos que mais custariam caro se mudassem sem querer:
+ *
+ * 1. **o corte é `manage`, e não o `edit` da skill e do catálogo.** O clone
+ *    leva a ACL do original junto, e ler a lista de concessões já é poder de
+ *    `manage` (`docs/12` decisão 11): com `edit` bastando, quem só publica no
+ *    servidor descobriria pela cópia com quem ele é dividido;
+ * 2. **o papel também é exigido**, porque a cópia é uma criação — e o objeto
+ *    vem primeiro, então quem não enxerga o vMCP recebe 404 antes disso;
+ * 3. **o desempate do slug é do banco**: corpo sem `slug` nunca dá 409; o
+ *    slug pedido que já existe volta de lá com o 409 inteiro.
+ */
+describe('clonar um vMCP', () => {
+  /** O que `cloneVirtualMcp` devolve: um servidor novo, fechado, de quem clonou. */
+  const COPIA = { ...mcpVisto({ role: 'admin', userUuid: 'uuid-admin' }), uuid: 'uuid-copia', slug: 'time-a-2', isOpen: false };
+
+  beforeEach(() => {
+    banco.cloneVirtualMcp.mockResolvedValue(COPIA);
+  });
+
+  it('o dono clona, e o corpo vazio chega ao banco só com o dono da cópia', async () => {
+    const copia = await clone(dono, 'time-a', {});
+
+    expect(copia).toMatchObject({ slug: 'time-a-2', isOpen: false, access: 'owner' });
+    expect(banco.cloneVirtualMcp).toHaveBeenCalledWith('uuid-mcp', { ownerUserUuid: DONO }, 'web-admin', expect.objectContaining({ userUuid: DONO }));
+  });
+
+  it('nome e slug pedidos chegam aparados, e o teto do nome vale como na criação', async () => {
+    await clone(dono, 'time-a', { name: ' Time A copiado ', slug: ' time-a-copia ' });
+    expect(banco.cloneVirtualMcp).toHaveBeenCalledWith(
+      'uuid-mcp',
+      { name: 'Time A copiado', slug: 'time-a-copia', ownerUserUuid: DONO },
+      'web-admin',
+      expect.anything(),
+    );
+
+    expect((await recusa(clone(dono, 'time-a', { name: 'x'.repeat(NAME_MAX + 1) }))).status).toBe(400);
+    expect(banco.cloneVirtualMcp).toHaveBeenCalledOnce();
+  });
+
+  it('`manage` concedido basta para quem pode criar', async () => {
+    concedido = 'manage';
+
+    const copia = await clone(convidadoEditor, 'time-a', {});
+
+    expect(copia).toMatchObject({ slug: 'time-a-2' });
+    expect(banco.cloneVirtualMcp).toHaveBeenCalledWith('uuid-mcp', { ownerUserUuid: 'uuid-convidado' }, 'web-admin', expect.anything());
+  });
+
+  it('403 para quem tem só `edit`: o clone leva a ACL, e ler a ACL é de `manage`', async () => {
+    concedido = 'edit';
+
+    const erro = await recusa(clone(convidadoEditor, 'time-a', {}));
+
+    expect(erro.status).toBe(403);
+    expect(erro.message).toContain('administrar');
+    expect(banco.cloneVirtualMcp).not.toHaveBeenCalled();
+  });
+
+  it('403 para papel membro, mesmo com `manage` no original', async () => {
+    concedido = 'manage';
+
+    expect(await recusa(clone(convidado, 'time-a', {}))).toEqual({
+      status: 403,
+      message: 'Seu papel não permite criar no acervo',
+    });
+    expect(banco.cloneVirtualMcp).not.toHaveBeenCalled();
+  });
+
+  it('404 para slug que a sessão não enxerga, antes de conferir papel', async () => {
+    expect((await recusa(clone(convidado, 'time-a', {}))).status).toBe(404);
+    expect(banco.cloneVirtualMcp).not.toHaveBeenCalled();
+  });
+
+  it('o 409 do slug pedido que já existe volta inteiro', async () => {
+    banco.cloneVirtualMcp.mockRejectedValue(conflict('Já existe um MCP virtual com o slug "time-a-copia"'));
+
+    expect(await recusa(clone(dono, 'time-a', { slug: 'time-a-copia' }))).toEqual({
+      status: 409,
+      message: 'Já existe um MCP virtual com o slug "time-a-copia"',
+    });
   });
 });
 

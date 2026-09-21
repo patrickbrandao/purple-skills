@@ -15,6 +15,7 @@ import {
   type VirtualMcpSummary,
 } from '../api.js';
 import { AccessBadge } from '../components/AccessPanel.js';
+import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { Button, EmptyRow, Field, Kbd, McpStateBadges, Menu, MenuItem, Modal, Skel, Status, useStored } from '../components/ui.js';
 import { Honeycomb } from '../components/Honeycomb.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
@@ -27,8 +28,8 @@ const SORT_LABEL: Record<Sort, string> = {
   online: 'Clientes online',
   updated: 'Atualização',
 };
-type Scope = 'todos' | AccessScope;
-const SCOPE_LABEL: Record<Scope, string> = { todos: 'Tudo que vejo', mine: 'Meus', shared: 'Compartilhados comigo', public: 'Abertos' };
+type Scope = 'all' | AccessScope;
+const SCOPE_LABEL: Record<Scope, string> = { all: 'Tudo que vejo', mine: 'Meus', shared: 'Compartilhados comigo', public: 'Abertos' };
 
 /**
  * A home do painel: os servidores MCP virtuais como cards, cada um com a
@@ -42,19 +43,22 @@ export function ServersPage({ session, user }: { session: Session; user: Session
   const { open: openPalette } = usePalette();
   const podeCriar = canCreate(user.role);
   const [items, setItems] = useState<VirtualMcpSummary[] | null>(null);
-  const scope = (params.get('acesso') as Scope | null) ?? 'todos';
+  // O servidor que o diálogo de clonagem está copiando; ele mora **aqui**, e
+  // não no card, que é um `<a>` (`CloneDialog.tsx`).
+  const [clonando, setClonando] = useState<VirtualMcpSummary | null>(null);
+  const scope = (params.get('access') as Scope | null) ?? 'all';
   const [openSkills, setOpenSkills] = useState<number | null>(null);
   const [sort, setSort] = useStored<Sort>('purple-skills-admin:mcps-sort', 'skills');
   const [view, setView] = useStored<'grid' | 'list'>('purple-skills-admin:mcps-view', 'grid');
   const [favorites, setFavorites] = useStored<string[]>('purple-skills-admin:mcps-favorites', []);
-  const creating = params.get('novo') === '1';
+  const creating = params.get('new') === '1';
 
   // Uma busca por recorte. O cleanup descarta a resposta atrasada: trocando de
   // recorte depressa, a consulta antiga podia chegar por último e repor a lista
   // do recorte anterior sob o filtro novo — e aqui nada recarrega sozinho.
   useEffect(() => {
     let active = true;
-    Promise.all([getMcps(scope === 'todos' ? '' : scope), getStats().catch(() => null)])
+    Promise.all([getMcps(scope === 'all' ? '' : scope), getStats().catch(() => null)])
       .then(([list, stats]) => {
         if (!active) return;
         setItems(list.items);
@@ -116,7 +120,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
             </span>
           </button>
           {podeCriar && (
-            <Button onClick={() => setParams({ novo: '1' })}>
+            <Button onClick={() => setParams({ new: '1' })}>
               <Plus /> Novo vMCP
             </Button>
           )}
@@ -155,7 +159,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
             )}
           >
             {(Object.keys(SCOPE_LABEL) as Scope[]).map((key) => (
-              <MenuItem key={key} onSelect={() => setParams(key === 'todos' ? {} : { acesso: key })}>
+              <MenuItem key={key} onSelect={() => setParams(key === 'all' ? {} : { access: key })}>
                 {SCOPE_LABEL[key]}
               </MenuItem>
             ))}
@@ -184,7 +188,15 @@ export function ServersPage({ session, user }: { session: Session; user: Session
       {items !== null && items.length > 0 && view === 'grid' && (
         <div className="card-grid">
           {sorted.map((mcp, index) => (
-            <ServerCard key={mcp.uuid} mcp={mcp} user={user} index={index} favorite={favorites.includes(mcp.uuid)} onFavorite={() => toggleFavorite(mcp)} />
+            <ServerCard
+              key={mcp.uuid}
+              mcp={mcp}
+              user={user}
+              index={index}
+              favorite={favorites.includes(mcp.uuid)}
+              onFavorite={() => toggleFavorite(mcp)}
+              onClone={() => setClonando(mcp)}
+            />
           ))}
         </div>
       )}
@@ -203,6 +215,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
                 <th className="num hidden sm:table-cell">Chaves</th>
                 <th className="hidden md:table-cell">Dono</th>
                 <th className="hidden lg:table-cell">Atualizado</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -235,9 +248,12 @@ export function ServersPage({ session, user }: { session: Session; user: Session
                   <td className="hidden lg:table-cell">
                     <span className="row-sub whitespace-nowrap">{formatRelative(mcp.updatedAt)}</span>
                   </td>
+                  <td className="num">
+                    <CloneButton kind="mcp" object={mcp} role={user.role} shape="linha" onClone={() => setClonando(mcp)} />
+                  </td>
                 </tr>
               ))}
-              {sorted.length === 0 && <EmptyRow colSpan={8}>{scope !== 'todos' ? 'Nenhum servidor nesse recorte' : podeCriar ? 'Nenhum servidor ainda' : 'Nenhum servidor é seu, compartilhado com você ou aberto'}</EmptyRow>}
+              {sorted.length === 0 && <EmptyRow colSpan={9}>{scope !== 'all' ? 'Nenhum servidor nesse recorte' : podeCriar ? 'Nenhum servidor ainda' : 'Nenhum servidor é seu, compartilhado com você ou aberto'}</EmptyRow>}
             </tbody>
           </table>
         </div>
@@ -246,7 +262,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
       {canManageUsers(user.role) && items !== null && items.length > 0 && (
         <p className="panel-hint mt-5">
           Qual destes responde em <code>{session.mcpPublicUrl || '<MCP_PUBLIC_URL>'}/mcp</code>, o MCP público da instalação, é
-          escolhido em <Link to="/configuracoes/mcp-padrao" className="link">Configurações → MCP padrão</Link>.
+          escolhido em <Link to="/settings/default-mcp" className="link">Configurações → MCP padrão</Link>.
         </p>
       )}
 
@@ -255,17 +271,20 @@ export function ServersPage({ session, user }: { session: Session; user: Session
         onClose={() => setParams({})}
         onCreated={(slug) => navigate(`/mcps/${slug}`)}
       />
+
+      {clonando && <CloneDialog kind="mcp" origem={clonando} onClose={() => setClonando(null)} />}
     </div>
   );
 }
 
-function ServerCard({ mcp, user, index, favorite, onFavorite }: { mcp: VirtualMcpSummary; user: SessionUser; index: number; favorite: boolean; onFavorite: () => void }) {
+function ServerCard({ mcp, user, index, favorite, onFavorite, onClone }: { mcp: VirtualMcpSummary; user: SessionUser; index: number; favorite: boolean; onFavorite: () => void; onClone: () => void }) {
   return (
     <Link to={`/mcps/${mcp.slug}`} className={`server-card${mcp.isActive ? '' : ' is-off'}`} style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}>
       <div className="head">
         <span className="nm">{mcp.name}</span>
         <McpStateBadges mcp={mcp} withActive={false} />
         <AccessBadge object={mcp} user={user} publicLabel="aberto" />
+        <CloneButton kind="mcp" object={mcp} role={user.role} shape="linha" onClone={onClone} />
         <button
           type="button"
           className={`row-action star${favorite ? ' on' : ''}`}

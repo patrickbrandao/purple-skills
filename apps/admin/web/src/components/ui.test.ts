@@ -1,7 +1,8 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SkillMcpRef } from '../api.js';
+import type { EffectiveAccess, Role, SkillMcpRef } from '../api.js';
+import { CloneButton, corpoDaClonagem, podeClonar, type CloneKind } from './CloneDialog.js';
 import { McpChips, armChord, isChordKey, noSite } from './ui.js';
 
 /** Um `keydown` qualquer: para o acorde só a identidade do objeto importa. */
@@ -128,6 +129,110 @@ describe('onde a skill está', () => {
 
       expect(html).toContain('desligada');
       expect(html).not.toContain('>no site<');
+    });
+  });
+});
+
+/**
+ * Clonar (`docs/16-clonagem.md`): o botão nas duas superfícies e o corpo da
+ * chamada. O diálogo em si não entra aqui — ele navega, e navegar pede o
+ * roteador; o que precisa de guarda é o que decide **se** o botão aparece e
+ * **o que** vai no corpo.
+ */
+describe('clonagem', () => {
+  const KINDS: CloneKind[] = ['skill', 'catalog', 'mcp'];
+
+  describe('podeClonar', () => {
+    // Clonar cria um objeto novo: mexer no original não basta, o papel da
+    // sessão também tem de poder criar. Sem isso, um `membro` com `edit`
+    // numa skill compartilhada ganharia por aqui um caminho para criar
+    // skills que a tela "Nova skill" lhe nega.
+    it('o papel que não cria não clona, por mais acesso que tenha no original', () => {
+      for (const kind of KINDS) {
+        expect(podeClonar(kind, 'owner', 'membro'), kind).toBe(false);
+        expect(podeClonar(kind, 'manage', 'membro'), kind).toBe(false);
+      }
+    });
+
+    it('skill e catálogo pedem edit; o vMCP pede manage', () => {
+      for (const role of ['admin', 'editor'] as Role[]) {
+        for (const kind of ['skill', 'catalog'] as CloneKind[]) {
+          expect(podeClonar(kind, 'view', role), `${kind}/${role}`).toBe(false);
+          expect(podeClonar(kind, 'edit', role), `${kind}/${role}`).toBe(true);
+        }
+        expect(podeClonar('mcp', 'edit', role), role).toBe(false);
+        expect(podeClonar('mcp', 'manage', role), role).toBe(true);
+        expect(podeClonar('mcp', 'owner', role), role).toBe(true);
+      }
+    });
+
+    it('sem acesso nenhum, ninguém clona — nem o admin', () => {
+      for (const kind of KINDS) {
+        expect(podeClonar(kind, null, 'admin'), kind).toBe(false);
+      }
+    });
+  });
+
+  describe('CloneButton', () => {
+    const botao = (kind: CloneKind, access: EffectiveAccess, role: Role, shape?: 'botao' | 'linha') =>
+      renderToStaticMarkup(
+        createElement(CloneButton, { kind, object: { slug: 'minha-skill', name: 'Minha Skill', access }, role, shape, onClone: () => {} }),
+      );
+
+    it('some para quem não pode clonar, como Remover já some da linha', () => {
+      expect(botao('skill', 'view', 'editor')).toBe('');
+      expect(botao('skill', 'owner', 'membro')).toBe('');
+      expect(botao('mcp', 'edit', 'admin')).toBe('');
+      expect(botao('catalog', null, 'admin')).toBe('');
+    });
+
+    it('aparece para quem pode, com o rótulo do tipo no título', () => {
+      expect(botao('skill', 'edit', 'editor')).toContain('Clonar');
+      expect(botao('catalog', 'edit', 'admin')).toContain('Clonar');
+      expect(botao('mcp', 'manage', 'admin', 'linha')).toContain('Clonar servidor');
+    });
+
+    it('as duas formas usam classe que já existe no console, e nenhuma é utilitário do Tailwind', () => {
+      // A linha da lista é o `row-action` das outras ações da linha; o
+      // cabeçalho da ficha é o `btn btn-ghost` dos outros botões de lá.
+      expect(botao('skill', 'edit', 'admin', 'linha')).toContain('class="row-action"');
+      expect(botao('skill', 'edit', 'admin')).toContain('btn btn-ghost');
+    });
+  });
+
+  describe('corpoDaClonagem', () => {
+    const origem = { slug: 'minha-skill', name: 'Minha Skill' };
+    const comoNasce = { name: origem.name, slug: 'minha-skill-2' };
+
+    it('campo intocado não vai no corpo: quem desempata o slug é o servidor', () => {
+      const corpo = corpoDaClonagem(origem, comoNasce);
+
+      // `toEqual({})` não bastaria: `{ slug: undefined }` passaria, e o
+      // `JSON.stringify` do cliente até o omitiria — mas o dia em que alguém
+      // trocar o serializador, a chave voltaria e o 409 com ela.
+      expect(Object.keys(corpo)).toEqual([]);
+      expect('slug' in corpo).toBe(false);
+      expect('name' in corpo).toBe(false);
+    });
+
+    it('só o que a pessoa mudou, cada campo por conta própria', () => {
+      expect(corpoDaClonagem(origem, { ...comoNasce, slug: 'outra-coisa' })).toEqual({ slug: 'outra-coisa' });
+      expect(corpoDaClonagem(origem, { ...comoNasce, name: 'Minha Skill (rascunho)' })).toEqual({ name: 'Minha Skill (rascunho)' });
+      expect(corpoDaClonagem(origem, { name: 'Outra', slug: 'outra' })).toEqual({ name: 'Outra', slug: 'outra' });
+    });
+
+    it('espaço em volta não conta como edição, e campo vazio fica de fora', () => {
+      expect(corpoDaClonagem(origem, { name: '  Minha Skill  ', slug: '  minha-skill-2  ' })).toEqual({});
+      expect(corpoDaClonagem(origem, { name: '', slug: '' })).toEqual({});
+    });
+
+    it('a sugestão de quem já é cópia também é intocada: clonar a cópia não manda slug', () => {
+      const copia = { slug: 'minha-skill-2', name: 'Minha Skill' };
+
+      // A sugestão empilha, porque é o que o servidor faz — ele desempata a
+      // partir do slug do original, não do nome. Mandar `-3` é edição.
+      expect(corpoDaClonagem(copia, { name: copia.name, slug: 'minha-skill-2-2' })).toEqual({});
+      expect(corpoDaClonagem(copia, { name: copia.name, slug: 'minha-skill-3' })).toEqual({ slug: 'minha-skill-3' });
     });
   });
 });

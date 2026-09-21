@@ -131,7 +131,7 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
               {items.map((item) => (
                 <tr key={item.uuid}>
                   <td>
-                    <Link to={`/quarentena/${item.uuid}`} className="flex items-center gap-3 no-underline">
+                    <Link to={`/quarantine/${item.uuid}`} className="flex items-center gap-3 no-underline">
                       <span className="skill-icon sm" aria-hidden="true">
                         <FileArchive size={14} />
                       </span>
