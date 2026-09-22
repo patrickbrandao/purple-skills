@@ -1,9 +1,9 @@
-import { AppError, badRequest, getSkillSummary, getUserByEmail, notFound } from '@purple-skills/db';
+import { AppError, badRequest, getSkillSummary, getUserByUsername, notFound } from '@purple-skills/db';
 import {
   ACCESS_LABEL,
   accessAtLeast,
   isAccessLevel,
-  normalizeEmail,
+  normalizeUsername,
   type AccessLevel,
   type EffectiveAccess,
   type Grant,
@@ -56,31 +56,39 @@ export function levelFrom(raw: unknown): AccessLevel {
 }
 
 /**
- * A conta alvo de uma **concessão ou transferência**, pelo e-mail: precisa
+/**
+ * A conta alvo de uma **concessão ou transferência**, pelo username: precisa
  * existir e estar ativa. Mudar o nível é a mesma chamada de conceder, e também
  * passa por aqui. Revogar **não**: ver `grantOf`.
+ *
+ * Gêmea da do painel (`apps/admin/src/access.ts`). O e-mail deixou de
+ * identificar conta aqui também (`docs/19-username.md` decisão 9), e nesta
+ * superfície isso vale dobrado: quem preenche o argumento é um **agente**, e
+ * ele só pode preencher o que enxerga — nenhuma tool devolve e-mail.
  */
-export async function accountByEmail(rawEmail: string): Promise<{ uuid: string; email: string }> {
-  const email = normalizeEmail(rawEmail);
-  if (!email) throw badRequest('Informe o e-mail da conta');
-  const user = await getUserByEmail(email);
-  if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${email}`);
-  return { uuid: user.uuid, email: user.email };
+export async function accountByUsername(
+  rawUsername: string,
+): Promise<{ uuid: string; username: string }> {
+  const username = normalizeUsername(rawUsername);
+  if (!username) throw badRequest('Informe o usuário da conta');
+  const user = await getUserByUsername(username);
+  if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${username}`);
+  return { uuid: user.uuid, username: user.username };
 }
 
 /**
- * A concessão a revogar, procurada pelo e-mail **na lista do próprio objeto** —
- * a que quem tem `manage` já lê —, e não em `users`. Gêmea da do painel
- * (`apps/admin/src/access.ts`), onde está o porquê inteiro: revogar passava por
- * `accountByEmail`, que exige conta ativa, e a concessão de quem foi desativado
- * depois de recebê-la não saía por tool nenhuma, contra a decisão 10 do
- * `docs/12` (relatório 039 da auditoria de 2026-09-19). Pela lista a resposta
- * também não diz se existe conta com aquele e-mail.
+ * A concessão a revogar, procurada pelo username **na lista do próprio
+ * objeto** — a que quem tem `manage` já lê —, e não em `users`. Gêmea da do
+ * painel (`apps/admin/src/access.ts`), onde está o porquê inteiro: revogar
+ * passava por `accountByUsername`, que exige conta ativa, e a concessão de quem
+ * foi desativado depois de recebê-la não saía por tool nenhuma, contra a
+ * decisão 10 do `docs/12` (relatório 039 da auditoria de 2026-09-19). Pela lista
+ * a resposta também não diz se existe conta com aquele username.
  */
-export function grantOf(grants: readonly Grant[], rawEmail: string, where: string): Grant {
-  const email = normalizeEmail(rawEmail);
-  if (!email) throw badRequest('Informe o e-mail da conta');
-  const grant = grants.find((item) => item.email.toLowerCase() === email);
+export function grantOf(grants: readonly Grant[], rawUsername: string, where: string): Grant {
+  const username = normalizeUsername(rawUsername);
+  if (!username) throw badRequest('Informe o usuário da conta');
+  const grant = grants.find((item) => item.username.toLowerCase() === username);
   // `where` é o lugar por extenso — "nesta skill", "neste catálogo".
   if (!grant) throw notFound(`A conta não tem concessão ${where}`);
   return grant;

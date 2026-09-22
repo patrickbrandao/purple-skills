@@ -71,7 +71,9 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `029-arquivos-de-texto-antigos.sql` | só dados: as linhas de `files` gravadas como binário **antes** de a tabela de mime do shared ganhar 70 extensões (beta.22) viram texto — só o UTF-8 válido e sem byte nulo; hash, tamanho e os dois `updated_at` não mudam, e as skills donas ficam `rag_stale`. **Depois da `027` de propósito** — antes dela o `UPDATE` cairia inteiro no atalho do trigger antigo. Ver [Arquivos da skill](#arquivos-da-skill) |
 | `030-quarentena.sql` | quarentena: `quarantine_skills` e `quarantine_files` (o envio que espera aprovação — texto **ou** binário com o CHECK, caminho único por envio sem diferenciar caixa e o trigger que carimba `updated_at` do envio), o `CHECK` de `action` com as cinco ações `quarantine.*` (a lista inteira, repetida — a base era esta até a `031`) e a chave `quarantine.approvers` em `settings`, semeada com `admin+owner`. Nenhuma coluna de RAG e nenhum trigger de `rag_stale`: ver [Quarentena](#quarentena) |
 | `031-clonagem.sql` | clonagem: as três ações `skill.clone`, `catalog.clone` e `mcp.clone` no `CHECK` de `audit_log.action` (a lista inteira, repetida — **quem mexer nele depois parte desta**), com `target_label` = `<slug de origem> -> <slug da cópia>`. Nenhuma coluna, nenhuma tabela e nenhum dado: o que a cópia leva já cabe nas tabelas que existem — ver [Clonagem](#clonagem) |
+| `033-username.sql` | username: `users.username` (obrigatória, única por `lower(username)`), o **backfill derivado do `name`** (com `translate()` e mapa de acentos — esta instalação não tem `unaccent` —, `user-<8 hex>` para nome inutilizável ou reservado e sufixo numérico em colisão), `usernames` (o livro dos nomes já gastos: abandonado nunca volta), a **reescrita do histórico** (`audit_log.actor_label`/`target_label` e `skill_accesses.user_email` → `user_username`, com `DROP COLUMN` e o trigram de `022` recriado) e `user.username` no `CHECK` de `action` — ver [Username](#username) |
 | `032-atividade.sql` | a tela de Atividade: `mcp_call_counters` (o contador de chamadas JSON-RPC por balde de 15 min, com a PK pelo **slug** do vMCP e a `family` gravada junto) e os dois índices que faltavam em `mcp_sessions` (`started_at DESC` e `ended_at DESC`). Nenhuma coluna nova nas tabelas antigas e nenhum dado — ver [Atividade](#atividade) |
+| `034-perfil.sql` | perfil: `user_profiles` (bio, site, `links` JSONB e o `is_public` opt-in, com os CHECKs de teto e de cardinalidade) e `user_avatars` (os bytes da foto, `mime` da lista fechada, `sha256` do ETag conferido pelo banco e o teto de 512 KB), as duas com PK `user_uuid` e `ON DELETE CASCADE`, mais o índice parcial `user_profiles_public_idx` e `user.profile` no `CHECK` de `action`. **Nenhuma linha é criada**: a do perfil nasce no primeiro salvamento — ver [Perfil](#perfil) |
 
 Regras:
 
@@ -104,7 +106,7 @@ Regras:
 
 `IF EXISTS` garante que a segunda passada **não falha** — não que ela não faz
 nada. Um `DROP` correto em `nnn` destrói o que `mmm > nnn` criou com o mesmo
-nome, e três casos estão medidos:
+nome, e quatro casos estão medidos:
 
 - o `012` faz `DROP COLUMN IF EXISTS is_public`, e o `017` recriou
   `skills.is_public` com outro sentido (quem pode **ler**). Reaplicado, o `012`
@@ -118,7 +120,13 @@ nome, e três casos estão medidos:
   para o `016` sobre as três ações de clonagem da `031`, que é o que
   `catalogs.integration.test.ts` mede no fim (e desfaz reaplicando a `031`);
 - a `020` recria `files_rag_stale_tg`, que a `027` redefiniu: reaplicada sozinha,
-  desfaz a correção.
+  desfaz a correção;
+- a `022` cria um GIN sobre `skill_accesses.user_email`, coluna que a `033`
+  **apagou** ao trocar o e-mail pelo username. Reaplicada sobre o schema de
+  hoje ela não estraga nada: **falha** (`column "user_email" does not exist`),
+  o arquivo inteiro sofre rollback e o runner aborta. É o caso mais benigno dos
+  quatro, e o único que se anuncia; `accesses.integration.test.ts` o mede, e
+  `settings.integration.test.ts` tira a `022` da sua reexecução por causa dele.
 
 O runner só chega a isso com o histórico **truncado**, e por isso o **CLI**
 (`npm run migrate`, o container `migrate`) confere antes de aplicar qualquer
@@ -169,7 +177,8 @@ regra passou a ser explícita e verificada:
 - **fica só no SQL** o que ele não expressa: índice parcial
   (`skills_rag_stale_idx`, os dois de `mcp_sessions` abertas, `users_oidc_uniq`)
   e por expressão (`files_skill_path_lower_uniq`, `users_email_lower_uniq`,
-  `skills_score_idx`, `quarantine_files_path_lower_uniq`), os CHECKs, as
+  `users_username_lower_uniq`, `skills_score_idx`,
+  `quarantine_files_path_lower_uniq`), os CHECKs, as
   funções e os triggers de busca, de RAG e do carimbo da quarentena;
 - **os nomes batem** onde o DSL os aceita: PK composta (`primaryKey({ name })`),
   UNIQUE (`.unique('<tabela>_<coluna>_key')`) e índice. A exceção é a chave
@@ -193,7 +202,10 @@ expressão existente derruba a suíte.
 | `files` | árvore de arquivos da skill; texto **ou** binário, nunca os dois (CHECK), com o `content_sha256` do que está gravado (`020`, por trigger) |
 | `tags` / `skill_tags` | tags e o vínculo N:N com as skills |
 | `audit_log` | trilha de auditoria de create/update/delete **e dos eventos de conta**, com o conteúdo anterior, o ator e o alvo |
-| `users` | contas: papel (`admin`/`editor`/`membro`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
+| `users` | contas: o **username** (o identificador público, único por `lower(username)`, `033`), o e-mail (privado: entrar, recuperar a senha e casar com a identidade OIDC), papel (`admin`/`editor`/`membro`), senha, vínculo OIDC, `token_version` e o bloqueio do login |
+| `usernames` | o livro dos usernames já gastos nesta instalação (`033`): PK em `lower(username)`, `user_uuid` anulável (`SET NULL`) e `released_at`. **Username abandonado nunca volta** — ver [Username](#username) |
+| `user_profiles` | o perfil de uma conta (`034`): `bio` (`''` = sem bio), `website_url`, `links` (JSONB, até 8) e `is_public` — opt-in, desligado por padrão. PK `user_uuid`, `ON DELETE CASCADE`. A linha **nasce no primeiro salvamento**, não com a conta — ver [Perfil](#perfil) |
+| `user_avatars` | os bytes da foto (`034`), em tabela separada para não viajarem em leitura nenhuma de perfil: `bytes`, `mime` (PNG/JPEG/WebP, CHECK), `sha256` (o ETag, conferido contra os bytes pelo CHECK) e `updated_at`. PK `user_uuid`, `ON DELETE CASCADE`, teto de 512 KB |
 | `api_keys` | chaves `psk_` por usuário; guarda o prefixo e o hash, nunca o segredo |
 | `reset_tokens` | tokens de redefinição de senha, com expiração, uso único e o fechamento do link substituído (`superseded_at`, `023`) — ver [Links de redefinição de senha](#links-de-redefinição-de-senha) |
 | `virtual_mcps` | servidores MCP virtuais: `slug`, dono (`owner_user_uuid`), `is_active`, `is_open` e `layout` (posições dos nós fixos do canvas, JSONB) |
@@ -205,7 +217,7 @@ expressão existente derruba a suíte.
 | `skill_grants` / `catalog_grants` / `virtual_mcp_grants` | as concessões por objeto (`017`): PK `(objeto, conta)`, os dois `ON DELETE CASCADE`, `level` em `view`/`edit`/`manage` (CHECK), `granted_by_user_uuid` informativo (`SET NULL`) e `created_at`; índice reverso por `user_uuid`. Dono e admin **não** têm linha |
 | `settings` | configuração da instalação, chave-valor; `default_virtual_mcp` guarda o uuid do vMCP que responde em `/mcp`, sem FK, as três chaves `rag.*` guardam driver, modelo e estado do indexador (`020`) e `quarantine.approvers` guarda quem aprova um envio (`030`, semeada com `admin+owner`) |
 | `mcp_sessions` | uma linha por cliente conectado a um vMCP pelo MCP público: transporte, por onde chegou, credencial, IP, `clientInfo`, atividade e fim. Sobrevive à remoção do vMCP e nunca é podada |
-| `skill_accesses` | uma linha por **leitura** de uma skill (`018`): o que foi lido (`kind`, `surface`), por onde (`origin`, o vMCP, os catálogos do caminho), com que credencial (`auth`, chave `psv_`, chave `psk_` e conta), de onde (`ip`, `user_agent`, `clientInfo`, `session_id`) e quando. Toda FK é `SET NULL` com a cópia ao lado; nunca é podada |
+| `skill_accesses` | uma linha por **leitura** de uma skill (`018`): o que foi lido (`kind`, `surface`), por onde (`origin`, o vMCP, os catálogos do caminho), com que credencial (`auth`, chave `psv_`, chave `psk_` e a conta pelo `user_username`), de onde (`ip`, `user_agent`, `clientInfo`, `session_id`) e quando. Toda FK é `SET NULL` com a cópia ao lado; nunca é podada |
 | `mcp_call_counters` | quantas chamadas JSON-RPC o MCP público atendeu (`032`), por balde de 15 minutos, vMCP, transporte e método. É **contador, não registro**: nada de tool, argumento, IP, conta ou sessão. PK `(bucket, virtual_mcp_slug, transport, method)` — pelo slug, porque o uuid é `SET NULL` e nulo não fecha chave; `family` é derivada do método e gravada junto. Nunca é podada |
 | `rag_spaces` | um espaço de embedding (`020`): driver, modelo, dimensões e os **dois prefixos** do driver — a identidade é a combinação dos cinco |
 | `rag_texts` | o texto canônico, endereçado pelo próprio SHA-256 e guardado **sem** o prefixo do driver; o hash é conferido pelo banco |
@@ -273,19 +285,28 @@ Toda leitura de skill recebe uma `visibility` **ou** um `viewer`:
 | `virtualMcp: { uuid, surface }` | a exposição naquele vMCP com a porta da superfície, pela precedência dos catálogos; sobrepõe as duas acima | mcp-public |
 
 Na visibilidade `'open'` a leitura também **deixa de trazer** o que o site não
-mostra, em vez de trazer e o app cortar (`tasks/002`): o dono vem nulo
-(`ownerUserUuid`/`ownerEmail` — e-mail é dado pessoal que o `docs/12` §10 aceita
-expor a conta logada, não ao anônimo), `grants` vem vazio em `getSkillDetail`, e
-dentro de `mcps` o `catalogs` do caminho **só nomeia catálogo público**. O
-vínculo por catálogo privado continua contando para a exposição — a skill *está*
-naquele servidor —, o que não sai é o nome do catálogo fechado. Além de fechar o
-vazamento pelo lado do banco, é o que para de pagar uma subconsulta de e-mail
-por linha e uma consulta de concessões por página da skill.
+mostra, em vez de trazer e o app cortar (`tasks/002`): `grants` vem vazio em
+`getSkillDetail`, e dentro de `mcps` o `catalogs` do caminho **só nomeia
+catálogo público**. O vínculo por catálogo privado continua contando para a
+exposição — a skill *está* naquele servidor —, o que não sai é o nome do
+catálogo fechado. Além de fechar o vazamento pelo lado do banco, é o que para
+de pagar uma consulta de concessões por página da skill.
+
+**O dono saiu dessa lista na `033`.** Até ela, `ownerUserUuid`/`ownerEmail`
+vinham nulos no site, porque o rótulo do dono era o **e-mail** — dado pessoal
+que o `docs/12` §10 aceitava expor a conta logada, não ao anônimo. O rótulo
+agora é o username, e a decisão 11 do `docs/19` é explícita: a ficha pública
+credita o dono por `@username`. As duas colunas saem em toda visibilidade, e
+quem corta o `ownerUserUuid` da resposta anônima é a lista de permissão de
+`apps/site/src/api.ts` — ele é o `sub` do cookie de sessão do painel
+(`tasks/001`).
 
 O padrão é o restritivo de propósito: quem esquece a opção mostra de menos,
 nunca de mais. O filtro mora no SQL porque o `total` de `listSkills` e a
 contagem de `listTags` não têm conserto depois da consulta. `SkillSummary`
-traz `isActive`, `isPublic`, o dono (`ownerUserUuid`, `ownerEmail`), o
+traz `isActive`, `isPublic`, o dono (`ownerUserUuid`, `ownerUsername`), o
+`ownerHasProfile` (se o crédito ao dono vira link para `/u/<username>`, `034` —
+ver [Perfil](#perfil)), o
 `access` da conta que leu (ver [Acesso granular](#acesso-granular)) e
 `mcps`, os vMCPs em que a skill está — um item por servidor, `direct: true`
 num vínculo direto e `direct: false` (com `catalogs` dizendo por quais) num
@@ -362,8 +383,9 @@ await listSkillGrants(skillUuid);                                          // Gr
 - `remove*Grant` apaga a linha; concessão inexistente (ou uuid torto) é 404
   e nada é auditado. **Não olha `users.is_active`**: a concessão de uma conta
   desativada é revogável como qualquer outra.
-- `Grant` é `{ userUuid, email, name, role, isActive, level,
-  grantedByUserUuid, grantedByEmail, createdAt }`; quem concedeu pode já ter
+- `Grant` é `{ userUuid, username, name, role, isActive, level,
+  grantedByUserUuid, grantedByUsername, createdAt }` — os dois rótulos de conta
+  eram o e-mail até a `033` (ver [Username](#username)); quem concedeu pode já ter
   sido removido (`SET NULL` → os dois nulos). `isActive` é o da **conta**
   (`users.is_active`), não o da concessão — é o que o painel usa para marcar a
   linha de quem foi desativado (`tasks/039`).
@@ -424,35 +446,248 @@ const { adopted, skills, catalogs } = await adoptOrphans(user.uuid, 'web-admin',
 - Quem pode disparar é regra do app; o banco confere só a elegibilidade.
 
 **`lookupUsers(q, limit = 10)`** é a busca "Compartilhar com…": contas
-**ativas** cujo nome ou e-mail contém `q` (`ILIKE`, com o termo **literal** —
-ver [O termo de busca](#o-termo-de-busca-literal-e-indexado)), por nome,
-`UserLookup[]` (`uuid`, `email`, `name`, `role`). `q` aparado com menos de dois
-caracteres devolve `[]` sem consultar; `limit` é clamp 1..50.
+**ativas** cujo nome ou **username** contém `q` (`ILIKE`, com o termo
+**literal** — ver [O termo de busca](#o-termo-de-busca-literal-e-indexado)),
+por nome, `UserLookup[]` (`uuid`, `username`, `name`, `role`). `q` aparado com
+menos de dois caracteres devolve `[]` sem consultar; `limit` é clamp 1..50.
+
+O e-mail saiu **dos dois lados** na `033` (`docs/19` decisão 10), e não só da
+projeção: devolver só o username mas continuar casando por endereço deixaria
+qualquer conta logada descobrir a qual username um e-mail corresponde, bastando
+digitá-lo. A sondagem anula o sigilo mesmo com o campo fora da resposta.
 
 **Site.** `listPublicCatalogs()` lista os catálogos públicos e ligados
-(`PublicCatalog`: sem dono, sem concessões, `skillCount` = participações
-ativas de skills ligadas), por nome. `getPublicCatalog(slug)` é a página:
+(`PublicCatalog`: `ownerUsername` e **não** `ownerUserUuid`, sem concessões,
+`skillCount` = participações ativas de skills ligadas), por nome. `getPublicCatalog(slug)` é a página:
 `PublicCatalogDetail` com `skills` = **todos** os membros ativos como
 `SkillSummary` na visibilidade do site (`mcps` só com abertos e ligados,
 `catalogs` vazio, `access` nulo), por nome — inclusive os privados e os que
 não estão em vMCP aberto nenhum, porque o contêiner expõe (`docs/12`
 decisão 5). Privado, desligado ou inexistente é `null`, sem distinção.
 
-**Auditoria** (`docs/12` §8): `skill.share` / `skill.unshare` levam
-`skill_uuid`/`skill_slug` e `target_label` = `email:nível` / `email`;
-`catalog.share` / `mcp.share` levam `<slug> <email>:<nível>` e
-`catalog.unshare` / `mcp.unshare` levam `<slug> <email>` — sem skill, como
-os demais eventos de contêiner. Transferir é `update` / `catalog.update` /
-`mcp.update` do objeto com o e-mail do novo dono no label (`email` na skill,
-`<slug> <email>` nos outros); deixar órfão não muda o label. A adoção
-(`adoptOrphans`) grava exatamente isso: `update` com `skill_uuid`/`skill_slug`
-e o e-mail, ou `catalog.update` com `<slug> <email>`. Ligar o flag
-público é um `update` comum.
+**Auditoria** (`docs/12` §8, com o rótulo da `033`): `skill.share` /
+`skill.unshare` levam `skill_uuid`/`skill_slug` e `target_label` =
+`username:nível` / `username`; `catalog.share` / `mcp.share` levam
+`<slug> <username>:<nível>` e `catalog.unshare` / `mcp.unshare` levam
+`<slug> <username>` — sem skill, como os demais eventos de contêiner.
+Transferir é `update` / `catalog.update` / `mcp.update` do objeto com o
+username do novo dono no label (`username` na skill, `<slug> <username>` nos
+outros); deixar órfão não muda o label. A adoção (`adoptOrphans`) grava
+exatamente isso: `update` com `skill_uuid`/`skill_slug` e o username, ou
+`catalog.update` com `<slug> <username>`. Ligar o flag público é um `update`
+comum.
+
+Era o **e-mail** em todos esses lugares até a `033`, que reescreveu o que
+estava gravado — ver [Username](#username).
 
 **Efeito da `017` numa instalação existente** (`docs/12` §9): leitores
 viram membros e **deixam de ver** o que não é deles, público ou exposto;
 editores deixam de editar o que não criaram. O admin marca públicas as
 skills que devem continuar visíveis, concede `view`/`edit` ou transfere.
+
+### Username
+
+O identificador **público** da conta (`033`,
+[`docs/19-username.md`](../docs/19-username.md)). Ele ocupa, em toda superfície,
+o lugar que o e-mail ocupava: dono de skill, catálogo e vMCP; linha da ACL e
+"concedido por"; quem leu na guia Acessos; a busca de contas; o rótulo
+congelado em `audit_log` e em `skill_accesses`; e a ficha pública do site. O
+e-mail **continua obrigatório e único**, e volta a ter três usos, todos
+privados: entrar, recuperar a senha e casar com a identidade OIDC
+(`docs/05` §2.4 e §2.6, que não mudam).
+
+**A forma é de shared, não daqui.** `packages/shared/src/username.ts`
+(`normalizeUsername`, `usernameFromName`, `usernameWithSuffix`,
+`usernameFromUuid`, `isEmailLogin`, `RESERVED_USERNAMES`) é o único lugar que
+decide o que vale; `queries.ts` a chama e a `033` a repete em SQL — uma vez, e
+só porque uma migration não chama TypeScript. Em resumo: 3 a 32 caracteres,
+`[a-z0-9._-]`, alfanumérico nas pontas, sem duas pontuações seguidas, **sem
+`@`**, sem forma de uuid e fora da lista de reservados; a caixa não é
+preservada.
+
+**As duas tabelas.** `users.username` é o nome **atual**, único por
+`lower(username)` (`users_username_lower_uniq`, por expressão, como o do
+e-mail). `usernames` é o livro de tudo que a instalação já gastou: uma linha
+por nome, PK em `lower(username)`, `user_uuid` anulável e `released_at`.
+Tomar um nome é **inserir** ali — a PK é o que torna a reserva atômica e
+permanente.
+
+**Username abandonado nunca volta** (decisão 6). Sem isso o `@joao` de uma
+trilha de 2025 poderia ser outra pessoa em 2026, e o rótulo congelado — que
+existe justamente para sobreviver à remoção da conta (`004`) — passaria a
+apontar para quem não fez nada. Duas consequências que valem ler antes de
+mexer no código:
+
+- a linha do livro **nunca é adotada**. A tentação é reaproveitar a que está
+  com `user_uuid` nulo e `released_at` nulo, que parece "reservada e nunca
+  usada"; ela é também o estado de uma conta **apagada** (a FK é `ON DELETE
+  SET NULL`), e adotá-la devolveria a circulação o nome de quem foi embora.
+  O `INSERT` é `ON CONFLICT DO NOTHING`, sempre;
+- trocar de username **libera** o antigo (`released_at`) e mantém o
+  `user_uuid` dele: a linha passa a dizer "foi desta conta e não é de
+  ninguém". Nunca é apagada.
+
+**As duas recusas são distintas de propósito.** Quem pede um nome que é de uma
+conta **viva** recebe `Já existe uma conta com o username "x"`; quem pede um
+que a instalação já gastou recebe `O username "x" já foi usado nesta
+instalação`. Quem administra precisa saber se o nome está ocupado agora ou
+queimado para sempre.
+
+**As funções.** `getUserByUsername` é irmã de `getUserByEmail`.
+`getUserByLogin(identifier)` é o campo único do login (`docs/19` decisão 3):
+tem `@`, é e-mail; não tem, é username — decidível porque `normalizeUsername`
+recusa `@`. `createUser` exige `username` e grava a linha do livro na mesma
+transação; `updateUser` aceita `username` (só admin, e quem confere o papel é
+o app) e faz a troca inteira numa transação. `nextFreeUsername(base)` é
+leitura — o primeiro nome livre nas **duas** fontes, com o sufixo numérico de
+`usernameWithSuffix` — e serve à sugestão do formulário e ao
+auto-provisionamento OIDC; base inutilizável é 400, porque a função **não
+inventa base**: quem chama decide o fallback (`usernameFromUuid`).
+`reserveUsername(candidate, userUuid)` é a irmã que grava, para uma conta que
+já existe: na colisão ela numera em vez de recusar.
+
+**O que a `033` fez com o que já estava no banco.** É a migration mais
+invasiva desde o `017`, e não tem volta sem backup:
+
+- **backfill do `name`**, nunca da parte antes do `@` — publicar o local part
+  para todo o painel vazaria metade do endereço, que é o que a mudança existe
+  para evitar. Nome inutilizável, curto demais ou reservado cai em
+  `user-<8 hex do uuid>`; colisão (inclusive entre dois `user-<8 hex>` iguais,
+  que `uuidv7()` produz em contas criadas no mesmo minuto) recebe sufixo
+  numérico;
+- **`audit_log` reescrito**: o e-mail vira username em `actor_label` e
+  `target_label`, por ocorrência e com fronteira nas duas pontas (os rótulos
+  são compostos: `username`, `username:nível`, `<slug> username:nível`,
+  `username <resto>`), na ordem **decrescente de `length(email)`** — senão
+  `ana@x.com` seria trocado dentro de `mariana@x.com`. O que sobra com forma
+  de e-mail vira `conta removida`, e essa varredura é **restrita** a
+  `target_label` de `user.*`, `*.share` e `*.unshare` mais `actor_label` de
+  qualquer ação: `target_label` de quarentena é nome de envio escrito por
+  gente, e um envio chamado `relatorio@2026.q1` não é conta nenhuma;
+- **`skill_accesses.user_email` deixou de existir**: virou `user_username`
+  (por `user_uuid`, depois por `lower(email)`, o resto `conta removida`), e o
+  GIN de trigrama do `022` foi recriado sobre a coluna nova. Leitura **sem
+  conta** (site anônimo, vMCP aberto) continua com a coluna nula — `conta
+  removida` ali seria inventar uma conta que nunca houve.
+
+Quem mede tudo isso é
+[`src/username.integration.test.ts`](src/username.integration.test.ts), sobre
+uma base parada no `032`: é o único lugar onde o backfill e a reescrita rodam
+sobre dados do mundo antigo.
+
+### Perfil
+
+A página atrás do `@username` (`034`,
+[`docs/20-perfil.md`](../docs/20-perfil.md)). O `033` fez do username o
+identificador público; aqui ele ganha uma foto, uma bio, um site, links e uma
+página no site em `/u/<username>`.
+
+**Duas tabelas, e a separação é o ponto.** `user_profiles` é a parte editável;
+`user_avatars` são os bytes. Eles não podem viajar junto com a leitura do
+perfil — a página do perfil lê o perfil e a ficha de skill lê o dono, e uma
+coluna `bytea` na mesma linha faria toda leitura arrastar até 512 KB para
+descartá-los. É a mesma razão de `files.binary_content` (`001`) morar na linha
+do arquivo e não na da skill. Separadas, `user_avatars` só é lida pela rota que
+serve a imagem, e as duas colunas de perfil que falam de foto (`hasAvatar`,
+`avatarUpdatedAt`) vêm de um `LEFT JOIN` que **não cita** `bytes`.
+
+**A linha nasce no primeiro salvamento.** A `034` não cria linha nenhuma: quem
+nunca abriu a tela não tem perfil, e `getProfile` devolve o objeto **vazio e
+privado** em vez de nulo — "sem perfil" e "perfil em branco" são o mesmo estado
+para quem lê. `saveProfile` é `INSERT … ON CONFLICT DO UPDATE`, e o upsert
+acontece mesmo quando a chamada só troca o `name`.
+
+**Público é opt-in** (`is_public`, padrão `false`) e decide o que sai para o
+**anônimo**, não o que o painel mostra: a foto aparece nas listas e fichas entre
+contas logadas com o perfil privado, como o monograma já aparecia.
+
+**O que o banco garante e o que é do shared.** A forma é de
+`packages/shared/src/profile.ts` (`normalizeBio`, `normalizeWebsite`,
+`normalizeProfileLinks`, `sniffAvatarMime`) — `queries.ts` a chama, nunca a
+reescreve, como faz com `normalizeUsername` desde o `033`. Os CHECKs são teto e
+lista fechada, a última linha para um caminho de escrita novo: bio ≤ 500,
+`website_url` ≤ 512, `links` array de até 8 (`jsonb_typeof` + cardinalidade,
+como `virtual_mcps.layout` do `014`), `mime` em PNG/JPEG/WebP, `bytes` entre 1 e
+512 KB e `sha256 = sha256(bytes)` — o mesmo CHECK de hash de `rag_texts` (`020`),
+aqui porque um ETag que não descreve os bytes servidos é pior do que nenhum
+ETag.
+
+**O `sha256` é o ETag.** Ele existe para a rota da imagem responder 304 sem
+cache longo — e cache longo é justamente o que deixaria um avatar visível
+depois de o perfil virar privado. Os cabeçalhos são de `avatarHeaders`, do
+shared, iguais no painel e no site.
+
+**`user.profile` na trilha** é o admin **limpando** o perfil de alguém
+(`clearProfile`): bio, site, links e foto saem e o `is_public` desliga. É o
+único caminho pelo qual quem não é o dono mexe no perfil, e ele não escreve
+texto — o admin apaga, nunca corrige no lugar da pessoa. A edição do **próprio**
+perfil não entra na trilha, pelo mesmo critério que mantém o login fora dela
+(`docs/05` §2.8).
+
+**`ownerHasProfile`** viaja em `SkillSummary` e em `PublicCatalog`: diz se o
+`por @fulano` da ficha vira link para `/u/<username>` ou fica no texto. A
+pergunta é exatamente a que `getPublicProfile` responde — perfil público **e**
+conta ativa —, porque um link para conta desativada levaria ao 404 que a
+desativação acabou de criar. É o **único** dado de perfil que viaja na ficha da
+skill.
+
+> **A forma dele foi medida.** Como subconsulta escalar, e não `EXISTS`: o
+> planejador trata um `EXISTS` correlacionado por igualdade como *hashed
+> SubPlan* e materializa o conjunto inteiro das contas com perfil público uma
+> vez por consulta. Na listagem do site (5 000 skills, página de 24) com 50 000
+> contas e 50 060 perfis, isso levou a consulta de **3,9 ms** para **10,9 ms**
+> (e para 14,1 ms com dois `EXISTS`, perfil e conta separados). A escalar não
+> pode ser hasheada, é avaliada por linha e faz 24 buscas no
+> `user_profiles_public_idx` em **Index Only Scan** com `Heap Fetches: 0`: 4,2 ms,
+> ou **+0,24 ms** sobre a mesma listagem sem a coluna. Com 60 perfis as três
+> formas empatam dentro do ruído — a escalar é a única que não piora quando a
+> instalação cresce. É para ela que o índice parcial existe.
+
+**O que as leituras públicas recusam.** `getPublicProfile(username)` devolve
+`null` para perfil privado, conta desativada e username inexistente, **sem
+distinguir os três**: distinguir seria responder "esta conta existe, mas não
+quer ser vista", que é a informação que o opt-in existe para não dar. O
+`username` que ele devolve é o **canônico** (caixa baixa, como gravado), para o
+site montar a chamada seguinte sem propagar a grafia da URL.
+
+**A conferência da rota da imagem é `isProfilePublic(username)`, não
+`getPublicProfile`.** As duas respondem à mesma pergunta — e usam o **mesmo**
+predicado, `PERFIL_PUBLICO`, e não duas cópias dele —, mas `getPublicProfile`
+monta junto as skills e os catálogos públicos da pessoa (com `skillColumns` e
+as subconsultas por linha) para devolver a página. Servir uma foto com ela
+fazia cada `<img>` pagar a listagem inteira daquela conta: numa conta com 200
+skills públicas, abrir a página materializava essas linhas **duas vezes** — uma
+para a página, outra para a imagem —, numa rota anônima. É a mesma família do
+custo medido em `ownerHasProfile`: trabalho proporcional ao acervo numa
+consulta que não precisa dele. Medido com 202 skills públicas na conta:
+**4,04 ms** contra **0,37 ms** (mediana de 30 chamadas, ida e volta ao banco
+incluídos), e a consulta barata toca 2 páginas — não cresce com o acervo.
+`profile.integration.test.ts` prova a diferença **estruturalmente**, com a
+tabela `skills` renomeada: quem a lê falha, quem não a lê responde igual.
+
+**As duas leituras de avatar são burras de propósito.** `getAvatar(userUuid)` e
+`getAvatarByUsername(username)` **não olham** `is_public` nem `is_active`: o
+painel serve a foto a qualquer sessão logada e o site confere
+`getPublicProfile` **antes** de pedir os bytes. A política é de quem chama, e
+as duas superfícies não têm a mesma política. `getAvatarByUsername` existe para
+o site não precisar de `getUserByUsername`, que devolveria hash de senha,
+`token_version` e o subject OIDC para desenhar uma imagem.
+
+**`listPublicByOwner(username)`** lista o que a pessoa publicou e o site já
+mostrava: as skills pelo mesmo `OPEN_EXPOSURE` das demais leituras do site e os
+catálogos pela regra de `listPublicCatalogs`. Estar no perfil **não** torna
+nada visível. Ela não filtra `users.is_active` — a conta desativada fica sem
+página (quem recusa é `getPublicProfile`), mas o acervo público dela segue no
+site como sempre esteve. As duas listas vêm inteiras, sem paginação, como em
+`getPublicCatalog`.
+
+**`avatarUpdatedAt` em `UserSummary`.** O carimbo acompanha a conta em toda
+leitura de `users`, para uma lista do painel saber se há foto sem uma
+requisição por linha. Ele entra em `USER_COLUMNS` por **subconsulta
+correlacionada**, e não por `LEFT JOIN`, porque a lista também é usada em
+`RETURNING` (onde não há `FROM` para juntar nada) — e porque uma junção ali
+convidaria alguém a acrescentar `bytes` ao `SELECT`, que é o que a tabela
+separada existe para impedir.
 
 ### MCP padrão
 
@@ -651,7 +886,7 @@ vMCP **e** `view` no catálogo, e **desvincular** é só o `edit` do vMCP —
   informado passa por `isValidSlug`; em uso é 409. `updateCatalog(uuid, {
   slug?, name?, description?, isActive?, isPublic?, ownerUserUuid? })` é
   parcial no padrão de `updateVirtualMcp` e audita `catalog.update` (com
-  `<slug> <email>` numa transferência — as regras estão em
+  `<slug> <username>` numa transferência — as regras estão em
   [Acesso granular](#acesso-granular)); `deleteCatalog` audita
   `catalog.delete` e a cascata leva membros, vínculos e concessões.
 - `setCatalogSkills(uuid, [{ slug, isActive? }])` é **declarativa**: quem
@@ -725,10 +960,10 @@ o que diz *quem*, *por onde* e *quando*.
 |----------|-------|
 | quem grava | o MCP público (`origin = 'mcp'`: `get_skill` → `surface = 'tool'`, `resources/read` → `'resource'`, `prompts/get` → `'prompt'`, o `SKILL.md` avulso → `'file'`, o pacote → `'download'`), o site (`'site'`: `'page'`, `'file'`, `'download'`) e o mcp-admin (`'mcp-admin'`: `'admin-tool'`). O painel **não** grava |
 | `kind` | `view` ou `download` — o contador que a leitura soma. **Exceção:** com `origin = 'mcp-admin'` a linha entra e **nenhum** contador é somado (skill, vínculo ou catálogo): o `get_skill` do mcp-admin nunca contou, e a pontuação do acervo não muda de significado por a leitura passar a ser registrada |
-| `auth` | `open` (vMCP aberto), `key` (chave `psv_`, em `key_id`/`key_name`), `user` (chave `psk_` em `api_key_id`/`api_key_name` e a conta em `user_uuid`/`user_email`) ou `anonymous` (o site) |
+| `auth` | `open` (vMCP aberto), `key` (chave `psv_`, em `key_id`/`key_name`), `user` (chave `psk_` em `api_key_id`/`api_key_name` e a conta em `user_uuid`/`user_username`) ou `anonymous` (o site) |
 | caminho | com vMCP, os catálogos por onde a skill chegou a ele **nesta leitura** — os mesmos que recebem o contador: ligados, com participação ativa, vinculados ao vMCP **com a porta da superfície lida** (`tool`, `file` e `download` pela de skill; `prompt` e `resource` pela de mesmo nome — a regra de `exposedIn`), e só sem vínculo direto (a precedência não olha porta). Três arrays paralelos (`catalog_uuids`/`_slugs`/`_names`), vazios no vínculo direto, no site e no mcp-admin. As linhas gravadas antes dessa regra (`tasks/041`) trazem todo catálogo vinculado, com qualquer porta, e não há como recalculá-las |
 | rótulos e cópias | o que vem do cliente (`session_id`, `ip`, `user_agent`, `client_name`, `client_version`) passa por `normalizeSessionLabel`: caractere de controle vira espaço — o `text` não guarda U+0000, e o byte nulo no `clientInfo` derrubava a linha **e** os contadores —, apara, vazio vira nulo, teto de `MCP_SESSION_LABEL_MAX` (512). As **cópias de nome** (skill, vMCP, chave `psv_`, chave `psk_`, cada catálogo) são cortadas no mesmo teto: nome não tem limite na criação e a linha é copiada a cada leitura. Nos dois casos **cortar, nunca recusar** — não há `CHECK` de tamanho de propósito, porque o registro vale mais do que o campo |
-| histórico | toda FK (`skill_uuid`, `virtual_mcp_uuid`, `key_id`, `api_key_id`, `user_uuid`) é `ON DELETE SET NULL` e tem a **cópia** ao lado (`skill_slug`/`skill_name`, `virtual_mcp_slug`/`virtual_mcp_name`, `key_name`, `api_key_name`, `user_email`). Apagar o objeto não apaga a leitura; o uuid nulo é o que diz que ele sumiu. Os arrays de catálogo não têm FK: o uuid fica, e a **listagem** o devolve nulo quando o catálogo já não existe |
+| histórico | toda FK (`skill_uuid`, `virtual_mcp_uuid`, `key_id`, `api_key_id`, `user_uuid`) é `ON DELETE SET NULL` e tem a **cópia** ao lado (`skill_slug`/`skill_name`, `virtual_mcp_slug`/`virtual_mcp_name`, `key_name`, `api_key_name`, `user_username`). Apagar o objeto não apaga a leitura; o uuid nulo é o que diz que ele sumiu. Os arrays de catálogo não têm FK: o uuid fica, e a **listagem** o devolve nulo quando o catálogo já não existe |
 | poda | **nenhuma**, como `mcp_sessions`: sem job, trigger nem retenção |
 
 Os índices `(skill_uuid, created_at DESC)`, `(virtual_mcp_uuid, created_at
@@ -1065,7 +1300,7 @@ Com o dono sendo quem aprova, o defeito some na raiz e a promoção passa a se
 comportar como `createSkill` — quem cria enxerga, edita e publica o que criou
 (`docs/12` decisão 8). Devolver a skill a quem a trouxe continua possível e
 vira um ato com trilha: transferir (`updateSkill` com `ownerUserUuid`, que
-audita `update` com o e-mail do novo dono) ou conceder (`setSkillGrant`).
+audita `update` com o username do novo dono) ou conceder (`setSkillGrant`).
 Quem quiser reconstituir a origem tem a linha `quarantine.promote`, com o nome
 do envio, e o `quarantine.create`, com quem submeteu.
 
@@ -1353,22 +1588,24 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Clonagem | `cloneSkill`, `cloneCatalog`, `cloneVirtualMcp` — o **uuid do original**, `CloneInput`, a origem e o ator; devolvem a ficha da cópia (`SkillDetail`/`CatalogDetail`/`VirtualMcpDetail`). Ver [Clonagem](#clonagem) |
 | Quarentena | `listQuarantine`, `getQuarantine`, `createQuarantine`, `readQuarantineFile`, `readAllQuarantineFiles`, `createQuarantineFile`, `setQuarantineFile`, `setQuarantineFiles`, `deleteQuarantineFile`, `deleteQuarantine`, `promoteQuarantine`, `getQuarantineApprovers`, `setQuarantineApprovers` — ver [Quarentena](#quarentena). O envio é endereçado pelo **uuid**; `QuarantineSummary`/`QuarantineDetail`/`QuarantinePage` e `QuarantineApprovers` vêm de shared |
 | Extensão de skills (MCP) | `listSkillsManifest(virtualMcpUuid, { slug? })` e `readSkillMdBodies(uuids)` — o manifesto da SEP-2640 e os corpos do `SKILL.md` em lote; `SkillManifestEntry`, `SkillManifestFile` e `SkillMdBody`. Ver [Manifesto da extensão de skills](#manifesto-da-extensão-de-skills) |
-| Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
+| Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByUsername`, `getUserByLogin` (o campo único do login), `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
+| Username | `nextFreeUsername(base)` — o primeiro nome livre nas **duas** fontes, para a sugestão do painel e o auto-provisionamento OIDC — e `reserveUsername(candidate, userUuid)`, que toma e grava numerando em vez de recusar. Ver [Username](#username) |
+| Perfil | `getProfile(userUuid)` (o vazio e privado quando não há linha), `saveProfile(userUuid, input)` (upsert parcial; aceita `name` e o grava em `users`), `clearProfile(userUuid, source, actor)` (a limpeza do admin: esvazia, desliga, apaga a foto e audita `user.profile`, numa transação), `getPublicProfile(username)` (só com `is_public` **e** conta ativa; `null` sem distinguir os motivos), `isProfilePublic(username)` — a mesma pergunta **sem** montar as listas, para a rota da imagem — e `listPublicByOwner(username)`. A foto: `setAvatar(userUuid, bytes, mime?)` — o tipo sai dos **bytes**, e o `mime` informado é conferência —, `deleteAvatar`, `getAvatar(userUuid)`, `getAvatarByUsername(username)` e `avatarStamp(userUuid)`. As duas leituras de avatar **não** olham `is_public`: a política é de quem chama. Ver [Perfil](#perfil) |
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
 | Senha | `createResetToken`, `consumeResetToken` |
 | Auditoria de conta | `recordAccountAudit` |
 | MCP virtual | `listVirtualMcps`, `listOpenVirtualMcps`, `getVirtualMcp`, `getVirtualMcpByUuid`, `resolveVirtualMcp`, `createVirtualMcp`, `updateVirtualMcp`, `deleteVirtualMcp`, `setVirtualMcpSkills`, `listVirtualMcpKeys`, `listVirtualMcpKeysByCreator`, `createVirtualMcpKey`, `revokeVirtualMcpKey`, `getVirtualMcpKeyByPrefix`, `touchVirtualMcpKey` |
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
-| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `mcpCallCounters`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `ragTextStatus`, `ragSkillClaims`, `quarantineSkills`, `quarantineFiles`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `McpCallCounterRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow`, `RagTextStatusRow`, `RagSkillClaimRow`, `QuarantineSkillRow`, `QuarantineFileRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `RevokedApiKey`, `RevokedVirtualMcpKey`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `AdoptOrphansResult`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListActivityDaysOptions`, `ActivityOfDayOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `PendingRagTextsOptions`, `ClaimStaleSkillsOptions`, `ReleaseRagTextsOptions`, `RagVectorInput`, `RagCoverage`, `ListQuarantineOptions`, `CreateQuarantineInput`, `CloneInput` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
+| Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `mcpCallCounters`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `ragTextStatus`, `ragSkillClaims`, `quarantineSkills`, `quarantineFiles`, `usernames`, `userProfiles`, `userAvatars`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `UsernameRow`, `UserProfileRow`, `UserAvatarRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `McpCallCounterRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow`, `RagTextStatusRow`, `RagSkillClaimRow`, `QuarantineSkillRow`, `QuarantineFileRow` |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `RevokedApiKey`, `RevokedVirtualMcpKey`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `AdoptOrphansResult`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListActivityDaysOptions`, `ActivityOfDayOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `PendingRagTextsOptions`, `ClaimStaleSkillsOptions`, `ReleaseRagTextsOptions`, `RagVectorInput`, `RagCoverage`, `ListQuarantineOptions`, `CreateQuarantineInput`, `CloneInput`, `SaveProfileInput`, `Avatar`, `AvatarMeta`, `PublicByOwner` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
 | Migrations | `runMigrations` (aceita `{ refuseRetroactive }` — ver [Reaplicar migration antiga](#reaplicar-migration-antiga)), `schemaDir`, tipo `RunMigrationsOptions` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
 (`'web-admin'` ou `'mcp-admin'`) e aceitam um **ator opcional** no fim:
 
 ```ts
-await createSkill(input, 'web-admin', { userUuid: user.uuid, label: user.email });
+await createSkill(input, 'web-admin', { userUuid: user.uuid, label: user.username });
 await setFiles(slug, arquivos, 'mcp-admin', { replace: true }, ator); // actor é o 5º
 ```
 
@@ -1763,7 +2000,7 @@ pelo site, que não têm o que fazer com um hash.
   auditoria e sem `updated_at`. A permissão é do app.
 - `createVirtualMcp` / `updateVirtualMcp` / `deleteVirtualMcp` exigem ator e
   auditam como `mcp.create` / `mcp.update` / `mcp.delete`, com `targetLabel`
-  = slug do MCP (o novo, em rename; `<slug> <email>` numa transferência).
+  = slug do MCP (o novo, em rename; `<slug> <username>` numa transferência).
   Slug omitido é gerado do nome; informado passa por `isValidSlug`; em uso é
   409. `updateVirtualMcp` é parcial no padrão de `updateUser` (`undefined`
   não mexe, `ownerUserUuid: null` apaga o dono; um uuid precisa ser de conta
@@ -1818,7 +2055,9 @@ pelo site, que não têm o que fazer com um hash.
 
 - `UserRecord` é `UserSummary` **mais** `passwordHash`, `tokenVersion`,
   `failedAttempts` e `oidcSubject`. Nada disso vai para o navegador: `listUsers`
-  devolve `UserSummary`.
+  devolve `UserSummary`. `UserSummary` ganhou `avatarUpdatedAt` no `034`:
+  o carimbo da foto, nulo quando não há — os **bytes** nunca saem por aqui (ver
+  [Perfil](#perfil)).
 - `updateUser` é parcial. `undefined` é "não mexe", `null` é "apaga";
   `bumpTokenVersion: true` incrementa `token_version` e derruba todo cookie já
   emitido para a conta.
@@ -1878,24 +2117,34 @@ pelo site, que não têm o que fazer com um hash.
   [Links de redefinição de senha](#links-de-redefinição-de-senha).
 - `recordAccountAudit` grava os eventos de conta (`user.create`, `user.role`,
   `user.deactivate`, `user.activate`, `user.password`, `user.link`,
-  `key.create`, `key.revoke`), os das
+  `user.username`, `key.create`, `key.revoke`), os das
   chaves de MCP virtual (`mcp.key.create`, `mcp.key.revoke`) e os das chaves do
   MCP principal (`public.key.create`, `public.key.revoke`) — linhas sem skill,
   com `targetLabel` dizendo sobre quem foi.
 - `user.password` (`024`) é a senha de **outra** conta trocada por quem
-  administra ou por um link de redefinição; `targetLabel` é o e-mail da conta
-  afetada e o **ator** diz o caminho: o e-mail do admin, `bootstrap` ou
+  administra ou por um link de redefinição; `targetLabel` é o username da conta
+  afetada e o **ator** diz o caminho: o username do admin, `bootstrap` ou
   `link-de-redefinicao` (ali só se sabe que alguém portava o link). A troca
   feita pelo próprio dono logado fica fora, como o login. Senha nenhuma, nem
   hash, entra na linha.
 - `user.activate` e `user.link` (`026`, `tasks/003`) são os outros dois eventos
   que mudam **quem consegue entrar** na conta. `user.activate` é o par de
   `user.deactivate`: reativar devolve o login, as concessões e as chaves `psk_`
-  de uma vez; ator = quem reativou, `targetLabel` = e-mail da conta. `user.link`
+  de uma vez; ator = quem reativou, `targetLabel` = username da conta. `user.link`
   é uma identidade OIDC passando a abrir uma conta local que já existia — uma
   vez por conta, **não é login** (login segue fora da trilha, `docs/05` §2.8);
   o ator é o caminho, `oidc:<issuer>` com `userUuid` nulo, como no `user.create`
-  por SSO, e `targetLabel` leva o e-mail e o `subject` que assumiu a conta.
+  por SSO, e `targetLabel` leva o username e o `subject` que assumiu a conta.
+- `user.profile` (`034`) é o admin **limpando** o perfil público de uma conta.
+  **Não** passa por `recordAccountAudit`: quem a grava é `clearProfile`, que
+  apaga e audita na mesma transação — auditar numa chamada à parte deixaria a
+  trilha e o dado divergirem quando a segunda falhasse. Ator = quem limpou,
+  `targetLabel` = o username de quem foi limpo. Ver [Perfil](#perfil).
+- `user.username` (`033`) é o username de uma conta trocado por um **admin**
+  (`docs/19` decisão 5 — só admin troca): ator = quem trocou, `targetLabel` =
+  `<antigo> -> <novo>`, a mesma gramática da clonagem (`031`). É esta linha que
+  mantém legível a trilha anterior à troca, e o nome antigo não volta a
+  circular (decisão 6) — então ela nunca passa a apontar para outra pessoa.
 
 ### Instalação sem administrador
 
@@ -1920,16 +2169,18 @@ WITH promovida AS (
   SET role = 'admin', is_active = true, token_version = token_version + 1, updated_at = now()
   WHERE lower(email) = lower('pessoa@exemplo.com')
     AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND is_active)
-  RETURNING email
+  RETURNING username
 )
 INSERT INTO audit_log (action, source, actor_label, target_label)
-SELECT 'user.role', 'web-admin', 'sql-manual', email || ' → admin' FROM promovida
+SELECT 'user.role', 'web-admin', 'sql-manual', username || ' → admin' FROM promovida
 RETURNING target_label;
 ```
 
 - é o que `updateAccount` faz numa promoção: papel, `token_version + 1` (a
   sessão aberta da conta cai e ela entra de novo já como admin) e a linha
-  `user.role` com `<e-mail> → admin`. O ator é `sql-manual`, sem conta — o
+  `user.role` com `<username> → admin`. A conta é **procurada** pelo e-mail (é
+  o que quem opera tem na mão) e o rótulo gravado é o **username**, como toda
+  linha da trilha desde o `033`. O ator é `sql-manual`, sem conta — o
   `source` é `web-admin` porque o `CHECK` só tem dois valores, como no `seed`;
 - o `NOT EXISTS` é o que a torna **segura ao repetir**: com um administrador
   ativo ela não promove nem audita nada (devolve zero linhas) — havendo admin,
@@ -1948,7 +2199,7 @@ filtros da página:
 |-------|--------|
 | `limit`, `offset` | clamp 1..200, padrão 50; offset negativo ou torto vira 0 e o que passa de `Number.MAX_SAFE_INTEGER` **satura** nele — ver [O offset satura](#o-offset-satura) |
 | `action` | igualdade; valor fora do `CHECK` de `audit_log.action` é 400 |
-| `actor` | igualdade com `actor_label` (e-mail, `token-global`, `bootstrap`, `seed`) |
+| `actor` | igualdade com `actor_label` (username, `token-global`, `bootstrap`, `seed`) |
 | `q` | `ILIKE %q%` em `skill_slug`, `target_label`, `file_path` e `actor_label`, com o termo **literal** e os quatro GIN de trigrama do `022` — ver [O termo de busca](#o-termo-de-busca-literal-e-indexado) |
 | `since`, `until` | `created_at >=` / `<=`; precisam ser `Date` válidas |
 
@@ -2055,7 +2306,7 @@ const doCatalogo = await listSkillAccesses({ catalogUuid });
   entram na linha), numa instrução só e sem transação, como `bumpCounter`.
   Com `origin: 'mcp-admin'` **só grava a linha**: contador nenhum é tocado.
   Resolve as cópias sozinha (slug/nome da skill e do vMCP, nome da chave
-  `psv_` por `keyId`, da `psk_` por `apiKeyId`, e-mail por `userUuid`).
+  `psv_` por `keyId`, da `psk_` por `apiKeyId`, username por `userUuid`).
   `kind`/`surface`/`origin`/`auth` fora dos `CHECK`s, `skillUuid` torto ou
   rótulo que não é string são 400 (bug do chamador). **Skill inexistente não
   grava nada e não lança** — ela pode ter sumido entre a leitura e o
@@ -2076,7 +2327,7 @@ const doCatalogo = await listSkillAccesses({ catalogUuid });
   chaves `psk_` dela —, `apiKeyId` recorta a uma chave); `limit` clamp
   1..200, padrão 50; offset torto vira 0 e o gigante satura
   ([O offset satura](#o-offset-satura)); `q` é `ILIKE %q%` em
-  `user_email`, `api_key_name`, `key_name`, `ip`, `client_name` e
+  `user_username`, `api_key_name`, `key_name`, `ip`, `client_name` e
   `session_id`, com o termo **literal** e os seis GIN de trigrama do `022`
   (ver [O termo de busca](#o-termo-de-busca-literal-e-indexado));
   `origin`/`kind` fora do `CHECK` e uuid torto em qualquer
@@ -2485,7 +2736,7 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
     database/src/schema.integration.test.ts database/src/migrate.integration.test.ts \
     database/src/locks.integration.test.ts database/src/skills.integration.test.ts \
     database/src/quarantine.integration.test.ts database/src/manifest.integration.test.ts \
-    database/src/activity.integration.test.ts
+    database/src/activity.integration.test.ts database/src/profile.integration.test.ts
 ```
 
 A suíte do RAG e a do `schema.ts` exigem **pgvector** no servidor (a imagem
@@ -2495,26 +2746,28 @@ A suíte do RAG e a do `schema.ts` exigem **pgvector** no servidor (a imagem
 | Suíte | Cobre |
 |-------|-------|
 | `files.integration.test.ts` | unicidade de caminho sem diferenciar caixa; `createFile`: arquivo vazio (texto e binário) na raiz e em pasta, com o retorno igual à listagem; as quatro recusas com a mensagem exata, sem alterar conteúdo nem auditar (inclusive o `SKILL.md` sem linha); `_` e `%` literais; a auditoria `create`; os 404/400; criações concorrentes (o mesmo caminho em várias caixas e arquivo × pasta); e o INSERT alheio em andamento que vira 409 pelo `ON CONFLICT`, sem deadlock, com a skill indexada; **texto × binário** (o `.csv` em Windows-1252 guardado byte a byte em `setFile`, `setFiles`, `createFile` e nos anexos de `createSkill`; acento, vazio e BOM intactos; o `SKILL.md` que não é texto recusado com 400 nas quatro escritas, sem mudar o corpo gravado); **a caixa dobrada pelo Postgres** (o `replace` que não apaga o `İndice.md`, `İ.md` + `I.md` no mesmo lote sem 21000 — conferido contra o `lower()` do próprio cluster); **a fila das escritas de arquivo** (`setFile` e `updateSkillWithContent` esperando no advisory lock sem segurar linha, reproduzido com um cliente cru no papel da outra ponta; o salvamento sem `skillMd` fora da fila; pares concorrentes formulário × arquivo, `replace` × avulso, duas remoções do mesmo caminho e `deleteSkill` × escrita respondendo 404 em vez de 23503); e a **`029`** sobre linhas gravadas por SQL cru como antes da beta.22 (o que converte e o que fica binário — `.INI`, `dir.v2/run.ps1`, `.env.example`, `.env`, `Makefile`, `x.`, Latin-1, UTF-16, byte nulo, PNG —, hash, tamanho e datas iguais, `rag_stale`, a segunda passada que não reescreve nada e a marcação que vale também com a função de trigger anterior à `027`) |
-| `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset (uso único, expirado, o link fechado na emissão do próximo e na troca da senha, o vencido que não é reetiquetado, o logout que não fecha nada e o `CHECK` dos dois carimbos) e o ator na auditoria; mais a primeira conta que nasce `membro` sem o `onlyIfTableEmpty` e a **receita de "Instalação sem administrador"** rodada com o SQL do README (promove, derruba a sessão, audita e não age na segunda vez nem com admin ativo); o "Sair" que **não** carimba `updated_at` (e o campo junto, ou `{}`, que carimba); `clearLoginLock` destravando no UPDATE da senha, com `false`/ausente deixando a trava; a revogação de chave `psk_` devolvendo nome, prefixo e dono (e `null` na segunda vez, sem reescrever `revoked_at`); e `user.activate`/`user.link` na trilha, como filtro de `listAuditPage`, com o `CHECK` ainda fechado e a `026` re-executada |
+| `users.integration.test.ts` | contas, bloqueio de login, chaves de API, tokens de reset (uso único, expirado, o link fechado na emissão do próximo e na troca da senha, o vencido que não é reetiquetado, o logout que não fecha nada e o `CHECK` dos dois carimbos) e o ator na auditoria; mais a primeira conta que nasce `membro` sem o `onlyIfTableEmpty` e a **receita de "Instalação sem administrador"** rodada com o SQL do README (promove, derruba a sessão, audita e não age na segunda vez nem com admin ativo); o "Sair" que **não** carimba `updated_at` (e o campo junto, ou `{}`, que carimba); `clearLoginLock` destravando no UPDATE da senha, com `false`/ausente deixando a trava; a revogação de chave `psk_` devolvendo nome, prefixo e dono (e `null` na segunda vez, sem reescrever `revoked_at`); e `user.activate`/`user.link` na trilha, como filtro de `listAuditPage`, com o `CHECK` ainda fechado e a `026` re-executada; mais o **username**: `getUserByUsername` e o campo único de `getUserByLogin` (com `@` e sem), a recusa do nome torto e as **duas** mensagens de 409 (conta viva × nome já gasto, inclusive o de uma conta apagada), a troca que libera o antigo sem apagá-lo e nunca o devolve, e `nextFreeUsername`/`reserveUsername` consultando `users` e `usernames` juntas; mais o **carimbo do avatar** (`034`) em `UserSummary`, nas quatro leituras de conta e nos `RETURNING` de `createUser` e `updateUser` — é onde a subconsulta correlacionada de `USER_COLUMNS` prova que vale, já que ali não há `FROM` para juntar nada —, com a cascata levando a foto na conta apagada |
+| `username.integration.test.ts` | a `033` sobre uma base parada no `032` — **o único lugar** onde o backfill e a reescrita do histórico rodam sobre dados do mundo antigo: o username derivado do `name` (com acento, no teto de 32 e com sufixo em colisão, e nunca do local part do e-mail), o `user-<8 hex>` de nome inutilizável, reservado e curto demais, com o **empate entre três** que `uuidv7()` produz no mesmo minuto resolvido pelo sufixo; a coluna obrigatória, o único por `lower(username)` e o livro nascendo completo; a trilha reescrita nos quatro formatos de rótulo, com `ana@x.com` **não** trocado dentro de `mariana@x.com`, `conta removida` no que sobrou e a **quarentena intocada** (um envio chamado `relatorio@2026.q1` tem forma de e-mail e não é conta); `skill_accesses` casando por uuid e por `lower(email)`, a leitura anônima seguindo nula, o `user_email` apagado e o trigram recriado; `user.username` no `CHECK` com a lista do `031` inteira; e a reaplicação que não reescreve rótulo, conta nem livro — e não deixa a função auxiliar no banco |
 | `virtual-mcps.integration.test.ts` | MCP virtual: recorte declarativo, leituras por vínculo, contadores duplos, chaves `psv_` (inclusive as emitidas por conta, `listVirtualMcpKeysByCreator`, o índice do `021` e a revogação que devolve nome e prefixo — `null` quando não é daquele servidor ou já estava revogada), o runtime que ignora inativos e a **clonagem de vMCP** (`031`): vínculos de skill e de catálogo com as três portas e as posições, `layout` inteiro, concessões com `granted_by` trocado por quem clonou e **sem** a linha dele, cópia fechada com o original aberto, **sem chave**, com os contadores do vínculo zerados e sem herdar o posto de vMCP padrão; o original intacto; o `-2`/`-3`, o slug pedido (livre, 409 e 400), os 404 e a linha `mcp.clone` com `<origem> -> <cópia>`, sem `mcp.create` junto |
-| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, o uuid em **maiúsculas** que grava o canônico em vez de virar "removido", as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar que o SQL não falha nem muda a **estrutura** na segunda passada — de **dado** não prova nada: toda skill do cenário é privada, e o `012` reaplicado derruba o `is_public` do `017`; ver `migrate.integration.test.ts`). A lista de migrations é lida da pasta, não escrita à mão |
+| `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, o uuid em **maiúsculas** que grava o canônico em vez de virar "removido", as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar que o SQL não falha nem muda a **estrutura** na segunda passada — de **dado** não prova nada: toda skill do cenário é privada, e o `012` reaplicado derruba o `is_public` do `017`; ver `migrate.integration.test.ts`). A lista de migrations é lida da pasta, não escrita à mão — menos a `022`, que fica **fora da segunda passada**: ela cria um GIN sobre `skill_accesses.user_email`, coluna que a `033` apagou, e reaplicada falha (ver [Reaplicar migration antiga](#reaplicar-migration-antiga)) |
 | `sessions.integration.test.ts` | sessões do MCP público: abrir/tocar/fechar, o `clientInfo` que só entra uma vez, o reuso de linha do stateless, a expiração com fim presumido por transporte, a listagem com filtros, recorte e `isOnline`, o contador por transporte, `onlineSessions` no resumo do vMCP com e sem janela, a linha que sobrevive à remoção do vMCP sem ser podada, o offset além da faixa do `bigint` saturando, e o `clientInfo` com byte nulo e caractere de controle: a sessão entra com o rótulo limpo, o `touch` não perde as requisições, o nome além do teto entra cortado e o nulo num campo obrigatório é 400 |
 | `catalogs.integration.test.ts` | catálogos (inclui o recorte do site: o catálogo **privado** do caminho não é nomeado em `mcps[].catalogs` fora de `'all'`/`viewer`, e o dono vem nulo): criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; a re-execução do `016`; e a **clonagem de catálogo** (`031`), **depois** dela de propósito — a re-execução estreita o `CHECK` de `audit_log.action` para a lista da época e `catalog.clone` volta a ser recusada até a `031` ser reaplicada (que é como o teste começa, provando a idempotência dela): membros copiados com o `is_active` de cada participação, cópia privada com o original público, sem vínculo com vMCP e sem concessão, original intacto, o `-2`/`-3`, o slug pedido (livre, 409 e 400), os 404 e a linha `catalog.clone` com `<origem> -> <cópia>`, sozinha na trilha |
 | `virtual-mcps.integration.test.ts` também cobre | a visibilidade `'open'` do site (só vMCP aberto e ligado), `mcps` na skill, `listPublishedSkills` por vMCP, o `icon` da skill (regra de shared, 400 no inválido, CHECK de tamanho), os contadores por porta e os dois previews da colmeia (`preview` e `previewCatalogs`, com o teto `VIRTUAL_MCP_PREVIEW_SIZE` e o `isActive` do catálogo), e o canvas (`setVirtualMcpCanvas`, posição preservada por `setVirtualMcpSkills`, `linkSkill` com posição, `layout` que ignora lixo, os CHECKs de `014`) |
-| `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; a concessão de **conta desativada** marcada em `Grant.isActive` e revogável nos três tipos (com a mudança de nível ainda recusada, e sem devolver nada na reativação); a **ficha do catálogo recortada pela conta** — `mcps` só com os vMCPs que ela vê (inclusive para a dona do catálogo) e `skills` só com os membros que ela abre, com `mcpCount`/`skillCount` globais; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers` (inclusive `%%` e `_` como caractere); `listPublicCatalogs`/`getPublicCatalog` com membros privados; as cascatas; a re-execução do `017` que não devolve dono a ninguém; e o UPDATE parcial das duas escritas de skill, com a escrita concorrente (renomeação, público e desligamento) sobrevivendo à trava da linha |
+| `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo — mais o username que a `033` derivou do **nome** daquela conta legada, e a linha dela no livro); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; a concessão de **conta desativada** marcada em `Grant.isActive` e revogável nos três tipos (com a mudança de nível ainda recusada, e sem devolver nada na reativação); a **ficha do catálogo recortada pela conta** — `mcps` só com os vMCPs que ela vê (inclusive para a dona do catálogo) e `skills` só com os membros que ela abre, com `mcpCount`/`skillCount` globais; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers` por nome e por username, com o **e-mail recusado dos dois lados** (inclusive `%%` e `_` como caractere); `listPublicCatalogs`/`getPublicCatalog` com membros privados e o `ownerUsername` que a decisão 11 do `docs/19` passou a expor ao anônimo; as cascatas; a re-execução do `017` que não devolve dono a ninguém; e o UPDATE parcial das duas escritas de skill, com a escrita concorrente (renomeação, público e desligamento) sobrevivendo à trava da linha; mais o `ownerHasProfile` (`034`) no catálogo público e na skill dele, falso enquanto a dona não abre o perfil, falso com o perfil salvo e privado, verdadeiro com ele público |
 | `rag.integration.test.ts` | busca semântica (`020`): os 29 cenários de verificação do DDL — o backfill do hash numa base parada no `019` (sem tocar `updated_at`), a coluna gerada que o Postgres recusa, os triggers de pendência (skill, arquivo de texto, binário que não marca, UPDATE sem mudança, SKILL.md, tag, contador), o `CHECK` do hash e o texto com prefixo recusado, a deduplicação de textos iguais, o `CHECK` de dimensão e a FK composta, cobertura e pendências (com o texto órfão de fora), a fusão RRF, as cascatas de espaço, skill e arquivo e o texto em uso protegido, a reserva em lote e duas em paralelo, o HNSW acima de 2000 dimensões, a identidade do espaço com os dois prefixos (e os limites dos prefixos) e o mesmo texto em dois espaços; mais o **recorte de visibilidade real** nas duas pernas (o vMCP fechado que não vaza no site nem em outro servidor), a paginação e o `total` do conjunto fundido (inclusive a página além do fim e o conjunto fundido vazio, em que a contagem volta a ser uma consulta à parte, e as 120 skills com o mesmo termo, que provam que a perna textual entra inteira: o `total` é o da busca textual mais os vizinhos, e duas páginas cobrem o conjunto sem repetir nem pular), a semeadura e o painel em `settings` com as duas ações novas de auditoria, o **termo literal** (`%`, `_` e `\` como caractere, com as skills de controle que o curinga traria, nas duas pernas, e caixa/acento/palavra parcial intactos) e a re-execução da `020`; mais a **fila de textos** do `025` (a recusa gravada que tira o texto da fila daquele espaço e não é reescrita na segunda vez, o espaço/texto inexistente que não grava nem lança, a reserva com prazo que não deixa duas chamadas em paralelo pegarem o mesmo texto, a reserva vencida que volta à fila, a gravação do vetor que encerra a reserva, o hash sem texto que `insertRagVectors` ignora em vez de perder o lote, e a coleta de órfãos levando vetor e estado pelas cascatas; a **devolução da reserva** do lote que falha, um texto de cada vez e o lote inteiro, sem tocar a recusa, e o **adiamento** com `retryAfterMs`; `clearRagRefusals` limpando um espaço só, sem tocar a reserva nem o outro espaço, com a auditoria); a **troca binário ↔ texto** com o conteúdo igual marcando nos dois sentidos, e o binário regravado igual continuando sem marcar (`027`); e a **reserva de skills com prazo** (`028`: a linha gravada e baixada por terminar e por devolver, o lote do indexador morto que volta só depois do prazo e na ordem de processamento, a skill que derruba o indexador travada no teto de tentativas e visível em `stuckSkills`, o conteúdo novo que recomeça a conta, a reserva viva segurando a skill remarcada, duas réplicas repartindo as vencidas, a statement que pula a linha travada em vez de esperar, a cascata e `ragSchemaReady` esperando a sexta tabela). As listas de migrations são lidas da pasta, e a reexecução da `020` leva a `027` junto |
-| `accesses.integration.test.ts` | acessos por skill (`018`): a leitura do site com as cópias e só o contador global; pelo MCP público por catálogo (os catálogos do caminho por nome, cada um somando, e a participação desativada saindo do caminho) e por vínculo direto (catálogos vazios, o contador do vínculo); pelo mcp-admin com o nome da chave `psk_` e o e-mail **e contador nenhum somado**; skill inexistente sem gravar nem lançar, opcionais tortos ou sumidos ignorados, e os 400; a listagem com cada filtro (skill, catálogo, vMCP, conta e chave `psk_` — duas contas, cada uma só vê a sua —, `origin`, `kind`), o `q` em cada coluna, a ordem, o clamp e os 400; as cópias sobrevivendo à remoção da skill, do catálogo, do vMCP (e da chave `psv_`) e da conta (e da chave `psk_`), sem poda; o `q` **literal** (`%` e `_` como caractere e o pior caso de LIKE casando nada); e a re-execução do `018`, do `019` e do `022` juntos, com o conjunto exato de índices — os seis GIN de trigrama incluídos — e o CHECK dos arrays; mais **o caminho que olha a porta** (dois catálogos no mesmo vMCP com portas diferentes: cada superfície grava e soma só no que a serve, `resource` sem ninguém fica sem caminho, a guia de cada catálogo só mostra o que passou por ele, e a precedência do vínculo direto segue sem porta), o **rótulo com byte nulo e controle** (a linha entra limpa **e** os contadores sobem; `normalizeSessionLabel` no teto, idempotente e com o par substituto cortado virando U+FFFD; o nulo em `q`, no termo de `listSkills` e num nome é 400), as **cópias de nome cortadas** em 512 com os três arrays de catálogo alinhados, e o **offset saturando** nas quatro listagens |
+| `accesses.integration.test.ts` | acessos por skill (`018`): a leitura do site com as cópias e só o contador global; pelo MCP público por catálogo (os catálogos do caminho por nome, cada um somando, e a participação desativada saindo do caminho) e por vínculo direto (catálogos vazios, o contador do vínculo); pelo mcp-admin com o nome da chave `psk_` e o **username** da conta **e contador nenhum somado**; skill inexistente sem gravar nem lançar, opcionais tortos ou sumidos ignorados, e os 400; a listagem com cada filtro (skill, catálogo, vMCP, conta e chave `psk_` — duas contas, cada uma só vê a sua —, `origin`, `kind`), o `q` em cada coluna, a ordem, o clamp e os 400; as cópias sobrevivendo à remoção da skill, do catálogo, do vMCP (e da chave `psv_`) e da conta (e da chave `psk_`), sem poda; o `q` **literal** (`%` e `_` como caractere e o pior caso de LIKE casando nada); e a re-execução do `018` e do `019` juntos, com o conjunto exato de índices — os seis GIN de trigrama incluídos — e o CHECK dos arrays, mais a `022` **recusada** sobre o schema da `033` (`user_email` já não existe) sem deixar nada pela metade; mais **o caminho que olha a porta** (dois catálogos no mesmo vMCP com portas diferentes: cada superfície grava e soma só no que a serve, `resource` sem ninguém fica sem caminho, a guia de cada catálogo só mostra o que passou por ele, e a precedência do vínculo direto segue sem porta), o **rótulo com byte nulo e controle** (a linha entra limpa **e** os contadores sobem; `normalizeSessionLabel` no teto, idempotente e com o par substituto cortado virando U+FFFD; o nulo em `q`, no termo de `listSkills` e num nome é 400), as **cópias de nome cortadas** em 512 com os três arrays de catálogo alinhados, e o **offset saturando** nas quatro listagens |
 | `activity.integration.test.ts` | a tela de Atividade (`032`): o UPSERT somando no mesmo balde (dois despejos e um instante fora do passo de 15 min caindo na mesma linha), a lista vazia que não consulta nada, o saneamento do `method` (byte nulo e ESC sumindo, os dois virando a mesma chave **no mesmo lote** sem 21000, o método de 300 caracteres cortado em `MCP_CALL_METHOD_MAX`, o só-controle e o `calls` zero descartados sem derrubar o lote), o vMCP apagado que entra com uuid nulo e o slug (a FK recusaria o lote inteiro) e os cinco 400 de quem chama; a **série nos dois fusos** — o mesmo instante (02:30Z de 10/03) contado no dia 10 em UTC e no dia **9** em `America/Sao_Paulo`, com as quatro fontes somando no `total` —, o fuso desconhecido (inclusive `+05:45` e o nome com espaço) e a faixa invertida com 400, e a faixa de dez anos saturando em 400 dias; o relatório de um dia com as quatro fontes populadas (três sessões e duas identidades, o agente repetido no `topAgents`, a encerrada que **começou na véspera**, doze chamadas em quatro famílias, três transportes e dois servidores, as leituras por superfície/origem/credencial com a skill mais lida, e a trilha com dois atores e duas origens), o `top` recortando só os top-N e o clamp no mínimo; e o dia vazio devolvendo zeros, listas vazias e série vazia |
+| `profile.integration.test.ts` | o perfil (`034`): a conta que nasce **sem** linha e a leitura que devolve o vazio e privado, a linha que nasce no primeiro salvamento (privada), o campo ausente que não é regravado e o `websiteUrl: null` que apaga, o `name` gravado em `users` (e só ele, com o carimbo subindo), as dez recusas da regra do shared com o campo nomeado (bio no teto depois de normalizada, URL, 9 links, URL repetida em caixa diferente, rótulo vazio e o caractere nulo em bio e em link) e os 404 de conta inexistente nas três escritas — inclusive o que só a chave estrangeira do upsert acusa; a **foto**: o tipo decidido pelos bytes, o SVG recusado, o `mime` informado que não bate com os bytes, o vazio e o acima de 512 KB, a substituição, o `sha256` que o ETag usa conferido contra o calculado em Node, `getAvatarByUsername` por caixa diferente, o carimbo sozinho, a foto de quem **não** tem perfil e a remoção idempotente; a **página pública**: privada, conta desativada e username inexistente no mesmo `null` (e o `@` e o vazio), o username canônico, a reativação que devolve a página, e as duas listas com o que já era público — a privada e a desligada de fora, a que só chega por vMCP aberto dentro, e o catálogo privado e o desligado fora; a **conferência barata** da rota da imagem (`isProfilePublic`): com a tabela `skills` renomeada, ela responde e `getPublicProfile` falha — a prova de que não toca no acervo —, mais a igualdade com a página nos seis casos e o perfil desligado e a conta desativada fechando as duas juntas; `ownerHasProfile` falso sem linha, com linha privada, com dono desativado e em skill órfã, verdadeiro nas três visibilidades e no catálogo público; `clearProfile` esvaziando, desligando, apagando a foto, auditando `user.profile` com o username no alvo e alcançando a foto de quem nunca salvou perfil (auditando de novo sem nada a limpar); os CHECKs do `034` recusando por SQL cru (mime, teto e piso de bytes, hash que não descreve os bytes, bio, site e os dois de `links`) e o `CHECK` de `action` com a ação nova; a cascata das duas tabelas na conta apagada, com o acervo ficando órfão e o username seguindo gasto; e a **re-execução da `034`**, que não muda estrutura, dado nem o CHECK |
 | `schema.integration.test.ts` | `src/schema.ts` × banco migrado do zero (ver [O `schema.ts` e o banco](#o-schemats-e-o-banco)): tabela, coluna (tipo, NOT NULL, DEFAULT), chave primária e UNIQUE **com o nome da constraint**, chave estrangeira com a ação de remoção e índice (método, colunas, classe de operadores e `DESC`), nos dois sentidos; mais a lista `SOMENTE_SQL` dos parciais e por expressão, que precisa corresponder a índices que existem |
 | `orphans.integration.test.ts` | adoção pelo admin solitário (`adoptOrphans`): a única admin ativa (com outra desativada) adota as skills órfãs do token global, do bootstrap e sem ator e o catálogo órfão, sem tocar o que tem dono nem os vMCPs (o `public` padrão continua órfão); `updated_at` de skills, catálogos e vMCPs, `rag_stale` e `search_vector` intocados; a concessão prévia da conta (promovida de editora) apagada só nos adotados, e as de outras contas e do vMCP mantidas; uma linha de auditoria por objeto no formato da transferência, com o ator e a origem recebidos (inclusive `bootstrap`); a segunda chamada sem adotar nem auditar; três chamadas simultâneas auditando uma vez só; o `q` **literal** de `listAuditPage` (`%` e `_` como caractere, e o pior caso de LIKE casando nada); e as recusas sem gravar — membro, editor, uuid torto ou inexistente, admin desativada (mesmo sendo a única), duas admins ativas, a outra reativada e a própria conta desativada |
 | `quarantine.integration.test.ts` | quarentena (`030`): a chave `quarantine.approvers` semeada com o padrão; dois envios **do mesmo nome** convivendo, a lista mais recentes primeiro, o `SKILL.md` gravado cru com o frontmatter dentro; texto × binário com o CHECK (o `.csv` em Windows-1252 e o PNG byte a byte, e os dois INSERTs crus que o CHECK recusa); caminho duplicado em caixa diferente **recusado dentro do envio** (pela query e pelo índice) e **livre entre envios**, com o upsert trocando a grafia; o `SKILL.md` criável quando falta, removível, e as mensagens de pasta × arquivo; o `updated_at` do envio subindo ao gravar **e** ao apagar um arquivo; oito escritas simultâneas no mesmo envio sem deadlock e a remoção concorrente virando 404; o recorte por dono (`null` e uuid torto devolvendo vazio), a busca literal (`%` como caractere) e a paginação; uuid torto `null` na leitura e 404 na escrita; a cascata do envio apagado; o `SET NULL` do dono removido deixando o envio órfão; a promoção sem `SKILL.md` recusada **sem apagar nada** (e consertada acrescentando o arquivo); o `SKILL.md` **binário** entrando no envio e voltando byte a byte, a promoção dele recusada com o envio e os arquivos intactos, o conserto por cima (salvar o arquivo em UTF-8 no próprio envio) e o mesmo arquivo continuando **recusado em `files`**; a promoção completa (slug com sufixo quando ocupado, **dono e criador o promotor**, inclusive no envio de outra conta, tags e descrição do frontmatter, `SKILL.md` sem frontmatter, anexos com caminho e bytes intactos, skill flutuante e envio sumido), a auditoria `quarantine.promote` com `<nome> -> <slug>`; a skill promovida **pendente de RAG** e reservada por `claimStaleSkills`, com as tabelas novas sem trigger de RAG e sem coluna de RAG; a política recusando o valor inválido e auditando `quarantine.settings`; o `CHECK` com as cinco ações novas e as antigas; e a **re-execução da `030`**, que não muda estrutura, dado nem a política já escolhida |
 | `migrate.integration.test.ts` | o **runner**: com a recusa ligada, o banco novo aplica tudo e a segunda passada não faz nada; a linha que falta no meio do histórico é recusada nomeando os arquivos, sem aplicar nenhum e com o `is_public` intacto; o histórico inteiro perdido é recusado pelo schema que já existe (a marca d'água seria zero) e a recomposição documentada destrava; o **CLI de verdade**, num processo filho — de um caminho com espaço, acento e symlink (o caso em que ele saía com 0 sem fazer nada), recusando por padrão com código 1 e liberando com `MIGRATE_ALLOW_RETRO=1`; e, sem a recusa, o porquê dela medido: o `012` reaplicado derruba o `is_public` do `017`, o `017` o devolve zerado e sem linha na trilha, e estreita o `CHECK` de `audit_log` a ponto de recusar `rag.reindex` |
 | `locks.integration.test.ts` | a **ordem de travas** no recorte do vMCP (`tasks/023`): `linkSkill` e `unlinkSkill` esperando o canvas na linha do servidor, sem segurar o vínculo (um cliente cru faz o papel do canvas e atualiza o vínculo por cima, sem deadlock); as quatro travas do recorte em `FOR NO KEY UPDATE` — cada função real é pausada depois de travar o vMCP e um terceiro cliente consegue o `FOR KEY SHARE NOWAIT` que a FK de `skill_accesses` pede; a regra "trava pura no começo, `UPDATE` no fim", conferida pelo `pgrowlocks` (contrib; pulada com aviso se o servidor não tiver) com a função pausada no vínculo; pares concorrentes no mesmo vínculo (`linkSkill`/`unlinkSkill`/`recordSkillAccess` × canvas e recorte); `createSkill` publicando nos mesmos servidores em ordens opostas; o vMCP apagado no meio de um `linkSkill` virando o 400 da validação; e o canvas tudo ou nada com o `layout` gravado por último |
-| `skills.integration.test.ts` | **slug gerado perto do teto** (`tasks/035`): três e quatro homônimos de nome longo, a base de 94 caracteres atravessando `-9` → `-10`, dois nomes diferentes com o mesmo prefixo dividindo os desempates encurtados, o mesmo para vMCP e catálogo, e o caso comum e o slug pedido em uso (409 com o próprio slug) intactos; **paginação com desempate** (`tasks/036`): sobre 90 skills inseridas num `INSERT` só — empatadas em nome, `updated_at` e contadores —, as páginas de `score`, `recent`, `name` e da relevância textual são uma partição do conjunto, e a busca híbrida com o `rrf` empatado entre as pernas (30 só-texto × 30 só-vetor, página de 1) também; e a **clonagem de skill** (`031`): propriedades, arquivos (texto e binário, byte a byte, com o hash recalculado) e tags copiados, a cópia nascendo privada mesmo com o original público, desligada como ele, flutuante (sem vMCP, sem catálogo e sem concessão) mesmo com o original publicado e compartilhado, pendente de RAG e com o criador acompanhando o dono; o `-2` e o `-3`, o nome pedido que não mexe no desempate, o slug pedido livre, ocupado (409) e inválido (400), os 404 de uuid torto, sumido e dono inexistente sem deixar rastro, e a linha `skill.clone` com `<origem> -> <cópia>` e sem `create` junto. Exige pgvector |
+| `skills.integration.test.ts` | **slug gerado perto do teto** (`tasks/035`): três e quatro homônimos de nome longo, a base de 94 caracteres atravessando `-9` → `-10`, dois nomes diferentes com o mesmo prefixo dividindo os desempates encurtados, o mesmo para vMCP e catálogo, e o caso comum e o slug pedido em uso (409 com o próprio slug) intactos; **paginação com desempate** (`tasks/036`): sobre 90 skills inseridas num `INSERT` só — empatadas em nome, `updated_at` e contadores —, as páginas de `score`, `recent`, `name` e da relevância textual são uma partição do conjunto, e a busca híbrida com o `rrf` empatado entre as pernas (30 só-texto × 30 só-vetor, página de 1) também; e a **clonagem de skill** (`031`): propriedades, arquivos (texto e binário, byte a byte, com o hash recalculado) e tags copiados, a cópia nascendo privada mesmo com o original público, desligada como ele, flutuante (sem vMCP, sem catálogo e sem concessão) mesmo com o original publicado e compartilhado, pendente de RAG e com o criador acompanhando o dono; o `-2` e o `-3`, o nome pedido que não mexe no desempate, o slug pedido livre, ocupado (409) e inválido (400), os 404 de uuid torto, sumido e dono inexistente sem deixar rastro, e a linha `skill.clone` com `<origem> -> <cópia>` e sem `create` junto; mais o `ownerHasProfile` (`034`) seguindo o **dono da linha**: verdadeiro na fonte, cuja dona tem página, e falso na cópia, de quem clonou e não tem. Exige pgvector |
 | `manifest.integration.test.ts` | o manifesto da extensão de skills (SEP-2640, ver [Manifesto da extensão de skills](#manifesto-da-extensão-de-skills)): o recorte de `listSkillsManifest` (vínculo direto com `as_skill`, o que só tem prompt/resource, a desligada, a de outro vMCP, a que chega por catálogo e a que o vínculo direto sem `as_skill` esconde apesar do catálogo), `options.slug` devolvendo uma entrada ou nenhuma (inclusive a vazia), as **tags ordenadas por nome** com os `tags.id` semeados em ordem inversa (pedir as tags fora de ordem numa skill só não prova nada: `replaceTagsTx` ordena os nomes antes de gravar), o inventário com o `SKILL.md` primeiro (provado por um anexo que a coleção do banco põe antes dele) e o `sha256` hexadecimal batendo com o calculado em Node sobre os mesmos bytes — texto multibyte e binário —, com `sizeBytes` em bytes; a skill sem linha de `SKILL.md` listada mesmo assim; e `readSkillMdBodies` com lista vazia, uuid torto, uuid inexistente, várias skills de uma vez, uuid repetido e um lote de 55 corpos que atravessa o teto de fatiamento; mais o `updatedAt` subindo com o `SKILL.md` — a chave de cache do texto composto |
 | `migrate.test.ts` (sem banco) | `migrationNumber` nos dois formatos de nome, e `isEntrypoint` com caminhos reais num diretório temporário: espaço e acento (a URL percent-encodada que a comparação antiga não reconhecia), symlink, `--preserve-symlinks-main`, outro arquivo e `argv[1]` ausente ou inexistente |
 
-As dezessete de integração recriam o mesmo banco e o Vitest roda arquivos em
+As dezenove de integração recriam o mesmo banco e o Vitest roda arquivos em
 paralelo: elas se serializam por um advisory lock (`pg_advisory_lock`) segurado
 durante todo o arquivo. Suíte de integração nova aqui dentro precisa usar o
 mesmo número.

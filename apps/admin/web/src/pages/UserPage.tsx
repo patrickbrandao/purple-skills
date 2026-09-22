@@ -16,7 +16,7 @@ import {
 import { Badge, EmptyRow, Panel, Skel, Status, Tabs } from '../components/ui.js';
 import { AccessLog } from '../components/AccessLog.js';
 import { ActorTrail } from '../components/ActorTrail.js';
-import { initials } from '../components/SkillIcon.js';
+import { Avatar } from '../components/Avatar.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
 
@@ -122,7 +122,7 @@ export function UserPage({ me }: { me: SessionUser }) {
         <Route index element={<AccountTab user={user} me={me} />} />
         <Route path="keys" element={<KeysTab user={user} />} />
         <Route path="accesses" element={<AccessLog load={loadAccesses} showSkill />} />
-        <Route path="activity" element={<ActorTrail actor={user.email} />} />
+        <Route path="activity" element={<ActorTrail actor={user.username} />} />
       </Routes>
     </div>
   );
@@ -133,12 +133,17 @@ export function UserPage({ me }: { me: SessionUser }) {
 /** Bloqueio de login em vigor (`docs/05` §2.7): a data está no futuro. */
 export const isLocked = (user: UserSummary) => user.lockedUntil !== null && new Date(user.lockedUntil) > new Date();
 
-/** O título da ficha: avatar, nome com os selos e a linha com e-mail, papel e datas. */
+/** O título da ficha: avatar, nome com os selos e a linha com usuário, e-mail, papel e datas. */
 export function UserTitle({ user, me, name }: { user: UserSummary; me: SessionUser; name?: string }) {
   const self = user.uuid === me.uuid;
   return (
     <div className="flex items-center gap-3">
-      <span className="avatar lg">{initials(name || user.name)}</span>
+      <Avatar
+        username={user.username}
+        name={name || user.name}
+        stamp={user.avatarUpdatedAt}
+        className="lg"
+      />
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="truncate">{name || user.name}</h1>
@@ -152,7 +157,14 @@ export function UserTitle({ user, me, name }: { user: UserSummary; me: SessionUs
           {isLocked(user) && <Badge tone="danger">bloqueada</Badge>}
         </div>
         <p className="sub mono flex flex-wrap items-center gap-x-3">
-          <span>{user.email}</span>
+          {/*
+            Os dois lado a lado, e só aqui: esta ficha é de admin, a única
+            superfície além da própria conta em que o e-mail aparece
+            (`docs/19-username.md` decisão 8). O username vem primeiro porque é
+            como o resto do painel nomeia esta pessoa.
+          */}
+          <span>@{user.username}</span>
+          <span>· {user.email}</span>
           <span>· último acesso: {user.lastLoginAt ? formatRelative(user.lastLoginAt) : 'nunca entrou'}</span>
           <span>· criada em {formatDateTime(user.createdAt)}</span>
           <span>· atualizada em {formatDateTime(user.updatedAt)}</span>
@@ -265,6 +277,8 @@ function AccountTab({ user, me }: { user: UserSummary; me: SessionUser }) {
         <dl className="kv props-kv">
           <dt>Nome</dt>
           <dd>{user.name}</dd>
+          <dt>Usuário</dt>
+          <dd className="mono">@{user.username}</dd>
           <dt>E-mail</dt>
           <dd className="mono">{user.email}</dd>
           <dt>Papel</dt>

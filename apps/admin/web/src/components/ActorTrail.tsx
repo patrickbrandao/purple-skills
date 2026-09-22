@@ -99,7 +99,7 @@ export function ActorTrail({ actor }: { actor: string }) {
 
       <p className="panel-hint mt-3 mb-0">
         O que esta conta fez no acervo, pelo painel ou pelo MCP administrativo: a mesma trilha da Auditoria, filtrada
-        pelo e-mail. Leituras não entram aqui — estão em Acessos.
+        pelo usuário. Leituras não entram aqui — estão em Acessos.
       </p>
     </div>
   );

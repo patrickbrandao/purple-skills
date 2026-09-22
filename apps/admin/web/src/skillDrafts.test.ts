@@ -19,13 +19,13 @@ const mcp = (uuid: string, extra: Partial<SkillMcpRef> = {}): SkillMcpRef => ({
 
 const grant = (userUuid: string, level: Grant['level']): Grant => ({
   userUuid,
-  email: `${userUuid}@x.dev`,
+  username: userUuid,
   name: userUuid,
   role: 'membro',
   isActive: true,
   level,
   grantedByUserUuid: null,
-  grantedByEmail: null,
+  grantedByUsername: null,
   createdAt: '2026-09-16T00:00:00Z',
 });
 
@@ -36,7 +36,7 @@ const SKILL = {
   isPublic: false,
   ownerUserUuid: 'dono',
   // O dono se compara pelo e-mail: é o que a busca de contas devolve (`tasks/025`).
-  ownerEmail: 'dono@x.dev',
+  ownerUsername: 'dono',
   mcps: [mcp('m1'), mcp('m2', { direct: false, catalogs: [{ uuid: 'c1', slug: 'c1', name: 'C1' }] })],
   catalogs: [
     { uuid: 'c1', slug: 'c1', name: 'C1', isActive: true, memberActive: true },
@@ -98,33 +98,33 @@ describe('planChanges', () => {
       drafts({
         access: {
           isPublic: true,
-          owner: { uuid: 'nova', email: 'nova@x.dev', name: 'Nova', role: 'editor' },
+          owner: { uuid: 'nova', username: 'nova', name: 'Nova', role: 'editor' },
           grants: {
-            'ana@x.dev': { email: 'ana@x.dev', name: 'ana', role: 'membro', level: null },
-            'bia@x.dev': { email: 'bia@x.dev', name: 'bia', role: 'membro', level: 'edit' },
-            'caio@x.dev': { email: 'caio@x.dev', name: 'caio', role: 'membro', level: 'manage' },
+            'ana': { username: 'ana', name: 'ana', role: 'membro', level: null },
+            'bia': { username: 'bia', name: 'bia', role: 'membro', level: 'edit' },
+            'caio': { username: 'caio', name: 'caio', role: 'membro', level: 'manage' },
           },
         },
       }),
     );
     expect(plan.map((change) => change.type)).toEqual(['public', 'revoke', 'grant', 'owner']);
-    expect(plan[2]).toMatchObject({ email: 'caio@x.dev', level: 'manage', isNew: true });
+    expect(plan[2]).toMatchObject({ username: 'caio', level: 'manage', isNew: true });
   });
 
   it('o público igual ao gravado e o dono atual não são pendência', () => {
-    expect(types(drafts({ access: { isPublic: false, owner: { uuid: 'dono', email: 'dono@x.dev', name: 'D', role: 'admin' }, grants: {} } }))).toEqual([]);
+    expect(types(drafts({ access: { isPublic: false, owner: { uuid: 'dono', username: 'dono', name: 'D', role: 'admin' }, grants: {} } }))).toEqual([]);
   });
 
   it('mudar o nível de quem já tem concessão não é concessão nova', () => {
     const [change] = planChanges(
       SKILL,
-      drafts({ access: { grants: { 'bia@x.dev': { email: 'bia@x.dev', name: 'bia', role: 'membro', level: 'manage' } } } }),
+      drafts({ access: { grants: { 'bia': { username: 'bia', name: 'bia', role: 'membro', level: 'manage' } } } }),
     );
-    expect(change).toMatchObject({ type: 'grant', email: 'bia@x.dev', level: 'manage', isNew: false });
+    expect(change).toMatchObject({ type: 'grant', username: 'bia', level: 'manage', isNew: false });
   });
 
   it('revogar quem não tem concessão não é pendência', () => {
-    expect(types(drafts({ access: { grants: { 'zeca@x.dev': { email: 'zeca@x.dev', name: 'z', role: 'membro', level: null } } } }))).toEqual([]);
+    expect(types(drafts({ access: { grants: { 'zeca': { username: 'zeca', name: 'z', role: 'membro', level: null } } } }))).toEqual([]);
   });
 });
 
@@ -140,7 +140,7 @@ describe('pruneDrafts', () => {
         catalogs: { c1: { slug: 'c1', name: 'C1', member: true, active: true } },
         access: {
           isPublic: false,
-          grants: { 'ana@x.dev': { email: 'ana@x.dev', name: 'ana', role: 'membro', level: 'view' } },
+          grants: { 'ana': { username: 'ana', name: 'ana', role: 'membro', level: 'view' } },
         },
       }),
     );

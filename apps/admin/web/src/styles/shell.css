@@ -86,6 +86,19 @@
   height: 40px;
   font-size: 14px;
 }
+/* A foto ocupa o mesmo círculo do monograma: `cover` recorta pelo centro em vez
+   de deformar, que é o que aconteceria com uma imagem não quadrada — e não há
+   redimensionamento no servidor (`docs/20-perfil.md` §3.2), então chega o que a
+   pessoa enviou. O gradiente de fundo fica por baixo e aparece enquanto a
+   imagem carrega. */
+img.avatar {
+  object-fit: cover;
+}
+.avatar.xl {
+  width: 96px;
+  height: 96px;
+  font-size: 32px;
+}
 
 .nav {
   display: flex;
@@ -1328,4 +1341,53 @@
   .shell.sidebar-collapsed .sidebar {
     transition: none;
   }
+}
+
+/* ============================================================
+   QUADRO "O QUE É SEU" (Minha conta)
+   ============================================================
+   Três números — servidores vMCP, skills e catálogos de que a conta é dona —
+   e cada tile é um link para a lista que o produziu, porque o gesto seguinte
+   de quem lê o número é abrir a lista. O desenho é o dos tiles da Atividade
+   (`activity.css`), copiado e não reusado: aquele bloco é de uma tela de
+   relatório, e amarrar o perfil a ele faria um ajuste de lá mexer aqui. */
+.own-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.own-stat {
+  display: block;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 10px 12px;
+  min-width: 0;
+  color: inherit;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.own-stat:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.own-stat .v {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+.own-stat .k {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+.own-stat .k svg {
+  width: 14px;
+  height: 14px;
 }

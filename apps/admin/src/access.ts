@@ -3,7 +3,7 @@ import {
   badRequest,
   getSkillDetail,
   getSkillSummary,
-  getUserByEmail,
+  getUserByUsername,
   listSkillGrants,
   lookupUsers,
   notFound,
@@ -16,7 +16,7 @@ import {
   canCreate,
   canManage,
   isAccessLevel,
-  normalizeEmail,
+  normalizeUsername,
   type AccessLevel,
   type EffectiveAccess,
   type Grant,
@@ -74,7 +74,7 @@ type Sheet = {
   access: EffectiveAccess;
   grants: Grant[];
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
 };
 
 /**
@@ -82,36 +82,45 @@ type Sheet = {
  *
  * A lista de concessões só vai para quem tem `manage` (decisão 11): quem tem
  * `view` ou `edit` vê o dono e o flag público, não com quem divide. E nenhuma
- * conta sai pelo `uuid` — ver `ownerByEmail`: o dono e as concessões vão pelo
- * e-mail, e o dono dos contêineres aninhados (os catálogos de um vMCP, os vMCPs
- * de um catálogo), que não tem e-mail ao lado e que o painel não lê, não vai.
+ * conta sai pelo `uuid` — ver `ownerByUsername`: o dono e as concessões vão pelo
+ * username, e o dono dos contêineres aninhados (os catálogos de um vMCP, os
+ * vMCPs de um catálogo), que não tem username ao lado e que o painel não lê, não
+ * vai.
  */
 export function withGrants<T extends Sheet>(object: T): T {
-  const grants = canManage(object.access) ? object.grants.map(grantByEmail) : [];
-  return withoutNestedOwners(ownerByEmail({ ...object, grants }));
+  const grants = canManage(object.access) ? object.grants.map(grantByUsername) : [];
+  return withoutNestedOwners(ownerByUsername({ ...object, grants }));
 }
 
 /**
- * O dono como ele sai do painel: pelo **e-mail**, pela mesma razão do
- * `withoutUuid` da busca de contas. `ownerUserUuid` ao lado de `ownerEmail`, em
- * toda ficha e lista que a sessão vê, entregava o `sub` do cookie de cada dono —
- * e a busca dá o papel pelo e-mail, então o par que o `withoutUuid` tirou de
- * circulação continuava reconstruível (relatório 011 da auditoria de
- * 2026-09-19). O campo sobrevive como **apelido do e-mail** até sair do tipo
- * compartilhado; nulo continua "sem dono". Vale para toda sessão, admin
- * inclusive — quem precisa do uuid de verdade tem `/api/users`. A **entrada**
- * `ownerUserUuid` do `PATCH` não muda: e-mail ou uuid (`ownerFrom`).
+ * O dono como ele sai do painel: pelo **username**, pela mesma razão do
+ * `withoutUuid` da busca de contas. `ownerUserUuid` ao lado do rótulo da conta,
+ * em toda ficha e lista que a sessão vê, entregava o `sub` do cookie de cada
+ * dono — e a busca dá o papel pelo mesmo rótulo, então o par que o
+ * `withoutUuid` tirou de circulação continuava reconstruível (relatório 011 da
+ * auditoria de 2026-09-19). O campo sobrevive como **apelido do username** até
+ * sair do tipo compartilhado; nulo continua "sem dono". Vale para toda sessão,
+ * admin inclusive — quem precisa do uuid de verdade tem `/api/users`.
+ *
+ * **Era o e-mail que ocupava este lugar, e é o que mudou** (`docs/19-username.md`
+ * decisão 1): o raciocínio acima continua inteiro, só que o rótulo que ele
+ * carrega deixou de ser dado pessoal. A **entrada** `ownerUserUuid` do `PATCH`
+ * acompanha: username ou uuid, e e-mail recusado (`ownerFrom`).
  */
-export const ownerByEmail = <T extends { ownerUserUuid: string | null; ownerEmail: string | null }>(object: T): T => ({
+export const ownerByUsername = <
+  T extends { ownerUserUuid: string | null; ownerUsername: string | null },
+>(
+  object: T,
+): T => ({
   ...object,
-  ownerUserUuid: object.ownerUserUuid === null ? null : object.ownerEmail,
+  ownerUserUuid: object.ownerUserUuid === null ? null : object.ownerUsername,
 });
 
-/** A concessão como ela sai: a conta e quem concedeu, pelo e-mail (ver `ownerByEmail`). */
-export const grantByEmail = (grant: Grant): Grant => ({
+/** A concessão como ela sai: a conta e quem concedeu, pelo username (ver `ownerByUsername`). */
+export const grantByUsername = (grant: Grant): Grant => ({
   ...grant,
-  userUuid: grant.email,
-  grantedByUserUuid: grant.grantedByUserUuid === null ? null : grant.grantedByEmail,
+  userUuid: grant.username,
+  grantedByUserUuid: grant.grantedByUserUuid === null ? null : grant.grantedByUsername,
 });
 
 /**
@@ -189,67 +198,76 @@ export function levelFrom(raw: unknown): AccessLevel {
 }
 
 /**
- * A conta alvo de uma **concessão ou transferência**, pelo e-mail: tem de
+ * A conta alvo de uma **concessão ou transferência**, pelo username: tem de
  * existir e estar ativa — dar acesso, ou o objeto, a quem não entra não faz
  * sentido, e o banco recusa os dois (`setGrant`, `transferOwnerTx`). Mudar o
  * **nível** é a mesma chamada de conceder, e por isso também exige conta ativa.
  * Revogar **não** passa por aqui: ver `grantOf`.
+ *
+ * E-mail é recusado aqui como qualquer outro texto fora do formato
+ * (`normalizeUsername` não deixa passar `@`), o que é a decisão 9 do
+ * `docs/19-username.md` no ponto em que ela se realiza: aceitá-lo manteria o
+ * endereço viajando na URL da rota de concessão.
  */
-export async function accountByEmail(rawEmail: string): Promise<{ uuid: string; email: string }> {
-  const email = normalizeEmail(rawEmail);
-  if (!email) throw badRequest('Informe o e-mail da conta');
-  const user = await getUserByEmail(email);
-  if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${email}`);
-  return { uuid: user.uuid, email: user.email };
+export async function accountByUsername(
+  rawUsername: string,
+): Promise<{ uuid: string; username: string }> {
+  const username = normalizeUsername(rawUsername);
+  if (!username) throw badRequest('Informe o usuário da conta');
+  const user = await getUserByUsername(username);
+  if (!user || !user.isActive) throw notFound(`Conta não encontrada ou desativada: ${username}`);
+  return { uuid: user.uuid, username: user.username };
 }
 
 /**
- * A concessão a revogar, procurada pelo e-mail **na lista do próprio objeto** —
- * a que quem tem `manage` já lê —, e não em `users`.
+ * A concessão a revogar, procurada pelo username **na lista do próprio
+ * objeto** — a que quem tem `manage` já lê —, e não em `users`.
  *
- * Revogar passava por `accountByEmail`, que exige conta ativa: a concessão de
+ * Revogar passava por `accountByUsername`, que exige conta ativa: a concessão de
  * quem foi desativado depois de recebê-la não saía por superfície nenhuma,
  * contra a decisão 10 do `docs/12` ("`manage` revoga qualquer concessão"), e
  * voltava a valer, sem ninguém querer, se a conta fosse reativada (relatório
  * 039 da auditoria de 2026-09-19). A linha existe com a conta em qualquer
  * estado, e `remove*Grant` no banco não olha `is_active`.
  *
- * Pela lista, e não por um `accountByEmail` sem a conferência de conta ativa,
+ * Pela lista, e não por um `accountByUsername` sem a conferência de conta ativa,
  * porque a resposta de quem consulta `users` distinguiria "não existe conta com
- * este e-mail" de "existe, e não tem concessão aqui" — inclusive para conta
+ * este usuário" de "existe, e não tem concessão aqui" — inclusive para conta
  * desativada, que a busca de contas não revela (decisão 13). Aqui a pergunta é
  * uma só: a linha está na lista ou não está.
  */
-export function grantOf(grants: readonly Grant[], rawEmail: string, where: string): Grant {
-  const email = normalizeEmail(rawEmail);
-  if (!email) throw badRequest('Informe o e-mail da conta');
-  const grant = grants.find((item) => item.email.toLowerCase() === email);
+export function grantOf(grants: readonly Grant[], rawUsername: string, where: string): Grant {
+  const username = normalizeUsername(rawUsername);
+  if (!username) throw badRequest('Informe o usuário da conta');
+  const grant = grants.find((item) => item.username.toLowerCase() === username);
   // `where` é o lugar por extenso — "nesta skill", "neste catálogo".
   if (!grant) throw notFound(`A conta não tem concessão ${where}`);
   return grant;
 }
 
 /**
- * A conta como ela sai do painel: identificada pelo **e-mail**, sem o `uuid`.
+ * A conta como ela sai do painel: identificada pelo **username**, sem o `uuid`.
  *
  * O `uuid` é o `sub` do cookie de sessão (`auth.ts`), e o único outro campo do
  * payload é uma versão inteira pequena: entregar `uuid` + papel de toda conta
- * ativa a qualquer sessão é dizer a um membro qual crachá forjar. O e-mail já
- * identifica a conta em todas as rotas de concessão, e já é visível para o
- * mesmo público (`docs/12` decisão 13 e §10), então nada de novo vaza aqui.
+ * ativa a qualquer sessão é dizer a um membro qual crachá forjar. O username já
+ * identifica a conta em todas as rotas de concessão e é público por desenho
+ * (`docs/19-username.md` decisão 1), então nada de novo vaza aqui — ao
+ * contrário do e-mail, que ocupava este lugar e saiu.
  *
- * `uuid` continua no objeto como apelido do e-mail só enquanto o painel o ler.
+ * `uuid` continua no objeto como apelido do username só enquanto o painel o ler.
  */
 export const withoutUuid = (user: UserLookup): UserLookup => ({
-  email: user.email,
+  username: user.username,
   name: user.name,
   role: user.role,
-  uuid: user.email,
+  uuid: user.username,
 });
 
 /**
  * Busca de contas para compartilhar (decisão 13): qualquer sessão, só contas
- * ativas, e nunca o `uuid` da conta — ver `withoutUuid`.
+ * ativas, e nunca o `uuid` da conta — ver `withoutUuid`. Casa por username e
+ * nome; o e-mail saiu também da **entrada** (`docs/19` decisão 10).
  */
 export async function lookup(rawQuery: unknown): Promise<UserLookup[]> {
   const q = typeof rawQuery === 'string' ? rawQuery.trim() : '';
@@ -257,23 +275,30 @@ export async function lookup(rawQuery: unknown): Promise<UserLookup[]> {
   return (await lookupUsers(q)).map(withoutUuid);
 }
 
-export async function shareSkill(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
+export async function shareSkill(
+  user: AuthUser,
+  slug: string,
+  username: string,
+  rawLevel: unknown,
+): Promise<Grant> {
   const skill = await loadSkillSummary(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  return grantByEmail(await setSkillGrant(skill.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
+  const target = await accountByUsername(username);
+  return grantByUsername(
+    await setSkillGrant(skill.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)),
+  );
 }
 
 /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
-export async function unshareSkill(user: AuthUser, slug: string, email: string): Promise<void> {
+export async function unshareSkill(user: AuthUser, slug: string, username: string): Promise<void> {
   const skill = await loadSkillSummary(user, slug, 'manage');
-  const grant = grantOf(await listSkillGrants(skill.uuid), email, 'nesta skill');
+  const grant = grantOf(await listSkillGrants(skill.uuid), username, 'nesta skill');
   await removeSkillGrant(skill.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 
-/** UUID canônico, como o banco grava — o que não é e-mail tem de ter esta cara. */
+/** UUID canônico, como o banco grava — o que não é username tem de ter esta cara. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const OWNER_FORMAT = 'ownerUserUuid precisa ser o e-mail da conta, um UUID ou null';
+const OWNER_FORMAT = 'ownerUserUuid precisa ser o usuário da conta, um UUID ou null';
 
 /** `ownerUserUuid` do corpo de um PATCH: transferir exige `'owner'` e uma conta ativa. */
 export async function ownerFrom(
@@ -293,10 +318,22 @@ export async function ownerFrom(
   if (typeof raw !== 'string' || !raw.trim()) throw badRequest(OWNER_FORMAT);
   const target = raw.trim();
   // A busca de contas não entrega mais o `uuid` (ver `withoutUuid`), então o
-  // novo dono chega pelo e-mail — o mesmo identificador das rotas de concessão,
-  // e com a conferência de conta ativa que o UUID cru não faz. O UUID continua
-  // aceito para quem já integra pela REST.
-  if (target.includes('@')) return (await accountByEmail(target)).uuid;
-  if (!UUID.test(target)) throw badRequest(OWNER_FORMAT);
-  return target;
+  // novo dono chega pelo **username** — o mesmo identificador das rotas de
+  // concessão, e com a conferência de conta ativa que o UUID cru não faz. O UUID
+  // continua aceito para quem já integra pela REST.
+  //
+  // O UUID é testado **primeiro**, e não o username, porque a ordem inversa
+  // dependeria de `normalizeUsername` recusar a forma de uuid — ela recusa, e
+  // ainda assim a ordem certa é esta: a que não precisa dessa garantia.
+  if (UUID.test(target)) return target;
+  // E-mail tem recusa própria em vez de cair no formato genérico: quem manda um
+  // endereço aqui está integrando contra a API antiga, e "precisa ser o usuário"
+  // não diz que o e-mail parou de valer de propósito (`docs/19` decisão 9).
+  if (target.includes('@')) {
+    throw badRequest(
+      'O dono é indicado pelo usuário da conta, não pelo e-mail — o e-mail deixou de ' +
+        'identificar contas nesta API',
+    );
+  }
+  return (await accountByUsername(target)).uuid;
 }

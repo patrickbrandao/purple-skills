@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Lock, Mail, ShieldCheck, UserRound } from 'lucide-react';
+import { AtSign, Lock, Mail, ShieldCheck, UserRound } from 'lucide-react';
 import {
   confirmPasswordReset,
   login,
@@ -7,6 +7,7 @@ import {
   setup,
   type Session,
 } from '../api.js';
+import { normalizeUsername, usernameFromName } from '@purple-skills/shared/username';
 import { Button } from '../components/ui.js';
 
 /**
@@ -34,8 +35,24 @@ export function LoginPage({
   const openSetup = params.get('setup') === '1' && session.needsSetup;
 
   const [mode, setMode] = useState<Mode>(resetToken ? 'reset' : openSetup ? 'setup' : 'login');
+  /**
+   * O campo único do login (`docs/19-username.md` decisão 3): username **ou**
+   * e-mail, e quem decide é o `@` — do lado do servidor, em `getUserByLogin`. O
+   * formulário não escolhe nem avisa qual dos dois foi lido: dizer "esse usuário
+   * não existe" contra "esse e-mail não existe" devolveria de graça a informação
+   * de que um endereço tem conta aqui.
+   */
+  const [identifier, setIdentifier] = useState('');
+  /** Só no setup e no "esqueci minha senha": o link de redefinição vai por e-mail. */
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
+  /**
+   * O username do primeiro admin. Nasce derivado do nome e vira "escolhido à
+   * mão" no primeiro toque — daí o `touched`: sem ele, continuar digitando o
+   * nome sobrescreveria o que a pessoa acabou de escrever aqui.
+   */
+  const [username, setUsername] = useState('');
+  const [usernameTouched, setUsernameTouched] = useState(false);
   const [password, setPassword] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [error, setError] = useState<string | null>(ssoError);
@@ -49,6 +66,19 @@ export function LoginPage({
   /** Enquanto não existe conta nenhuma, a ADMIN_PASSWORD ainda entra sozinha. */
   const legacy = session.legacyLogin && mode === 'login';
 
+  /**
+   * O username que o setup vai mandar: o digitado, ou o derivado do nome
+   * enquanto ninguém tocou no campo (`docs/19-username.md` decisão 12).
+   *
+   * Vazio é legítimo — o servidor deriva do nome e resolve a colisão
+   * (`usernameParaConta`, em `admin/src/accounts.ts`). Nome que não dá username
+   * nenhum (só pontuação, só ideogramas) cai justamente nesse caminho, em vez de
+   * travar o formulário do primeiro administrador.
+   */
+  const sugestao = usernameTouched ? username : (usernameFromName(name) ?? '');
+  /** Só avisa quando há o que avisar: campo vazio não é erro. */
+  const usernameInvalido = sugestao !== '' && normalizeUsername(sugestao) === null;
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -57,7 +87,7 @@ export function LoginPage({
 
     try {
       if (mode === 'setup') {
-        await setup({ adminPassword, email, name, password });
+        await setup({ adminPassword, username: sugestao, email, name, password });
         onSuccess();
       } else if (mode === 'forgot') {
         await requestPasswordReset(email);
@@ -70,7 +100,7 @@ export function LoginPage({
         setPassword('');
         setMode('login');
       } else {
-        await login(legacy ? { password } : { email, password });
+        await login(legacy ? { password } : { identifier, password });
         onSuccess();
       }
     } catch (err) {
@@ -97,14 +127,14 @@ export function LoginPage({
 
   const ready =
     mode === 'setup'
-      ? adminPassword && email && name && password
+      ? adminPassword && email && name && password && !usernameInvalido
       : mode === 'forgot'
         ? Boolean(email)
         : mode === 'reset'
           ? Boolean(password)
           : legacy
             ? Boolean(password)
-            : Boolean(email && password);
+            : Boolean(identifier && password);
 
   return (
     <div className="login-shell">
@@ -156,7 +186,38 @@ export function LoginPage({
           </div>
         )}
 
-        {mode !== 'reset' && !legacy && (
+        {/*
+          O username do primeiro administrador, derivado do nome e editável.
+          `type="text"` e não `email`: são coisas diferentes, e o teclado de
+          e-mail do celular atrapalharia.
+        */}
+        {mode === 'setup' && (
+          <div className="login-field">
+            <AtSign />
+            <input
+              type="text"
+              className="field"
+              value={sugestao}
+              onChange={(event) => {
+                setUsernameTouched(true);
+                setUsername(event.target.value);
+              }}
+              placeholder="Usuário (como as outras contas vão te ver)"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              aria-label="Usuário"
+            />
+          </div>
+        )}
+
+        {/*
+          O e-mail só aparece onde ele é usado de fato: criar a conta e pedir o
+          link de redefinição. No login ele deixou de ser um campo próprio —
+          quem quiser entrar por e-mail digita no campo único acima
+          (`docs/19-username.md` decisão 3).
+        */}
+        {(mode === 'setup' || mode === 'forgot') && (
           <div className="login-field">
             <Mail />
             <input
@@ -164,10 +225,28 @@ export function LoginPage({
               className="field"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              placeholder="E-mail"
-              autoFocus={mode !== 'setup'}
-              autoComplete="username"
+              placeholder="E-mail (privado: só você e os administradores veem)"
+              autoFocus={mode === 'forgot'}
+              autoComplete="email"
               aria-label="E-mail"
+            />
+          </div>
+        )}
+
+        {mode === 'login' && !legacy && (
+          <div className="login-field">
+            <UserRound />
+            <input
+              type="text"
+              className="field"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+              placeholder="Usuário ou e-mail"
+              autoFocus
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              aria-label="Usuário ou e-mail"
             />
           </div>
         )}
@@ -194,6 +273,13 @@ export function LoginPage({
           </div>
         )}
 
+        {usernameInvalido && (
+          <p className="form-error">
+            O usuário aceita de 3 a 32 caracteres — letras sem acento, números, ponto, hífen e
+            sublinhado —, começa e termina em letra ou número e não repete pontuação. Em branco,
+            ele é derivado do seu nome.
+          </p>
+        )}
         {error && <p className="form-error">{error}</p>}
         {notice && <p className="form-notice">{notice}</p>}
 
@@ -233,7 +319,8 @@ export function LoginPage({
         {mode === 'setup' && (
           <p className="login-note">
             A <code>ADMIN_PASSWORD</code> só serve para criar esta primeira conta. A partir dela, o
-            acesso ao painel passa a ser sempre por e-mail e senha.
+            acesso ao painel passa a ser sempre por conta e senha — o usuário ou o e-mail, no mesmo
+            campo.
           </p>
         )}
       </form>

@@ -44,6 +44,7 @@ const SCHEMA_LOCK = 8_200_004;
 const SOMENTE_SQL: Record<string, string> = {
   files_skill_path_lower_uniq: 'por expressão: UNIQUE (skill_uuid, lower(path)) — `003`',
   users_email_lower_uniq: 'por expressão: UNIQUE (lower(email)) — `004`',
+  users_username_lower_uniq: 'por expressão: UNIQUE (lower(username)) — `033`',
   users_oidc_uniq: 'parcial: UNIQUE (oidc_issuer, oidc_subject) com os dois não nulos — `004`',
   mcp_sessions_open_last_seen_idx: 'parcial: (last_seen_at) WHERE ended_at IS NULL — `015`',
   mcp_sessions_open_session_id_idx: 'parcial: (session_id) WHERE ended_at IS NULL — `015`',
@@ -51,6 +52,7 @@ const SOMENTE_SQL: Record<string, string> = {
   skills_rag_stale_idx: 'parcial: (updated_at, uuid) WHERE rag_stale — `020`',
   quarantine_files_path_lower_uniq:
     'por expressão: UNIQUE (quarantine_uuid, lower(path)) — `030`',
+  user_profiles_public_idx: 'parcial: (user_uuid) WHERE is_public — `034`',
 };
 
 /** Tabelas que existem no banco e de propósito não têm tipagem. */

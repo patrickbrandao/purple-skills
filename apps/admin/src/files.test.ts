@@ -8,6 +8,8 @@ process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 const { ADMIN, db } = vi.hoisted(() => ({
   ADMIN: {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.dev',
     name: 'Admin',
     role: 'admin',
@@ -63,7 +65,7 @@ const skill = {
   isActive: true,
   isPublic: false,
   ownerUserUuid: 'uuid-admin',
-  ownerEmail: 'admin@exemplo.dev',
+  ownerUsername: 'admin@exemplo.dev',
   access: 'owner',
   mcps: [],
   catalogs: [],

@@ -28,14 +28,14 @@ import {
   type VirtualMcpDetail,
 } from '@purple-skills/shared';
 import {
-  accountByEmail,
+  accountByUsername,
   assertAccess,
   assertCanCreate,
   assertSkillsViewable,
-  grantByEmail,
+  grantByUsername,
   grantOf,
   levelFrom,
-  ownerByEmail,
+  ownerByUsername,
   ownerFrom,
   withGrants,
 } from './access.js';
@@ -53,8 +53,8 @@ export async function listMine(user: AuthUser, rawScope?: unknown): Promise<Cata
     viewer: viewerOf(user),
     ...(isAccessScope(rawScope) ? { scope: rawScope } : {}),
   });
-  // O dono sai pelo e-mail, nunca pelo uuid da conta (`ownerByEmail`).
-  return items.map(ownerByEmail);
+  // O dono sai pelo username, nunca pelo uuid da conta (`ownerByUsername`).
+  return items.map(ownerByUsername);
 }
 
 /**
@@ -240,16 +240,16 @@ export async function removeSkill(user: AuthUser, slug: string, skillSlug: strin
 
 // -------------------------------------------------------------- concessões ---
 
-export async function share(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
+export async function share(user: AuthUser, slug: string, username: string, rawLevel: unknown): Promise<Grant> {
   const current = await load(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  return grantByEmail(await setCatalogGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
+  const target = await accountByUsername(username);
+  return grantByUsername(await setCatalogGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
 }
 
 /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
-export async function unshare(user: AuthUser, slug: string, email: string): Promise<void> {
+export async function unshare(user: AuthUser, slug: string, username: string): Promise<void> {
   const current = await load(user, slug, 'manage');
-  const grant = grantOf(current.grants, email, 'neste catálogo');
+  const grant = grantOf(current.grants, username, 'neste catálogo');
   await removeCatalogGrant(current.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 

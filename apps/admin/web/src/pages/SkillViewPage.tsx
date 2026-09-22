@@ -15,6 +15,7 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  atUser,
   canEdit,
   canManage,
   formatDateTime,
@@ -384,7 +385,7 @@ function PropertiesTab({ skill }: { skill: SkillDetail }) {
             )}
           </dd>
           <dt>Visibilidade</dt>
-          <dd>{skill.isPublic ? 'pública' : 'privada'} · dono: {skill.ownerEmail ?? 'nenhum (só administradores)'}</dd>
+          <dd>{skill.isPublic ? 'pública' : 'privada'} · dono: {atUser(skill.ownerUsername, 'nenhum (só administradores)')}</dd>
           <dt>Catálogos</dt>
           <dd>{num(skill.catalogs.length)}</dd>
           <dt>Arquivos</dt>

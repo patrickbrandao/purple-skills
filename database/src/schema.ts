@@ -31,7 +31,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { VirtualMcpLayout } from '@purple-skills/shared';
+import type { ProfileLink, VirtualMcpLayout } from '@purple-skills/shared';
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => 'bytea',
@@ -230,10 +230,18 @@ export const auditLog = pgTable(
 
 // ----------------------------------------------------------------- contas ---
 
-// Os índices únicos de `users` (`users_email_lower_uniq` e o parcial
-// `users_oidc_uniq`) são por expressão e ficam só no SQL — aqui é tipagem.
+// Os três índices únicos de `users` (`users_email_lower_uniq`,
+// `users_username_lower_uniq` e o parcial `users_oidc_uniq`) são por expressão
+// e ficam só no SQL — aqui é tipagem.
 export const users = pgTable('users', {
   uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
+  /**
+   * O identificador **público** da conta (`033`, `docs/19-username.md`): dono,
+   * linha da ACL, quem leu na guia Acessos, busca de contas, trilha e ficha
+   * pública do site. Único por `lower(username)`. O e-mail ao lado voltou a
+   * ser privado — entrar, recuperar a senha e casar com a identidade OIDC.
+   */
+  username: text('username').notNull(),
   email: text('email').notNull(),
   name: text('name').notNull(),
   /** Nulo numa conta que só entra por OIDC. */
@@ -249,6 +257,87 @@ export const users = pgTable('users', {
   failedAttempts: integer('failed_attempts').notNull().default(0),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * O livro de usernames (`schema/033-username.sql`, `docs/19` decisão 6): uma
+ * linha por nome que esta instalação já gastou.
+ *
+ * **Username abandonado nunca volta.** Sem esta tabela o `@joao` de uma trilha
+ * de 2025 poderia ser outra pessoa em 2026, e `audit_log` — que congela o
+ * rótulo em texto justamente para sobreviver à remoção da conta — passaria a
+ * apontar para quem não fez nada. Tomar um nome é **inserir aqui**: a PK em
+ * `lower(username)` é o que torna a reserva atômica e permanente.
+ *
+ * `userUuid` é anulável de propósito: a conta pode ser apagada e a reserva tem
+ * de sobreviver a isso (o mesmo motivo de `audit_log.actor_label` existir).
+ * `releasedAt` preenchido diz "não é de ninguém e não volta a ser" — é o que
+ * a troca de username carimba no nome antigo.
+ */
+export const usernames = pgTable(
+  'usernames',
+  {
+    usernameLower: text('username_lower').primaryKey(),
+    userUuid: uuid('user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
+    takenAt: timestamp('taken_at', { withTimezone: true }).notNull().defaultNow(),
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+  },
+  // Chave estrangeira sem índice transforma a remoção de uma conta num seq
+  // scan da tabela referenciada (a mesma razão de `skills_created_by_idx`).
+  (table) => [index('usernames_user_uuid_idx').on(table.userUuid)],
+);
+
+/**
+ * O perfil de uma conta (`schema/034-perfil.sql`, `docs/20-perfil.md`): a
+ * parte editável do "quem é a pessoa por trás do `@username`".
+ *
+ * A linha **nasce no primeiro salvamento**, não com a conta: quem nunca abriu
+ * a tela não tem perfil, e toda leitura trata a ausência como o perfil vazio e
+ * privado. `isPublic` é opt-in e decide o que sai para o **anônimo** — no
+ * painel, entre contas logadas, a foto aparece de todo jeito.
+ *
+ * `ON DELETE CASCADE` porque o perfil é *da* pessoa, ao contrário do que ela
+ * publicou (skill, catálogo, vMCP), que fica órfão pelo `SET NULL` do `017`.
+ *
+ * Os três CHECKs (teto da bio, teto do site, `jsonb_typeof` + cardinalidade dos
+ * links) ficam só no SQL. O `user_profiles_public_idx` também: é **parcial**.
+ */
+export const userProfiles = pgTable('user_profiles', {
+  userUuid: uuid('user_uuid')
+    .primaryKey()
+    .references(() => users.uuid, { onDelete: 'cascade' }),
+  /** `''` é "sem bio": os dois seriam o mesmo estado com dois valores. */
+  bio: text('bio').notNull().default(''),
+  websiteUrl: text('website_url'),
+  /** Até 8 `{ label, url }` — JSONB como `virtualMcps.layout`, não é padrão novo. */
+  links: jsonb('links').$type<ProfileLink[]>().notNull().default(sql`'[]'::jsonb`),
+  isPublic: boolean('is_public').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A foto da conta (`schema/034-perfil.sql`), em tabela separada **de propósito**.
+ *
+ * Os bytes não podem viajar junto com a leitura do perfil: a página
+ * `/u/<username>` lê o perfil e a ficha de skill lê o dono, e uma coluna
+ * `bytea` na mesma linha faria toda leitura arrastar até 512 KB para
+ * descartá-los. É a mesma razão de `files.binaryContent` (`001`) morar na linha
+ * do arquivo e não na da skill.
+ *
+ * `sha256` existe para o **ETag** da rota que serve a imagem: é o que permite
+ * revalidar com 304 sem cache longo — e cache longo é o que deixaria um avatar
+ * visível depois de o perfil virar privado. O CHECK que o amarra aos bytes, o
+ * da lista de mimes e o do teto de 512 KB ficam só no SQL.
+ */
+export const userAvatars = pgTable('user_avatars', {
+  userUuid: uuid('user_uuid')
+    .primaryKey()
+    .references(() => users.uuid, { onDelete: 'cascade' }),
+  bytes: bytea('bytes').notNull(),
+  mime: text('mime').notNull(),
+  sha256: bytea('sha256').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -708,7 +797,14 @@ export const skillAccesses = pgTable(
     apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
     apiKeyName: text('api_key_name'),
     userUuid: uuid('user_uuid').references(() => users.uuid, { onDelete: 'set null' }),
-    userEmail: text('user_email'),
+    /**
+     * A cópia que sobrevive à remoção da conta. Era `user_email` até o `033`,
+     * que a converteu linha a linha e apagou a coluna: a guia Acessos é de
+     * `manage`, não de admin, e entregava o endereço de quem leu a qualquer
+     * dono de skill. `conta removida` é o que o `033` gravou onde a conta já
+     * não existia; nulo é leitura **sem conta** (site anônimo, vMCP aberto).
+     */
+    userUsername: text('user_username'),
     /** O de `mcp_sessions.session_id`, sem FK: lá ele não é único. */
     sessionId: text('session_id'),
     /** Já resolvido pelo `trust proxy` do app. */
@@ -734,9 +830,9 @@ export const skillAccesses = pgTable(
     // As seis colunas do `q` da guia (`schema/022-busca-por-substring.sql`):
     // `ILIKE '%termo%'` só usa índice de trigrama, e num `OR` só há
     // `BitmapOr` se **todos** os ramos tiverem um.
-    index('skill_accesses_user_email_trgm_idx').using(
+    index('skill_accesses_user_username_trgm_idx').using(
       'gin',
-      table.userEmail.op('gin_trgm_ops'),
+      table.userUsername.op('gin_trgm_ops'),
     ),
     index('skill_accesses_api_key_name_trgm_idx').using(
       'gin',
@@ -992,6 +1088,9 @@ export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
 export type UserRow = typeof users.$inferSelect;
+export type UsernameRow = typeof usernames.$inferSelect;
+export type UserProfileRow = typeof userProfiles.$inferSelect;
+export type UserAvatarRow = typeof userAvatars.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type ResetTokenRow = typeof resetTokens.$inferSelect;
 export type VirtualMcpRow = typeof virtualMcps.$inferSelect;

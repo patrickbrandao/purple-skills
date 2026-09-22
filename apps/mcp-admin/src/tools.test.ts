@@ -20,7 +20,7 @@ const db = vi.hoisted(() => ({
   updateSkill: vi.fn(),
   getVirtualMcp: vi.fn(),
   getSkillSummary: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
   setSkillGrant: vi.fn(),
   removeSkillGrant: vi.fn(),
   listSkillGrants: vi.fn(),
@@ -47,7 +47,7 @@ type Role = 'admin' | 'editor' | 'membro';
 type Viewer = { role: Role; userUuid: string | null };
 
 const caller = (role: Role, userUuid: string | null = role === 'admin' ? null : `uuid-${role}`) => ({
-  actor: { userUuid, label: `${role}@exemplo.com` },
+  actor: { userUuid, label: `${role}` },
   role,
   identity: `teste:${role}`,
 });
@@ -55,7 +55,7 @@ const caller = (role: Role, userUuid: string | null = role === 'admin' ? null : 
 /** Chamador padrão dos testes: o token global, com papel admin. */
 const handlers = createHandlers(caller('admin'));
 /** Ator gravado no audit quando quem chama é o token global. */
-const ADMIN_ACTOR = { userUuid: null, label: 'admin@exemplo.com' };
+const ADMIN_ACTOR = { userUuid: null, label: 'admin' };
 
 /** O que o banco faria com `viewer` (`docs/12` §3.1); concessões por uuid da conta. */
 const grants: Record<string, 'view' | 'edit' | 'manage'> = {};
@@ -80,7 +80,7 @@ const detail = {
   isActive: true,
   isPublic: false,
   ownerUserUuid: 'uuid-editor',
-  ownerEmail: 'editor@exemplo.com',
+  ownerUsername: 'editor',
   access: 'owner',
   grants: [],
   mcps: [],
@@ -113,7 +113,7 @@ const timeA = {
   isActive: true,
   isOpen: false,
   ownerUserUuid: 'uuid-editor',
-  ownerEmail: 'editor@exemplo.com',
+  ownerUsername: 'editor',
   grants: [],
   skillCount: 0,
   activeKeyCount: 0,
@@ -143,8 +143,8 @@ beforeEach(() => {
   db.getVirtualMcp.mockImplementation(async (slug: string, options?: { viewer?: Viewer }) =>
     slug === 'time-a' ? seen(timeA, options?.viewer) : null,
   );
-  db.getUserByEmail.mockImplementation(async (email: string) =>
-    email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
+  db.getUserByUsername.mockImplementation(async (username: string) =>
+    username === 'maria' ? { uuid: 'uuid-maria', username, isActive: true } : null,
   );
   // O que um `replace` removeria, que o `set_files_bulk` pergunta ao banco
   // antes de gravar. Por padrão nada: nada a remover, nada a confirmar.
@@ -825,15 +825,15 @@ describe('get_skill', () => {
   });
 
   it('mostra o dono e o acesso; as concessões só para quem administra', async () => {
-    const dado = { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'view', grantedByUserUuid: null, grantedByEmail: null, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dado = { userUuid: 'uuid-maria', username: 'maria', name: 'Maria', role: 'membro', isActive: true, level: 'view', grantedByUserUuid: null, grantedByUsername: null, createdAt: '2026-01-01T00:00:00.000Z' };
     db.getSkillDetail.mockImplementation(async (_slug: string, options?: { viewer?: Viewer }) =>
       seen({ ...detail, grants: [dado] }, options?.viewer),
     );
 
     const doDono = JSON.parse((await handlers.get_skill({ slug: 'minha-skill' })).content[0].text);
-    expect(doDono).toMatchObject({ owner: 'editor@exemplo.com', isPublic: false, access: 'owner' });
+    expect(doDono).toMatchObject({ owner: 'editor', isPublic: false, access: 'owner' });
     // `isActive` é a conta: desativada, a concessão fica na lista, inerte, até ser revogada.
-    expect(doDono.grants).toEqual([{ email: 'maria@exemplo.com', name: 'Maria', level: 'view', isActive: true }]);
+    expect(doDono.grants).toEqual([{ username: 'maria', name: 'Maria', level: 'view', isActive: true }]);
 
     grants['uuid-maria'] = 'view';
     const daMaria = JSON.parse(
@@ -980,7 +980,7 @@ describe('list_skills', () => {
         viaCatalogs: ['dados'],
       },
     ]);
-    expect(payload.skills[0]).toMatchObject({ isActive: true, owner: 'editor@exemplo.com', access: 'owner' });
+    expect(payload.skills[0]).toMatchObject({ isActive: true, owner: 'editor', access: 'owner' });
     expect(payload.skills[0]).not.toHaveProperty('visibility');
   });
 });
@@ -1032,25 +1032,25 @@ describe('acesso: share / unshare / transfer', () => {
 
   /** As concessões da skill: uma de conta ativa e uma de conta desativada depois de recebê-la. */
   const CONCESSOES = [
-    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'manage' },
-    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
+    { userUuid: 'uuid-maria', username: 'maria', name: 'Maria', role: 'membro', isActive: true, level: 'manage' },
+    { userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
   ];
 
   it('manage concede e revoga pelo e-mail', async () => {
-    db.setSkillGrant.mockResolvedValue({ userUuid: 'uuid-maria', email: 'maria@exemplo.com', level: 'manage' });
+    db.setSkillGrant.mockResolvedValue({ userUuid: 'uuid-maria', username: 'maria', level: 'manage' });
     db.removeSkillGrant.mockResolvedValue(undefined);
     db.listSkillGrants.mockResolvedValue(CONCESSOES);
 
-    const dado = await dono.share_skill({ slug: 'minha-skill', email: 'maria@exemplo.com', level: 'manage' });
-    expect(dado.content[0].text).toMatch(/maria@exemplo.com agora pode administrar/);
+    const dado = await dono.share_skill({ slug: 'minha-skill', username: 'maria', level: 'manage' });
+    expect(dado.content[0].text).toMatch(/maria agora pode administrar/);
     expect(db.setSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-maria', 'manage', 'mcp-admin', caller('editor').actor);
 
-    await dono.unshare_skill({ slug: 'minha-skill', email: 'maria@exemplo.com' });
+    await dono.unshare_skill({ slug: 'minha-skill', username: 'maria' });
     expect(db.removeSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-maria', 'mcp-admin', caller('editor').actor);
 
     grants['uuid-outro'] = 'edit';
     const negado = await guard(() =>
-      createHandlers(caller('membro', 'uuid-outro')).share_skill({ slug: 'minha-skill', email: 'maria@exemplo.com', level: 'view' }),
+      createHandlers(caller('membro', 'uuid-outro')).share_skill({ slug: 'minha-skill', username: 'maria', level: 'view' }),
     );
     expect(negado.isError).toBe(true);
     expect(negado.content[0].text).toMatch(/exige "administrar"/);
@@ -1059,11 +1059,11 @@ describe('acesso: share / unshare / transfer', () => {
   it('transferir é do dono; conta inativa é recusada', async () => {
     db.updateSkill.mockResolvedValue(detail);
 
-    await dono.transfer_skill({ slug: 'minha-skill', email: 'maria@exemplo.com' });
+    await dono.transfer_skill({ slug: 'minha-skill', username: 'maria' });
     expect(db.updateSkill).toHaveBeenCalledWith('minha-skill', { ownerUserUuid: 'uuid-maria' }, 'mcp-admin', caller('editor').actor);
 
-    db.getUserByEmail.mockResolvedValueOnce({ uuid: 'uuid-x', email: 'x@exemplo.com', isActive: false });
-    const inativa = await guard(() => dono.transfer_skill({ slug: 'minha-skill', email: 'x@exemplo.com' }));
+    db.getUserByUsername.mockResolvedValueOnce({ uuid: 'uuid-ninguem', username: 'ninguem', isActive: false });
+    const inativa = await guard(() => dono.transfer_skill({ slug: 'minha-skill', username: 'ninguem' }));
     expect(inativa.isError).toBe(true);
     expect(inativa.content[0].text).toMatch(/desativada/);
   });
@@ -1077,14 +1077,14 @@ describe('acesso: share / unshare / transfer', () => {
    */
   it('revoga a concessão de conta desativada; conceder a ela continua recusado', async () => {
     db.listSkillGrants.mockResolvedValue(CONCESSOES);
-    db.getUserByEmail.mockResolvedValue({ uuid: 'uuid-saiu', email: 'saiu@exemplo.com', isActive: false });
+    db.getUserByUsername.mockResolvedValue({ uuid: 'uuid-saiu', username: 'saiu', isActive: false });
 
-    const tirado = await dono.unshare_skill({ slug: 'minha-skill', email: 'Saiu@Exemplo.com' });
+    const tirado = await dono.unshare_skill({ slug: 'minha-skill', username: 'Saiu' });
     expect(tirado.isError).toBeUndefined();
-    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    expect(tirado.content[0].text).toMatch(/saiu perdeu o acesso/);
     expect(db.removeSkillGrant).toHaveBeenCalledWith('minha-skill', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
 
-    const concedido = await guard(() => dono.share_skill({ slug: 'minha-skill', email: 'saiu@exemplo.com', level: 'view' }));
+    const concedido = await guard(() => dono.share_skill({ slug: 'minha-skill', username: 'saiu', level: 'view' }));
     expect(concedido.isError).toBe(true);
     expect(concedido.content[0].text).toMatch(/desativada/);
     expect(db.setSkillGrant).not.toHaveBeenCalled();
@@ -1095,11 +1095,11 @@ describe('acesso: share / unshare / transfer', () => {
   it('e-mail sem concessão na skill é recusado sem consultar a conta', async () => {
     db.listSkillGrants.mockResolvedValue(CONCESSOES);
 
-    const nada = await guard(() => dono.unshare_skill({ slug: 'minha-skill', email: 'x@exemplo.com' }));
+    const nada = await guard(() => dono.unshare_skill({ slug: 'minha-skill', username: 'ninguem' }));
 
     expect(nada.isError).toBe(true);
     expect(nada.content[0].text).toBe('A conta não tem concessão nesta skill');
-    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.getUserByUsername).not.toHaveBeenCalled();
     expect(db.removeSkillGrant).not.toHaveBeenCalled();
   });
 });
@@ -1204,7 +1204,7 @@ describe('papel e acesso da credencial', () => {
 
     expect(db.createSkill).toHaveBeenCalledWith(expect.anything(), 'mcp-admin', {
       userUuid: 'uuid-editor',
-      label: 'editor@exemplo.com',
+      label: 'editor',
     });
   });
 });

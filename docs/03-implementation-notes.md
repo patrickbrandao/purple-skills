@@ -2210,3 +2210,118 @@ banco descartável e em árvore de trabalho:
   um arquivo que era binário ainda sai como "Binary files differ", porque o lado
   antigo é binário; confira pelos comandos (`grep -c '[[:cntrl:]]'`, `file`),
   não pelo diff.
+
+## Username
+
+O desenho e o porquê de cada escolha estão em
+[`19-username.md`](19-username.md). Aqui só o que é desvio ou armadilha de
+implementação.
+
+- **A regra do username existe em dois lugares, e isso é deliberado — o terceiro
+  é que não podia existir.** `packages/shared/src/username.ts` é a fonte; a
+  migration `033` repete a derivação em SQL porque roda uma vez e some, antes de
+  qualquer código deste pacote existir naquele banco. O que **não** podia
+  aparecer era uma terceira cópia viva no navegador: o bundle do painel não
+  importa `@purple-skills/shared` (a raiz reexporta módulos que falam com
+  `node:fs` e `node:crypto`, e o comentário no topo de
+  `apps/admin/web/src/api.ts` registra a regra), e a saída foi um **export por
+  subpath** novo no `package.json` do `shared` — `@purple-skills/shared/username`.
+  O módulo não importa nada, então entra no bundle sozinho, e é o único do
+  pacote com export próprio. Se algum dia outro módulo folha precisar do mesmo,
+  o precedente é este.
+- **O mapa de acentos é uma tabela, não `String.normalize('NFD')`.** A tentação
+  é usar NFD + remoção de combinantes no TypeScript, que é mais curto e mais
+  correto. O problema é que a `033` precisa da **mesma** regra em SQL, e esta
+  instalação não tem a extensão `unaccent` — lá é `translate()` com um par de
+  cadeias. Duas implementações da mesma regra só ficam iguais se a regra for uma
+  tabela; NFD de um lado e `translate()` do outro divergiriam em silêncio no
+  primeiro nome acentuado, e o backfill produziria um username e a criação de
+  conta, outro.
+- **O OIDC não deriva o username do `name` às cegas.** Quando o provedor não
+  manda nome, `resolveOidcUser` já usava o **e-mail** como `name` da conta —
+  então `usernameFromName(name)` devolveria `fulano-empresa-com`, publicando o
+  endereço inteiro como identificador público. O código compara `name === email`
+  e, nesse caso, cai no fallback `user-<8 hex>`. É feio na tela até um admin
+  renomear a conta, e é o que preserva o sigilo.
+- **Campo de username em branco significa coisas diferentes ao criar e ao
+  editar.** Ao criar (setup e "Nova conta"), vazio quer dizer "derive do nome" —
+  é o que faz o formulário funcionar para quem não quer escolher. No `PATCH` de
+  uma conta que já existe, vazio é **400**: derivar ali apagaria o identificador
+  público de alguém por descuido, num campo que o admin pode ter esvaziado sem
+  querer.
+- **O Salvar da edição de conta tranca com o username inválido**, e não só com o
+  formulário limpo. Sem isso, mudar o nome com o campo Usuário meio digitado
+  gravaria o nome e engoliria o username em silêncio: o `save` manda `undefined`
+  quando o texto não normaliza, e o `PATCH` simplesmente não mexeria nele.
+- **O teste do site precisou de um e-mail plantado na amostra.** A guarda nova
+  (`ENDERECO`, em `apps/site/src/api.test.ts`) varre o JSON anônimo inteiro
+  procurando forma de e-mail, com qualquer nome de campo. Depois da `033`
+  nenhum objeto que o site lê carrega endereço — o que tornaria a guarda vazia.
+  A amostra leva um `ownerEmail` de propósito, fora de `CAMPOS_DA_SKILL`, como
+  regressão simulada: é o que a suíte encontra se alguém voltar a espalhar o
+  objeto do banco (`...detail`) em vez de projetá-lo campo a campo.
+- **A ordem da reescrita do histórico importa em dois pontos.** Por comprimento
+  decrescente do e-mail, senão `ana@x.com` é substituído *dentro* de
+  `mariana@x.com`; e com fronteira nas duas pontas, porque os rótulos são
+  compostos em vários formatos (`email`, `email:nível`, `<slug> email:nível`,
+  `email <subject>`) e a troca é por ocorrência, não por igualdade.
+- **O banco parou de anular o dono na visibilidade `'open'`, e a guarda mudou de
+  lugar.** Para a ficha pública creditar `@dono` (decisão 11 do `19`),
+  `skillColumns` passou a devolver `ownerUserUuid` **e** `ownerUsername` também
+  ao site — antes anulava os dois ali. O `ownerUserUuid` é o `sub` do cookie de
+  sessão do painel, então a **lista de permissão de `skillPublica`
+  (`apps/site/src/api.ts`) virou a única coisa entre ele e o anônimo**: um
+  `...detail` de volta ali vaza o uuid. As guardas de teste são `PROIBIDOS` (com
+  a amostra carregando o campo de propósito) e `ENDERECO`, as duas em
+  `apps/site/src/api.test.ts`. Custo colateral: uma busca pela PK de `users` por
+  linha nas listagens do site.
+- **A `022` deixou de poder ser reaplicada sobre o schema de hoje.** Ela cria um
+  GIN sobre `skill_accesses.user_email`, coluna que a `033` apagou; reexecutada,
+  falha com `column "user_email" does not exist`. O arquivo roda em transação, e
+  nada fica pela metade — é o caso mais benigno da família "reaplicar migration
+  antiga", e o único que se anuncia em vez de passar em silêncio. Está no
+  `database/README.md` e é medido em `accesses.integration.test.ts`.
+
+## Perfil
+
+O desenho e o porquê de cada escolha estão em [`20-perfil.md`](20-perfil.md).
+Aqui só o que é desvio ou armadilha de implementação.
+
+- **O tipo da imagem sai dos bytes, e o teto é conferido depois de recebê-los.**
+  As duas coisas contrariam o instinto. A extensão e o `Content-Type` da parte
+  multipart são texto que o remetente escolhe: aceitar qualquer um é deixá-lo
+  declarar que o SVG dele é um PNG. E o `limitRequestBytes` das rotas de upload
+  corta pelo teto **do painel** (64 MB, que é o do .zip de uma skill), não pelos
+  512 KB do avatar — esse é regra da rota, e por isso vive em
+  `apps/admin/src/profile.ts`, depois do multer.
+- **`user_avatars` é tabela separada por causa da leitura, não da escrita.** A
+  tentação é uma coluna `bytea` em `user_profiles`; o problema aparece na
+  página `/u/<username>` e na ficha de skill, que leem o perfil ou o dono e
+  arrastariam até 512 KB para descartar. É o mesmo motivo de
+  `files.binary_content` (`001`) estar na linha do arquivo e não na da skill.
+- **O avatar é servido com `max-age=0, must-revalidate` + ETag, e não com cache
+  longo.** Cache longo é justamente o que deixaria a foto visível depois de o
+  perfil virar privado. O ETag é o `sha256` da imagem: revalidar custa um 304 de
+  alguns bytes, e trocar a foto invalida sozinha. Os cabeçalhos vivem em
+  `avatarHeaders`, no `shared`, porque painel e site servem a mesma coisa e duas
+  cópias divergiriam.
+- **A URL do avatar leva o carimbo como query** (`?v=<avatarUpdatedAt>`). Com
+  `max-age=0` a imagem nova entraria na revalidação seguinte, mas um `<img>` de
+  aba aberta há meia hora não revalida sozinho — o carimbo troca a URL e a foto
+  nova aparece sem recarregar a página.
+- **A rota do avatar do site passa pelo `getPublicProfile`, e não direto aos
+  bytes.** Sem isso, a imagem de um perfil recém-tornado privado continuaria
+  servida a quem tivesse a URL — e a URL é pública por construção, porque esteve
+  numa página. As funções do banco (`getAvatar`, `getAvatarByUsername`) são
+  deliberadamente burras: a política é de quem chama, porque o painel serve a
+  foto a qualquer sessão logada e o site só à pública.
+- **O interruptor "publicar" grava sozinho, fora do Salvar.** É a ação mais
+  consequente da tela, e não pode ficar pendurada num botão que a pessoa talvez
+  não clique: quem desliga o perfil quer que ele saia do ar agora.
+- **Campo de username vazio significa coisas diferentes ao criar e ao editar** —
+  e o mesmo vale aqui para o perfil: no `PATCH /api/me/profile`, campo ausente é
+  "não mexe", o que é o que deixa o interruptor do público não reenviar a bio.
+- **`PATCH /api/me/profile` é a única escrita em `users` que não exige admin.**
+  Ela aceita `name` e mais nada dali: o corpo é lido campo a campo em
+  `profile.save`, e não repassado a `updateUser`. Um repasse cru poria papel,
+  estado e username ao alcance de quem montasse o JSON à mão.

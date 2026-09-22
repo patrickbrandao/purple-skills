@@ -20,19 +20,25 @@ export type CatalogDraft = { slug: string; name: string; member: boolean; active
 /**
  * O nível desejado de uma conta; `null` revoga.
  *
- * A conta é identificada pelo **e-mail**: é o que a busca de contas devolve
- * (`tasks/025`, `UserLookup`) e o que as rotas de concessão usam na URL. O
- * `uuid` não chega mais ao painel, e comparar um com o outro é o que fazia o
- * rascunho tratar uma concessão existente como nova.
+ * A conta é identificada pelo **username**: é o que a busca de contas devolve
+ * (`tasks/025`, `UserLookup`) e o que as rotas de concessão usam na URL
+ * (`docs/19-username.md` decisão 9). O `uuid` não chega mais ao painel, e comparar
+ * um com o outro é o que fazia o rascunho tratar uma concessão existente como
+ * nova.
  */
-export type GrantDraft = { email: string; name: string; role: Role; level: AccessLevel | null };
+export type GrantDraft = {
+  username: string;
+  name: string;
+  role: Role;
+  level: AccessLevel | null;
+};
 
 export type AccessDraft = {
   /** `undefined` não mexe. */
   isPublic?: boolean;
   /** O novo dono; `undefined` não mexe. */
   owner?: UserLookup;
-  /** Por e-mail da conta. */
+  /** Por username da conta. */
   grants: Record<string, GrantDraft>;
 };
 
@@ -77,8 +83,8 @@ export type PlannedChange =
   | { type: 'catalog-add'; catalogUuid: string; slug: string; name: string; active: boolean }
   | { type: 'catalog-active'; catalogUuid: string; slug: string; name: string; active: boolean }
   | { type: 'catalog-remove'; catalogUuid: string; slug: string; name: string }
-  | { type: 'grant'; email: string; level: AccessLevel; isNew: boolean }
-  | { type: 'revoke'; email: string }
+  | { type: 'grant'; username: string; level: AccessLevel; isNew: boolean }
+  | { type: 'revoke'; username: string }
   | { type: 'owner'; user: UserLookup };
 
 function linkChange(skill: SkillDetail, mcpUuid: string, draft: LinkDraft): PlannedChange | null {
@@ -98,10 +104,10 @@ function catalogChange(skill: SkillDetail, catalogUuid: string, draft: CatalogDr
 }
 
 function grantChange(skill: SkillDetail, draft: GrantDraft): PlannedChange | null {
-  const current = skill.grants.find((item) => item.email === draft.email);
-  if (draft.level === null) return current ? { type: 'revoke', email: draft.email } : null;
+  const current = skill.grants.find((item) => item.username === draft.username);
+  if (draft.level === null) return current ? { type: 'revoke', username: draft.username } : null;
   if (current?.level === draft.level) return null;
-  return { type: 'grant', email: draft.email, level: draft.level, isNew: !current };
+  return { type: 'grant', username: draft.username, level: draft.level, isNew: !current };
 }
 
 /**
@@ -131,7 +137,7 @@ export function planChanges(skill: SkillDetail, drafts: SkillDrafts): PlannedCha
   // O dono se compara pelo e-mail: é o identificador que a busca de contas
   // devolve (`tasks/025`). Comparar com `ownerUserUuid` dava sempre diferente,
   // e escolher o dono atual gravava uma transferência dele para ele mesmo.
-  if (access.owner && access.owner.email !== skill.ownerEmail) {
+  if (access.owner && access.owner.username !== skill.ownerUsername) {
     changes.push({ type: 'owner', user: access.owner });
   }
   return changes;
@@ -148,8 +154,8 @@ export function pruneDrafts(skill: SkillDetail, drafts: SkillDrafts): SkillDraft
     catalogs: keep(drafts.catalogs, (uuid, draft) => catalogChange(skill, uuid, draft) !== null),
     access: {
       isPublic: access.isPublic !== undefined && access.isPublic !== skill.isPublic ? access.isPublic : undefined,
-      owner: access.owner && access.owner.email !== skill.ownerEmail ? access.owner : undefined,
-      grants: keep(access.grants, (_email, draft) => grantChange(skill, draft) !== null),
+      owner: access.owner && access.owner.username !== skill.ownerUsername ? access.owner : undefined,
+      grants: keep(access.grants, (_username, draft) => grantChange(skill, draft) !== null),
     },
   };
 }
@@ -170,10 +176,10 @@ export function describeChange(change: PlannedChange): string {
     case 'catalog-remove':
       return `tirar do catálogo "${change.name}"`;
     case 'grant':
-      return change.isNew ? `compartilhar com ${change.email}` : `mudar o nível de ${change.email}`;
+      return change.isNew ? `compartilhar com ${change.username}` : `mudar o nível de ${change.username}`;
     case 'revoke':
-      return `revogar o acesso de ${change.email}`;
+      return `revogar o acesso de ${change.username}`;
     case 'owner':
-      return `transferir para ${change.user.email}`;
+      return `transferir para ${change.user.username}`;
   }
 }

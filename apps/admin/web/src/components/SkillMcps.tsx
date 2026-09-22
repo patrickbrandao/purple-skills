@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Library, Plus, Server, Trash2, Undo2 } from 'lucide-react';
 import {
+  atUser,
   canCreate,
   canEdit,
   getCatalogs,
@@ -568,7 +569,7 @@ export function SkillCatalogsTab({
                       <span className="row-sub">{row.summary ? row.summary.mcpCount : '—'}</span>
                     </td>
                     <td className="hidden lg:table-cell">
-                      <span className="row-sub">{row.summary ? (row.summary.ownerEmail ?? 'sem dono') : '—'}</span>
+                      <span className="row-sub">{row.summary ? atUser(row.summary.ownerUsername, 'sem dono') : '—'}</span>
                     </td>
                     {editing && (
                       <td className="num whitespace-nowrap">

@@ -100,8 +100,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
 
-    anaUuid = (await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
-    brunoUuid = (await createUser({ email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
+    anaUuid = (await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
+    brunoUuid = (await createUser({ username: 'bruno', email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
       .uuid;
 
     // Catálogo: três skills flutuantes — nenhuma está em servidor nenhum
@@ -142,7 +142,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     expect(mcp.isActive).toBe(true);
     expect(mcp.isOpen).toBe(false);
     expect(mcp.ownerUserUuid).toBe(brunoUuid);
-    expect(mcp.ownerEmail).toBe('bruno@exemplo.dev');
+    expect(mcp.ownerUsername).toBe('bruno');
     expect(mcp.skillCount).toBe(0);
     expect(mcp.activeKeyCount).toBe(0);
     // Sem `settings` preenchida, ninguém é o padrão.
@@ -157,7 +157,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     );
     expect(segundo.slug).toBe('time-de-dados-2');
     expect(segundo.ownerUserUuid).toBeNull();
-    expect(segundo.ownerEmail).toBeNull();
+    expect(segundo.ownerUsername).toBeNull();
 
     const conflito = await capture(
       createVirtualMcp({ name: 'Outro', slug: 'time-de-dados', ownerUserUuid: null }, SOURCE, ana),
@@ -887,7 +887,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
 
   it('clona o vMCP: vínculos com portas e posições, concessões e layout; sem chave, sem contador e sem o posto de padrão', async () => {
     const clonadorUuid = (
-      await createUser({ email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
+      await createUser({ username: 'clonador', email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
     ).uuid;
 
     // A fonte: aberta, com uma skill vinculada (com contadores), um catálogo
@@ -981,8 +981,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     });
     // As concessões vêm, menos a de quem clonou (ela é a dona da cópia), e
     // quem concede no objeto novo é quem clonou.
-    expect(copia.grants.map((g) => [g.email, g.level, g.grantedByEmail])).toEqual([
-      ['bruno@exemplo.dev', 'edit', 'clonador@exemplo.dev'],
+    expect(copia.grants.map((g) => [g.username, g.level, g.grantedByUsername])).toEqual([
+      ['bruno', 'edit', 'clonador'],
     ]);
     // Chave nenhuma: o segredo não é guardado e `prefix` é UNIQUE.
     expect(await listVirtualMcpKeys(copia.uuid)).toEqual([]);
@@ -1023,9 +1023,9 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       'Outro nome',
       null,
     ]);
-    expect(terceiro.grants.map((g) => [g.email, g.grantedByEmail])).toEqual([
-      ['bruno@exemplo.dev', null],
-      ['clonador@exemplo.dev', null],
+    expect(terceiro.grants.map((g) => [g.username, g.grantedByUsername])).toEqual([
+      ['bruno', null],
+      ['clonador', null],
     ]);
 
     // Slug pedido: livre grava, ocupado é 409, inválido é 400; uuid torto ou

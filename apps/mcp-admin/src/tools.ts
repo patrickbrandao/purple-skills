@@ -36,7 +36,7 @@ import {
   type AccessLevel,
   type SkillSummary,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, grantOf, levelFrom, loadSkill, viewerOf } from './access.js';
+import { accountByUsername, assertAccess, grantOf, levelFrom, loadSkill, viewerOf } from './access.js';
 import { TOKEN_CALLER, type Caller } from './auth.js';
 import { config } from './config.js';
 
@@ -191,7 +191,7 @@ type McpLinkArg = { slug: string; asSkill: boolean; asPrompt: boolean; asResourc
 
 /** O que a tool mostra do acesso: o dono, se é pública e o que a credencial pode. */
 const accessOf = (skill: SkillSummary) => ({
-  owner: skill.ownerEmail,
+  owner: skill.ownerUsername,
   isPublic: skill.isPublic,
   access: skill.access,
 });
@@ -340,7 +340,7 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
         // `isActive: false` é a conta desativada: a linha fica, inerte, volta a
         // valer se a conta for reativada — e `unshare_skill` a revoga assim mesmo.
         grants: canManage(detail.access)
-          ? detail.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
+          ? detail.grants.map((grant) => ({ username: grant.username, name: grant.name, level: grant.level, isActive: grant.isActive }))
           : undefined,
         mcps: mcpsOf(detail),
         catalogs: catalogsOf(detail),
@@ -664,26 +664,26 @@ export function createHandlers(caller: Caller = TOKEN_CALLER) {
 
     // ---------------------------------------------------------- acesso ---
 
-    async share_skill(args: { slug: string; email: string; level: string }): Promise<ToolResult> {
+    async share_skill(args: { slug: string; username: string; level: string }): Promise<ToolResult> {
       const skill = await skillWith(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       const grant = await setSkillGrant(skill.slug, target.uuid, levelFrom(args.level), SOURCE, actor);
-      return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} a skill "${skill.slug}".`);
+      return text(`${grant.username} agora pode ${ACCESS_LABEL[grant.level]} a skill "${skill.slug}".`);
     },
 
     /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
-    async unshare_skill(args: { slug: string; email: string }): Promise<ToolResult> {
+    async unshare_skill(args: { slug: string; username: string }): Promise<ToolResult> {
       const skill = await skillWith(args.slug, 'manage');
-      const grant = grantOf(await listSkillGrants(skill.uuid), args.email, 'nesta skill');
+      const grant = grantOf(await listSkillGrants(skill.uuid), args.username, 'nesta skill');
       await removeSkillGrant(skill.slug, grant.userUuid, SOURCE, actor);
-      return text(`${grant.email} perdeu o acesso à skill "${skill.slug}".`);
+      return text(`${grant.username} perdeu o acesso à skill "${skill.slug}".`);
     },
 
-    async transfer_skill(args: { slug: string; email: string }): Promise<ToolResult> {
+    async transfer_skill(args: { slug: string; username: string }): Promise<ToolResult> {
       const skill = await skillWith(args.slug, 'owner');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       await updateSkill(skill.slug, { ownerUserUuid: target.uuid }, SOURCE, actor);
-      return text(`A skill "${skill.slug}" agora é de ${target.email}.`);
+      return text(`A skill "${skill.slug}" agora é de ${target.username}.`);
     },
 
     async list_tags(): Promise<ToolResult> {

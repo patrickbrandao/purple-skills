@@ -112,8 +112,8 @@ function tarGzDe(entradas: Record<string, Buffer | string>): Buffer {
   return gzipSync(Buffer.concat(blocos));
 }
 
-const admin = { uuid: 'uuid-admin', email: 'admin@exemplo.dev', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
-const editor = { ...admin, uuid: 'uuid-editor', email: 'editor@exemplo.dev', role: 'editor' };
+const admin = { uuid: 'uuid-admin', username: 'admin', email: 'admin@exemplo.dev', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+const editor = { ...admin, uuid: 'uuid-editor', username: 'editor', email: 'editor@exemplo.dev', role: 'editor' };
 
 const timeA = {
   uuid: 'mcp-1',
@@ -123,7 +123,7 @@ const timeA = {
   isActive: true,
   isOpen: false,
   ownerUserUuid: 'uuid-editor',
-  ownerEmail: 'editor@exemplo.dev',
+  ownerUsername: 'editor@exemplo.dev',
   skillCount: 0,
   activeKeyCount: 0,
   isDefault: false,
@@ -179,7 +179,7 @@ beforeEach(() => {
   // `skillMd` entra porque a rota passa o retorno por `bodyOnly` antes de
   // responder: sem ele cada importação despeja um TypeError no stderr do teste.
   criar.mockResolvedValue({ slug: 'minha-skill', skillMd: '', files: [] });
-  criarEnvio.mockResolvedValue({ uuid: 'envio-1', name: 'Revisor', ownerUserUuid: 'uuid-admin', ownerEmail: 'admin@exemplo.dev' });
+  criarEnvio.mockResolvedValue({ uuid: 'envio-1', name: 'Revisor', ownerUserUuid: 'uuid-admin', ownerUsername: 'admin@exemplo.dev' });
   lerMcp.mockResolvedValue(timeA);
 });
 
@@ -668,7 +668,7 @@ describe('POST /api/skills/import — bundle', () => {
         name: input.name,
         fileCount: input.files?.length ?? 0,
         ownerUserUuid: 'uuid-admin',
-        ownerEmail: 'admin@exemplo.dev',
+        ownerUsername: 'admin@exemplo.dev',
       };
     });
   });
@@ -1364,7 +1364,7 @@ describe('POST /api/skills/import — bundle', () => {
   it('falha no meio do bundle mantém o que já entrou e propaga o erro', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     criarEnvio
-      .mockResolvedValueOnce({ uuid: 'envio-1', name: 'Alfa', fileCount: 1, ownerUserUuid: null, ownerEmail: null })
+      .mockResolvedValueOnce({ uuid: 'envio-1', name: 'Alfa', fileCount: 1, ownerUserUuid: null, ownerUsername: null })
       .mockRejectedValueOnce(new Error('banco fora do ar'));
 
     const { res } = await importarPacote(
@@ -1398,7 +1398,7 @@ describe('POST /api/skills/import — bundle', () => {
   it('a falha no meio diz que parte do pacote entrou, e loga o que já foi gravado', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     criarEnvio
-      .mockResolvedValueOnce({ uuid: 'envio-1', name: 'Alfa', fileCount: 1, ownerUserUuid: null, ownerEmail: null })
+      .mockResolvedValueOnce({ uuid: 'envio-1', name: 'Alfa', fileCount: 1, ownerUserUuid: null, ownerUsername: null })
       .mockRejectedValueOnce(new Error('banco fora do ar'));
 
     const { res } = await importarPacote(

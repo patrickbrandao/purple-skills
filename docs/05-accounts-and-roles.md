@@ -17,6 +17,22 @@ referência de *por que* cada peça é assim.
 > no ponto. O item "ownership por skill" da `§5` entrou no escopo do `12` (dono
 > e concessões por skill).
 >
+> **Parcialmente revogado por [`19`](19-username.md), no ponto do
+> identificador.** A conta ganhou `username`, e é ele — não o e-mail — que
+> nomeia a pessoa em toda superfície: dono, ACL, trilha de auditoria, guia
+> Acessos, busca de contas e a ficha pública do site. Onde este documento usa o
+> e-mail como **rótulo** — o `target_label` e o `actor_label` da `§2.8`, o
+> "e-mail da conta afetada" dos eventos de conta —, leia **username**; a
+> migration `033` reescreveu o histórico.
+>
+> **O que o `19` não toca:** o e-mail continua obrigatório e único, e continua
+> sendo por ele que a `§2.4` casa uma identidade OIDC com uma conta local (é o
+> que o provedor entrega) e que a `§2.6` manda o link de redefinição. O que
+> mudou é quem o **vê**: só a própria pessoa e um admin. A `§2.2`
+> (`token_version`) e a `§2.7` (rate limiting) não mudam de regra — o `§2.7`
+> passa a contar tentativas na mesma conta quer ela tenha sido nomeada por
+> username ou por e-mail, porque o login virou **um campo só**.
+>
 > **A troca do nome do papel não isenta o OIDC.** Onde este documento escreve
 > `leitor` — a decisão 5, a decisão 9, a matriz da `§2.1`, a `§2.4`, a `§2.5`,
 > o `CHECK` da `§3` e a tabela da `§4` —, leia **`membro`**: o `017` fez

@@ -24,7 +24,7 @@ const db = vi.hoisted(() => ({
   removeCatalogGrant: vi.fn(),
   getVirtualMcp: vi.fn(),
   getSkillSummary: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
   setVirtualMcpCatalogs: vi.fn(),
   notFound: (message: string) => new AppError(message, 404, 'not_found'),
   badRequest: (message: string) => new AppError(message, 400, 'bad_request'),
@@ -40,7 +40,7 @@ type Role = 'admin' | 'editor' | 'membro';
 type Viewer = { role: Role; userUuid: string | null };
 
 const caller = (role: Role, userUuid: string | null = `uuid-${role}`) => ({
-  actor: { userUuid, label: userUuid ? `${role}@exemplo.com` : 'token-global' },
+  actor: { userUuid, label: userUuid ? `${role}` : 'token-global' },
   role,
   identity: `teste:${role}`,
 });
@@ -67,11 +67,11 @@ const catalog = {
   isActive: true,
   isPublic: false,
   ownerUserUuid: 'uuid-editor',
-  ownerEmail: 'editor@exemplo.com',
+  ownerUsername: 'editor',
   // Uma concessão de conta ativa e uma de conta desativada depois de recebê-la.
   grants: [
-    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'view' },
-    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'edit' },
+    { userUuid: 'uuid-maria', username: 'maria', name: 'Maria', role: 'membro', isActive: true, level: 'view' },
+    { userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', role: 'membro', isActive: false, level: 'edit' },
   ],
   skillCount: 2,
   activeSkillCount: 1,
@@ -88,8 +88,8 @@ const catalog = {
 };
 
 /** Um catálogo de outra conta, privado; e um público. */
-const alheio = { ...catalog, uuid: 'cat-2', slug: 'alheio', name: 'Alheio', ownerUserUuid: 'uuid-outro', ownerEmail: 'outro@exemplo.com' };
-const publico = { ...catalog, uuid: 'cat-3', slug: 'publico', name: 'Público', ownerUserUuid: 'uuid-outro', ownerEmail: 'outro@exemplo.com', isPublic: true };
+const alheio = { ...catalog, uuid: 'cat-2', slug: 'alheio', name: 'Alheio', ownerUserUuid: 'uuid-outro', ownerUsername: 'outro' };
+const publico = { ...catalog, uuid: 'cat-3', slug: 'publico', name: 'Público', ownerUserUuid: 'uuid-outro', ownerUsername: 'outro', isPublic: true };
 
 /** Um vMCP do mesmo editor, com o catálogo alheio já vinculado. */
 const mcp = {
@@ -124,8 +124,8 @@ beforeEach(() => {
     const skill = skills[slug];
     return skill ? seen({ slug, name: slug, ...skill }, options?.viewer) : null;
   });
-  db.getUserByEmail.mockImplementation(async (email: string) =>
-    email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
+  db.getUserByUsername.mockImplementation(async (username: string) =>
+    username === 'maria' ? { uuid: 'uuid-maria', username, isActive: true } : null,
   );
 });
 
@@ -341,13 +341,13 @@ describe('set_virtual_mcp_catalogs', () => {
 describe('acesso: share / unshare / transfer', () => {
   it('manage concede e revoga; dono transfere', async () => {
     const dono = createCatalogHandlers(caller('editor'));
-    db.setCatalogGrant.mockResolvedValue({ userUuid: 'uuid-maria', email: 'maria@exemplo.com', level: 'view' });
+    db.setCatalogGrant.mockResolvedValue({ userUuid: 'uuid-maria', username: 'maria', level: 'view' });
     db.removeCatalogGrant.mockResolvedValue(undefined);
     db.updateCatalog.mockResolvedValue(catalog);
 
-    await dono.share_catalog({ slug: 'dados', email: 'maria@exemplo.com', level: 'view' });
-    await dono.unshare_catalog({ slug: 'dados', email: 'maria@exemplo.com' });
-    await dono.transfer_catalog({ slug: 'dados', email: 'maria@exemplo.com' });
+    await dono.share_catalog({ slug: 'dados', username: 'maria', level: 'view' });
+    await dono.unshare_catalog({ slug: 'dados', username: 'maria' });
+    await dono.transfer_catalog({ slug: 'dados', username: 'maria' });
 
     expect(db.setCatalogGrant).toHaveBeenCalledWith('dados', 'uuid-maria', 'view', 'mcp-admin', caller('editor').actor);
     expect(db.removeCatalogGrant).toHaveBeenCalledWith('dados', 'uuid-maria', 'mcp-admin', caller('editor').actor);
@@ -355,7 +355,7 @@ describe('acesso: share / unshare / transfer', () => {
 
     grants['uuid-terceiro'] = 'edit';
     const editor = createCatalogHandlers(caller('membro', 'uuid-terceiro'));
-    const negado = await guard(() => editor.share_catalog({ slug: 'dados', email: 'maria@exemplo.com', level: 'view' }));
+    const negado = await guard(() => editor.share_catalog({ slug: 'dados', username: 'maria', level: 'view' }));
     expect(negado.isError).toBe(true);
     expect(negado.content[0].text).toMatch(/exige "administrar"/);
   });
@@ -367,21 +367,21 @@ describe('acesso: share / unshare / transfer', () => {
    */
   it('revoga a concessão de conta desativada, que a ficha marca; conceder a ela continua recusado', async () => {
     const dono = createCatalogHandlers(caller('editor'));
-    db.getUserByEmail.mockImplementation(async (email: string) =>
-      email === 'saiu@exemplo.com' ? { uuid: 'uuid-saiu', email, isActive: false } : null,
+    db.getUserByUsername.mockImplementation(async (username: string) =>
+      username === 'saiu' ? { uuid: 'uuid-saiu', username, isActive: false } : null,
     );
 
     const ficha = JSON.parse((await dono.get_catalog({ slug: 'dados' })).content[0].text);
     expect(ficha.grants).toEqual([
-      { email: 'maria@exemplo.com', name: 'Maria', level: 'view', isActive: true },
-      { email: 'saiu@exemplo.com', name: 'Saiu', level: 'edit', isActive: false },
+      { username: 'maria', name: 'Maria', level: 'view', isActive: true },
+      { username: 'saiu', name: 'Saiu', level: 'edit', isActive: false },
     ]);
 
-    const tirado = await dono.unshare_catalog({ slug: 'dados', email: 'saiu@exemplo.com' });
-    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    const tirado = await dono.unshare_catalog({ slug: 'dados', username: 'saiu' });
+    expect(tirado.content[0].text).toMatch(/saiu perdeu o acesso/);
     expect(db.removeCatalogGrant).toHaveBeenCalledWith('dados', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
 
-    const concedido = await guard(() => dono.share_catalog({ slug: 'dados', email: 'saiu@exemplo.com', level: 'view' }));
+    const concedido = await guard(() => dono.share_catalog({ slug: 'dados', username: 'saiu', level: 'view' }));
     expect(concedido.isError).toBe(true);
     expect(concedido.content[0].text).toMatch(/desativada/);
     expect(db.setCatalogGrant).not.toHaveBeenCalled();
@@ -389,11 +389,11 @@ describe('acesso: share / unshare / transfer', () => {
 
   // Revogar não consulta `users`: a resposta não diz se existe conta com aquele e-mail.
   it('e-mail sem concessão aqui é recusado sem consultar a conta', async () => {
-    const nada = await guard(() => createCatalogHandlers(caller('editor')).unshare_catalog({ slug: 'dados', email: 'x@exemplo.com' }));
+    const nada = await guard(() => createCatalogHandlers(caller('editor')).unshare_catalog({ slug: 'dados', username: 'ninguem' }));
 
     expect(nada.isError).toBe(true);
     expect(nada.content[0].text).toBe('A conta não tem concessão neste catálogo');
-    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.getUserByUsername).not.toHaveBeenCalled();
     expect(db.removeCatalogGrant).not.toHaveBeenCalled();
   });
 });

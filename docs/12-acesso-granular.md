@@ -263,6 +263,14 @@ página da skill, lista os vMCPs em que a sessão tem `edit`.
 
 ### 5.3 API REST
 
+> **Onde se lê "e-mail" daqui até o fim da seção, leia "username".** O
+> [`19`](19-username.md) trocou o identificador público da conta: as rotas são
+> `/access/:username`, a busca devolve `username` e **deixou de casar por
+> e-mail**, e os apelidos descritos abaixo apontam para o username. O raciocínio
+> de cada regra — por que a conta não sai pelo `uuid`, por que o apelido existe —
+> continua valendo inteiro; só o rótulo que ele carrega deixou de ser dado
+> pessoal. O e-mail **não é aceito** nem na entrada (decisão 9 do `19`).
+
 ```
 GET    /api/users/lookup?q=            nome, e-mail e papel de contas ativas (qualquer logado)
 
@@ -307,6 +315,11 @@ fica só em `POST` (criar, importar).
 > `managed` (`mcps.ts`, `catalogs.ts`).
 
 ## 6. O mcp-admin
+
+> **O parâmetro `email` virou `username`** nas nove tools, pelo [`19`](19-username.md)
+> (decisão 9). Nesta superfície a troca é mais que cosmética: quem preenche o
+> argumento é um agente, e nenhuma tool devolve e-mail — ele não teria de onde
+> tirar um endereço.
 
 `share_skill(slug, email, level)`, `unshare_skill(slug, email)`,
 `transfer_skill(slug, email)`, e os pares para `catalog` e `mcp`. Cada tool
@@ -366,8 +379,12 @@ que mudou nele, e "quem virou dono" se lê no label.
 - **Contêiner expõe também no site.** Marcar um catálogo como público publica
   membros privados para o anônimo. É a mesma regra do vMCP aberto e o aviso
   é o mesmo.
-- **A busca de contas expõe e-mails** a qualquer conta logada. Aceito por ser
-  uma instalação de colaboradores.
+- ~~**A busca de contas expõe e-mails** a qualquer conta logada. Aceito por ser
+  uma instalação de colaboradores.~~ **Revogado pelo [`19`](19-username.md)**
+  (decisões 8 e 10): a busca devolve o **username** e deixou de casar por
+  e-mail — devolver só o username e continuar casando por endereço deixaria
+  qualquer conta logada descobrir a qual username um e-mail corresponde. O
+  endereço passou a ser visível só para a própria pessoa e para um admin.
 - **Vínculos sobrevivem à revogação.** Revogar `view` não tira a skill dos
   contêineres alheios; a página da skill mostra onde ela está, e desligar
   resolve.

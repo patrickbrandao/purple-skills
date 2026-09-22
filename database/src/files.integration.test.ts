@@ -342,7 +342,7 @@ describe.skipIf(!url)('arquivos: unicidade de caminho sem diferenciar caixa', ()
     });
 
     it('audita create com o caminho normalizado e sem conteúdo anterior', async () => {
-      const ana = await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'editor' });
+      const ana = await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'editor' });
       const actor = { userUuid: ana.uuid, label: ana.email };
 
       await createFile(SLUG, './auditoria//novo.md', 'primeira versão', 'web-admin', actor);

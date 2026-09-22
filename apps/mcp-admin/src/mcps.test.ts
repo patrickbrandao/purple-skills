@@ -16,7 +16,7 @@ const db = vi.hoisted(() => ({
   listVirtualMcps: vi.fn(),
   getVirtualMcp: vi.fn(),
   getSkillSummary: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
   cloneVirtualMcp: vi.fn(),
   createVirtualMcp: vi.fn(),
   updateVirtualMcp: vi.fn(),
@@ -45,7 +45,7 @@ type Role = 'admin' | 'editor' | 'membro';
 type Viewer = { role: Role; userUuid: string | null };
 
 const caller = (role: Role, userUuid: string | null = `uuid-${role}`) => ({
-  actor: { userUuid, label: userUuid ? `${role}@exemplo.com` : 'token-global' },
+  actor: { userUuid, label: userUuid ? `${role}` : 'token-global' },
   role,
   identity: `teste:${role}`,
 });
@@ -76,11 +76,11 @@ const mcp = {
   isActive: true,
   isOpen: false,
   ownerUserUuid: 'uuid-editor',
-  ownerEmail: 'editor@exemplo.com',
+  ownerUsername: 'editor',
   // Uma concessão de conta ativa e uma de conta desativada depois de recebê-la.
   grants: [
-    { userUuid: 'uuid-maria', email: 'maria@exemplo.com', name: 'Maria', role: 'membro', isActive: true, level: 'edit' },
-    { userUuid: 'uuid-saiu', email: 'saiu@exemplo.com', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
+    { userUuid: 'uuid-maria', username: 'maria', name: 'Maria', role: 'membro', isActive: true, level: 'edit' },
+    { userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', role: 'membro', isActive: false, level: 'view' },
   ],
   skillCount: 1,
   activeKeyCount: 0,
@@ -140,8 +140,8 @@ beforeEach(() => {
     const mcps = (todos ? onde.todos : onde.visiveis).map((mcpSlug) => ({ slug: mcpSlug }));
     return seen({ slug, name: slug, mcps, ...skill }, options?.viewer);
   });
-  db.getUserByEmail.mockImplementation(async (email: string) =>
-    email === 'maria@exemplo.com' ? { uuid: 'uuid-maria', email, isActive: true } : null,
+  db.getUserByUsername.mockImplementation(async (username: string) =>
+    username === 'maria' ? { uuid: 'uuid-maria', username, isActive: true } : null,
   );
   db.recordAccountAudit.mockResolvedValue(undefined);
 });
@@ -626,22 +626,22 @@ describe('acesso: share / unshare / transfer', () => {
   const dono = createMcpHandlers(caller('editor'));
 
   it('manage concede e revoga pelo e-mail; conta desconhecida é 404', async () => {
-    db.setVirtualMcpGrant.mockResolvedValue({ userUuid: 'uuid-maria', email: 'maria@exemplo.com', level: 'edit' });
+    db.setVirtualMcpGrant.mockResolvedValue({ userUuid: 'uuid-maria', username: 'maria', level: 'edit' });
     db.removeVirtualMcpGrant.mockResolvedValue(undefined);
 
-    const dado = await dono.share_mcp({ slug: 'time-a', email: 'maria@exemplo.com', level: 'edit' });
-    expect(dado.content[0].text).toMatch(/maria@exemplo.com agora pode editar/);
+    const dado = await dono.share_mcp({ slug: 'time-a', username: 'maria', level: 'edit' });
+    expect(dado.content[0].text).toMatch(/maria agora pode editar/);
     expect(db.setVirtualMcpGrant).toHaveBeenCalledWith('time-a', 'uuid-maria', 'edit', 'mcp-admin', caller('editor').actor);
 
-    const tirado = await dono.unshare_mcp({ slug: 'time-a', email: 'maria@exemplo.com' });
+    const tirado = await dono.unshare_mcp({ slug: 'time-a', username: 'maria' });
     expect(tirado.content[0].text).toMatch(/perdeu o acesso/);
     expect(db.removeVirtualMcpGrant).toHaveBeenCalledWith('time-a', 'uuid-maria', 'mcp-admin', caller('editor').actor);
 
-    const ninguem = await guard(() => dono.share_mcp({ slug: 'time-a', email: 'x@exemplo.com', level: 'view' }));
+    const ninguem = await guard(() => dono.share_mcp({ slug: 'time-a', username: 'ninguem', level: 'view' }));
     expect(ninguem.isError).toBe(true);
     expect(ninguem.content[0].text).toMatch(/Conta não encontrada/);
 
-    const nivel = await guard(() => dono.share_mcp({ slug: 'time-a', email: 'maria@exemplo.com', level: 'owner' }));
+    const nivel = await guard(() => dono.share_mcp({ slug: 'time-a', username: 'maria', level: 'owner' }));
     expect(nivel.isError).toBe(true);
   });
 
@@ -653,21 +653,21 @@ describe('acesso: share / unshare / transfer', () => {
    * continuam exigindo.
    */
   it('revoga a concessão de conta desativada, que a ficha marca; conceder a ela continua recusado', async () => {
-    db.getUserByEmail.mockImplementation(async (email: string) =>
-      email === 'saiu@exemplo.com' ? { uuid: 'uuid-saiu', email, isActive: false } : null,
+    db.getUserByUsername.mockImplementation(async (username: string) =>
+      username === 'saiu' ? { uuid: 'uuid-saiu', username, isActive: false } : null,
     );
 
     const ficha = JSON.parse((await dono.get_virtual_mcp({ slug: 'time-a' })).content[0].text);
     expect(ficha.grants).toEqual([
-      { email: 'maria@exemplo.com', name: 'Maria', level: 'edit', isActive: true },
-      { email: 'saiu@exemplo.com', name: 'Saiu', level: 'view', isActive: false },
+      { username: 'maria', name: 'Maria', level: 'edit', isActive: true },
+      { username: 'saiu', name: 'Saiu', level: 'view', isActive: false },
     ]);
 
-    const tirado = await dono.unshare_mcp({ slug: 'time-a', email: 'Saiu@Exemplo.com' });
-    expect(tirado.content[0].text).toMatch(/saiu@exemplo.com perdeu o acesso/);
+    const tirado = await dono.unshare_mcp({ slug: 'time-a', username: 'Saiu' });
+    expect(tirado.content[0].text).toMatch(/saiu perdeu o acesso/);
     expect(db.removeVirtualMcpGrant).toHaveBeenCalledWith('time-a', 'uuid-saiu', 'mcp-admin', caller('editor').actor);
 
-    const concedido = await guard(() => dono.share_mcp({ slug: 'time-a', email: 'saiu@exemplo.com', level: 'edit' }));
+    const concedido = await guard(() => dono.share_mcp({ slug: 'time-a', username: 'saiu', level: 'edit' }));
     expect(concedido.isError).toBe(true);
     expect(concedido.content[0].text).toMatch(/desativada/);
     expect(db.setVirtualMcpGrant).not.toHaveBeenCalled();
@@ -676,23 +676,23 @@ describe('acesso: share / unshare / transfer', () => {
   // Revogar não consulta `users`: a resposta não diz se existe conta com aquele
   // e-mail — nem desativada, que a busca de contas não revela (decisão 13).
   it('e-mail sem concessão aqui é recusado sem consultar a conta', async () => {
-    const nada = await guard(() => dono.unshare_mcp({ slug: 'time-a', email: 'x@exemplo.com' }));
+    const nada = await guard(() => dono.unshare_mcp({ slug: 'time-a', username: 'ninguem' }));
 
     expect(nada.isError).toBe(true);
     expect(nada.content[0].text).toBe('A conta não tem concessão neste MCP virtual');
-    expect(db.getUserByEmail).not.toHaveBeenCalled();
+    expect(db.getUserByUsername).not.toHaveBeenCalled();
     expect(db.removeVirtualMcpGrant).not.toHaveBeenCalled();
   });
 
   it('só dono ou admin transferem; manage não', async () => {
     db.updateVirtualMcp.mockResolvedValue(mcp);
 
-    await dono.transfer_mcp({ slug: 'time-a', email: 'maria@exemplo.com' });
+    await dono.transfer_mcp({ slug: 'time-a', username: 'maria' });
     expect(db.updateVirtualMcp).toHaveBeenCalledWith('mcp-1', { ownerUserUuid: 'uuid-maria' }, 'mcp-admin', caller('editor').actor);
 
     grants['uuid-outro'] = 'manage';
     const gerente = createMcpHandlers(caller('membro', 'uuid-outro'));
-    const negado = await guard(() => gerente.transfer_mcp({ slug: 'time-a', email: 'maria@exemplo.com' }));
+    const negado = await guard(() => gerente.transfer_mcp({ slug: 'time-a', username: 'maria' }));
     expect(negado.isError).toBe(true);
     expect(negado.content[0].text).toMatch(/exige "dono"/);
   });

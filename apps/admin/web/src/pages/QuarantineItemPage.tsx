@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Binary, Download, ExternalLink, FilePlus, Save, ShieldCheck, Trash2 } from 'lucide-react';
 import {
+  atUser,
   createQuarantineFile,
   deleteQuarantineFile,
   deleteQuarantineItem,
@@ -285,7 +286,7 @@ export function QuarantineItemPage() {
             {item.description || 'Sem descrição no SKILL.md.'}
             <br />
             <span className="mono">{item.sourceFilename ?? 'pacote sem nome'}</span> · enviado por{' '}
-            {item.ownerEmail ?? 'sem dono'} · {formatRelative(item.createdAt)} · {item.fileCount} arquivo
+            {atUser(item.ownerUsername, 'sem dono')} · {formatRelative(item.createdAt)} · {item.fileCount} arquivo
             {item.fileCount === 1 ? '' : 's'} · {formatBytes(item.sizeBytes)}
           </p>
         </div>

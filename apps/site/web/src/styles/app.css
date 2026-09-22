@@ -952,3 +952,89 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   margin-top: 28px;
   padding-top: 18px;
 }
+
+/* --------------------------------------------------------------- perfil ---
+   A página pública de uma conta (`docs/20-perfil.md` §7). Ela reusa
+   `.skill-page`, `.skill-grid` e `.skill-card`; o que é próprio é o cabeçalho
+   com a foto ao lado do nome. */
+.profile-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 22px;
+  margin-top: 14px;
+}
+.profile-photo {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  flex: none;
+  /* `cover` recorta pelo centro: não há redimensionamento no servidor
+     (`docs/20` §3.2), então chega o que a pessoa enviou, em qualquer
+     proporção — e deformar um rosto é pior do que cortá-lo. */
+  object-fit: cover;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.profile-photo.is-mono {
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+}
+.profile-photo.is-mono svg {
+  width: 40px;
+  height: 40px;
+}
+.profile-handle {
+  color: var(--text-faint);
+  font-size: 0.9rem;
+  margin-top: 2px;
+}
+.profile-bio {
+  color: var(--text-dim);
+  font-size: 0.98rem;
+  max-width: 46em;
+  margin-top: 10px;
+  /* A bio é texto puro (decisão 8): as quebras que a pessoa escreveu são as
+     únicas que aparecem, e não há markdown para interpretar. */
+  white-space: pre-line;
+}
+.profile-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.profile-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  text-decoration: none;
+  /* O rótulo é escrito por quem tem conta: sem teto de largura, um "link" de
+     quarenta caracteres empurra a pílula para fora do cartão. */
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-link:hover {
+  border-color: var(--accent-soft);
+  color: var(--text);
+}
+.profile-link svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+@media (max-width: 640px) {
+  .profile-head {
+    flex-direction: column;
+    gap: 14px;
+  }
+}

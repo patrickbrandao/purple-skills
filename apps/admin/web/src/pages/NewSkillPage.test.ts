@@ -22,7 +22,7 @@ describe('o corpo da importação para a quarentena', () => {
     description: '',
     sourceFilename: 'brainstorming.zip',
     ownerUserUuid: null,
-    ownerEmail: null,
+    ownerUsername: null,
     fileCount: 4,
     sizeBytes: 2048,
     createdAt: '2026-09-20T12:00:00.000Z',

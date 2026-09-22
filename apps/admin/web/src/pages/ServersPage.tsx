@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, LayoutGrid, List, Plus, Search, Star } from 'lucide-react';
 import {
+  atUser,
   canCreate,
   canManageUsers,
   createMcp,
@@ -243,7 +244,7 @@ export function ServersPage({ session, user }: { session: Session; user: Session
                   <td className="num hidden sm:table-cell">{mcp.onlineSessions}</td>
                   <td className="num hidden sm:table-cell">{mcp.activeKeyCount}</td>
                   <td className="hidden md:table-cell">
-                    <span className="row-sub">{mcp.ownerEmail ?? 'sem dono (só admin)'}</span>
+                    <span className="row-sub">{atUser(mcp.ownerUsername, 'sem dono (só admin)')}</span>
                   </td>
                   <td className="hidden lg:table-cell">
                     <span className="row-sub whitespace-nowrap">{formatRelative(mcp.updatedAt)}</span>

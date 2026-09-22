@@ -31,7 +31,7 @@ const banco = vi.hoisted(() => ({
   setCatalogGrant: vi.fn(),
   removeCatalogGrant: vi.fn(),
   getSkillSummary: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
 }));
 
 // Só estas são trocadas: o resto do pacote entra de verdade (`AppError`,
@@ -52,6 +52,10 @@ const DONA = 'uuid-dona';
 
 const sessao = (role: AuthUser['role'], uuid: string): AuthUser => ({
   uuid,
+  username: role,
+  avatarUpdatedAt: null,
+  // O e-mail continua na sessão — é a própria conta se vendo (`docs/19` decisão
+  // 8). O que saiu das superfícies é o e-mail de **outra** pessoa.
   email: `${role}@exemplo.dev`,
   name: role,
   role,
@@ -72,17 +76,17 @@ const FLAGS = { asSkill: true, asPrompt: false, asResource: false };
 
 const CONCESSAO = {
   userUuid: 'uuid-bia',
-  email: 'bia@exemplo.dev',
+  username: 'bia',
   name: 'Bia',
   role: 'membro',
   isActive: true,
   level: 'edit',
   grantedByUserUuid: 'uuid-ana',
-  grantedByEmail: 'ana@exemplo.dev',
+  grantedByUsername: 'ana',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', email: 'saiu@exemplo.dev', name: 'Saiu', isActive: false };
+const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', isActive: false };
 
 const mcpRef = (slug: string, ownerUserUuid: string) => ({
   uuid: `ref-${slug}`,
@@ -114,7 +118,7 @@ function catalogoVisto(viewer?: Viewer) {
     isPublic: true,
     ownerUserUuid: DONA,
     // De propósito sem o uuid dentro: os casos do relatório 011 procuram o uuid no JSON.
-    ownerEmail: 'dona@exemplo.dev',
+    ownerUsername: 'dona',
     skillCount: 1,
     activeSkillCount: 1,
     mcpCount: 2,
@@ -208,38 +212,38 @@ describe('a resposta de uma escrita não devolve o vMCP fechado que a leitura es
  */
 describe('concessões: revogar não exige conta ativa', () => {
   beforeEach(() => {
-    banco.getUserByEmail.mockImplementation((email: string) =>
-      Promise.resolve(email === 'saiu@exemplo.dev' ? { uuid: 'uuid-saiu', email, isActive: false } : null),
+    banco.getUserByUsername.mockImplementation((username: string) =>
+      Promise.resolve(username === 'saiu' ? { uuid: 'uuid-saiu', username, isActive: false } : null),
     );
   });
 
   it('revoga a concessão de conta desativada', async () => {
-    await unshare(dona, 'dados', 'Saiu@Exemplo.dev');
+    await unshare(dona, 'dados', 'Saiu');
 
     expect(banco.removeCatalogGrant).toHaveBeenCalledWith('dados', 'uuid-saiu', 'web-admin', expect.objectContaining({ userUuid: DONA }));
   });
 
   it('conceder — e mudar o nível — de conta desativada continua recusado', async () => {
-    expect(await recusa(share(dona, 'dados', 'saiu@exemplo.dev', 'view'))).toEqual({
+    expect(await recusa(share(dona, 'dados', 'saiu', 'view'))).toEqual({
       status: 404,
-      message: 'Conta não encontrada ou desativada: saiu@exemplo.dev',
+      message: 'Conta não encontrada ou desativada: saiu',
     });
     expect(banco.setCatalogGrant).not.toHaveBeenCalled();
   });
 
   it('e-mail sem concessão aqui é 404 sem consultar a conta', async () => {
-    expect(await recusa(unshare(dona, 'dados', 'ninguem@exemplo.dev'))).toEqual({
+    expect(await recusa(unshare(dona, 'dados', 'ninguem'))).toEqual({
       status: 404,
       message: 'A conta não tem concessão neste catálogo',
     });
-    expect(banco.getUserByEmail).not.toHaveBeenCalled();
+    expect(banco.getUserByUsername).not.toHaveBeenCalled();
     expect(banco.removeCatalogGrant).not.toHaveBeenCalled();
   });
 
   it('quem só edita não revoga', async () => {
     concedido = 'edit';
 
-    expect((await recusa(unshare(convidado, 'dados', 'saiu@exemplo.dev'))).status).toBe(403);
+    expect((await recusa(unshare(convidado, 'dados', 'saiu'))).status).toBe(403);
     expect(banco.removeCatalogGrant).not.toHaveBeenCalled();
   });
 });
@@ -386,9 +390,9 @@ describe('nenhuma resposta de catálogo carrega uuid de conta', () => {
     const ficha = await detail(admin, 'dados');
 
     semUuidDeConta(ficha);
-    expect(ficha).toMatchObject({ ownerUserUuid: 'dona@exemplo.dev', ownerEmail: 'dona@exemplo.dev' });
-    expect(ficha.grants[0]).toEqual({ ...CONCESSAO, userUuid: 'bia@exemplo.dev', grantedByUserUuid: 'ana@exemplo.dev' });
-    expect(ficha.grants[1]).toMatchObject({ email: 'saiu@exemplo.dev', isActive: false });
+    expect(ficha).toMatchObject({ ownerUserUuid: 'dona', ownerUsername: 'dona' });
+    expect(ficha.grants[0]).toEqual({ ...CONCESSAO, userUuid: 'bia', grantedByUserUuid: 'ana' });
+    expect(ficha.grants[1]).toMatchObject({ username: 'saiu', isActive: false });
     expect(ficha.mcps[1]).not.toHaveProperty('ownerUserUuid');
     expect(ficha.mcps[1]).toMatchObject({ slug: 'fechado-do-bruno', asSkill: true });
   });
@@ -401,12 +405,12 @@ describe('nenhuma resposta de catálogo carrega uuid de conta', () => {
   });
 
   it('conceder devolve a concessão pelo e-mail', async () => {
-    banco.getUserByEmail.mockResolvedValue({ uuid: 'uuid-bia', email: 'bia@exemplo.dev', isActive: true });
+    banco.getUserByUsername.mockResolvedValue({ uuid: 'uuid-bia', username: 'bia', isActive: true });
     banco.setCatalogGrant.mockResolvedValue(CONCESSAO);
 
-    const concessao = await share(admin, 'dados', 'bia@exemplo.dev', 'edit');
+    const concessao = await share(admin, 'dados', 'bia', 'edit');
 
     semUuidDeConta(concessao);
-    expect(concessao).toMatchObject({ email: 'bia@exemplo.dev', userUuid: 'bia@exemplo.dev', level: 'edit' });
+    expect(concessao).toMatchObject({ username: 'bia', userUuid: 'bia', level: 'edit' });
   });
 });

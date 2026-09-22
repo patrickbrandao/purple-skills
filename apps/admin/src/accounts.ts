@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   adoptOrphans,
   badRequest,
@@ -9,10 +9,12 @@ import {
   createUser,
   consumeResetToken,
   getUserByEmail,
+  getUserByLogin,
   getUserByOidc,
   getUserByUuid,
   listApiKeys,
   listUsers,
+  nextFreeUsername,
   notFound,
   recordAccountAudit,
   registerFailedLogin,
@@ -32,8 +34,12 @@ import {
   generatePassword,
   hashPassword,
   isRole,
+  isReservedUsername,
   normalizeEmail,
+  normalizeUsername,
   passwordProblem,
+  usernameFromName,
+  usernameFromUuid,
   verifyPassword,
 } from '@purple-skills/shared';
 import { config } from './config.js';
@@ -57,10 +63,19 @@ function textOf(value: unknown, field: string): string {
   return value;
 }
 
-/** O que o painel mostra de uma conta. Nunca inclui hash nem token. */
+/**
+ * O que o painel mostra de uma conta. Nunca inclui hash nem token.
+ *
+ * **O `email` fica aqui, e é o único tipo em que ele fica** (`docs/19-username.md`
+ * decisão 8): `UserSummary` só sai por `/api/users*`, que é de admin, e por
+ * `GET /api/session`, que é a própria pessoa. Toda outra superfície nomeia a
+ * conta por `username`.
+ */
 export function toPublicUser(user: UserRecord | UserSummary): UserSummary {
   const {
     uuid,
+    username,
+    avatarUpdatedAt,
     email,
     name,
     role,
@@ -75,6 +90,8 @@ export function toPublicUser(user: UserRecord | UserSummary): UserSummary {
   } = user;
   return {
     uuid,
+    username,
+    avatarUpdatedAt,
     email,
     name,
     role,
@@ -90,6 +107,42 @@ export function toPublicUser(user: UserRecord | UserSummary): UserSummary {
 }
 
 export const listAccounts = (): Promise<UserSummary[]> => listUsers();
+
+/**
+ * O username com que uma conta nasce (`docs/19-username.md` decisão 12).
+ *
+ * Informado: normaliza e recusa o que não vale. O reservado tem mensagem
+ * própria porque é o único caso em que a recusa não se explica sozinha — quem
+ * tenta `admin` lê "não pode" e não vê nada de errado no texto que digitou.
+ *
+ * Ausente: deriva do **nome** (`§3.1`) e resolve a colisão no banco
+ * (`nextFreeUsername`, que consulta `users` e a tabela `usernames` — um
+ * username abandonado não volta, decisão 6). Nome que não dá username
+ * utilizável cai no `user-<8 hex>`, com um uuid sorteado aqui: o da linha só
+ * existe depois do INSERT, e o valor não precisa ser o dela — precisa ser
+ * livre, e quem garante isso é o `nextFreeUsername` logo abaixo.
+ *
+ * **Nunca deriva da parte antes do `@`**, que é a tentação óbvia e a razão de
+ * esta mudança existir: o local part é metade do endereço, e publicá-lo para
+ * todo o painel vazaria exatamente o que se quis fechar.
+ */
+async function usernameParaConta(raw: unknown, name: string): Promise<string> {
+  if (raw !== undefined && raw !== null && raw !== '') {
+    const username = normalizeUsername(raw);
+    if (!username) {
+      if (isReservedUsername(raw)) {
+        throw badRequest(`"${textOf(raw, 'username').trim()}" é um nome reservado — escolha outro`);
+      }
+      throw badRequest(
+        'O usuário deve ter de 3 a 32 caracteres, usar só letras sem acento, números, ponto, ' +
+          'hífen e sublinhado, começar e terminar em letra ou número e não repetir pontuação',
+      );
+    }
+    return username;
+  }
+
+  return nextFreeUsername(usernameFromName(name) ?? usernameFromUuid(randomUUID()));
+}
 
 // ------------------------------------------------------------- bootstrap ---
 
@@ -113,6 +166,7 @@ export const listAccounts = (): Promise<UserSummary[]> => listUsers();
  * a resposta do `/api/setup` não muda de forma conforme quem recusou.
  */
 export async function bootstrapAdmin(input: {
+  username?: unknown;
   email?: unknown;
   name?: unknown;
   password?: unknown;
@@ -122,6 +176,8 @@ export async function bootstrapAdmin(input: {
 
   const name = textOf(input.name, 'name').trim();
   if (!name) throw badRequest('Informe o nome do administrador');
+
+  const username = await usernameParaConta(input.username, name);
 
   const problem = passwordProblem(input.password);
   if (problem) throw badRequest(problem);
@@ -135,6 +191,7 @@ export async function bootstrapAdmin(input: {
   }
 
   const user = await createUser({
+    username,
     email,
     name,
     role: 'admin',
@@ -148,7 +205,7 @@ export async function bootstrapAdmin(input: {
     action: 'user.create',
     source: SOURCE,
     actor: { userUuid: null, label: 'bootstrap' },
-    targetLabel: email,
+    targetLabel: user.username,
   });
 
   // O que a sessão de bootstrap criou passa a ser do primeiro admin.
@@ -168,14 +225,16 @@ export async function bootstrapAdmin(input: {
  * Melhor esforço: uma falha vai para o log e não impede a entrada.
  */
 export async function adoptOrphansFor(
-  user: { uuid: string; email: string; role: Role },
-  actor: AuditActor = { userUuid: user.uuid, label: user.email },
+  user: { uuid: string; username: string; role: Role },
+  actor: AuditActor = { userUuid: user.uuid, label: user.username },
 ): Promise<void> {
   if (user.role !== 'admin') return;
   try {
     const { skills, catalogs } = await adoptOrphans(user.uuid, SOURCE, actor);
     if (skills + catalogs > 0) {
-      console.log(`[admin] ${user.email} adotou ${skills} skill(s) e ${catalogs} catálogo(s) sem dono`);
+      console.log(
+        `[admin] ${user.username} adotou ${skills} skill(s) e ${catalogs} catálogo(s) sem dono`,
+      );
     }
   } catch (err) {
     console.error('[admin] falha ao adotar skills e catálogos sem dono:', err);
@@ -191,8 +250,11 @@ export type LoginOutcome = { user: UserRecord } | { error: string; status: numbe
  * gastar o mesmo scrypt quando não existe conta para conferir.
  *
  * Sem ele a resposta genérica do login é derrotada pelo relógio: medido nesta
- * máquina, e-mail sem conta responde em ~1 ms e e-mail com conta em ~70 ms, e as
- * faixas nem se tocam — uma única tentativa classifica o endereço.
+ * máquina, identificador sem conta responde em ~1 ms e identificador com conta
+ * em ~70 ms, e as faixas nem se tocam — uma única tentativa classifica o que
+ * foi digitado. Vale igual para os dois caminhos da decisão 3 do
+ * `docs/19-username.md`: sem isto, o formulário diria se um **username** existe
+ * com a mesma clareza com que dizia de um e-mail.
  *
  * Nasce na primeira necessidade, não no import: quem nunca erra o login não paga
  * scrypt no boot. A primeira tentativa inválida do processo custa dois (gerar e
@@ -208,32 +270,44 @@ function gastarTrabalhoDeSenha(password: string): void {
 }
 
 /**
- * Login por conta.
+ * Login por conta, **por username ou por e-mail** (`docs/19-username.md`
+ * decisão 3).
  *
- * A resposta é **a mesma** para e-mail inexistente e senha errada — no texto e
- * no tempo: distingui-las transforma o formulário num verificador de quem tem
- * conta aqui. O corpo igual não basta, porque conferir a senha custa scrypt e
- * quem não tem conta não teria nada a conferir; daí o `gastarTrabalhoDeSenha`.
- * A trava por `locked_until` é a única resposta diferente, e só depois de
- * acertar o e-mail.
+ * O campo é um só e quem decide é o `@`: tem, é e-mail; não tem, é username. A
+ * regra não tem caso ambíguo porque nenhum username válido pode conter `@`
+ * (`normalizeUsername`), e é `getUserByLogin` que a aplica — aqui o
+ * identificador não é normalizado antes, justamente porque a normalização é
+ * diferente nos dois casos.
+ *
+ * A resposta é **a mesma** para identificador inexistente e senha errada — no
+ * texto e no tempo: distingui-las transforma o formulário num verificador de
+ * quem tem conta aqui. O corpo igual não basta, porque conferir a senha custa
+ * scrypt e quem não tem conta não teria nada a conferir; daí o
+ * `gastarTrabalhoDeSenha`. A trava por `locked_until` é a única resposta
+ * diferente, e só depois de acertar o identificador.
+ *
+ * O texto do erro **não diz qual dos dois falhou**, e nem poderia: "username
+ * não encontrado" contra "e-mail não encontrado" devolveria, de graça, a
+ * informação de que aquele endereço tem conta aqui.
  */
 export async function loginWithPassword(input: {
-  email?: unknown;
+  identifier?: unknown;
   password?: unknown;
 }): Promise<LoginOutcome> {
-  const genericError = { error: 'E-mail ou senha incorretos', status: 401 };
+  const genericError = { error: 'Usuário, e-mail ou senha incorretos', status: 401 };
 
-  const email = normalizeEmail(input.email);
+  const identifier = typeof input.identifier === 'string' ? input.identifier.trim() : '';
   const password = input.password;
   // Este ramo não gasta scrypt de propósito: ele depende só do que o cliente
   // mandou, não de haver conta, então não vaza nada — e queimar CPU em pedido
   // vazio seria oferecer negação de serviço de graça.
-  if (!email || typeof password !== 'string' || password.length === 0) return genericError;
+  if (!identifier || typeof password !== 'string' || password.length === 0) return genericError;
 
-  const user = await getUserByEmail(email);
+  const user = await getUserByLogin(identifier);
   if (!user || !user.isActive || !user.passwordHash) {
     // O que vaza aqui é o tempo, não o texto. Vale também para conta desativada
-    // e para conta só-OIDC: sem isto elas se separariam de um e-mail sem conta.
+    // e para conta só-OIDC: sem isto elas se separariam de um identificador sem
+    // conta.
     gastarTrabalhoDeSenha(password);
     return genericError;
   }
@@ -263,13 +337,15 @@ export async function loginWithPassword(input: {
 
 export async function createAccount(
   actor: AuditActor,
-  input: { email?: unknown; name?: unknown; role?: unknown; password?: unknown },
+  input: { username?: unknown; email?: unknown; name?: unknown; role?: unknown; password?: unknown },
 ): Promise<{ user: UserSummary; temporaryPassword: string | null }> {
   const email = normalizeEmail(input.email);
   if (!email) throw badRequest('Informe um e-mail válido');
 
   const name = textOf(input.name, 'name').trim();
   if (!name) throw badRequest('Informe o nome');
+
+  const username = await usernameParaConta(input.username, name);
 
   if (!isRole(input.role)) throw badRequest('Papel inválido: use admin, editor ou membro');
 
@@ -283,6 +359,7 @@ export async function createAccount(
   const password = explicit ? (input.password as string) : generatePassword();
 
   const user = await createUser({
+    username,
     email,
     name,
     role: input.role,
@@ -294,7 +371,7 @@ export async function createAccount(
     action: 'user.create',
     source: SOURCE,
     actor,
-    targetLabel: email,
+    targetLabel: user.username,
   });
 
   return { user: toPublicUser(user), temporaryPassword: explicit ? null : password };
@@ -303,12 +380,13 @@ export async function createAccount(
 export async function updateAccount(
   actor: AuthUser,
   uuid: string,
-  patch: { name?: unknown; role?: unknown; isActive?: unknown },
+  patch: { username?: unknown; name?: unknown; role?: unknown; isActive?: unknown },
 ): Promise<UserSummary> {
   const target = await getUserByUuid(uuid);
   if (!target) throw notFound('Conta não encontrada');
 
   const changes: {
+    username?: string;
     name?: string;
     role?: Role;
     isActive?: boolean;
@@ -327,6 +405,20 @@ export async function updateAccount(
     const name = textOf(patch.name, 'name').trim();
     if (!name) throw badRequest('O nome não pode ficar vazio');
     changes.name = name;
+  }
+
+  // Trocar o username é de **admin**, e a rota já cobra isso — aqui só se
+  // recusa o vazio, que no `usernameParaConta` significaria "derive do nome" e
+  // trocaria o username de alguém por acidente num PATCH que mandou `""`.
+  // O antigo não volta a circular (`docs/19-username.md` decisão 6): quem
+  // garante isso é a tabela `usernames`, no `updateUser`, e não uma conferência
+  // daqui — entre ler e gravar, outra conta poderia tomar o nome.
+  if (patch.username !== undefined) {
+    if (patch.username === null || patch.username === '') {
+      throw badRequest('O usuário não pode ficar vazio');
+    }
+    const username = await usernameParaConta(patch.username, target.name);
+    if (username !== target.username) changes.username = username;
   }
 
   if (patch.role !== undefined) {
@@ -368,20 +460,33 @@ export async function updateAccount(
 
   const updated = await updateUser(uuid, changes);
 
+  // O rótulo é `<antigo> -> <novo>`, a mesma forma da clonagem (`031`), e a
+  // linha é o que mantém legível a trilha anterior à troca: lá o rótulo
+  // congelado continua dizendo o username antigo, e é aqui que se descobre
+  // quem ele virou. Vem **antes** das outras porque é a que renomeia o alvo —
+  // as de baixo já usam o username novo.
+  if (changes.username !== undefined) {
+    await recordAccountAudit({
+      action: 'user.username',
+      source: SOURCE,
+      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
+      targetLabel: `${target.username} -> ${changes.username}`,
+    });
+  }
   if (changes.role !== undefined) {
     await recordAccountAudit({
       action: 'user.role',
       source: SOURCE,
-      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
-      targetLabel: `${target.email} → ${changes.role}`,
+      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
+      targetLabel: `${updated.username} → ${changes.role}`,
     });
   }
   if (changes.isActive === false) {
     await recordAccountAudit({
       action: 'user.deactivate',
       source: SOURCE,
-      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
-      targetLabel: target.email,
+      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
+      targetLabel: updated.username,
     });
   }
   // O par do de cima, que faltava (relatório 003 da auditoria de 2026-09-19):
@@ -393,8 +498,8 @@ export async function updateAccount(
     await recordAccountAudit({
       action: 'user.activate',
       source: SOURCE,
-      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
-      targetLabel: target.email,
+      actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
+      targetLabel: updated.username,
     });
   }
 
@@ -432,16 +537,16 @@ export async function updateAccount(
  * e o que resta é falha de infraestrutura, exatamente o caso em que derrubar a
  * resposta perderia a senha temporária.
  */
-async function registrarTrocaDeSenha(actor: AuditActor, email: string): Promise<void> {
+async function registrarTrocaDeSenha(actor: AuditActor, username: string): Promise<void> {
   try {
     await recordAccountAudit({
       action: 'user.password',
       source: SOURCE,
       actor,
-      targetLabel: email,
+      targetLabel: username,
     });
   } catch (err) {
-    console.error(`[admin] falha ao auditar a redefinição de senha de ${email}:`, err);
+    console.error(`[admin] falha ao auditar a redefinição de senha de ${username}:`, err);
   }
 }
 
@@ -471,8 +576,8 @@ export async function resetAccountPassword(
   // Trocar a senha de outra conta é assumi-la: é a ação mais forte da tela de
   // contas, e era a única que não deixava rastro de quem a fez.
   await registrarTrocaDeSenha(
-    { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
-    target.email,
+    { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
+    target.username,
   );
 
   return { user: toPublicUser(updated), temporaryPassword: password };
@@ -532,7 +637,7 @@ export async function issueKey(
   await recordAccountAudit({
     action: 'key.create',
     source: SOURCE,
-    actor: { userUuid: user.uuid, label: user.email },
+    actor: { userUuid: user.uuid, label: user.username },
     targetLabel: `${name} (${generated.prefix})`,
   });
 
@@ -554,16 +659,16 @@ export async function listAccountKeys(uuid: string): Promise<ApiKeySummary[]> {
 }
 
 /**
- * O rótulo de um `key.revoke` na trilha: `<e-mail do dono>: <nome> (<prefixo>)`.
+ * O rótulo de um `key.revoke` na trilha: `<username do dono>: <nome> (<prefixo>)`.
  * A emissão já rotulava `<nome> (<prefixo>)`; a revogação gravava o **uuid** da
  * chave, que não aparece em tela nenhuma — a linha não se casava com a da
  * emissão, e quem lê a trilha não sabia que chave era (relatório 040 da
- * auditoria de 2026-09-19). O nome, o prefixo e o e-mail do dono vêm do próprio
- * `UPDATE` da revogação, sem leitura a mais nem corrida com ela. Linha antiga
- * não é reescrita: continua com o uuid.
+ * auditoria de 2026-09-19). O nome, o prefixo e o username do dono vêm do
+ * próprio `UPDATE` da revogação, sem leitura a mais nem corrida com ela. Linha
+ * antiga não é reescrita: continua com o uuid.
  */
-const revokedKeyLabel = (revoked: { name: string; prefix: string; userEmail: string }): string =>
-  `${revoked.userEmail}: ${revoked.name} (${revoked.prefix})`;
+const revokedKeyLabel = (revoked: { name: string; prefix: string; userUsername: string }): string =>
+  `${revoked.userUsername}: ${revoked.name} (${revoked.prefix})`;
 
 /**
  * O admin revoga uma chave de outra conta pela ficha dela. O escopo pelo dono
@@ -577,7 +682,7 @@ export async function revokeAccountKey(actor: AuthUser, uuid: string, id: string
   await recordAccountAudit({
     action: 'key.revoke',
     source: SOURCE,
-    actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.email },
+    actor: { userUuid: actor.uuid, label: actor.legacy ? 'bootstrap' : actor.username },
     targetLabel: revokedKeyLabel(revoked),
   });
 }
@@ -593,7 +698,7 @@ export async function revokeKey(user: AuthUser, id: string): Promise<void> {
   await recordAccountAudit({
     action: 'key.revoke',
     source: SOURCE,
-    actor: { userUuid: user.uuid, label: user.legacy ? 'bootstrap' : user.email },
+    actor: { userUuid: user.uuid, label: user.legacy ? 'bootstrap' : user.username },
     targetLabel: revokedKeyLabel(revoked),
   });
 }
@@ -673,7 +778,7 @@ export async function confirmPasswordReset(
   // caminho, não a conta — atribuí-la ao dono afirmaria uma posse que um link
   // vazado desmente. Sem esta linha, senha trocada por link não aparece em
   // lugar nenhum.
-  await registrarTrocaDeSenha({ userUuid: null, label: 'link-de-redefinicao' }, updated.email);
+  await registrarTrocaDeSenha({ userUuid: null, label: 'link-de-redefinicao' }, updated.username);
 }
 
 // -------------------------------------------------------------- OIDC -------
@@ -706,7 +811,7 @@ export type OidcClaims = {
  */
 async function registrarVinculo(
   claims: OidcClaims,
-  email: string,
+  username: string,
   descartouTemporaria: boolean,
 ): Promise<void> {
   try {
@@ -714,10 +819,10 @@ async function registrarVinculo(
       action: 'user.link',
       source: SOURCE,
       actor: { userUuid: null, label: `oidc:${claims.issuer}` },
-      targetLabel: `${email} (sub ${claims.subject}${descartouTemporaria ? '; senha temporária descartada' : ''})`,
+      targetLabel: `${username} (sub ${claims.subject}${descartouTemporaria ? '; senha temporária descartada' : ''})`,
     });
   } catch (err) {
-    console.error(`[admin] falha ao auditar o vínculo OIDC de ${email}:`, err);
+    console.error(`[admin] falha ao auditar o vínculo OIDC de ${username}:`, err);
   }
 }
 
@@ -816,7 +921,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
         ? { passwordHash: null, mustChangePassword: false, bumpTokenVersion: true }
         : {}),
     });
-    await registrarVinculo(claims, linked.email, descartarTemporaria);
+    await registrarVinculo(claims, linked.username, descartarTemporaria);
     await registerSuccessfulLogin(linked.uuid);
     await adoptOrphansFor(linked);
     return linked;
@@ -853,12 +958,25 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
     );
   }
 
+  // O claim vem do provedor, não de quem está entrando: o que não é texto vale
+  // como ausente (o nome cai no e-mail) em vez de derrubar o login — `String()`
+  // de um objeto sem `toString` lança.
+  const name = (typeof claims.name === 'string' ? claims.name.trim() : '') || email;
+
+  // O username de uma conta provisionada por SSO sai do **nome** do provedor
+  // (`docs/19-username.md` decisão 12), com sufixo em colisão. Repare que `name`
+  // acima cai no e-mail quando o provedor não manda nome — e é exatamente por
+  // isso que aqui não se deriva de `name` às cegas: `usernameFromName` de um
+  // e-mail devolveria `fulano-empresa-com`, publicando o endereço inteiro. Nesse
+  // caso o fallback do uuid entra, e a pessoa fica com `user-<hex>` até um admin
+  // renomeá-la — feio, e preferível a vazar o endereço.
+  const derivado = name === email ? null : usernameFromName(name);
+  const username = await nextFreeUsername(derivado ?? usernameFromUuid(randomUUID()));
+
   const created = await createUser({
+    username,
     email,
-    // O claim vem do provedor, não de quem está entrando: o que não é texto vale
-    // como ausente (o nome cai no e-mail) em vez de derrubar o login — `String()`
-    // de um objeto sem `toString` lança.
-    name: (typeof claims.name === 'string' ? claims.name.trim() : '') || email,
+    name,
     role: 'membro',
     passwordHash: null,
     oidcIssuer: claims.issuer,
@@ -869,7 +987,7 @@ export async function resolveOidcUser(claims: OidcClaims): Promise<UserRecord> {
     action: 'user.create',
     source: SOURCE,
     actor: { userUuid: null, label: `oidc:${claims.issuer}` },
-    targetLabel: email,
+    targetLabel: created.username,
   });
 
   await registerSuccessfulLogin(created.uuid);

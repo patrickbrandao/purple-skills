@@ -572,10 +572,11 @@ argumento a argumento, é a da tabela do
   por [`12`](12-acesso-granular.md)** (§3.1): o alcance é por conta — as suas,
   as concedidas e as públicas ou expostas, inclusive sem vínculo e desligadas;
   tudo para admin.
-- `share_skill(slug, email, level)` / `unshare_skill(slug, email)` /
-  `transfer_skill(slug, email)`, e o mesmo para `*_catalog` e `*_mcp`
+- `share_skill(slug, username, level)` / `unshare_skill(slug, username)` /
+  `transfer_skill(slug, username)`, e o mesmo para `*_catalog` e `*_mcp`
   ([`12`](12-acesso-granular.md)): conceder e revogar é `manage`, transferir é
-  do dono (ou admin).
+  do dono (ou admin). O parâmetro era `email` e virou `username` no
+  [`19`](19-username.md) — e-mail não é aceito.
 - MCPs virtuais ([`08`](08-mcp-virtual.md) §6.2): `list_virtual_mcps()`,
   `get_virtual_mcp(slug)`, `create_virtual_mcp(name, slug?, description?,
   is_open?)`, `update_virtual_mcp(slug, {name?, new_slug?, description?,
@@ -801,13 +802,16 @@ Desenho em [`12-acesso-granular.md`](12-acesso-granular.md). Migration `017`.
   `catalog.unshare`, `mcp.share` / `mcp.unshare`; transferência e flag
   público são `update` do objeto.
 - **A conta, quando o painel precisa apontar uma pessoa, é identificada pelo
-  e-mail — nunca pelo `uuid`** (`025`). O `uuid` é o `sub` do cookie de sessão, e a
+  username — nunca pelo `uuid`** (`025`; era o e-mail até o
+  [`19`](19-username.md)). O `uuid` é o `sub` do cookie de sessão, e a
   busca da decisão 13 é aberta a qualquer conta logada: emitir `uuid` + papel de
   toda conta ativa é entregar o alvo exato de uma falsificação de cookie, e um
   portão de papel não resolveria, porque `membro` também é dono e transfere
-  (decisão 9). O e-mail já vai no mesmo payload e já é risco aceito (§10), então não
-  há identificador opaco a inventar. Vale para `GET /api/users/lookup` e para o
-  `ownerUserUuid` do `PATCH`, que passou a aceitar e-mail.
+  (decisão 9). Não há identificador opaco a inventar: o username existe para ser
+  público. Vale para `GET /api/users/lookup` e para o `ownerUserUuid` do `PATCH`,
+  que aceita username ou uuid. O e-mail ocupava este lugar e saiu de circulação
+  — com ele, o raciocínio dependia de um "risco aceito" (§10 do `12`) que o `19`
+  desfez.
 
 ## 12.4 Fichas, colmeia e registro de acessos
 
@@ -1093,6 +1097,86 @@ dia, e `ended_at`, para as encerradas nele.
   [`09`](09-mcp-padrao-e-skills-flutuantes.md) (`§6`).
 - **Fora do escopo**: nome de tool e argumentos na contagem, poda automática,
   E2E da tela, série por hora, número por cliente e recorte por vMCP.
+
+## 12.10 Username: o identificador público, e o e-mail de volta ao privado
+
+Desenho em [`19-username.md`](19-username.md). Migration `033-username.sql`.
+
+- **`users.username`, obrigatório e único** por `lower(username)`, ocupa o lugar
+  que o e-mail ocupava em toda superfície que nomeia uma conta: dono, lista de
+  concessões, "concedido por", guia Acessos, busca de contas, rótulos da trilha
+  e — pela primeira vez — a ficha pública do site, que passa a creditar `@dono`.
+- **O e-mail não sumiu: voltou a ser privado.** Continua obrigatório e único,
+  porque o link de redefinição vai por ele e o vínculo OIDC casa por ele
+  (`05` §2.4 e §2.6). O que mudou é quem o vê: **só a própria conta e um
+  admin**. Antes, uma conta `membro` recém-criada lia o endereço de todo mundo
+  digitando duas letras na busca de contas.
+- **Um campo só no login**, "usuário ou e-mail": tem `@`, é e-mail; não tem, é
+  username. A regra só fecha porque `normalizeUsername` recusa `@` — e é isso,
+  não uma heurística, que a torna decidível.
+- **O e-mail deixou de ser aceito também na entrada.** As rotas de concessão são
+  `/access/:username`, as nove tools do mcp-admin recebem `username`, e a busca
+  de contas **não casa** mais por endereço: devolver só o username e continuar
+  casando por e-mail deixaria qualquer conta logada descobrir a qual username um
+  endereço corresponde. Quebra quem integrava pela REST.
+- **O histórico congelado foi reescrito.** `audit_log.actor_label`/`target_label`
+  e `skill_accesses.user_email` guardavam endereços em texto; a `033` os troca
+  por username onde a conta existe e apaga a coluna `user_email`. A guia Acessos
+  era o pior caso: é de `manage`, não de admin, então o dono de uma skill via o
+  e-mail de todo mundo que a leu.
+- **Username abandonado nunca volta a circular** (tabela `usernames`): sem isso,
+  o `@joao` de uma trilha de 2025 poderia ser outra pessoa em 2026. Trocar é de
+  admin, e a troca entra na trilha como `user.username`, com `<antigo> -> <novo>`.
+- **O backfill sai do `name`**, nunca da parte antes do `@`: publicar o local
+  part para todo o painel vazaria metade do endereço — exatamente o que esta
+  mudança existe para fechar.
+- **Revoga**, cada um marcado no ponto: o "a conta é o e-mail" do `§5.3` do
+  [`12`](12-acesso-granular.md) (o bloco do relatório 011), a parte "busca por
+  nome/e-mail" da decisão 13 e a parte do site da decisão 11. O
+  [`05`](05-accounts-and-roles.md) leva a marca no cabeçalho, pelos rótulos de
+  auditoria. Conferi o [`13`](13-fichas-e-acessos.md) e o
+  [`18`](18-atividade.md): as guias ficam como estão e a tela de Atividade não
+  tem recorte por conta — nada a revogar neles.
+- **Fora do escopo**: trocar o próprio username (só admin troca), username no
+  MCP público, e-mail opcional, e um resultado de busca diferente por papel.
+
+## 12.11 Perfil de usuário
+
+Desenho em [`20-perfil.md`](20-perfil.md). Migration `034-perfil.sql`.
+
+- **O que o perfil é**: o nome de exibição que já existia (`users.name`, que
+  passa a ser editável pelo dono), uma **foto**, e um bloco público e opcional
+  com descrição, site e até oito links.
+- **A foto é upload, guardado no banco** e servido pelo produto — não é URL. Um
+  `<img src>` externo numa página anônima entrega o IP de cada visitante ao dono
+  daquele host, e a página do perfil é anônima por definição. O tipo sai dos
+  **bytes iniciais**, nunca da extensão nem do `Content-Type`: os dois são texto
+  que quem envia escolhe. **SVG é recusado** — é XML com `<script>` dentro, e
+  servi-lo na origem do site seria execução de código de terceiro na página.
+- **Duas tabelas, e a separação é o ponto**: `user_profiles` (texto e flags) e
+  `user_avatars` (bytes). Com a imagem na mesma linha, toda leitura de perfil —
+  e a ficha de skill lê o dono — arrastaria até 512 KB para descartar.
+- **Público é opt-in, desligado por padrão.** Bio, foto e links são
+  auto-expressão, não metadado do acervo; a migration não liga nada e não cria
+  linha nenhuma — ela nasce no primeiro salvamento.
+- **Uma quarta rota pública no site**, `/u/<username>`, com as skills e os
+  catálogos **já públicos** da pessoa. Perfil privado, conta desativada e
+  username inexistente respondem o **mesmo 404**: distingui-los diria "esta
+  conta existe, mas não quer ser vista".
+- **Indexa normalmente.** O opt-in é o consentimento; um `noindex` por cima
+  dele seria o produto discordando de quem ligou o perfil.
+- **Quem escreve é o dono.** O admin tem só "limpar perfil" — apaga os campos
+  públicos, desliga o público e apaga a foto, com linha na trilha
+  (`user.profile`). Não existe caminho em que um admin escreva texto assinado
+  por outra pessoa. A edição do **próprio** perfil não entra na trilha, pelo
+  critério que já mantém o login fora dela.
+- **`ownerHasProfile` é o único dado de perfil que viaja na ficha da skill**: um
+  booleano que diz se o `por @fulano` vira link. Bio, foto e links ficam na
+  rota do perfil.
+- **Não revoga nada**, e isso foi conferido documento a documento — o `19`, o
+  `12`, o `13`, o `05` e o `18` seguem inteiros (`20` no cabeçalho).
+- **Fora do escopo**: seguir/curtir/comentar, redimensionar a foto, índice de
+  pessoas no site, perfil no MCP e e-mail de contato público.
 
 ## 13. Riscos aceitos conscientemente (v1)
 

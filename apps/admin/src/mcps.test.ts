@@ -41,7 +41,7 @@ const banco = vi.hoisted(() => ({
   revokeVirtualMcpKey: vi.fn(),
   listVirtualMcpKeys: vi.fn(),
   recordAccountAudit: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
   setVirtualMcpGrant: vi.fn(),
   removeVirtualMcpGrant: vi.fn(),
 }));
@@ -83,7 +83,10 @@ const DONO = 'uuid-dono';
 
 const sessao = (role: AuthUser['role'], uuid: string | null): AuthUser => ({
   uuid,
-  email: uuid ? `${uuid}@exemplo.dev` : 'bootstrap',
+  username: uuid ?? 'bootstrap',
+  avatarUpdatedAt: null,
+  // Ver a nota em `access.test.ts`: a sessão vê o próprio e-mail.
+  email: uuid ? `${uuid}@exemplo.dev` : '',
   name: role,
   role,
   mustChangePassword: false,
@@ -110,7 +113,7 @@ function mcpVisto(viewer: { role: AuthUser['role']; userUuid: string | null }) {
     name: 'Time A',
     ownerUserUuid: DONO,
     // De propósito sem o uuid dentro: os casos do relatório 011 procuram o uuid no JSON.
-    ownerEmail: 'dona@exemplo.dev',
+    ownerUsername: 'dona',
     isOpen: true,
     isActive: true,
     skills: [],
@@ -302,13 +305,13 @@ const FLAGS = { asSkill: true, asPrompt: false, asResource: false };
 
 const CONCESSAO = {
   userUuid: 'uuid-bia',
-  email: 'bia@exemplo.dev',
+  username: 'bia',
   name: 'Bia',
   role: 'membro',
   isActive: true,
   level: 'edit',
   grantedByUserUuid: 'uuid-ana',
-  grantedByEmail: 'ana@exemplo.dev',
+  grantedByUsername: 'ana',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -333,7 +336,7 @@ const FICHA_DO_ADMIN = {
   files: [],
   isPublic: true,
   ownerUserUuid: 'uuid-ana',
-  ownerEmail: 'ana@exemplo.dev',
+  ownerUsername: 'ana',
   access: 'owner',
   grants: [CONCESSAO],
   mcps: [vmcpRef('time-a'), vmcpRef('fechado-da-ana')],
@@ -372,7 +375,7 @@ describe('vínculo pelo lado da skill: a resposta é a ficha de quem chamou', ()
     expect(banco.getSkillDetail).toHaveBeenCalledWith('alfa', { viewer: { role: 'membro', userUuid: 'uuid-convidado' } });
     expect(ficha).toMatchObject({ slug: 'alfa', access: 'view', grants: [], catalogs: [] });
     expect(ficha?.mcps.map((mcp) => mcp.slug)).toEqual(['time-a']);
-    expect(JSON.stringify(ficha)).not.toContain('bia@exemplo.dev');
+    expect(JSON.stringify(ficha)).not.toContain('bia');
     expect(JSON.stringify(ficha)).not.toContain('fechado-da-ana');
   });
 
@@ -383,7 +386,7 @@ describe('vínculo pelo lado da skill: a resposta é a ficha de quem chamou', ()
     const ficha = await linkSkill(convidado, 'time-a', 'alfa', FLAGS);
 
     expect(ficha?.access).toBe('manage');
-    expect(ficha?.grants.map((grant) => grant.email)).toEqual(['bia@exemplo.dev']);
+    expect(ficha?.grants.map((grant) => grant.username)).toEqual(['bia']);
   });
 
   // O banco distingue "Skill não encontrada" de "não está vinculada" — os dois
@@ -543,27 +546,27 @@ describe('`name` que não é texto é 400, não 500', () => {
  * lista de concessões; conceder e transferir continuam exigindo conta ativa.
  */
 describe('concessões: revogar não exige conta ativa', () => {
-  const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', email: 'saiu@exemplo.dev', name: 'Saiu', isActive: false };
+  const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', isActive: false };
 
   beforeEach(() => {
     lerMcp.mockImplementation((_slug: string, options: { viewer: { role: AuthUser['role']; userUuid: string | null } }) =>
       Promise.resolve({ ...mcpVisto(options.viewer), grants: [CONCESSAO, DESATIVADA] }),
     );
-    banco.getUserByEmail.mockImplementation((email: string) =>
-      Promise.resolve(email === 'saiu@exemplo.dev' ? { uuid: 'uuid-saiu', email, isActive: false } : null),
+    banco.getUserByUsername.mockImplementation((username: string) =>
+      Promise.resolve(username === 'saiu' ? { uuid: 'uuid-saiu', username, isActive: false } : null),
     );
   });
 
   it('revoga a concessão de conta desativada', async () => {
-    await unshare(dono, 'time-a', ' Saiu@Exemplo.dev ');
+    await unshare(dono, 'time-a', '  Saiu  ');
 
     expect(banco.removeVirtualMcpGrant).toHaveBeenCalledWith('time-a', 'uuid-saiu', 'web-admin', expect.objectContaining({ userUuid: DONO }));
   });
 
   it('conceder — e mudar o nível — de conta desativada continua recusado', async () => {
-    const erro = await recusa(share(dono, 'time-a', 'saiu@exemplo.dev', 'view'));
+    const erro = await recusa(share(dono, 'time-a', 'saiu', 'view'));
 
-    expect(erro).toEqual({ status: 404, message: 'Conta não encontrada ou desativada: saiu@exemplo.dev' });
+    expect(erro).toEqual({ status: 404, message: 'Conta não encontrada ou desativada: saiu' });
     expect(banco.setVirtualMcpGrant).not.toHaveBeenCalled();
   });
 
@@ -571,18 +574,18 @@ describe('concessões: revogar não exige conta ativa', () => {
   // com este e-mail" de "existe, e não tem concessão aqui" — nem para conta
   // desativada, que a busca de contas não revela (`docs/12` decisão 13).
   it('e-mail sem concessão aqui é o mesmo 404, exista a conta ou não', async () => {
-    const semConta = await recusa(unshare(dono, 'time-a', 'ninguem@exemplo.dev'));
-    banco.getUserByEmail.mockResolvedValue({ uuid: 'uuid-outra', email: 'ninguem@exemplo.dev', isActive: false });
-    const comConta = await recusa(unshare(dono, 'time-a', 'ninguem@exemplo.dev'));
+    const semConta = await recusa(unshare(dono, 'time-a', 'ninguem'));
+    banco.getUserByUsername.mockResolvedValue({ uuid: 'uuid-outra', username: 'ninguem', isActive: false });
+    const comConta = await recusa(unshare(dono, 'time-a', 'ninguem'));
 
     expect(semConta).toEqual({ status: 404, message: 'A conta não tem concessão neste MCP virtual' });
     expect(comConta).toEqual(semConta);
-    expect(banco.getUserByEmail).not.toHaveBeenCalled();
+    expect(banco.getUserByUsername).not.toHaveBeenCalled();
     expect(banco.removeVirtualMcpGrant).not.toHaveBeenCalled();
   });
 
   it('e-mail torto é 400', async () => {
-    expect((await recusa(unshare(dono, 'time-a', 'nao-e-email'))).status).toBe(400);
+    expect((await recusa(unshare(dono, 'time-a', 'a'))).status).toBe(400);
   });
 });
 
@@ -621,8 +624,8 @@ describe('nenhuma resposta de vMCP carrega uuid de conta alheia', () => {
     const ficha = await detail(admin, 'time-a');
 
     semUuidDeConta(ficha);
-    expect(ficha).toMatchObject({ ownerUserUuid: 'dona@exemplo.dev', ownerEmail: 'dona@exemplo.dev' });
-    expect(ficha.grants).toEqual([{ ...CONCESSAO, userUuid: 'bia@exemplo.dev', grantedByUserUuid: 'ana@exemplo.dev' }]);
+    expect(ficha).toMatchObject({ ownerUserUuid: 'dona', ownerUsername: 'dona' });
+    expect(ficha.grants).toEqual([{ ...CONCESSAO, userUuid: 'bia', grantedByUserUuid: 'ana' }]);
     expect(ficha.catalogs[0]).not.toHaveProperty('ownerUserUuid');
     expect(ficha.catalogs[0]).toMatchObject({ slug: 'dados', asSkill: true });
   });
@@ -639,8 +642,8 @@ describe('nenhuma resposta de vMCP carrega uuid de conta alheia', () => {
       Promise.resolve({
         ...mcpCheio(options.viewer),
         ownerUserUuid: null,
-        ownerEmail: null,
-        grants: [{ ...CONCESSAO, grantedByUserUuid: null, grantedByEmail: null }],
+        ownerUsername: null,
+        grants: [{ ...CONCESSAO, grantedByUserUuid: null, grantedByUsername: null }],
       }),
     );
 
@@ -651,13 +654,13 @@ describe('nenhuma resposta de vMCP carrega uuid de conta alheia', () => {
   });
 
   it('conceder devolve a concessão pelo e-mail', async () => {
-    banco.getUserByEmail.mockResolvedValue({ uuid: 'uuid-bia', email: 'bia@exemplo.dev', isActive: true });
+    banco.getUserByUsername.mockResolvedValue({ uuid: 'uuid-bia', username: 'bia', isActive: true });
     banco.setVirtualMcpGrant.mockResolvedValue(CONCESSAO);
 
-    const concessao = await share(admin, 'time-a', 'bia@exemplo.dev', 'edit');
+    const concessao = await share(admin, 'time-a', 'bia', 'edit');
 
     semUuidDeConta(concessao);
-    expect(concessao).toMatchObject({ email: 'bia@exemplo.dev', userUuid: 'bia@exemplo.dev', level: 'edit' });
+    expect(concessao).toMatchObject({ username: 'bia', userUuid: 'bia', level: 'edit' });
   });
 
   it('chaves: quem emitiu só aparece quando é a própria sessão', async () => {

@@ -14,6 +14,135 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## [Não lançado]
+
+### Adicionado
+
+- **Perfil de usuário: nome de exibição, foto e um bloco público opcional.**
+  A conta ganha uma foto e — se quiser — descrição, site e até oito links, com
+  página própria no site em `/u/<username>`. O nome de exibição é o
+  `users.name` que já existia; o que mudou é que o próprio dono passa a
+  editá-lo. Desenho e o porquê de cada regra em
+  [`docs/20-perfil.md`](docs/20-perfil.md). Migration `034-perfil.sql`.
+- **A foto é upload guardado no banco, não uma URL.** Parece detalhe e não é:
+  um `<img src>` apontando para host externo **entrega o IP de cada visitante**
+  ao dono daquele host, e a página do perfil é anônima por definição. O tipo é
+  decidido pelos **bytes iniciais** — nunca pela extensão nem pelo
+  `Content-Type`, que são texto que quem envia escolhe —, o teto é 512 KB, e
+  **SVG é recusado**: ele é XML com `<script>` dentro, e servi-lo na origem do
+  site seria execução de código de terceiro na página.
+- **`/u/<username>`, a quarta rota pública do site**, com as skills e os
+  catálogos **já públicos** da pessoa — estar no perfil não torna nada
+  visível. O `por @fulano` da ficha da skill vira link quando o dono publicou o
+  perfil, e continua em texto quando não.
+- **O perfil público é opt-in, desligado por padrão.** A migration não liga
+  nada e não cria linha nenhuma: a linha nasce no primeiro salvamento, e quem
+  nunca abriu a tela não tem perfil. Perfil privado, conta desativada e
+  username inexistente respondem o **mesmo 404** no site — distingui-los diria
+  "esta conta existe, mas não quer ser vista", que é o que o opt-in existe para
+  não dizer.
+- **"Limpar perfil", na ficha de conta: a única coisa que um admin faz num
+  perfil alheio.** Apaga descrição, site, links e foto, e tira do ar — com
+  linha na trilha (`user.profile`). Moderar é tirar do ar, não reescrever com
+  outras palavras: **não existe** caminho em que um admin publique texto
+  assinado por outra pessoa. A edição do próprio perfil não entra na trilha,
+  pelo mesmo critério que mantém o login fora dela.
+- **O e-mail não tem campo no perfil, em superfície nenhuma** — nem como
+  "e-mail de contato público". Ele acabou de sair de circulação na `033`, e um
+  campo desses o traria de volta pela porta da frente. Quem quiser dar contato
+  usa um link.
+
+- **`username`: a conta passa a ter um identificador público, e o e-mail volta
+  a ser privado.** Coluna nova `users.username`, obrigatória e única por
+  `lower(username)`, que ocupa exatamente o lugar que o e-mail ocupava em toda
+  superfície que nomeia uma pessoa: dono de skill, catálogo e servidor; lista de
+  concessões e "concedido por"; guia **Acessos**; busca de "compartilhar com…";
+  rótulos da trilha de auditoria; e — pela primeira vez — a ficha pública do
+  site, que passa a creditar `@dono`. Desenho e o porquê de cada regra em
+  [`docs/19-username.md`](docs/19-username.md). Migration `033-username.sql`.
+- **Login por usuário *ou* e-mail, num campo só.** Tem `@`, o servidor lê como
+  e-mail; não tem, como username. A regra só é decidível porque nenhum username
+  válido pode conter `@` (`normalizeUsername`, em
+  `packages/shared/src/username.ts`) — não é heurística. O erro continua
+  genérico e o mesmo no tempo: dizer "esse usuário não existe" contra "esse
+  e-mail não existe" devolveria de graça a informação de que um endereço tem
+  conta aqui.
+- **`user.username` na trilha.** Trocar o username é de admin, e a linha grava
+  `<antigo> -> <novo>` — a mesma gramática da clonagem (`031`). É ela que liga a
+  trilha anterior à troca, onde o rótulo congelado ainda diz o nome antigo.
+
+### Alterado
+
+- **"Minha conta" virou ficha e editor, como as contas de admin.** `/account`
+  agora **só mostra** o perfil, com um botão Editar que leva a `/account/edit`,
+  onde os campos ficam em três guias: **Perfil** (foto, nome de exibição,
+  username), **Dados públicos** (descrição, site, links e o publicar) e
+  **Trocar senha**. A tela que se abre todo dia deixou de ser um formulário
+  aberto com três painéis empilhados. As guias da edição são estado de tela e
+  não rotas, de propósito: o formulário do perfil é **um** só nas duas
+  primeiras, e trocar de guia por rota o desmontaria — quem escrevesse a bio e
+  fosse conferir o nome perderia o que digitou. Detalhes em
+  [`docs/20-perfil.md`](docs/20-perfil.md) §7.1.
+- **A ficha ganhou o quadro "O que é seu":** quantos servidores vMCP, skills e
+  catálogos a conta **possui**, cada número levando à lista que o produziu.
+  Sem rota nova — são as três listas que já existem, no recorte `mine`. É posse,
+  não acesso: o que foi compartilhado com a pessoa não entra na conta.
+- **O quadro "Chaves do MCP administrativo" saiu do perfil.** Ele já não
+  emitia nada desde que as `psk_` ganharam tela própria (Adm MCP Keys, com item
+  de menu direto): o que restava era um ponteiro ocupando a largura da página.
+- **O e-mail deixou de ser exibido para outras contas.** Ele continua
+  obrigatório e único — o link de redefinição vai por ele e o vínculo OIDC casa
+  por ele (`docs/05` §2.4 e §2.6) —, mas só a **própria pessoa** e um **admin**
+  o veem. O que motivou: numa instalação com dez colaboradores, uma conta
+  `membro` recém-criada lia o endereço de todo mundo digitando duas letras na
+  busca de contas, e o dono de qualquer skill via na guia Acessos o e-mail de
+  quem a tinha lido — essa guia é de `manage`, não de admin.
+- **O histórico que já havia congelado e-mail foi reescrito.**
+  `audit_log.actor_label`/`target_label` e `skill_accesses.user_email` guardavam
+  endereços em texto. A `033` troca por username onde a conta ainda existe (por
+  ocorrência e em ordem decrescente de comprimento, senão `ana@x.com` seria
+  substituído dentro de `mariana@x.com`), marca o que não resolve como
+  `conta removida` e **apaga** a coluna `skill_accesses.user_email`. A varredura
+  final é restrita às ações cujo rótulo sabidamente é uma conta: `target_label`
+  de quarentena é nome de envio escrito por gente e fica de fora.
+- **Username abandonado nunca volta a circular** (tabela `usernames`, uma linha
+  por nome já usado nesta instalação). Sem isso, o `@joao` de uma trilha de 2025
+  poderia ser outra pessoa em 2026 — a trilha guarda texto congelado justamente
+  para sobreviver à remoção da conta, e reciclar o nome desfaria essa garantia.
+- **O backfill sai do campo `name`**, nunca da parte antes do `@`. Derivar do
+  local part era o caminho óbvio e teria publicado metade do endereço de todo
+  mundo para o painel inteiro — exatamente o que esta mudança existe para
+  fechar. Nome que não dá username utilizável cai em `user-<8 hex>`. O mesmo
+  vale para a conta provisionada por SSO, inclusive no caso em que o provedor
+  não manda nome e o `name` da conta **é** o e-mail.
+- **`@purple-skills/shared` ganhou um export por subpath**,
+  `@purple-skills/shared/username`. O bundle do painel não importa a raiz do
+  pacote (ela reexporta módulos que falam com `node:fs` e `node:crypto`), mas a
+  regra do username tem de ser uma só: ela já existe duas vezes — no TypeScript
+  e em SQL, na `033`, que roda uma vez e some — e uma terceira cópia viva no
+  navegador divergiria na primeira mudança. O módulo não importa nada e entra no
+  bundle sozinho.
+
+### Quebra de compatibilidade
+
+- `POST /api/login` recebe `identifier` no lugar de `email`.
+- As rotas de concessão viraram `/api/skills/:slug/access/:username` (idem
+  catálogo e vMCP) e **recusam** e-mail. Aceitá-lo manteria o endereço na URL,
+  e daí no log do proxy e no histórico do navegador.
+- As nove tools de compartilhamento do mcp-admin trocaram o parâmetro `email`
+  por `username`.
+- `ownerEmail`, `grants[].email`, `grants[].grantedByEmail` e
+  `SkillAccessEntry.userEmail` saíram dos corpos de resposta; no lugar entram os
+  campos `*Username`. Os apelidos que já existiam — `ownerUserUuid`,
+  `grants[].userUuid`, `grants[].grantedByUserUuid` e o `userUuid` da guia
+  Acessos — continuam, apontando agora para o username.
+- `GET /api/users/lookup` deixou de devolver e-mail **e de casar por e-mail**.
+  Só a saída não bastaria: quem casasse por endereço descobriria a qual username
+  ele corresponde, digitando-o.
+
+Não há período de convivência: manter o e-mail aceito na entrada, ou devolvido
+em paralelo, seria manter aberto o vazamento que esta mudança fecha.
+
 ## [1.0.0-beta.26] — 2026-09-21
 
 ### Adicionado

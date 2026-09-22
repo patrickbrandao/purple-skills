@@ -25,7 +25,7 @@ import {
   Users,
 } from 'lucide-react';
 import { ROLE_LABEL, canCreate, canManageUsers, type Session, type SessionUser } from '../../api.js';
-import { initials } from '../SkillIcon.js';
+import { Avatar } from '../Avatar.js';
 import { isNewSkillPath } from './routes.js';
 import { UserMenu, type OnLogout } from './UserMenu.js';
 import { SETTINGS_SECTIONS } from '../../pages/SettingsPage.js';
@@ -88,8 +88,13 @@ export function Sidebar({
 
   // O rodapé inteiro é o botão: avatar, nome, papel e o ⋮ abrem o mesmo menu.
   const accountTrigger = (props: { onClick: () => void; 'aria-expanded': boolean; 'aria-haspopup': 'menu' }) => (
-    <button type="button" className="sidebar-account" title={user.email || 'sessão de bootstrap'} {...props}>
-      <span className="avatar">{initials(user.name)}</span>
+    <button
+      type="button"
+      className="sidebar-account"
+      title={user.username ? `@${user.username}` : 'sessão de bootstrap'}
+      {...props}
+    >
+      <Avatar username={user.username} name={user.name} stamp={user.avatarUpdatedAt} />
       <span className="min-w-0 flex-1">
         <span className="nm">{user.name}</span>
         <span className="role">{user.legacy ? 'bootstrap' : ROLE_LABEL[user.role]}</span>
@@ -200,10 +205,15 @@ export function Sidebar({
                     {SETTINGS_ICON[section.path]} {section.label}
                   </NavLink>
                 ))}
-              {/* `end` em "Minha conta": sem ele o item acenderia junto com as telas de chave, que são `/account/…`. */}
+              {/* "Minha conta" acende em `/account` e na edição dela, e **só**:
+                  sem a lista explícita ela acenderia junto com as telas de
+                  chave, que também são `/account/…` e têm item próprio. */}
               {!user.legacy && (
                 <>
-                  <NavLink to="/account" end className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+                  <NavLink
+                    to="/account"
+                    className={`nav-item${['/account', '/account/edit'].includes(location.pathname) ? ' active' : ''}`}
+                  >
                     <UserRound /> Minha conta
                   </NavLink>
                   <NavLink to="/account/admin-keys" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>

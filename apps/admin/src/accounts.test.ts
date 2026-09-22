@@ -22,10 +22,12 @@ const db = vi.hoisted(() => ({
   createUser: vi.fn(),
   consumeResetToken: vi.fn(),
   getUserByEmail: vi.fn(),
+  getUserByLogin: vi.fn(),
   getUserByOidc: vi.fn(),
   getUserByUuid: vi.fn(),
   listApiKeys: vi.fn(),
   listUsers: vi.fn(),
+  nextFreeUsername: vi.fn(),
   recordAccountAudit: vi.fn(),
   registerFailedLogin: vi.fn(),
   registerSuccessfulLogin: vi.fn(),
@@ -71,6 +73,8 @@ const SENHA = 'uma-senha-longa-o-bastante';
 
 const conta = (role: 'admin' | 'editor' | 'membro') => ({
   uuid: `uuid-${role}`,
+  username: role,
+  avatarUpdatedAt: null,
   email: `${role}@exemplo.com`,
   name: role,
   role,
@@ -100,6 +104,9 @@ beforeEach(() => {
   db.recordAccountAudit.mockResolvedValue(undefined);
   // Tabela vazia é o estado normal do bootstrap.
   db.countUsers.mockResolvedValue(0);
+  // O username é derivado do nome quem chama não informa um (`docs/19-username.md`
+  // decisão 12): sem colisão, o candidato volta como veio.
+  db.nextFreeUsername.mockImplementation(async (base: string) => base);
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -114,33 +121,34 @@ describe('adoção dos órfãos', () => {
   });
 
   it('o login de um admin adota, com a própria conta como ator', async () => {
-    db.getUserByEmail.mockResolvedValue(conta('admin'));
+    db.getUserByLogin.mockResolvedValue(conta('admin'));
 
-    const outcome = await loginWithPassword({ email: 'admin@exemplo.com', password: SENHA });
+
+    const outcome = await loginWithPassword({ identifier: 'admin@exemplo.com', password: SENHA });
 
     expect(outcome).toHaveProperty('user');
-    expect(db.adoptOrphans).toHaveBeenCalledWith('uuid-admin', 'web-admin', { userUuid: 'uuid-admin', label: 'admin@exemplo.com' });
+    expect(db.adoptOrphans).toHaveBeenCalledWith('uuid-admin', 'web-admin', { userUuid: 'uuid-admin', label: 'admin' });
   });
 
   it('quem não é admin não chega a consultar', async () => {
-    db.getUserByEmail.mockResolvedValue(conta('editor'));
+    db.getUserByLogin.mockResolvedValue(conta('editor'));
 
-    expect(await loginWithPassword({ email: 'editor@exemplo.com', password: SENHA })).toHaveProperty('user');
+    expect(await loginWithPassword({ identifier: 'editor@exemplo.com', password: SENHA })).toHaveProperty('user');
     expect(db.adoptOrphans).not.toHaveBeenCalled();
   });
 
   it('senha errada não adota nada', async () => {
-    db.getUserByEmail.mockResolvedValue(conta('admin'));
+    db.getUserByLogin.mockResolvedValue(conta('admin'));
 
-    expect(await loginWithPassword({ email: 'admin@exemplo.com', password: 'outra-senha-qualquer' })).toHaveProperty('error');
+    expect(await loginWithPassword({ identifier: 'admin@exemplo.com', password: 'outra-senha-qualquer' })).toHaveProperty('error');
     expect(db.adoptOrphans).not.toHaveBeenCalled();
   });
 
   it('uma falha na adoção não impede a entrada', async () => {
-    db.getUserByEmail.mockResolvedValue(conta('admin'));
+    db.getUserByLogin.mockResolvedValue(conta('admin'));
     db.adoptOrphans.mockRejectedValue(new Error('banco fora do ar'));
 
-    expect(await loginWithPassword({ email: 'admin@exemplo.com', password: SENHA })).toHaveProperty('user');
+    expect(await loginWithPassword({ identifier: 'admin@exemplo.com', password: SENHA })).toHaveProperty('user');
     expect(console.error).toHaveBeenCalled();
   });
 
@@ -149,7 +157,7 @@ describe('adoção dos órfãos', () => {
 
     await resolveOidcUser({ issuer: 'https://idp', subject: 'sub-1', email: 'admin@exemplo.com' } as never);
 
-    expect(db.adoptOrphans).toHaveBeenCalledWith('uuid-admin', 'web-admin', { userUuid: 'uuid-admin', label: 'admin@exemplo.com' });
+    expect(db.adoptOrphans).toHaveBeenCalledWith('uuid-admin', 'web-admin', { userUuid: 'uuid-admin', label: 'admin' });
   });
 });
 
@@ -447,7 +455,7 @@ describe('auditoria do vínculo por SSO', () => {
       action: 'user.link',
       source: 'web-admin',
       actor: { userUuid: null, label: 'oidc:https://idp' },
-      targetLabel: 'editor@exemplo.com (sub sub-9)',
+      targetLabel: 'editor (sub sub-9)',
     });
   });
 
@@ -459,7 +467,7 @@ describe('auditoria do vínculo por SSO', () => {
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'user.link',
-        targetLabel: 'editor@exemplo.com (sub sub-9; senha temporária descartada)',
+        targetLabel: 'editor (sub sub-9; senha temporária descartada)',
       }),
     );
   });
@@ -479,7 +487,7 @@ describe('auditoria do vínculo por SSO', () => {
 
     expect(db.registerSuccessfulLogin).toHaveBeenCalledWith('uuid-editor');
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('editor@exemplo.com'),
+      expect.stringContaining('editor'),
       expect.objectContaining({ message: 'CHECK recusou a ação' }),
     );
   });
@@ -500,22 +508,25 @@ describe('tempo do login', () => {
   it('gasta o mesmo scrypt quando a conta não existe', async () => {
     const registro = conta('editor');
 
-    const medir = async (email: string) => {
-      db.getUserByEmail.mockResolvedValue(email === registro.email ? registro : null);
+    // O identificador pode ser username ou e-mail (`docs/19-username.md` decisão
+    // 3), e o oráculo de tempo teria de fechar para os dois: o que separa é
+    // haver conta, não a forma do que foi digitado.
+    const medir = async (identifier: string) => {
+      db.getUserByLogin.mockResolvedValue(identifier === registro.username ? registro : null);
       let menor = Number.POSITIVE_INFINITY;
       for (let i = 0; i < 3; i += 1) {
         const inicio = performance.now();
-        await loginWithPassword({ email, password: 'senha-errada-qualquer' });
+        await loginWithPassword({ identifier, password: 'senha-errada-qualquer' });
         menor = Math.min(menor, performance.now() - inicio);
       }
       return menor;
     };
 
     // A primeira tentativa inválida do processo gera o sentinela (dois scrypts).
-    await medir('naoexiste@exemplo.com');
+    await medir('naoexiste');
 
-    const semConta = await medir('naoexiste@exemplo.com');
-    const comConta = await medir(registro.email);
+    const semConta = await medir('naoexiste');
+    const comConta = await medir(registro.username);
 
     expect(semConta).toBeGreaterThan(comConta * 0.5);
   });
@@ -554,6 +565,8 @@ describe('allowlist de domínio vazia', () => {
 describe('isActive no PATCH da conta', () => {
   const admin = {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.com',
     name: 'Admin',
     role: 'admin' as const,
@@ -583,7 +596,7 @@ describe('isActive no PATCH da conta', () => {
 
     expect(db.updateUser).toHaveBeenCalledWith('uuid-editor', { isActive: false, bumpTokenVersion: true });
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.deactivate', targetLabel: 'editor@exemplo.com' }),
+      expect.objectContaining({ action: 'user.deactivate', targetLabel: 'editor' }),
     );
   });
 
@@ -600,8 +613,8 @@ describe('isActive no PATCH da conta', () => {
     expect(db.recordAccountAudit).toHaveBeenCalledWith({
       action: 'user.activate',
       source: 'web-admin',
-      actor: { userUuid: 'uuid-admin', label: 'admin@exemplo.com' },
-      targetLabel: 'editor@exemplo.com',
+      actor: { userUuid: 'uuid-admin', label: 'admin' },
+      targetLabel: 'editor',
     });
   });
 
@@ -634,6 +647,8 @@ describe('isActive no PATCH da conta', () => {
 describe('invariante do último administrador', () => {
   const admin = {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.com',
     name: 'Admin',
     role: 'admin' as const,
@@ -732,6 +747,8 @@ describe('invariante do último administrador', () => {
 describe('auditoria da troca de senha', () => {
   const admin = {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.com',
     name: 'Admin',
     role: 'admin' as const,
@@ -751,8 +768,8 @@ describe('auditoria da troca de senha', () => {
     expect(db.recordAccountAudit).toHaveBeenCalledWith({
       action: 'user.password',
       source: 'web-admin',
-      actor: { userUuid: 'uuid-admin', label: 'admin@exemplo.com' },
-      targetLabel: 'editor@exemplo.com',
+      actor: { userUuid: 'uuid-admin', label: 'admin' },
+      targetLabel: 'editor',
     });
     // Nem a senha temporária nem o hash dela encostam na trilha.
     const linha = JSON.stringify(db.recordAccountAudit.mock.calls[0]);
@@ -760,8 +777,8 @@ describe('auditoria da troca de senha', () => {
     expect(linha).not.toContain('scrypt');
   });
 
-  it('a sessão de bootstrap aparece como bootstrap, não com e-mail vazio', async () => {
-    await resetAccountPassword({ ...admin, uuid: null, email: '', legacy: true }, 'uuid-editor');
+  it('a sessão de bootstrap aparece como bootstrap, não com username vazio', async () => {
+    await resetAccountPassword({ ...admin, uuid: null, username: '', email: '', legacy: true }, 'uuid-editor');
 
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
       expect.objectContaining({ actor: { userUuid: null, label: 'bootstrap' } }),
@@ -777,7 +794,7 @@ describe('auditoria da troca de senha', () => {
       expect.objectContaining({
         action: 'user.password',
         actor: { userUuid: null, label: 'link-de-redefinicao' },
-        targetLabel: 'editor@exemplo.com',
+        targetLabel: 'editor',
       }),
     );
   });
@@ -801,6 +818,8 @@ describe('auditoria da troca de senha', () => {
 describe('a senha temporária destrava a conta', () => {
   const admin = {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.com',
     name: 'Admin',
     role: 'admin' as const,
@@ -827,7 +846,7 @@ describe('a senha temporária destrava a conta', () => {
   });
 
   it('a troca pelo próprio dono não mexe na trava', async () => {
-    const editor = { ...admin, uuid: 'uuid-editor', email: 'editor@exemplo.com', role: 'editor' as const };
+    const editor = { ...admin, uuid: 'uuid-editor', username: 'editor', email: 'editor@exemplo.com', role: 'editor' as const };
 
     await changeOwnPassword(editor, { currentPassword: SENHA, newPassword: 'outra-senha-bem-longa' });
 
@@ -912,13 +931,15 @@ describe('pedido de redefinição de senha', () => {
 describe('campo de texto que não é texto', () => {
   const admin = {
     uuid: 'uuid-admin',
+    username: 'admin',
+    avatarUpdatedAt: null,
     email: 'admin@exemplo.com',
     name: 'Admin',
     role: 'admin' as const,
     mustChangePassword: false,
     legacy: false,
   };
-  const ator = { userUuid: 'uuid-admin', label: 'admin@exemplo.com' };
+  const ator = { userUuid: 'uuid-admin', label: 'admin' };
   /** O que o `JSON.parse` entrega para `{"toString":1}`: `String()` dele lança. */
   const semToString = () => ({ toString: 1 });
 
@@ -1008,7 +1029,7 @@ const { revokeAccountKey, revokeKey } = await import('./accounts.js');
 
 describe('revogar chave psk_: a trilha rotula pelo nome, não pelo uuid da chave', () => {
   const ID = '7c3f9e12-0000-4000-8000-00000000a41b';
-  const REVOGADA = { name: 'notebook do trabalho', prefix: 'AbCd1234', userUuid: 'uuid-editor', userEmail: 'editor@exemplo.com' };
+  const REVOGADA = { name: 'notebook do trabalho', prefix: 'AbCd1234', userUuid: 'uuid-editor', userUsername: 'editor' };
   const sessao = (role: 'admin' | 'editor') => ({ ...conta(role), legacy: false });
 
   beforeEach(() => {
@@ -1024,8 +1045,8 @@ describe('revogar chave psk_: a trilha rotula pelo nome, não pelo uuid da chave
     expect(db.recordAccountAudit).toHaveBeenCalledWith({
       action: 'key.revoke',
       source: 'web-admin',
-      actor: { userUuid: 'uuid-editor', label: 'editor@exemplo.com' },
-      targetLabel: 'editor@exemplo.com: notebook do trabalho (AbCd1234)',
+      actor: { userUuid: 'uuid-editor', label: 'editor' },
+      targetLabel: 'editor: notebook do trabalho (AbCd1234)',
     });
   });
 
@@ -1039,8 +1060,8 @@ describe('revogar chave psk_: a trilha rotula pelo nome, não pelo uuid da chave
     expect(db.revokeApiKey).toHaveBeenCalledWith(ID, null);
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
       expect.objectContaining({
-        actor: { userUuid: 'uuid-admin', label: 'admin@exemplo.com' },
-        targetLabel: 'editor@exemplo.com: notebook do trabalho (AbCd1234)',
+        actor: { userUuid: 'uuid-admin', label: 'admin' },
+        targetLabel: 'editor: notebook do trabalho (AbCd1234)',
       }),
     );
   });
@@ -1053,7 +1074,7 @@ describe('revogar chave psk_: a trilha rotula pelo nome, não pelo uuid da chave
 
     expect(db.revokeApiKey).toHaveBeenCalledWith(ID, 'uuid-editor');
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'key.revoke', targetLabel: 'editor@exemplo.com: notebook do trabalho (AbCd1234)' }),
+      expect.objectContaining({ action: 'key.revoke', targetLabel: 'editor: notebook do trabalho (AbCd1234)' }),
     );
     expect(JSON.stringify(db.recordAccountAudit.mock.calls)).not.toContain(ID);
   });

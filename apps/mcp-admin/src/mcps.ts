@@ -32,7 +32,7 @@ import {
   type VirtualMcpDetail,
   type VirtualMcpSkillInput,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
+import { accountByUsername, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
 import type { Caller } from './auth.js';
 
 const SOURCE = 'mcp-admin' as const;
@@ -90,13 +90,13 @@ const view = (mcp: VirtualMcpDetail) => ({
   isActive: mcp.isActive,
   isOpen: mcp.isOpen,
   isDefault: mcp.isDefault,
-  owner: mcp.ownerEmail,
+  owner: mcp.ownerUsername,
   access: mcp.access,
   // A lista de concessões só para quem as administra (`docs/12` decisão 11).
   // `isActive: false` é a conta desativada: a linha fica, inerte, volta a valer
   // se a conta for reativada — e `unshare_mcp` a revoga assim mesmo.
   grants: canManage(mcp.access)
-    ? mcp.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
+    ? mcp.grants.map((grant) => ({ username: grant.username, name: grant.name, level: grant.level, isActive: grant.isActive }))
     : undefined,
   path: `/virtual/${mcp.slug}/mcp`,
   skills: mcp.skills.map((skill) => ({
@@ -167,7 +167,7 @@ export function createMcpHandlers(caller: Caller) {
           isActive: mcp.isActive,
           isOpen: mcp.isOpen,
           isDefault: mcp.isDefault,
-          owner: mcp.ownerEmail,
+          owner: mcp.ownerUsername,
           access: mcp.access,
           skills: mcp.skillCount,
           catalogs: mcp.catalogCount,
@@ -466,26 +466,26 @@ export function createMcpHandlers(caller: Caller) {
 
     // ----------------------------------------------------------- acesso ---
 
-    async share_mcp(args: { slug: string; email: string; level: string }): Promise<ToolResult> {
+    async share_mcp(args: { slug: string; username: string; level: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       const grant = await setVirtualMcpGrant(current.slug, target.uuid, levelFrom(args.level), SOURCE, actor);
-      return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} o MCP virtual "${current.slug}".`);
+      return text(`${grant.username} agora pode ${ACCESS_LABEL[grant.level]} o MCP virtual "${current.slug}".`);
     },
 
     /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
-    async unshare_mcp(args: { slug: string; email: string }): Promise<ToolResult> {
+    async unshare_mcp(args: { slug: string; username: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const grant = grantOf(current.grants, args.email, 'neste MCP virtual');
+      const grant = grantOf(current.grants, args.username, 'neste MCP virtual');
       await removeVirtualMcpGrant(current.slug, grant.userUuid, SOURCE, actor);
-      return text(`${grant.email} perdeu o acesso ao MCP virtual "${current.slug}".`);
+      return text(`${grant.username} perdeu o acesso ao MCP virtual "${current.slug}".`);
     },
 
-    async transfer_mcp(args: { slug: string; email: string }): Promise<ToolResult> {
+    async transfer_mcp(args: { slug: string; username: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'owner');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       await updateVirtualMcp(current.uuid, { ownerUserUuid: target.uuid }, SOURCE, actor);
-      return text(`O MCP virtual "${current.slug}" agora é de ${target.email}.`);
+      return text(`O MCP virtual "${current.slug}" agora é de ${target.username}.`);
     },
 
     // ------------------------------------------------------- MCP padrão ---

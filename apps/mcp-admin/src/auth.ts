@@ -69,7 +69,7 @@ export async function resolveCaller(req: Request): Promise<Caller | null> {
     });
 
     return {
-      actor: { userUuid: user.uuid, label: user.email },
+      actor: { userUuid: user.uuid, label: user.username },
       role: user.role,
       identity: `key:${record.id}`,
       apiKeyId: record.id,

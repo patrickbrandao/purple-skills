@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Eye, History, KeyRound, ListChecks, Lock, Save, UserRound } from 'lucide-react';
+import {
+  ArrowLeft,
+  Eye,
+  Globe,
+  History,
+  KeyRound,
+  ListChecks,
+  Lock,
+  Save,
+  UserRound,
+} from 'lucide-react';
 import {
   ROLES,
   ROLE_HINT,
   ROLE_LABEL,
+  clearUserProfile,
   getUser,
   getUserAccesses,
   resetUserPassword,
@@ -20,6 +31,7 @@ import { AccessLog } from '../components/AccessLog.js';
 import { ActorTrail } from '../components/ActorTrail.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
+import { normalizeUsername } from '@purple-skills/shared/username';
 import { KeysTable, UserAlerts, UserTitle, useUserKeys } from './UserPage.js';
 
 type Tab = 'account' | 'keys' | 'accesses' | 'activity';
@@ -42,6 +54,7 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
 
   const [user, setUser] = useState<UserSummary | null>(null);
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [role, setRole] = useState<Role>('editor');
   const [isActive, setIsActive] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -60,6 +73,7 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
   const hydrate = useCallback((fresh: UserSummary) => {
     setUser(fresh);
     setName(fresh.name);
+    setUsername(fresh.username);
     setRole(fresh.role);
     setIsActive(fresh.isActive);
   }, []);
@@ -88,7 +102,34 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
     };
   }, [uuid, hydrate, toast]);
 
-  const dirty = user !== null && (name !== user.name || role !== user.role || isActive !== user.isActive);
+  /**
+   * O username digitado, normalizado. `null` é "não vale" — e o formulário
+   * recusa salvar em vez de mandar ao servidor um texto que ele devolveria com
+   * 400. Campo em branco **não** é "derive do nome" aqui, ao contrário da
+   * criação: numa conta que já existe isso apagaria o identificador público
+   * dela por descuido, e o PATCH recusa o vazio.
+   */
+  const usernameLimpo = normalizeUsername(username);
+  const usernameInvalido = usernameLimpo === null;
+
+  const dirty =
+    user !== null &&
+    (name !== user.name ||
+      role !== user.role ||
+      isActive !== user.isActive ||
+      (usernameLimpo !== null && usernameLimpo !== user.username));
+
+  /**
+   * A trava do Salvar, num lugar só.
+   *
+   * **Ela estava só no botão, e havia três caminhos para o mesmo `save()`**: o
+   * botão, o item da paleta de comandos e o ⌘S. Os dois últimos olhavam apenas
+   * o `dirty`, então trocar o nome com o campo Usuário meio digitado (`ana-`) e
+   * apertar ⌘S gravava o nome e **engolia a troca de username em silêncio** —
+   * o `save` manda `undefined` quando o texto não normaliza. Uma constante
+   * fecha os três de uma vez, e fechar um a um é como o furo nasceu.
+   */
+  const podeSalvar = dirty && !usernameInvalido;
 
   const save = useCallback(async () => {
     if (!user) return;
@@ -96,6 +137,8 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
     try {
       const saved = await updateUser(user.uuid, {
         name: name !== user.name ? name : undefined,
+        username:
+          usernameLimpo !== null && usernameLimpo !== user.username ? usernameLimpo : undefined,
         role: role !== user.role ? role : undefined,
         isActive: isActive !== user.isActive ? isActive : undefined,
       });
@@ -106,28 +149,28 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
     } finally {
       setSaving(false);
     }
-  }, [user, name, role, isActive, hydrate, toast]);
+  }, [user, name, usernameLimpo, role, isActive, hydrate, toast]);
 
   useRegisterCommands(
-    user ? [{ id: 'user-save', label: 'Salvar alterações', group: 'Recurso', icon: <Save />, shortcut: '⌘ S', disabled: dirty ? (false as const) : 'nada a salvar', run: save }] : [],
-    [user?.uuid, dirty, save],
+    user ? [{ id: 'user-save', label: 'Salvar alterações', group: 'Recurso', icon: <Save />, shortcut: '⌘ S', disabled: podeSalvar ? (false as const) : 'nada a salvar', run: save }] : [],
+    [user?.uuid, podeSalvar, save],
   );
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        if (dirty && !saving) void save();
+        if (podeSalvar && !saving) void save();
       }
     };
     document.addEventListener('keydown', down);
     return () => document.removeEventListener('keydown', down);
-  }, [dirty, saving, save]);
+  }, [podeSalvar, saving, save]);
 
   async function resetPassword() {
     if (!user) return;
     const ok = await confirm({
-      title: `Gerar uma senha temporária para ${user.email}?`,
+      title: `Gerar uma senha temporária para @${user.username}?`,
       description: 'A senha atual deixa de valer, as sessões abertas caem e a pessoa é obrigada a trocá-la no primeiro acesso.',
       confirmLabel: 'Gerar senha',
     });
@@ -141,7 +184,37 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
       // papel e "conta ativa" em edição sumiam sem aviso. Nome, papel e estado
       // continuam sendo os que o formulário carregou, para o Salvar comparar com
       // eles e não regravar por cima o que outra pessoa tenha mudado no meio.
-      setUser({ ...result.user, name: user.name, role: user.role, isActive: user.isActive });
+      setUser({
+        ...result.user,
+        name: user.name,
+        username: user.username,
+        role: user.role,
+        isActive: user.isActive,
+      });
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  /**
+   * Limpar o perfil público de outra conta (`docs/20-perfil.md` decisão 6).
+   *
+   * Confirma antes porque é irreversível do lado de quem administra: o texto
+   * que a pessoa escreveu não volta, e quem o reescreve é ela.
+   */
+  async function limparPerfil() {
+    if (!user) return;
+    const ok = await confirm({
+      title: `Limpar o perfil público de @${user.username}?`,
+      description:
+        'A descrição, o site, os links e a foto são apagados, e o perfil sai do ar. O que ela escreveu não volta — só ela pode escrever de novo.',
+      confirmLabel: 'Limpar perfil',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await clearUserProfile(user.uuid);
+      toast.success('Perfil limpo.');
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -178,7 +251,13 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
           <Link to={base} className="btn btn-ghost">
             <Eye /> Visualizar
           </Link>
-          <Button onClick={() => void save()} disabled={saving || !dirty}>
+          {/*
+            `usernameInvalido` tranca o Salvar junto com o resto: sem isso,
+            mudar o nome com o campo Usuário meio digitado gravaria o nome e
+            engoliria o username em silêncio — o `save` manda `undefined`
+            quando ele não normaliza.
+          */}
+          <Button onClick={() => void save()} disabled={saving || !podeSalvar}>
             <Save /> {saving ? 'Salvando…' : dirty ? 'Salvar' : 'Salvo'}
           </Button>
         </div>
@@ -206,7 +285,31 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
                   <Field label="Nome">
                     <input className="field" value={name} onChange={(event) => setName(event.target.value)} />
                   </Field>
-                  <Field label="E-mail" hint="O e-mail é a identidade da conta e não muda; para outro endereço, crie outra conta e desative esta.">
+                  {/*
+                    Trocar o username é de admin (`docs/19-username.md` decisão
+                    5), e esta tela é só de admin. O aviso do hint não é
+                    decoração: o username antigo **não volta a circular**
+                    (decisão 6), então renomear queima o nome para sempre — é o
+                    que impede que o `@joao` de uma trilha antiga vire outra
+                    pessoa.
+                  */}
+                  <Field
+                    label="Usuário"
+                    hint={
+                      usernameInvalido
+                        ? 'De 3 a 32 caracteres: letras sem acento, números, ponto, hífen e sublinhado, começando e terminando em letra ou número.'
+                        : 'É por ele que as outras contas veem esta pessoa. O nome antigo não volta a ficar livre, e a trilha de auditoria anterior continua com ele.'
+                    }
+                  >
+                    <input
+                      className="field field-mono"
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      autoCapitalize="none"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field label="E-mail" hint="O e-mail é privado — só esta tela e a própria pessoa o veem. Ele não muda; para outro endereço, crie outra conta e desative esta.">
                     <input className="field field-mono" value={user.email} disabled />
                   </Field>
                   <Field label="Papel" hint={self ? 'Você não pode mudar o próprio papel.' : ROLE_HINT[role]}>
@@ -238,7 +341,7 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
                 {secret && (
                   <div className="key-reveal mb-3" style={{ marginTop: 0 }}>
                     <p className="t">
-                      Senha temporária de <strong>{user.email}</strong> — anote agora, ela não volta a aparecer.
+                      Senha temporária de <strong>@{user.username}</strong> — anote agora, ela não volta a aparecer.
                     </p>
                     <div className="row">
                       <code>{secret}</code>
@@ -253,12 +356,29 @@ export function UserEditorPage({ me }: { me: SessionUser }) {
                   <Lock /> Gerar senha temporária
                 </Button>
               </Panel>
+
+              {/*
+                Moderação, não edição (`docs/20-perfil.md` decisão 6): o admin
+                **apaga** o perfil público, e não existe tela em que ele escreva
+                texto no lugar de outra pessoa. Por isso o botão diz "limpar" e
+                fica aqui, com a senha temporária, e não num formulário.
+              */}
+              <Panel title="Perfil público" icon={<Globe />}>
+                <p className="panel-hint">
+                  Limpar apaga a descrição, o site, os links e a foto desta conta, e tira o perfil
+                  do ar. A pessoa continua podendo preencher tudo de novo. Fica na trilha de
+                  auditoria.
+                </p>
+                <Button variant="ghost" onClick={() => void limparPerfil()}>
+                  <Globe /> Limpar perfil
+                </Button>
+              </Panel>
             </div>
           }
         />
         <Route path="keys" element={<KeysEditor user={user} />} />
         <Route path="accesses" element={<AccessLog load={loadAccesses} showSkill />} />
-        <Route path="activity" element={<ActorTrail actor={user.email} />} />
+        <Route path="activity" element={<ActorTrail actor={user.username} />} />
       </Routes>
     </div>
   );
@@ -272,7 +392,7 @@ function KeysEditor({ user }: { user: UserSummary }) {
 
   async function revoke(key: ApiKeySummary) {
     const ok = await confirm({
-      title: `Revogar a chave "${key.name}" de ${user.email}?`,
+      title: `Revogar a chave "${key.name}" de @${user.username}?`,
       description: 'Quem a estiver usando perde o acesso na chamada seguinte. A linha fica como histórico.',
       confirmLabel: 'Revogar',
       danger: true,

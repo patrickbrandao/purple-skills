@@ -23,6 +23,14 @@ export const ACTION_LABEL: Record<AuditEntry['action'], string> = {
   // Uma identidade do provedor passou a abrir uma conta que já existia; o ator
   // é `oidc:<issuer>` e o alvo traz o `subject` (`tasks/003`).
   'user.link': 'vinculou SSO à conta',
+  // O username de uma conta trocado por um admin (`docs/19-username.md` decisão
+  // 5). O alvo é `<antigo> -> <novo>`, e é esta linha que liga a trilha anterior
+  // à troca — lá o rótulo congelado ainda diz o username antigo.
+  'user.username': 'renomeou conta',
+  // Um admin limpou o perfil público de uma conta (`docs/20-perfil.md`
+  // decisão 6). É moderação: apaga bio, site, links e foto, e desliga o
+  // público. Editar o **próprio** perfil não entra na trilha.
+  'user.profile': 'limpou perfil',
   'key.create': 'emitiu chave',
   'key.revoke': 'revogou chave',
   'mcp.create': 'criou servidor',
@@ -77,6 +85,11 @@ export const ACTION_TONE: Record<AuditEntry['action'], 'ok' | 'accent' | 'danger
   'user.password': 'danger',
   // Mesmo peso de `user.password`: uma credencial nova passa a abrir a conta.
   'user.link': 'danger',
+  // `accent`, como `user.role`: muda como a conta aparece em toda tela, e não o
+  // que ela pode. Concessão nenhuma se move — a ACL é por uuid.
+  'user.username': 'accent',
+  // `danger`: tira do ar conteúdo que a pessoa publicou, e ela não foi quem fez.
+  'user.profile': 'danger',
   'key.create': 'ok',
   'key.revoke': 'danger',
   'mcp.create': 'ok',

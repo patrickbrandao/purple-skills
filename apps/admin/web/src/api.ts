@@ -78,13 +78,13 @@ export const canOwn = (access: EffectiveAccess) => access === 'owner';
 /**
  * Uma concessão: a conta, o nível e quem concedeu.
  *
- * A conta se identifica pelo **e-mail**. `userUuid` e `grantedByUserUuid` chegam
- * do servidor como apelido do e-mail — o uuid de uma conta não sai mais do
- * painel (`ownerByEmail`, em `admin/src/access.ts`) —, e nada aqui os lê.
+ * A conta se identifica pelo **username**. `userUuid` e `grantedByUserUuid`
+ * chegam do servidor como apelido do username — o uuid de uma conta não sai mais
+ * do painel (`ownerByUsername`, em `admin/src/access.ts`) —, e nada aqui os lê.
  */
 export type Grant = {
   userUuid: string;
-  email: string;
+  username: string;
   name: string;
   role: Role;
   /**
@@ -95,11 +95,11 @@ export type Grant = {
   isActive: boolean;
   level: AccessLevel;
   grantedByUserUuid: string | null;
-  grantedByEmail: string | null;
+  grantedByUsername: string | null;
   createdAt: string;
 };
 
-export type UserLookup = { uuid: string; email: string; name: string; role: Role };
+export type UserLookup = { uuid: string; username: string; name: string; role: Role };
 
 /** O filtro das listas: meus, compartilhados comigo, públicos. */
 export type AccessScope = 'mine' | 'shared' | 'public';
@@ -107,12 +107,12 @@ export type AccessScope = 'mine' | 'shared' | 'public';
 /** Os campos de acesso que skill, catálogo e vMCP têm em comum. */
 export type Accessible = {
   /**
-   * Chega do servidor como **apelido de `ownerEmail`**: o uuid da conta dona não
-   * sai mais do painel (`ownerByEmail`, em `admin/src/access.ts`). O dono se
-   * compara pelo e-mail — ver `ownedBy`, em `AccessPanel.tsx`.
+   * Chega do servidor como **apelido de `ownerUsername`**: o uuid da conta dona
+   * não sai mais do painel (`ownerByUsername`, em `admin/src/access.ts`). O dono
+   * se compara pelo username — ver `ownedBy`, em `AccessPanel.tsx`.
    */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
   access: EffectiveAccess;
 };
 
@@ -201,6 +201,8 @@ export type AuditAction =
   | 'user.activate'
   | 'user.password'
   | 'user.link'
+  | 'user.username'
+  | 'user.profile'
   | 'key.create'
   | 'key.revoke'
   | 'mcp.create'
@@ -249,6 +251,8 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'user.activate',
   'user.password',
   'user.link',
+  'user.username',
+  'user.profile',
   'key.create',
   'key.revoke',
   'mcp.create',
@@ -321,6 +325,13 @@ export const canManageUsers = (role: Role) => role === 'admin';
 
 export type SessionUser = {
   uuid: string | null;
+  username: string;
+  /** Carimbo da foto, para o avatar da sidebar; `null` cai no monograma. */
+  avatarUpdatedAt: string | null;
+  /**
+   * O endereço da própria pessoa, e só dela (`docs/19-username.md` decisão 8):
+   * a tela Conta e o menu do usuário o mostram. Nenhuma outra conta o vê.
+   */
   email: string;
   name: string;
   role: Role;
@@ -385,6 +396,10 @@ export const SESSION_OPERATION_DEFAULTS: SessionOperation = {
 
 export type UserSummary = {
   uuid: string;
+  username: string;
+  /** Carimbo da foto (`docs/20-perfil.md`); `null` é conta sem foto. */
+  avatarUpdatedAt: string | null;
+  /** Só admin lê esta lista, e é por isso que o e-mail continua nela (decisão 8). */
   email: string;
   name: string;
   role: Role;
@@ -649,7 +664,7 @@ export type SkillAccessEntry = {
   apiKeyId: string | null;
   apiKeyName: string | null;
   userUuid: string | null;
-  userEmail: string | null;
+  userUsername: string | null;
   sessionId: string | null;
   ip: string | null;
   userAgent: string | null;
@@ -838,7 +853,12 @@ export const getSession = async (): Promise<Session> => ({
   ...(await request<SessionLogin & Partial<SessionOperation>>('/api/session')),
 });
 
-export const login = (credentials: { email?: string; password: string }) =>
+/**
+ * Um campo só para os dois caminhos (`docs/19-username.md` decisão 3): tem `@`,
+ * o servidor trata como e-mail; não tem, como username. `identifier` ausente é o
+ * login legado pela `ADMIN_PASSWORD`, que só vale com a tabela de contas vazia.
+ */
+export const login = (credentials: { identifier?: string; password: string }) =>
   request<{ authenticated: boolean }>('/api/login', { method: 'POST', body: json(credentials) });
 
 /**
@@ -852,6 +872,7 @@ export const logout = () =>
 
 export const setup = (body: {
   adminPassword: string;
+  username: string;
   email: string;
   name: string;
   password: string;
@@ -861,6 +882,61 @@ export const setup = (body: {
 });
 
 // ------------------------------------------------------------ minha conta ---
+
+/** Cópia manual de `ProfileLink` de `@purple-skills/shared` (ver o cabeçalho). */
+export type ProfileLink = { label: string; url: string };
+
+/** Cópia manual de `UserProfile`. O e-mail não está aqui, e é a funcionalidade. */
+export type UserProfile = {
+  username: string;
+  name: string;
+  bio: string;
+  websiteUrl: string | null;
+  links: ProfileLink[];
+  isPublic: boolean;
+  hasAvatar: boolean;
+  avatarUpdatedAt: string | null;
+};
+
+export const getMyProfile = () => request<UserProfile>('/api/me/profile');
+
+/** Campo ausente é "não mexe": a tela manda só o que mudou. */
+export const saveMyProfile = (body: {
+  name?: string;
+  bio?: string;
+  websiteUrl?: string | null;
+  links?: ProfileLink[];
+  isPublic?: boolean;
+}) => request<UserProfile>('/api/me/profile', { method: 'PATCH', body: json(body) });
+
+export const uploadMyAvatar = (file: File) => {
+  const form = new FormData();
+  form.append('file', file);
+  return request<UserProfile>('/api/me/profile/avatar', { method: 'PUT', body: form });
+};
+
+export const deleteMyAvatar = () =>
+  request<UserProfile>('/api/me/profile/avatar', { method: 'DELETE' });
+
+/** Limpar o perfil de outra conta: só admin, e é apagar, nunca reescrever. */
+export const clearUserProfile = (uuid: string) =>
+  request<UserProfile>(`/api/users/${encodeURIComponent(uuid)}/profile`, { method: 'DELETE' });
+
+/**
+ * A URL da foto de uma conta, para um `<img src>`.
+ *
+ * O `stamp` (o `avatarUpdatedAt` do perfil) vai como query **de propósito**: a
+ * rota responde `max-age=0, must-revalidate`, então trocar a foto já apareceria
+ * na revalidação seguinte — mas o `<img>` de uma aba aberta há meia hora não
+ * revalida sozinho. Com o carimbo na URL, trocar a foto troca a URL, e a
+ * imagem nova entra sem recarregar a página.
+ *
+ * `null` quando a conta não tem foto: quem chama desenha o monograma.
+ */
+export const avatarUrl = (username: string, stamp: string | null): string | null =>
+  stamp === null
+    ? null
+    : `/api/users/${encodeURIComponent(username)}/avatar?v=${encodeURIComponent(stamp)}`;
 
 export const changePassword = (body: { currentPassword?: string; newPassword: string }) =>
   request<{ changed: boolean }>('/api/me/password', { method: 'POST', body: json(body) });
@@ -885,6 +961,7 @@ export const getMyMcpKeys = () => request<{ items: IssuedMcpKey[] }>('/api/me/mc
 export const getUsers = () => request<{ items: UserSummary[] }>('/api/users');
 
 export const createUser = (body: {
+  username: string;
   email: string;
   name: string;
   role: Role;
@@ -894,7 +971,10 @@ export const createUser = (body: {
   body: json(body),
 });
 
-export const updateUser = (uuid: string, body: { name?: string; role?: Role; isActive?: boolean }) =>
+export const updateUser = (
+  uuid: string,
+  body: { name?: string; username?: string; role?: Role; isActive?: boolean },
+) =>
   request<UserSummary>(`/api/users/${encodeURIComponent(uuid)}`, {
     method: 'PATCH',
     body: json(body),
@@ -925,15 +1005,15 @@ export const lookupUsers = (q: string) => request<{ items: UserLookup[] }>(`/api
 
 export type AccessKind = 'skill' | 'catalog' | 'mcp';
 
-const accessPath = (kind: AccessKind, slug: string, email: string) =>
-  `/api/${kind === 'mcp' ? 'mcps' : kind === 'catalog' ? 'catalogs' : 'skills'}/${encodeURIComponent(slug)}/access/${encodeURIComponent(email)}`;
+const accessPath = (kind: AccessKind, slug: string, username: string) =>
+  `/api/${kind === 'mcp' ? 'mcps' : kind === 'catalog' ? 'catalogs' : 'skills'}/${encodeURIComponent(slug)}/access/${encodeURIComponent(username)}`;
 
 /** Concede ou muda o nível de uma conta num objeto (exige `manage`). */
-export const share = (kind: AccessKind, slug: string, email: string, level: AccessLevel) =>
-  request<Grant>(accessPath(kind, slug, email), { method: 'PUT', body: json({ level }) });
+export const share = (kind: AccessKind, slug: string, username: string, level: AccessLevel) =>
+  request<Grant>(accessPath(kind, slug, username), { method: 'PUT', body: json({ level }) });
 
-export const unshare = (kind: AccessKind, slug: string, email: string) =>
-  request<{ revoked: true }>(accessPath(kind, slug, email), { method: 'DELETE' });
+export const unshare = (kind: AccessKind, slug: string, username: string) =>
+  request<{ revoked: true }>(accessPath(kind, slug, username), { method: 'DELETE' });
 
 // -------------------------------------------------------------- clonagem ---
 
@@ -1200,9 +1280,9 @@ export type QuarantineSummary = {
   name: string;
   description: string;
   sourceFilename: string | null;
-  /** Sai pelo e-mail, como em toda ficha do painel; nulo é envio órfão. */
+  /** Sai pelo username, como em toda ficha do painel; nulo é envio órfão. */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
   fileCount: number;
   sizeBytes: number;
   createdAt: string;
@@ -1450,6 +1530,19 @@ export const num = (value: number | undefined | null) =>
   value === undefined || value === null ? '—' : value.toLocaleString('pt-BR');
 
 export const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
+
+/**
+ * Uma conta na tela: `@username`, ou o texto de ausência quando não há.
+ *
+ * Existe para o `@` ser **um lugar só**. Doze telas mostram o dono de um objeto,
+ * e o arroba escrito à mão em cada uma delas é a receita para uma sair sem —
+ * ou, pior, para alguém concluir que ali não é um username. O texto de ausência
+ * fica com quem chama, porque ele muda com o contexto: "sem dono" numa linha de
+ * lista, "nenhum (só administradores)" numa ficha que precisa explicar o
+ * efeito.
+ */
+export const atUser = (username: string | null | undefined, ausente: string): string =>
+  username ? `@${username}` : ausente;
 
 /**
  * A busca semântica, como o painel a vê (`docs/14-rag.md` §9).

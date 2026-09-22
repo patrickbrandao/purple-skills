@@ -8,7 +8,7 @@ import { load as loadCatalog } from './catalogs.js';
 /**
  * A guia "Acessos" da skill e do catálogo (`docs/13-fichas-e-acessos.md`):
  * os registros por leitura, mais novos primeiro, filtrados por quem leu
- * (`q`: e-mail, nome de chave, IP, cliente ou id de sessão), origem e tipo.
+ * (`q`: usuário, nome de chave, IP, cliente ou id de sessão), origem e tipo.
  * A lista traz IPs e nomes de chave de servidores que a conta pode não
  * administrar, por isso é `manage` no objeto — o mesmo critério das
  * concessões e das sessões de um vMCP.
@@ -33,19 +33,29 @@ function optionsOf(query: AccessQuery) {
 
 /**
  * A página como ela sai para quem administra o objeto: a conta que leu vai pelo
- * **e-mail**. `userUuid` ao lado de `userEmail` era mais um caminho por onde o
- * `sub` do cookie de sessão de outra conta chegava a quem não é admin (ver
- * `ownerByEmail`, em `access.ts`); o painel não lê o campo, que fica como apelido
- * do e-mail. `ofUser` é rota de admin, que já tem o uuid na URL, e não muda.
+ * **username**. `userUuid` ao lado do rótulo da conta era mais um caminho por
+ * onde o `sub` do cookie de sessão de outra conta chegava a quem não é admin
+ * (ver `ownerByUsername`, em `access.ts`); o painel não lê o campo, que fica como
+ * apelido do username. `ofUser` é rota de admin, que já tem o uuid na URL, e não
+ * muda.
+ *
+ * **Esta guia é o caso mais agudo da mudança** (`docs/19-username.md` §1): ela é
+ * de `manage`, não de admin, então o dono de uma skill via aqui o **e-mail de
+ * todo mundo que a leu**. Era a maior superfície de vazamento do painel, e é por
+ * isso que a migration `033` não se contentou em trocar o campo — ela apagou a
+ * coluna `skill_accesses.user_email`, que guardava esses endereços congelados.
  */
-const readersByEmail = (page: SkillAccessPage): SkillAccessPage => ({
+const readersByUsername = (page: SkillAccessPage): SkillAccessPage => ({
   ...page,
-  items: page.items.map((entry) => ({ ...entry, userUuid: entry.userUuid === null ? null : entry.userEmail })),
+  items: page.items.map((entry) => ({
+    ...entry,
+    userUuid: entry.userUuid === null ? null : entry.userUsername,
+  })),
 });
 
 export async function ofSkill(user: AuthUser, slug: string, query: AccessQuery): Promise<SkillAccessPage> {
   const skill = await loadSkill(user, slug, 'manage');
-  return readersByEmail(await listSkillAccesses({ skillUuid: skill.uuid, ...optionsOf(query) }));
+  return readersByUsername(await listSkillAccesses({ skillUuid: skill.uuid, ...optionsOf(query) }));
 }
 
 /** As leituras feitas por uma conta, pelas chaves `psk_` dela (a rota já exige admin). */
@@ -56,5 +66,5 @@ export async function ofUser(uuid: string, query: AccessQuery): Promise<SkillAcc
 
 export async function ofCatalog(user: AuthUser, slug: string, query: AccessQuery): Promise<SkillAccessPage> {
   const catalog = await loadCatalog(user, slug, 'manage');
-  return readersByEmail(await listSkillAccesses({ catalogUuid: catalog.uuid, ...optionsOf(query) }));
+  return readersByUsername(await listSkillAccesses({ catalogUuid: catalog.uuid, ...optionsOf(query) }));
 }
