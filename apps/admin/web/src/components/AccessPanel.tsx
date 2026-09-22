@@ -79,35 +79,36 @@ export function accessSentence(access: EffectiveAccess): string {
 }
 
 /**
- * A sessão é a dona do objeto? Pelo **e-mail**: o uuid de conta não sai mais do
- * servidor — `ownerUserUuid` chega como apelido do e-mail (relatório 011 da
+ * A sessão é a dona do objeto? Pelo **username**: o uuid de conta não sai mais do
+ * servidor — `ownerUserUuid` chega como apelido do username (relatório 011 da
  * auditoria de 2026-09-19) —, e comparar com `user.uuid` nunca casaria: o "você"
- * sumiria. A sessão de bootstrap não é conta (`uuid` nulo, e-mail vazio) e não é
+ * sumiria. A sessão de bootstrap não é conta (`uuid` nulo, username vazio) e não é
  * dona de nada.
  */
-export function ownedBy(object: Pick<Accessible, 'ownerEmail'>, user: Pick<SessionUser, 'uuid' | 'email'>): boolean {
-  return object.ownerEmail !== null && user.uuid !== null && object.ownerEmail.toLowerCase() === user.email.toLowerCase();
+export function ownedBy(object: Pick<Accessible, 'ownerUsername'>, user: Pick<SessionUser, 'uuid' | 'username'>): boolean {
+  return object.ownerUsername !== null && user.uuid !== null && object.ownerUsername.toLowerCase() === user.username.toLowerCase();
 }
 
 // -------------------------------------------------------------- busca ------
 
 /**
- * Escolhe uma conta pelo nome ou e-mail (decisão 13): a busca é do servidor,
+ * Escolhe uma conta pelo nome ou usuário (decisão 13 do `docs/12`, revista pela
+ * decisão 10 do `docs/19-username.md`): a busca é do servidor,
  * só contas ativas, a partir de dois caracteres.
  *
- * A conta escolhida é identificada pelo **e-mail** — o `uuid` saiu da busca
- * (`tasks/025`) e `exclude` é um conjunto de e-mails.
+ * A conta escolhida é identificada pelo **username** — o `uuid` saiu da busca
+ * (`tasks/025`) e `exclude` é um conjunto de usernames.
  */
 export function UserPicker({
   value,
   onChange,
   exclude,
-  placeholder = 'Nome ou e-mail da conta',
+  placeholder = 'Nome ou usuário da conta',
   autoFocus,
 }: {
   value: UserLookup | null;
   onChange: (user: UserLookup | null) => void;
-  /** E-mails a esconder da lista: quem já tem concessão, o dono. */
+  /** Usuários a esconder da lista: quem já tem concessão, o dono. */
   exclude?: Set<string>;
   placeholder?: string;
   autoFocus?: boolean;
@@ -126,7 +127,7 @@ export function UserPicker({
     }
     let active = true;
     lookupUsers(dq.trim())
-      .then((data) => active && setOptions(data.items.filter((item) => !exclude?.has(item.email))))
+      .then((data) => active && setOptions(data.items.filter((item) => !exclude?.has(item.username))))
       .catch(() => active && setOptions([]));
     return () => {
       active = false;
@@ -137,12 +138,12 @@ export function UserPicker({
     return (
       <div className="flex items-center gap-2">
         <span className="skill-icon sm" aria-hidden>
-          <span className="mono">{initials(value.name || value.email)}</span>
+          <span className="mono">{initials(value.name || value.username)}</span>
         </span>
         <span className="min-w-0 flex-1">
           <span className="row-title truncate">{value.name}</span>
           <span className="row-sub truncate">
-            {value.email} · {ROLE_LABEL[value.role]}
+            @{value.username} · {ROLE_LABEL[value.role]}
           </span>
         </span>
         <Button variant="quiet" size="sm" onClick={() => onChange(null)}>
@@ -173,7 +174,7 @@ export function UserPicker({
         <div className="menu" style={{ position: 'absolute', left: 0, right: 0, top: '100%', marginTop: 4, zIndex: 20 }}>
           {options.map((item) => (
             <button
-              key={item.email}
+              key={item.username}
               type="button"
               className="mi"
               onClick={() => {
@@ -185,7 +186,7 @@ export function UserPicker({
               <span className="min-w-0">
                 <span className="row-title truncate">{item.name}</span>
                 <span className="row-sub truncate">
-                  {item.email} · {ROLE_LABEL[item.role]}
+                  @{item.username} · {ROLE_LABEL[item.role]}
                 </span>
               </span>
             </button>
@@ -224,8 +225,8 @@ export type AccessMode<T> =
 type RowState = 'saved' | 'new' | 'changed' | 'revoked';
 
 type Row = {
-  /** A conta, pelo e-mail: é a chave do rascunho e o que as rotas recebem (`tasks/025`). */
-  email: string;
+  /** A conta, pelo username: é a chave do rascunho e o que as rotas recebem. */
+  username: string;
   name: string;
   role: Role;
   level: AccessLevel;
@@ -236,14 +237,14 @@ type Row = {
 /** As concessões gravadas com o rascunho por cima: as novas no fim. */
 function rowsOf(grants: Grant[], draft: AccessDraft | null): Row[] {
   const rows: Row[] = grants.map((grant) => {
-    const wanted = draft?.grants[grant.email];
+    const wanted = draft?.grants[grant.username];
     if (!wanted) return { ...grant, saved: grant, state: 'saved' };
     if (wanted.level === null) return { ...grant, saved: grant, state: 'revoked' };
     return { ...grant, level: wanted.level, saved: grant, state: wanted.level === grant.level ? 'saved' : 'changed' };
   });
-  const savedEmails = new Set(grants.map((grant) => grant.email));
+  const savedUsernames = new Set(grants.map((grant) => grant.username));
   for (const wanted of Object.values(draft?.grants ?? {})) {
-    if (savedEmails.has(wanted.email) || wanted.level === null) continue;
+    if (savedUsernames.has(wanted.username) || wanted.level === null) continue;
     rows.push({ ...wanted, level: wanted.level, saved: null, state: 'new' });
   }
   return rows;
@@ -313,21 +314,21 @@ export function AccessTab<T extends AccessObject>({
   const rows = rowsOf(object.grants, draft);
   const isPublic = draft?.isPublic ?? object.isPublic;
   const publicPending = draft?.isPublic !== undefined && draft.isPublic !== object.isPublic;
-  // O dono se compara pelo e-mail (`tasks/025`): o `uuid` não vem mais da
+  // O dono se compara pelo username (`tasks/025`): o `uuid` não vem mais da
   // busca de contas, e comparar os dois dava sempre "dono diferente".
-  const pendingOwner = draft?.owner && draft.owner.email !== object.ownerEmail ? draft.owner : null;
+  const pendingOwner = draft?.owner && draft.owner.username !== object.ownerUsername ? draft.owner : null;
 
   const setDraft = (patch: Partial<AccessDraft>) => {
     if (how.mode === 'draft') how.onDraft({ ...how.draft, ...patch });
   };
 
   /** Troca o rascunho de uma conta; voltar ao gravado apaga a entrada. */
-  const draftGrant = (row: Pick<Row, 'email' | 'name' | 'role'>, next: AccessLevel | null, saved: Grant | null) => {
+  const draftGrant = (row: Pick<Row, 'username' | 'name' | 'role'>, next: AccessLevel | null, saved: Grant | null) => {
     if (!draft) return;
-    const { [row.email]: _old, ...others } = draft.grants;
+    const { [row.username]: _old, ...others } = draft.grants;
     const unchanged = saved ? next === saved.level : next === null;
     setDraft({
-      grants: unchanged ? others : { ...others, [row.email]: { email: row.email, name: row.name, role: row.role, level: next } },
+      grants: unchanged ? others : { ...others, [row.username]: { username: row.username, name: row.name, role: row.role, level: next } },
     });
   };
 
@@ -359,7 +360,7 @@ export function AccessTab<T extends AccessObject>({
     event.preventDefault();
     if (!newOwner) return;
     if (how.mode === 'draft') {
-      setDraft({ owner: newOwner.email === object.ownerEmail ? undefined : newOwner });
+      setDraft({ owner: newOwner.username === object.ownerUsername ? undefined : newOwner });
       setNewOwner(null);
       setTransferring(false);
       return;
@@ -368,18 +369,18 @@ export function AccessTab<T extends AccessObject>({
     const ok = await confirm({
       title: `Transferir "${object.name}" para ${newOwner.name}?`,
       description: isAdminView
-        ? `${newOwner.email} passa a ser o dono, com todos os poderes sobre este ${what}.`
-        : `${newOwner.email} passa a ser o dono, e você deixa de ser. Só um administrador ou o novo dono pode devolver.`,
+        ? `@${newOwner.username} passa a ser o dono, com todos os poderes sobre este ${what}.`
+        : `@${newOwner.username} passa a ser o dono, e você deixa de ser. Só um administrador ou o novo dono pode devolver.`,
       confirmLabel: 'Transferir',
       danger: !isAdminView,
     });
     if (!ok) return;
-    // `ownerUserUuid` aceita o e-mail da conta (`admin/src/access.ts`,
+    // `ownerUserUuid` aceita o username da conta (`admin/src/access.ts`,
     // `ownerFrom`); é por ele que a busca de contas identifica quem escolher.
-    const updated = await live(() => how.onPatch({ ownerUserUuid: newOwner.email }));
+    const updated = await live(() => how.onPatch({ ownerUserUuid: newOwner.username }));
     if (!updated) return;
     how.onChanged(updated);
-    toast.success(`${object.name} agora é de ${newOwner.email}.`);
+    toast.success(`${object.name} agora é de @${newOwner.username}.`);
     setNewOwner(null);
     setTransferring(false);
   }
@@ -388,17 +389,17 @@ export function AccessTab<T extends AccessObject>({
     event.preventDefault();
     if (!target) return;
     if (how.mode === 'draft') {
-      draftGrant(target, level, object.grants.find((item) => item.email === target.email) ?? null);
+      draftGrant(target, level, object.grants.find((item) => item.username === target.username) ?? null);
       setTarget(null);
       setLevel('view');
       return;
     }
     if (how.mode !== 'live') return;
-    const saved = await live(() => share(kind, object.slug, target.email, level));
+    const saved = await live(() => share(kind, object.slug, target.username, level));
     if (!saved) return;
-    // A conta é o e-mail: o uuid dela não sai mais do servidor (ver `ownedBy`).
-    how.onChanged({ ...object, grants: [...object.grants.filter((item) => item.email !== saved.email), saved] });
-    toast.success(`${saved.email} agora pode ${ACCESS_LABEL[saved.level]}.`);
+    // A conta é o username: o uuid dela não sai mais do servidor (ver `ownedBy`).
+    how.onChanged({ ...object, grants: [...object.grants.filter((item) => item.username !== saved.username), saved] });
+    toast.success(`@${saved.username} agora pode ${ACCESS_LABEL[saved.level]}.`);
     setTarget(null);
     setLevel('view');
   }
@@ -409,9 +410,9 @@ export function AccessTab<T extends AccessObject>({
       return;
     }
     if (how.mode !== 'live' || next === row.level) return;
-    const saved = await live(() => share(kind, object.slug, row.email, next));
+    const saved = await live(() => share(kind, object.slug, row.username, next));
     if (!saved) return;
-    how.onChanged({ ...object, grants: object.grants.map((current) => (current.email === saved.email ? saved : current)) });
+    how.onChanged({ ...object, grants: object.grants.map((current) => (current.username === saved.username ? saved : current)) });
   }
 
   async function revoke(row: Row) {
@@ -422,27 +423,27 @@ export function AccessTab<T extends AccessObject>({
     if (how.mode !== 'live') return;
     const ok = await confirm({
       title: `Tirar o acesso de ${row.name}?`,
-      description: `${row.email} deixa de ${ACCESS_LABEL[row.level]} este ${what}. Vínculos que a conta já fez ficam.`,
+      description: `@${row.username} deixa de ${ACCESS_LABEL[row.level]} este ${what}. Vínculos que a conta já fez ficam.`,
       confirmLabel: 'Revogar',
       danger: true,
     });
     if (!ok) return;
-    const done = await live(() => unshare(kind, object.slug, row.email));
+    const done = await live(() => unshare(kind, object.slug, row.username));
     if (!done) return;
-    how.onChanged({ ...object, grants: object.grants.filter((current) => current.email !== row.email) });
-    toast.success(`${row.email} perdeu o acesso.`);
+    how.onChanged({ ...object, grants: object.grants.filter((current) => current.username !== row.username) });
+    toast.success(`@${row.username} perdeu o acesso.`);
   }
 
   /** Desfaz o rascunho de uma conta: volta ao gravado. */
   const undo = (row: Row) => row.saved ? draftGrant(row, row.saved.level, row.saved) : draftGrant(row, null, null);
 
   // A busca refaz a consulta quando o conjunto muda: ele só muda com as contas.
-  // São e-mails, porque é assim que a busca identifica a conta (`tasks/025`) —
-  // com `uuid` de um lado e e-mail do outro, nada era escondido.
-  const excludedKey = [...rows.map((row) => row.email), object.ownerEmail ?? '', pendingOwner?.email ?? ''].join(' ');
+  // São usernames, porque é assim que a busca identifica a conta (`tasks/025`) —
+  // com `uuid` de um lado e o rótulo do outro, nada era escondido.
+  const excludedKey = [...rows.map((row) => row.username), object.ownerUsername ?? '', pendingOwner?.username ?? ''].join(' ');
   const excluded = useMemo(() => new Set(excludedKey.split(' ').filter(Boolean)), [excludedKey]);
   // Transferir para quem tem concessão vale: a concessão some com a transferência.
-  const notOwners = useMemo(() => new Set(object.ownerEmail ? [object.ownerEmail] : []), [object.ownerEmail]);
+  const notOwners = useMemo(() => new Set(object.ownerUsername ? [object.ownerUsername] : []), [object.ownerUsername]);
   const activeCount = rows.filter((row) => row.state !== 'revoked').length;
 
   return (
@@ -494,9 +495,11 @@ export function AccessTab<T extends AccessObject>({
                   <span className="flex items-center gap-2">
                     <Crown style={{ width: 14, height: 14, color: 'var(--accent-soft)' }} />
                     <span className="min-w-0">
-                      <span className="row-title truncate">{object.ownerEmail ?? 'Sem dono'}</span>
+                      <span className="row-title truncate">
+                        {object.ownerUsername === null ? 'Sem dono' : `@${object.ownerUsername}`}
+                      </span>
                       <span className="row-sub truncate">
-                        {object.ownerEmail === null
+                        {object.ownerUsername === null
                           ? 'só os administradores mandam aqui'
                           : ownedBy(object, user)
                             ? 'você'
@@ -510,12 +513,12 @@ export function AccessTab<T extends AccessObject>({
                 </td>
                 <td className="hidden md:table-cell" />
                 <td className="num">
-                  {pendingOwner && <Badge tone="warn">passa a {pendingOwner.email} ao salvar</Badge>}
+                  {pendingOwner && <Badge tone="warn">passa a @{pendingOwner.username} ao salvar</Badge>}
                 </td>
               </tr>
               {manages &&
                 rows.map((row) => (
-                  <tr key={row.email} className={cx(row.state !== 'saved' && 'is-pending', row.state === 'revoked' && 'is-removed')}>
+                  <tr key={row.username} className={cx(row.state !== 'saved' && 'is-pending', row.state === 'revoked' && 'is-removed')}>
                     <td>
                       <span className="flex items-center gap-2">
                         <UserRound style={{ width: 14, height: 14, color: 'var(--text-faint)' }} />
@@ -523,14 +526,14 @@ export function AccessTab<T extends AccessObject>({
                           <span className="row-title truncate">{row.name}</span>
                           {isInactiveGrant(row) ? (
                             <span className="row-sub flex flex-wrap items-center gap-1.5">
-                              {row.email} · {ROLE_LABEL[row.role]}
+                              @{row.username} · {ROLE_LABEL[row.role]}
                               <Badge tone="warn" title={INACTIVE_HINT}>
                                 conta desativada
                               </Badge>
                             </span>
                           ) : (
                             <span className="row-sub truncate">
-                              {row.email} · {ROLE_LABEL[row.role]}
+                              @{row.username} · {ROLE_LABEL[row.role]}
                             </span>
                           )}
                         </span>
@@ -551,7 +554,7 @@ export function AccessTab<T extends AccessObject>({
                           value={row.level}
                           disabled={busy}
                           onChange={(event) => void changeLevel(row, event.target.value as AccessLevel)}
-                          aria-label={`Nível de ${row.email}`}
+                          aria-label={`Nível de @${row.username}`}
                         >
                           {ACCESS_LEVELS.map((option) => (
                             <option key={option} value={option}>
@@ -565,7 +568,7 @@ export function AccessTab<T extends AccessObject>({
                       {row.saved ? (
                         <span className="row-sub whitespace-nowrap">
                           {formatDateTime(row.saved.createdAt)}
-                          {row.saved.grantedByEmail && ` por ${row.saved.grantedByEmail}`}
+                          {row.saved.grantedByUsername && ` por ${row.saved.grantedByUsername}`}
                         </span>
                       ) : (
                         <span className="row-sub">—</span>
@@ -603,7 +606,9 @@ export function AccessTab<T extends AccessObject>({
           <dl className="kv">
             <dt>Dono</dt>
             <dd>
-              {object.ownerEmail ?? 'nenhum (só administradores)'}
+              {object.ownerUsername === null
+                ? 'nenhum (só administradores)'
+                : `@${object.ownerUsername}`}
               {ownedBy(object, user) && ' — você'}
             </dd>
             <dt>Seu acesso</dt>
@@ -613,7 +618,7 @@ export function AccessTab<T extends AccessObject>({
           {pendingOwner && (
             <div className="alert warn mt-3">
               <span className="min-w-0 flex-1">
-                Passa a ser de <strong>{pendingOwner.email}</strong> quando você salvar.
+                Passa a ser de <strong>@{pendingOwner.username}</strong> quando você salvar.
                 {!isAdminView && ' Você deixa de ser o dono.'}
               </span>
               <Button variant="quiet" size="sm" onClick={() => setDraft({ owner: undefined })}>

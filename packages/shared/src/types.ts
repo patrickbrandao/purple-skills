@@ -1,4 +1,5 @@
 import type { AccessLevel, EffectiveAccess, Role } from './roles.js';
+import type { ProfileLink } from './profile.js';
 
 /**
  * Um vMCP em que a skill está, visto da skill: o servidor e as três portas
@@ -65,15 +66,28 @@ export type SkillSummary = {
    * O dono da skill. Nulo quando ele foi removido ou quando quem criou não era
    * conta (bootstrap, token global).
    *
-   * O banco sempre os devolve, em qualquer visibilidade; o app os repassa a
-   * quem tem ao menos `view` (`docs/12` decisão 11) e **não** ao visitante
-   * anônimo — o site projeta a skill antes de responder
-   * (`apps/site/src/api.ts`, `skillPublica`). O §10 aceita e-mail exposto a
-   * conta logada, não a quem não tem login; e o `ownerUserUuid` é o `sub` do
-   * cookie de sessão do painel (`tasks/001`, `tasks/002`).
+   * O banco sempre os devolve, em qualquer visibilidade. O `ownerUsername`
+   * **sai também para o visitante anônimo** desde a decisão 11 do
+   * `docs/19-username.md`: a ficha pública credita o dono, e o username é dado
+   * público justamente para poder ser creditado. O que o site continua
+   * projetando fora é o `ownerUserUuid` (`apps/site/src/api.ts`,
+   * `skillPublica`), que é o `sub` do cookie de sessão do painel (`tasks/001`,
+   * `tasks/002`).
+   *
+   * Aqui o `ownerUserUuid` chega ao navegador como **apelido do username** —
+   * ver `ownerByUsername`, em `apps/admin/src/access.ts`.
    */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
+  /**
+   * O dono tem perfil público? É o que decide se o `por @fulano` da ficha vira
+   * **link** para `/u/<username>` ou fica no texto de hoje (`docs/20-perfil.md`
+   * §7). Sem ele o site apontaria para 404 em toda conta que não abriu o perfil.
+   *
+   * É o **único** dado de perfil que viaja na ficha da skill: bio, foto e links
+   * ficam na rota do perfil, que é onde alguém foi vê-los de propósito.
+   */
+  ownerHasProfile: boolean;
   /**
    * O que a conta que leu pode nesta skill (`accessLevel` de `roles.ts`,
    * mais `'view'` quando ela chega por um contêiner que a conta vê). Numa
@@ -118,35 +132,48 @@ export type SkillDetail = SkillSummary & {
 
 // ------------------------------------------------------------- acesso ------
 
-/** Uma concessão por objeto: a conta, o nível e quem concedeu. */
+/**
+ * Uma concessão por objeto: a conta, o nível e quem concedeu.
+ *
+ * A conta é o **username** (`docs/19-username.md` decisão 1), e `userUuid`
+ * chega ao navegador como apelido dele — ver `grantByUsername`, em
+ * `apps/admin/src/access.ts`.
+ */
 export type Grant = {
   userUuid: string;
-  email: string;
+  username: string;
   name: string;
   role: Role;
   /** A conta está ativa? Desativada mantém a linha, inerte (`docs/12` §2). */
   isActive: boolean;
   level: AccessLevel;
   grantedByUserUuid: string | null;
-  grantedByEmail: string | null;
+  grantedByUsername: string | null;
   createdAt: string;
 };
 
 /**
  * Resultado da busca de contas para compartilhar (`GET /api/users/lookup`).
  *
- * A conta é identificada pelo **e-mail**, o mesmo identificador que as rotas
- * de concessão já usam na URL (`docs/12` §5.3). O `uuid` da conta **não sai**
- * daqui: ele é o `sub` do cookie de sessão (`admin/src/auth.ts`), e a busca é
- * aberta a qualquer conta logada (decisão 13) — entregá-lo daria a um membro o
- * sujeito exato do crachá que ele quer forjar (`tasks/025`, `tasks/001`).
+ * A conta é identificada pelo **username**, o mesmo identificador que as rotas
+ * de concessão usam na URL (`docs/19-username.md` decisão 9). O `uuid` da conta
+ * **não sai** daqui: ele é o `sub` do cookie de sessão (`admin/src/auth.ts`), e
+ * a busca é aberta a qualquer conta logada (decisão 13 do `docs/12`) —
+ * entregá-lo daria a um membro o sujeito exato do crachá que ele quer forjar
+ * (`tasks/025`, `tasks/001`).
  *
- * O campo `uuid` sobrevive como **apelido do e-mail**, e só porque o painel
+ * **O e-mail não está nesta lista, e não é só omissão de saída:** a busca
+ * também deixou de *casar* por e-mail (`docs/19` decisão 10). Devolver só o
+ * username mas continuar casando por endereço deixaria qualquer conta logada
+ * descobrir a qual username um e-mail corresponde, digitando o endereço — a
+ * sondagem anula o sigilo mesmo sem o campo aparecer.
+ *
+ * O campo `uuid` sobrevive como **apelido do username**, e só porque o painel
  * ainda o lê (`admin/web/src/components/AccessPanel.tsx`): sai daqui, do
  * `withoutUuid` do admin e da projeção de `lookupUsers` quando o painel passar
- * a usar `email`.
+ * a usar `username`.
  */
-export type UserLookup = { email: string; name: string; role: Role; uuid: string };
+export type UserLookup = { username: string; name: string; role: Role; uuid: string };
 
 /** O filtro das listas do painel: meus, compartilhados comigo, públicos. */
 export type AccessScope = 'mine' | 'shared' | 'public';
@@ -191,16 +218,30 @@ export type AuditAction =
   | 'user.activate'
   // Senha de uma conta trocada por quem não é ela: a redefinição pelo admin e o
   // link de e-mail consumido (`docs/05-accounts-and-roles.md` §2.6).
-  // `target_label` é o e-mail da conta afetada e o ator diz por qual caminho
-  // foi — o e-mail de quem administra, ou `link-de-redefinicao`. A linha implica
-  // que **toda sessão daquela conta caiu** (`token_version`) e que o próximo
-  // acesso exige nova senha; ela nunca leva a senha, o hash nem o token.
+  // `target_label` é o username da conta afetada e o ator diz por qual caminho
+  // foi — o username de quem administra, ou `link-de-redefinicao`. A linha
+  // implica que **toda sessão daquela conta caiu** (`token_version`) e que o
+  // próximo acesso exige nova senha; ela nunca leva a senha, o hash nem o token.
   | 'user.password'
   // Uma identidade OIDC passou a abrir uma conta local que já existia
   // (`docs/05-accounts-and-roles.md` §2.4). Uma vez por conta — não é login. O
-  // ator é o caminho (`oidc:<issuer>`); `target_label` leva o e-mail da conta e
-  // o `subject` que a assumiu.
+  // ator é o caminho (`oidc:<issuer>`); `target_label` leva o username da conta
+  // e o `subject` que a assumiu.
   | 'user.link'
+  // O username de uma conta trocado por um admin (`docs/19-username.md`
+  // decisão 5). `target_label` é `<antigo> -> <novo>`, a mesma forma que a
+  // clonagem usa (`031`). A linha é o que mantém legível a trilha anterior à
+  // troca: o rótulo congelado lá continua dizendo `<antigo>`, e é aqui que se
+  // descobre quem ele virou. O username antigo **não volta a circular**
+  // (decisão 6), então a trilha nunca aponta para outra pessoa.
+  | 'user.username'
+  // Um admin **limpou** o perfil público de uma conta: bio, site, links e foto
+  // saem, e o `is_public` desliga (`docs/20-perfil.md` decisão 6). É moderação,
+  // e o único caminho pelo qual alguém que não é o dono mexe no perfil — o
+  // admin nunca escreve texto no lugar de outra pessoa. A edição do **próprio**
+  // perfil não entra na trilha, pelo mesmo critério que mantém o login fora
+  // dela: mudaria a ordem de grandeza do log.
+  | 'user.profile'
   | 'key.create'
   | 'key.revoke'
   // Eventos de MCP virtual (`docs/08-mcp-virtual.md` §6). `target_label` é o
@@ -220,7 +261,7 @@ export type AuditAction =
   | 'catalog.update'
   | 'catalog.delete'
   // Concessões (`docs/12-acesso-granular.md` §8). `target_label` é
-  // `email:nível` ao conceder e o e-mail ao revogar; em catálogo e vMCP o
+  // `username:nível` ao conceder e o username ao revogar; em catálogo e vMCP o
   // slug vem antes, separado por espaço. Transferir o dono é `update`.
   | 'skill.share'
   | 'skill.unshare'
@@ -283,17 +324,37 @@ export type AuditEntry = {
   source: AuditSource;
   actorUserUuid: string | null;
   actorLabel: string | null;
-  /** Alvo de um evento de conta (e-mail do usuário, nome da chave). */
+  /** Alvo de um evento de conta (username, nome da chave). */
   targetLabel: string | null;
   createdAt: string;
 };
 
 // ------------------------------------------------------------- contas ------
 
+/**
+ * A conta como as rotas de **admin** a devolvem (`/api/users*`) e como a
+ * própria sessão se vê (`GET /api/session`).
+ *
+ * É o único tipo que ainda carrega `email`, e é de propósito: pela decisão 8 do
+ * `docs/19-username.md` o endereço só aparece para a própria conta e para
+ * admin. Em toda outra superfície a conta é o `username` — dono, ACL, guia
+ * Acessos, busca de contas, trilha e ficha pública do site.
+ */
 export type UserSummary = {
   uuid: string;
+  username: string;
   email: string;
   name: string;
+  /**
+   * Quando a foto mudou, ou `null` quando não há foto (`docs/20-perfil.md`).
+   *
+   * Está aqui, e não só no perfil, porque o avatar aparece em **toda** lista e
+   * ficha do painel: sem o carimbo junto da conta, cada linha de lista faria
+   * uma requisição só para descobrir que não existe imagem. É um carimbo, não
+   * os bytes — eles moram em `user_avatars` e só a rota que serve a imagem os
+   * lê.
+   */
+  avatarUpdatedAt: string | null;
   role: Role;
   isActive: boolean;
   /** `false` numa conta que só entra por OIDC. */
@@ -304,6 +365,58 @@ export type UserSummary = {
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+// ------------------------------------------------------------- perfil ------
+
+/**
+ * O perfil como a **própria conta** o vê e edita (`docs/20-perfil.md`).
+ *
+ * `name` mora em `users` e não na tabela de perfil — é o nome de exibição que
+ * já existia (decisão 1); o que mudou foi quem pode escrevê-lo. Os demais
+ * campos são a linha de `user_profiles`, que **nasce no primeiro salvamento**:
+ * quem nunca abriu a tela não tem linha, e a leitura devolve este objeto
+ * vazio e privado em vez de nulo.
+ *
+ * **Não há e-mail aqui, e é isso que permite a funcionalidade existir**
+ * (`docs/19-username.md` decisão 8).
+ */
+export type UserProfile = {
+  username: string;
+  name: string;
+  /** Texto puro; `''` é "sem bio" (`docs/20` §3.1). */
+  bio: string;
+  websiteUrl: string | null;
+  links: ProfileLink[];
+  /** Opt-in, desligado por padrão: decide o que sai para o **anônimo**. */
+  isPublic: boolean;
+  hasAvatar: boolean;
+  /**
+   * Quando a foto mudou pela última vez, para a URL do avatar levar um
+   * cache-buster. Nulo quando não há foto. Os **bytes** nunca vêm por aqui:
+   * eles moram em `user_avatars` e só a rota que serve a imagem os lê.
+   */
+  avatarUpdatedAt: string | null;
+};
+
+/**
+ * O perfil como o **site anônimo** o vê. Só existe quando `isPublic` e a conta
+ * está ativa; nos demais casos a rota responde 404, sem distinguir os motivos
+ * (`docs/20` §7).
+ *
+ * As duas listas trazem o que **já era público** — estar no perfil não torna
+ * nada visível (decisão 7).
+ */
+export type PublicProfile = {
+  username: string;
+  name: string;
+  bio: string;
+  websiteUrl: string | null;
+  links: ProfileLink[];
+  hasAvatar: boolean;
+  avatarUpdatedAt: string | null;
+  skills: SkillSummary[];
+  catalogs: PublicCatalog[];
 };
 
 export type ApiKeySummary = {
@@ -336,7 +449,7 @@ export type VirtualMcpSummary = {
   isOpen: boolean;
   /** Nulo quando o dono foi removido ou quando quem criou foi a sessão de bootstrap. */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
   /** O que a conta que leu pode neste vMCP; `'view'` inclui ler as skills dentro. */
   access: EffectiveAccess;
   skillCount: number;
@@ -517,7 +630,7 @@ export type CatalogSummary = {
   isActive: boolean;
   /** Nulo quando o dono foi removido ou quando quem criou foi a sessão de bootstrap. */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
   /** Legível por qualquer conta e pelo site; expõe os membros (`docs/12` decisões 4 e 5). */
   isPublic: boolean;
   /** O que a conta que leu pode neste catálogo; `'view'` inclui ler os membros. */
@@ -570,12 +683,23 @@ export type CatalogDetail = CatalogSummary & {
   grants: Grant[];
 };
 
-/** Um catálogo público e ligado, como o site o lista: sem dono, sem concessões. */
+/**
+ * Um catálogo público e ligado, como o site o lista: **com o dono pelo
+ * username**, sem concessões.
+ *
+ * O dono entrou pela decisão 11 do `docs/19-username.md` — a ficha pública
+ * credita quem mantém o catálogo, como a da skill. Continua sem `ownerUserUuid`:
+ * o uuid é o `sub` do cookie de sessão do painel e não tem uso aqui. `null` é
+ * catálogo sem dono, e a página não credita ninguém.
+ */
 export type PublicCatalog = {
   uuid: string;
   slug: string;
   name: string;
   description: string;
+  ownerUsername: string | null;
+  /** O dono tem perfil público? Decide se o crédito vira link (`docs/20` §7). */
+  ownerHasProfile: boolean;
   /** Membros com participação ativa e skill ativa. */
   skillCount: number;
 };
@@ -712,7 +836,7 @@ export type SkillAccessEntry = {
   apiKeyId: string | null;
   apiKeyName: string | null;
   userUuid: string | null;
-  userEmail: string | null;
+  userUsername: string | null;
   sessionId: string | null;
   ip: string | null;
   userAgent: string | null;
@@ -744,7 +868,7 @@ export type AdminBrand = { name: string; iconUrl: string };
  * `mcp_sessions` (quem se conectou), `skill_accesses` (o que foi lido) e
  * `audit_log` (o que mudou no catálogo) — mais a contagem de chamadas por
  * método, que nasceu com esta tela. **Tudo agregado**: nenhum corpo daqui
- * carrega IP, e-mail, `session_id` nem qualquer identificador de uma operação
+ * carrega IP, conta, `session_id` nem qualquer identificador de uma operação
  * individual. Quem precisa do evento a evento tem a trilha (`/api/audit`), as
  * sessões (`/api/sessions`) e a guia de acessos da skill.
  */
@@ -920,7 +1044,7 @@ export type QuarantineSummary = {
   sourceFilename: string | null;
   /** Nulo quando o dono foi removido: o envio fica órfão, só do admin. */
   ownerUserUuid: string | null;
-  ownerEmail: string | null;
+  ownerUsername: string | null;
   fileCount: number;
   /** A soma dos bytes gravados, como eles chegaram. */
   sizeBytes: number;

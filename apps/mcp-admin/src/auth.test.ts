@@ -26,6 +26,7 @@ const request = (authorization?: string) =>
 
 const user = {
   uuid: 'uuid-do-dono',
+  username: 'maria',
   email: 'maria@exemplo.com',
   role: 'editor' as const,
   isActive: true,
@@ -72,7 +73,7 @@ describe('credencial do MCP administrativo', () => {
     expect(db.getApiKeyByPrefix).toHaveBeenCalledWith(key.prefix);
     // A chave, o IP e o agente vão junto: é o que o registro de acessos grava.
     expect(caller).toEqual({
-      actor: { userUuid: user.uuid, label: user.email },
+      actor: { userUuid: user.uuid, label: user.username },
       role: 'editor',
       identity: 'key:id-da-chave',
       apiKeyId: 'id-da-chave',

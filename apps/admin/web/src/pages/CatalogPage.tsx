@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Server, SlidersHorizontal, Users } from 'lucide-react';
 import {
+  atUser,
   canEdit as canEditAccess,
   canManage,
   formatDateTime,
@@ -193,7 +194,7 @@ export function CatalogSubline({ catalog, user }: { catalog: CatalogDetail; user
       <span>· {catalog.mcpCount} servidor{catalog.mcpCount === 1 ? '' : 'es'}</span>
       <span>· {num(catalog.viewCount)} acessos</span>
       <span>· {num(catalog.downloadCount)} downloads</span>
-      <span>· dono: {catalog.ownerEmail ?? 'nenhum (só admin)'}</span>
+      <span>· dono: {atUser(catalog.ownerUsername, 'nenhum (só admin)')}</span>
       <span>· criado em {formatDateTime(catalog.createdAt)}</span>
       <span>· atualizado em {formatDateTime(catalog.updatedAt)}</span>
       {user.role !== 'admin' && <span>· {accessSentence(catalog.access)}</span>}
@@ -393,7 +394,7 @@ function PropertiesTab({ catalog }: { catalog: CatalogDetail }) {
           <dd>{catalog.mcpCount}</dd>
           <dt>Visibilidade</dt>
           <dd>
-            {catalog.isPublic ? 'público' : 'privado'} · dono: {catalog.ownerEmail ?? 'nenhum (só administradores)'}
+            {catalog.isPublic ? 'público' : 'privado'} · dono: {atUser(catalog.ownerUsername, 'nenhum (só administradores)')}
           </dd>
           <dt>Acessos</dt>
           <dd>

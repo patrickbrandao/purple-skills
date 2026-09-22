@@ -20,7 +20,7 @@ const banco = vi.hoisted(() => ({
   listSkillGrants: vi.fn(),
   setSkillGrant: vi.fn(),
   removeSkillGrant: vi.fn(),
-  getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
   getVirtualMcp: vi.fn(),
   linkSkill: vi.fn(),
   unlinkSkill: vi.fn(),
@@ -38,7 +38,7 @@ vi.mock('@purple-skills/db', async (original) => ({
   ...banco,
 }));
 
-const { grantByEmail, grantOf, ownerByEmail, shareSkill, unshareSkill, withGrants } = await import('./access.js');
+const { grantByUsername, grantOf, ownerByUsername, shareSkill, unshareSkill, withGrants } = await import('./access.js');
 const { api } = await import('./api.js');
 // O `AppError` de verdade, para o caso do 409: o `fail()` do `api.ts` só
 // reconhece a classe, e um objeto com `status: 409` viraria 500.
@@ -52,6 +52,10 @@ type Viewer = { role: string; userUuid: string | null };
 
 const sessao = (role: 'admin' | 'editor' | 'membro', uuid: string) => ({
   uuid,
+  username: role,
+  avatarUpdatedAt: null,
+  // O e-mail continua na sessão — é a própria conta se vendo (`docs/19` decisão
+  // 8). O que saiu das superfícies é o e-mail de **outra** pessoa.
   email: `${role}@exemplo.dev`,
   name: role,
   role,
@@ -66,17 +70,17 @@ const FLAGS = { asSkill: true, asPrompt: false, asResource: false };
 
 const CONCESSAO = {
   userUuid: 'uuid-bia',
-  email: 'bia@exemplo.dev',
+  username: 'bia',
   name: 'Bia',
   role: 'membro' as const,
   isActive: true,
   level: 'edit' as const,
   grantedByUserUuid: 'uuid-ana',
-  grantedByEmail: 'ana@exemplo.dev',
+  grantedByUsername: 'ana',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', email: 'saiu@exemplo.dev', name: 'Saiu', isActive: false };
+const DESATIVADA = { ...CONCESSAO, userUuid: 'uuid-saiu', username: 'saiu', name: 'Saiu', isActive: false };
 
 const vmcpRef = (slug: string) => ({ uuid: `ref-${slug}`, slug, name: slug, isOpen: false, isActive: true, isDefault: false, ...FLAGS, direct: true, catalogs: [] });
 
@@ -89,7 +93,7 @@ const FICHA_DO_ADMIN = {
   files: [],
   isPublic: true,
   ownerUserUuid: 'uuid-ana',
-  ownerEmail: 'ana@exemplo.dev',
+  ownerUsername: 'ana',
   access: 'owner' as const,
   grants: [CONCESSAO, DESATIVADA],
   mcps: [vmcpRef('time-a'), vmcpRef('fechado-da-ana')],
@@ -114,8 +118,8 @@ beforeEach(() => {
   banco.getSkillSummary.mockImplementation((_slug: string, options?: { viewer?: Viewer }) => Promise.resolve(fichaPara(options?.viewer)));
   banco.getSkillDetail.mockImplementation((_slug: string, options?: { viewer?: Viewer }) => Promise.resolve(fichaPara(options?.viewer)));
   banco.listSkillGrants.mockResolvedValue([CONCESSAO, DESATIVADA]);
-  banco.getUserByEmail.mockImplementation((email: string) =>
-    Promise.resolve(email === 'saiu@exemplo.dev' ? { uuid: 'uuid-saiu', email, isActive: false } : null),
+  banco.getUserByUsername.mockImplementation((username: string) =>
+    Promise.resolve(username === 'saiu' ? { uuid: 'uuid-saiu', username, isActive: false } : null),
   );
 });
 
@@ -138,23 +142,23 @@ const recusa = async (acao: Promise<unknown>): Promise<{ status: number; message
  */
 describe('a conta sai pelo e-mail, nunca pelo uuid', () => {
   it('o dono: o campo vira apelido do e-mail; sem dono continua nulo', () => {
-    expect(ownerByEmail({ ownerUserUuid: 'uuid-ana', ownerEmail: 'ana@exemplo.dev' })).toEqual({
-      ownerUserUuid: 'ana@exemplo.dev',
-      ownerEmail: 'ana@exemplo.dev',
+    expect(ownerByUsername({ ownerUserUuid: 'uuid-ana', ownerUsername: 'ana' })).toEqual({
+      ownerUserUuid: 'ana',
+      ownerUsername: 'ana',
     });
-    expect(ownerByEmail({ ownerUserUuid: null, ownerEmail: null })).toEqual({ ownerUserUuid: null, ownerEmail: null });
+    expect(ownerByUsername({ ownerUserUuid: null, ownerUsername: null })).toEqual({ ownerUserUuid: null, ownerUsername: null });
   });
 
   it('a concessão: a conta e quem concedeu, e o resto intacto', () => {
-    expect(grantByEmail(CONCESSAO)).toEqual({ ...CONCESSAO, userUuid: 'bia@exemplo.dev', grantedByUserUuid: 'ana@exemplo.dev' });
-    expect(grantByEmail({ ...CONCESSAO, grantedByUserUuid: null, grantedByEmail: null }).grantedByUserUuid).toBeNull();
+    expect(grantByUsername(CONCESSAO)).toEqual({ ...CONCESSAO, userUuid: 'bia', grantedByUserUuid: 'ana' });
+    expect(grantByUsername({ ...CONCESSAO, grantedByUserUuid: null, grantedByUsername: null }).grantedByUserUuid).toBeNull();
   });
 
   it('a ficha de quem administra: nenhum uuid de conta em campo nenhum', () => {
     const ficha = withGrants(FICHA_DO_ADMIN);
 
     semUuidDeConta(ficha);
-    expect(ficha.grants.map((grant) => grant.email)).toEqual(['bia@exemplo.dev', 'saiu@exemplo.dev']);
+    expect(ficha.grants.map((grant) => grant.username)).toEqual(['bia', 'saiu']);
     // O que não é conta não muda: o uuid da skill e o dos contêineres continuam lá.
     expect(ficha).toMatchObject({ uuid: 'skill-alfa', mcps: FICHA_DO_ADMIN.mcps, catalogs: FICHA_DO_ADMIN.catalogs });
   });
@@ -164,10 +168,10 @@ describe('a conta sai pelo e-mail, nunca pelo uuid', () => {
   });
 
   it('conceder devolve a concessão pelo e-mail', async () => {
-    banco.getUserByEmail.mockResolvedValue({ uuid: 'uuid-bia', email: 'bia@exemplo.dev', isActive: true });
+    banco.getUserByUsername.mockResolvedValue({ uuid: 'uuid-bia', username: 'bia', isActive: true });
     banco.setSkillGrant.mockResolvedValue(CONCESSAO);
 
-    const concessao = await shareSkill(ana, 'alfa', 'bia@exemplo.dev', 'edit');
+    const concessao = await shareSkill(ana, 'alfa', 'bia', 'edit');
 
     expect(banco.setSkillGrant).toHaveBeenCalledWith('alfa', 'uuid-bia', 'edit', 'web-admin', expect.objectContaining({ userUuid: 'uuid-ana' }));
     semUuidDeConta(concessao);
@@ -183,16 +187,16 @@ describe('a conta sai pelo e-mail, nunca pelo uuid', () => {
  */
 describe('revogar a concessão de uma skill não exige conta ativa', () => {
   it('revoga a de conta desativada, pelo uuid que está na lista', async () => {
-    await unshareSkill(ana, 'alfa', ' Saiu@Exemplo.dev ');
+    await unshareSkill(ana, 'alfa', '  Saiu  ');
 
     expect(banco.listSkillGrants).toHaveBeenCalledWith('skill-alfa');
     expect(banco.removeSkillGrant).toHaveBeenCalledWith('alfa', 'uuid-saiu', 'web-admin', expect.objectContaining({ userUuid: 'uuid-ana' }));
   });
 
   it('conceder — e mudar o nível — de conta desativada continua recusado', async () => {
-    expect(await recusa(shareSkill(ana, 'alfa', 'saiu@exemplo.dev', 'view'))).toEqual({
+    expect(await recusa(shareSkill(ana, 'alfa', 'saiu', 'view'))).toEqual({
       status: 404,
-      message: 'Conta não encontrada ou desativada: saiu@exemplo.dev',
+      message: 'Conta não encontrada ou desativada: saiu',
     });
     expect(banco.setSkillGrant).not.toHaveBeenCalled();
   });
@@ -201,22 +205,24 @@ describe('revogar a concessão de uma skill não exige conta ativa', () => {
   // este e-mail" de "existe, e não tem concessão aqui" — nem para a conta
   // desativada, que a busca de contas não revela (decisão 13).
   it('e-mail sem concessão é 404 sem consultar a conta', async () => {
-    expect(await recusa(unshareSkill(ana, 'alfa', 'ninguem@exemplo.dev'))).toEqual({
+    expect(await recusa(unshareSkill(ana, 'alfa', 'ninguem'))).toEqual({
       status: 404,
       message: 'A conta não tem concessão nesta skill',
     });
-    expect(banco.getUserByEmail).not.toHaveBeenCalled();
+    expect(banco.getUserByUsername).not.toHaveBeenCalled();
     expect(banco.removeSkillGrant).not.toHaveBeenCalled();
   });
 
   it('quem não administra a skill não chega a ler a lista', async () => {
-    expect((await recusa(unshareSkill(leitor, 'alfa', 'saiu@exemplo.dev'))).status).toBe(403);
+    expect((await recusa(unshareSkill(leitor, 'alfa', 'saiu'))).status).toBe(403);
     expect(banco.listSkillGrants).not.toHaveBeenCalled();
   });
 
-  it('`grantOf`: e-mail torto é 400; a caixa do e-mail não importa', () => {
-    expect(() => grantOf([CONCESSAO], 'nao-e-email', 'nesta skill')).toThrow(/Informe o e-mail/);
-    expect(grantOf([CONCESSAO], 'BIA@exemplo.dev', 'nesta skill')).toBe(CONCESSAO);
+  it('`grantOf`: usuário torto é 400; a caixa não importa', () => {
+    expect(() => grantOf([CONCESSAO], 'a', 'nesta skill')).toThrow(/Informe o usuário/);
+    // Um e-mail também não passa: `normalizeUsername` recusa o `@` (decisão 9).
+    expect(() => grantOf([CONCESSAO], 'bia@exemplo.dev', 'nesta skill')).toThrow(/Informe o usuário/);
+    expect(grantOf([CONCESSAO], 'BIA', 'nesta skill')).toBe(CONCESSAO);
   });
 });
 
@@ -326,9 +332,9 @@ describe('as outras rotas de skill que devolvem ficha', () => {
     const lista = await chamar('get', '/api/skills', { user: leitor });
 
     semUuidDeConta(ficha.body);
-    expect(ficha.body).toMatchObject({ access: 'owner', ownerUserUuid: 'ana@exemplo.dev' });
+    expect(ficha.body).toMatchObject({ access: 'owner', ownerUserUuid: 'ana' });
     expect((ficha.body.grants as unknown[]).length).toBe(2);
-    expect(lista.body).toMatchObject({ total: 1, limit: 50, offset: 0, items: [{ slug: 'alfa', ownerUserUuid: 'ana@exemplo.dev' }] });
+    expect(lista.body).toMatchObject({ total: 1, limit: 50, offset: 0, items: [{ slug: 'alfa', ownerUserUuid: 'ana' }] });
   });
 
   // A guia Auditoria de skill e de catálogo é de quem tem `manage`, não só de
@@ -336,8 +342,8 @@ describe('as outras rotas de skill que devolvem ficha', () => {
   it('as leituras registradas: quem leu sai pelo e-mail', async () => {
     const pagina = {
       items: [
-        { id: 'a1', userUuid: 'uuid-bia', userEmail: 'bia@exemplo.dev', ip: '198.51.100.7' },
-        { id: 'a2', userUuid: null, userEmail: null, ip: '198.51.100.8' },
+        { id: 'a1', userUuid: 'uuid-bia', userUsername: 'bia', ip: '198.51.100.7' },
+        { id: 'a2', userUuid: null, userUsername: null, ip: '198.51.100.8' },
       ],
       total: 2,
       limit: 50,
@@ -352,8 +358,8 @@ describe('as outras rotas de skill que devolvem ficha', () => {
     for (const res of [daSkill, doCatalogo]) {
       semUuidDeConta(res.body);
       expect(res.body.items).toEqual([
-        { id: 'a1', userUuid: 'bia@exemplo.dev', userEmail: 'bia@exemplo.dev', ip: '198.51.100.7' },
-        { id: 'a2', userUuid: null, userEmail: null, ip: '198.51.100.8' },
+        { id: 'a1', userUuid: 'bia', userUsername: 'bia', ip: '198.51.100.7' },
+        { id: 'a2', userUuid: null, userUsername: null, ip: '198.51.100.8' },
       ]);
     }
   });
@@ -387,7 +393,7 @@ describe('POST /api/skills/:slug/clone', () => {
     expect(res.statusCode).toBe(201);
     expect(res.body).toMatchObject({ slug: 'alfa-2', access: 'owner', isPublic: false, skillMd: '# alfa\n' });
     expect((res.body.grants as unknown[]).length).toBe(2);
-    expect(res.body.ownerUserUuid).toBe('ana@exemplo.dev');
+    expect(res.body.ownerUserUuid).toBe('ana');
     semUuidDeConta(res.body);
   });
 

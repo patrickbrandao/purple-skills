@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, Library, Plus, Search } from 'lucide-react';
 import {
+  atUser,
   canCreate,
   createCatalog,
   formatRelative,
@@ -191,7 +192,7 @@ export function CatalogsPage({ user, mine = false }: { user: SessionUser; mine?:
                     {num(catalog.viewCount)}
                   </td>
                   <td className="hidden md:table-cell">
-                    <span className="row-sub">{catalog.ownerEmail ?? 'sem dono (só admin)'}</span>
+                    <span className="row-sub">{atUser(catalog.ownerUsername, 'sem dono (só admin)')}</span>
                   </td>
                   <td className="hidden lg:table-cell">
                     <span className="row-sub whitespace-nowrap">{formatRelative(catalog.updatedAt)}</span>

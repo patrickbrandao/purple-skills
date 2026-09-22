@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { fetchPublicCatalog, type PublicCatalogDetail } from '../api.js';
+import { fetchPublicCatalog, profilePath, type PublicCatalogDetail } from '../api.js';
 import { SkillCard } from '../components/SkillCard.js';
-import { ArrowLeftIcon, LayersIcon } from '../components/Icons.js';
+import { ArrowLeftIcon, LayersIcon, UserIcon } from '../components/Icons.js';
 import { useMeta } from '../useMeta.js';
 import { useReveal } from '../useReveal.js';
 
@@ -90,6 +90,17 @@ export function CatalogPage() {
 
           <div className="skill-meta">
             <span>{catalog.slug}</span>
+            {/* A autoria, como na ficha da skill (`docs/19-username.md` decisão 11). */}
+            {catalog.ownerUsername && (
+              <span>
+                <UserIcon />{' '}
+                {catalog.ownerHasProfile ? (
+                  <Link to={profilePath(catalog.ownerUsername)}>por @{catalog.ownerUsername}</Link>
+                ) : (
+                  <>por @{catalog.ownerUsername}</>
+                )}
+              </span>
+            )}
             <span>
               {count} {count === 1 ? 'skill ativa' : 'skills ativas'}
             </span>

@@ -19,6 +19,19 @@ export type SkillSummary = {
   name: string;
   description: string;
   /**
+   * Quem mantém a skill, pelo **username** (`docs/19-username.md` decisão 11).
+   * `null` é skill sem dono, e a página não credita ninguém. O `ownerUserUuid`
+   * não vem para cá: é o `sub` do cookie de sessão do painel, e não tem uso
+   * numa página anônima.
+   */
+  ownerUsername: string | null;
+  /**
+   * O dono tem perfil público? É o que decide se o crédito vira link para
+   * `/u/<username>` ou fica em texto (`docs/20-perfil.md` §7). É o único dado
+   * de perfil que viaja na ficha da skill.
+   */
+  ownerHasProfile: boolean;
+  /**
    * Onde a skill está: os MCPs virtuais **abertos e ligados** que a publicam,
    * com as portas de cada um. Pode vir vazia: desde o acesso granular
    * (`docs/12-acesso-granular.md` §7) a skill também chega ao site por ter sido
@@ -140,6 +153,10 @@ export type PublicCatalog = {
   slug: string;
   name: string;
   description: string;
+  /** Quem mantém o catálogo, pelo username; `null` é catálogo sem dono. */
+  ownerUsername: string | null;
+  /** O dono tem perfil público? Decide se o crédito vira link (`docs/20` §7). */
+  ownerHasProfile: boolean;
   /** Membros com participação ativa e skill ativa. */
   skillCount: number;
 };
@@ -148,8 +165,49 @@ export type PublicCatalog = {
 export type PublicCatalogDetail = PublicCatalog & { skills: SkillSummary[] };
 
 export const fetchPublicCatalogs = () => get<{ items: PublicCatalog[] }>('/api/catalogs');
+
 export const fetchPublicCatalog = (slug: string) =>
   get<PublicCatalogDetail>(`/api/catalogs/${encodeURIComponent(slug)}`);
+
+// ---------------------------------------------------------------- perfil ---
+
+/** Cópia manual de `ProfileLink` de `@purple-skills/shared`. */
+export type ProfileLink = { label: string; url: string };
+
+/**
+ * O perfil público (`docs/20-perfil.md`). Só existe quando a pessoa publicou:
+ * a rota responde 404 para perfil privado, conta desativada e username
+ * inexistente, sem distinguir os três.
+ *
+ * **Não há e-mail neste tipo**, nem poderia haver (`docs/19` decisão 8).
+ */
+export type PublicProfile = {
+  username: string;
+  name: string;
+  bio: string;
+  websiteUrl: string | null;
+  links: ProfileLink[];
+  hasAvatar: boolean;
+  avatarUpdatedAt: string | null;
+  skills: SkillSummary[];
+  catalogs: PublicCatalog[];
+};
+
+export const fetchPublicProfile = (username: string) =>
+  get<PublicProfile>(`/api/profiles/${encodeURIComponent(username)}`);
+
+/**
+ * A URL da foto, com o carimbo como cache-buster — a rota revalida a cada uso
+ * (`max-age=0`), e o carimbo é o que faz a imagem nova entrar sem recarregar a
+ * página. `null` quando não há foto: a página desenha o ícone genérico.
+ */
+export const profileAvatarUrl = (username: string, stamp: string | null): string | null =>
+  stamp === null
+    ? null
+    : `/u/${encodeURIComponent(username)}/avatar?v=${encodeURIComponent(stamp)}`;
+
+/** A página de um perfil público, para o crédito da ficha da skill virar link. */
+export const profilePath = (username: string) => `/u/${encodeURIComponent(username)}`;
 
 export const downloadUrl = (slug: string) => `/skills/${encodeURIComponent(slug)}/download`;
 

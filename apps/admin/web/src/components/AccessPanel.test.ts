@@ -3,27 +3,31 @@ import { isInactiveGrant, ownedBy } from './AccessPanel.js';
 
 /**
  * O uuid de uma conta não sai mais do servidor: `ownerUserUuid` chega como
- * apelido do e-mail (relatório 011 da auditoria de 2026-09-19). Comparado com
- * `user.uuid`, como era, o "você" da guia Acesso sumiria para todo dono.
+ * apelido do username (relatório 011 da auditoria de 2026-09-19, e a decisão 1
+ * do `docs/19-username.md`, que trocou o rótulo de e-mail por username).
+ * Comparado com `user.uuid`, como era, o "você" da guia Acesso sumiria para todo
+ * dono.
  */
-describe('ownedBy: o dono se reconhece pelo e-mail', () => {
-  const ana = { uuid: '3f2b8c4e-1a6d-4b7f-9c0e-8d5a2f1b6c37', email: 'ana@exemplo.dev' };
+describe('ownedBy: o dono se reconhece pelo username', () => {
+  const ana = { uuid: '3f2b8c4e-1a6d-4b7f-9c0e-8d5a2f1b6c37', username: 'ana' };
 
-  it('a sessão dona do objeto é "você", qualquer que seja a caixa do e-mail', () => {
-    expect(ownedBy({ ownerEmail: 'ana@exemplo.dev' }, ana)).toBe(true);
-    expect(ownedBy({ ownerEmail: 'Ana@Exemplo.dev' }, ana)).toBe(true);
+  it('a sessão dona do objeto é "você", qualquer que seja a caixa', () => {
+    expect(ownedBy({ ownerUsername: 'ana' }, ana)).toBe(true);
+    // O banco normaliza para caixa baixa, mas a comparação não depende disso.
+    expect(ownedBy({ ownerUsername: 'Ana' }, ana)).toBe(true);
   });
 
   it('dono alheio e objeto sem dono não são', () => {
-    expect(ownedBy({ ownerEmail: 'bia@exemplo.dev' }, ana)).toBe(false);
-    expect(ownedBy({ ownerEmail: null }, ana)).toBe(false);
+    expect(ownedBy({ ownerUsername: 'bia' }, ana)).toBe(false);
+    expect(ownedBy({ ownerUsername: null }, ana)).toBe(false);
   });
 
-  // A sessão de bootstrap não é conta: `uuid` nulo e e-mail vazio. Sem a guarda,
-  // um dono de e-mail vazio — que o banco não produz, mas um mock sim — casaria.
+  // A sessão de bootstrap não é conta: `uuid` nulo e username vazio. Sem a
+  // guarda, um dono de username vazio — que o banco não produz, mas um mock sim
+  // — casaria.
   it('a sessão de bootstrap não é dona de nada', () => {
-    expect(ownedBy({ ownerEmail: '' }, { uuid: null, email: '' })).toBe(false);
-    expect(ownedBy({ ownerEmail: null }, { uuid: null, email: '' })).toBe(false);
+    expect(ownedBy({ ownerUsername: '' }, { uuid: null, username: '' })).toBe(false);
+    expect(ownedBy({ ownerUsername: null }, { uuid: null, username: '' })).toBe(false);
   });
 });
 

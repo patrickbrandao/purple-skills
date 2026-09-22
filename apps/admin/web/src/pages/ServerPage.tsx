@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, KeyRound, LayoutTemplate, Radio, Settings, Trash2, Users } from 'lucide-react';
 import {
+  atUser,
   canEdit as canEditAccess,
   canManage,
   canOwn,
@@ -154,7 +155,7 @@ export function ServerPage({ session, user }: { session: Session; user: SessionU
               {' · '}
               {detail.skillCount} skill{detail.skillCount === 1 ? '' : 's'}
               {detail.catalogCount > 0 && ` · ${detail.catalogCount} catálogo${detail.catalogCount === 1 ? '' : 's'}`} · dono:{' '}
-              {detail.ownerEmail ?? 'nenhum (só admin)'}
+              {atUser(detail.ownerUsername, 'nenhum (só admin)')}
               {user.role !== 'admin' && ` · ${accessSentence(detail.access)}`}
             </div>
           </div>
@@ -594,7 +595,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
             <dd>{mcp.isDefault ? 'sim — responde em /mcp' : 'não'}</dd>
             <dt>Dono</dt>
             <dd>
-              {mcp.ownerEmail ?? 'nenhum (só administradores)'} ·{' '}
+              {atUser(mcp.ownerUsername, 'nenhum (só administradores)')} ·{' '}
               <Link to={`/mcps/${mcp.slug}/access`} className="link">
                 acesso
               </Link>

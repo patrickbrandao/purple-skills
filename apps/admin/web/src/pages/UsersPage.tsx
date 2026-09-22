@@ -14,9 +14,10 @@ import {
   type UserSummary,
 } from '../api.js';
 import { Badge, Button, CopyButton, EmptyRow, Field, Menu, MenuItem, Modal, Status, Skel, useDebounced } from '../components/ui.js';
-import { initials } from '../components/SkillIcon.js';
+import { Avatar } from '../components/Avatar.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
+import { normalizeUsername, usernameFromName } from '@purple-skills/shared/username';
 
 type Filter = 'all' | 'active' | 'disabled' | 'temporary';
 const FILTER_LABEL: Record<Filter, string> = {
@@ -71,7 +72,17 @@ export function UsersPage({ me }: { me: SessionUser }) {
   const visible = useMemo(() => {
     let list = users ?? [];
     const needle = dq.trim().toLowerCase();
-    if (needle) list = list.filter((user) => user.name.toLowerCase().includes(needle) || user.email.toLowerCase().includes(needle));
+    // O e-mail fica na busca **desta** tela: ela é de admin, e é a superfície em
+    // que o endereço continua visível (`docs/19-username.md` decisão 8). O
+    // username entra ao lado, porque é por ele que as outras telas nomeiam a conta.
+    if (needle) {
+      list = list.filter(
+        (user) =>
+          user.name.toLowerCase().includes(needle) ||
+          user.username.toLowerCase().includes(needle) ||
+          user.email.toLowerCase().includes(needle),
+      );
+    }
     if (filter === 'active') list = list.filter((user) => user.isActive);
     if (filter === 'disabled') list = list.filter((user) => !user.isActive);
     if (filter === 'temporary') list = list.filter((user) => user.mustChangePassword);
@@ -147,14 +158,14 @@ export function UsersPage({ me }: { me: SessionUser }) {
                   <tr key={user.uuid} className={user.isActive ? undefined : 'is-off'}>
                     <td>
                       <Link to={`/users/${user.uuid}`} className="flex items-center gap-3 no-underline">
-                        <span className="avatar">{initials(user.name)}</span>
+                        <Avatar username={user.username} name={user.name} stamp={user.avatarUpdatedAt} />
                         <span className="min-w-0">
                           <span className="row-title">
                             {user.name}
                             {self && <Badge className="ml-2">você</Badge>}
                           </span>
                           <span className="row-sub">
-                            {user.email}
+                            @{user.username} · {user.email}
                             {user.oidcIssuer && ' · SSO'}
                           </span>
                         </span>
@@ -216,6 +227,13 @@ function NewUserModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
   const toast = useToast();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
+  /**
+   * O username da conta nova: derivado do nome, e "escolhido à mão" no primeiro
+   * toque (`docs/19-username.md` decisão 12). Em branco o servidor deriva e
+   * resolve a colisão — é o mesmo caminho do `/api/setup`.
+   */
+  const [username, setUsername] = useState('');
+  const [usernameTouched, setUsernameTouched] = useState(false);
   const [role, setRole] = useState<Role>('editor');
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<{ user: UserSummary; password: string | null } | null>(null);
@@ -223,16 +241,21 @@ function NewUserModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
   function reset() {
     setEmail('');
     setName('');
+    setUsername('');
+    setUsernameTouched(false);
     setRole('editor');
     setCreated(null);
   }
+
+  const sugestao = usernameTouched ? username : (usernameFromName(name) ?? '');
+  const usernameInvalido = sugestao !== '' && normalizeUsername(sugestao) === null;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try {
-      const result = await createUser({ email, name, role });
-      toast.success(`Conta criada para ${result.user.email}.`);
+      const result = await createUser({ username: sugestao, email, name, role });
+      toast.success(`Conta criada para @${result.user.username}.`);
       setCreated({ user: result.user, password: result.temporaryPassword });
     } catch (err) {
       toast.error((err as Error).message);
@@ -265,7 +288,7 @@ function NewUserModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
           {created.password ? (
             <div className="key-reveal" style={{ marginTop: 0 }}>
               <p className="t">
-                Senha temporária de <strong>{created.user.email}</strong> — anote agora, ela não volta a aparecer. No
+                Senha temporária de <strong>@{created.user.username}</strong> — anote agora, ela não volta a aparecer. No
                 primeiro acesso a pessoa é obrigada a trocá-la.
               </p>
               <div className="row">
@@ -282,11 +305,31 @@ function NewUserModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
         </div>
       ) : (
         <form onSubmit={submit} className="mt-3 grid gap-4">
-          <Field label="E-mail">
+          <Field label="E-mail" hint="Privado: só esta pessoa e os administradores o veem. Serve para entrar, recuperar a senha e casar com o SSO.">
             <input type="email" className="field" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="pessoa@exemplo.com" autoFocus />
           </Field>
           <Field label="Nome">
             <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Nome de quem vai usar" />
+          </Field>
+          <Field
+            label="Usuário"
+            hint={
+              usernameInvalido
+                ? 'De 3 a 32 caracteres: letras sem acento, números, ponto, hífen e sublinhado, começando e terminando em letra ou número.'
+                : 'É por ele que as outras contas veem esta pessoa — no dono, nas concessões e no site. Em branco, sai do nome.'
+            }
+          >
+            <input
+              className="field"
+              value={sugestao}
+              onChange={(event) => {
+                setUsernameTouched(true);
+                setUsername(event.target.value);
+              }}
+              placeholder="derivado do nome"
+              autoCapitalize="none"
+              spellCheck={false}
+            />
           </Field>
           <Field label="Papel" hint={ROLE_HINT[role]}>
             <select className="field" value={role} onChange={(event) => setRole(event.target.value as Role)}>
@@ -312,7 +355,7 @@ function NewUserModal({ open, onClose, onCreated }: { open: boolean; onClose: ()
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={busy || !email.trim() || !name.trim()}>
+            <Button type="submit" disabled={busy || !email.trim() || !name.trim() || usernameInvalido}>
               {busy ? 'Criando…' : 'Criar conta'}
             </Button>
           </div>

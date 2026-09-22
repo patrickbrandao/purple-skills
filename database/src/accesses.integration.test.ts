@@ -139,7 +139,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
 
-    brunoUuid = (await createUser({ email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
+    brunoUuid = (await createUser({ username: 'bruno', email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
       .uuid;
     apiKeyId = (
       await createApiKey({ userUuid: brunoUuid, name: 'cli do bruno', prefix: 'psk12345', keyHash: 'x' })
@@ -204,7 +204,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
       apiKeyId: null,
       apiKeyName: null,
       userUuid: null,
-      userEmail: null,
+      userUsername: null,
       sessionId: null,
       ip: '203.0.113.9',
       userAgent: 'Mozilla/5.0',
@@ -309,7 +309,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
       apiKeyId,
       apiKeyName: 'cli do bruno',
       userUuid: brunoUuid,
-      userEmail: 'bruno@exemplo.dev',
+      userUsername: 'bruno',
       virtualMcpUuid: null,
       catalogs: [],
     });
@@ -320,7 +320,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
   });
 
   it('filtra por conta e por chave psk_: só as leituras daquela conta; uuid torto é 400', async () => {
-    const carlaUuid = (await createUser({ email: 'carla@exemplo.dev', name: 'Carla', role: 'membro' })).uuid;
+    const carlaUuid = (await createUser({ username: 'carla', email: 'carla@exemplo.dev', name: 'Carla', role: 'membro' })).uuid;
     const carlaKeyId = (
       await createApiKey({ userUuid: carlaUuid, name: 'cli da carla', prefix: 'psk67890', keyHash: 'x' })
     ).id;
@@ -330,11 +330,11 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     });
 
     const de = async (options: Parameters<typeof listSkillAccesses>[0]) =>
-      (await listSkillAccesses(options)).items.map((a) => `${a.skillSlug}:${a.userEmail}`);
-    expect(await de({ userUuid: brunoUuid })).toEqual(['alfa:bruno@exemplo.dev']);
-    expect(await de({ userUuid: carlaUuid })).toEqual(['gama:carla@exemplo.dev']);
-    expect(await de({ apiKeyId })).toEqual(['alfa:bruno@exemplo.dev']);
-    expect(await de({ apiKeyId: carlaKeyId })).toEqual(['gama:carla@exemplo.dev']);
+      (await listSkillAccesses(options)).items.map((a) => `${a.skillSlug}:${a.userUsername}`);
+    expect(await de({ userUuid: brunoUuid })).toEqual(['alfa:bruno']);
+    expect(await de({ userUuid: carlaUuid })).toEqual(['gama:carla']);
+    expect(await de({ apiKeyId })).toEqual(['alfa:bruno']);
+    expect(await de({ apiKeyId: carlaKeyId })).toEqual(['gama:carla']);
     expect((await listSkillAccesses({ userUuid: carlaUuid })).total).toBe(1);
     // Os filtros somam (AND): a conta de uma com a chave da outra não acha nada.
     expect(await de({ userUuid: carlaUuid, apiKeyId })).toEqual([]);
@@ -437,7 +437,9 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(await slugs({ kind: 'download', origin: 'site' })).toEqual([]);
 
     // `q` em cada uma das seis colunas, sem diferenciar caixa; vazio é ignorado.
-    expect(await slugs({ q: 'BRUNO@' })).toEqual(['alfa:admin-tool']);
+    expect(await slugs({ q: 'BRUNO' })).toEqual(['alfa:admin-tool']);
+    // O e-mail saiu da coluna e do `q` junto com ela (`033`).
+    expect(await slugs({ q: 'bruno@exemplo.dev' })).toEqual([]);
     expect(await slugs({ q: 'cli do' })).toEqual(['alfa:admin-tool']);
     expect(await slugs({ q: 'agente' })).toEqual(['beta:download']);
     expect(await slugs({ q: '203.0.113' })).toEqual(['alfa:tool', 'alfa:tool', 'alfa:page']);
@@ -527,13 +529,13 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     });
 
     // A conta (e, pela cascata, a chave `psk_`): o filtro pela conta apagada
-    // não acha mais nada; a cópia do e-mail acha.
+    // não acha mais nada; a cópia do **username** acha.
     await raw.query('DELETE FROM users WHERE uuid = $1', [brunoUuid]);
     expect((await listSkillAccesses({ userUuid: brunoUuid })).total).toBe(0);
-    const [doBruno] = (await listSkillAccesses({ q: 'bruno@' })).items;
+    const [doBruno] = (await listSkillAccesses({ q: 'bruno' })).items;
     expect(doBruno).toMatchObject({
       userUuid: null,
-      userEmail: 'bruno@exemplo.dev',
+      userUsername: 'bruno',
       apiKeyId: null,
       apiKeyName: 'cli do bruno',
     });
@@ -541,7 +543,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(await linhas()).toBe(antes);
   });
 
-  it('re-executar o 018, o 019 e o 022 sobre o resultado não faz nada', async () => {
+  it('re-executar o 018 e o 019 não faz nada; o 022 sobre o schema do 033 é recusado', async () => {
     const antes = await linhas();
     const indices = async () =>
       (await raw.query<{ indexname: string }>(
@@ -560,7 +562,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
       'skill_accesses_session_id_trgm_idx',
       'skill_accesses_skill_created_idx',
       'skill_accesses_user_created_idx',
-      'skill_accesses_user_email_trgm_idx',
+      'skill_accesses_user_username_trgm_idx',
       'skill_accesses_virtual_mcp_created_idx',
     ];
     // O `019` trocou o índice simples de `user_uuid` pelo composto; os seis
@@ -568,18 +570,25 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     expect(await indices()).toEqual(ESPERADOS);
 
     // Apagar do histórico é o que força o runner a rodar os arquivos de novo
-    // — uma segunda chamada normal só os pularia. Os três juntos: o `018`
-    // recria o índice simples, o `019` o derruba outra vez e o `022` acha os
-    // seus doze índices já no lugar.
-    const NOVAS = [
-      '018-acessos-por-skill.sql',
-      '019-acessos-por-conta.sql',
-      '022-busca-por-substring.sql',
-    ];
+    // — uma segunda chamada normal só os pularia. Os dois juntos: o `018`
+    // recria o índice simples e o `019` o derruba outra vez.
+    const NOVAS = ['018-acessos-por-skill.sql', '019-acessos-por-conta.sql'];
     await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
     expect(await runMigrations(url!)).toEqual(NOVAS);
     expect(await linhas()).toBe(antes);
     expect(await indices()).toEqual(ESPERADOS);
+
+    // O `022` **não** roda mais sobre este schema, e a recusa é a certa: ele
+    // cria um GIN sobre `skill_accesses.user_email`, coluna que o `033` apagou
+    // ao trocar o e-mail pelo username. É a regra de "Reaplicar migration
+    // antiga" do `README.md`: a idempotência é da **época** do arquivo, não de
+    // um schema mais novo. O arquivo roda numa transação, então a recusa não
+    // deixa nada pela metade — nem os índices de `skills` e `audit_log` que
+    // ele cria antes de chegar aqui.
+    await raw.query("DELETE FROM schema_migrations WHERE name = '022-busca-por-substring.sql'");
+    await expect(runMigrations(url!)).rejects.toThrow(/user_email.*does not exist/);
+    expect(await indices()).toEqual(ESPERADOS);
+    await raw.query("INSERT INTO schema_migrations (name) VALUES ('022-busca-por-substring.sql')");
 
     const { rows } = await raw.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM pg_constraint
@@ -745,7 +754,7 @@ describe.skipIf(!url)('acessos por skill: gravar com o caminho, sobreviver à re
     // O objeto continua com o nome inteiro — o corte é só na cópia.
     expect((await getCatalogByUuid(comprido.uuid))!.name).toHaveLength(MAX + 88);
 
-    const conta = await createUser({ email: 'dora@exemplo.dev', name: 'Dora', role: 'editor' });
+    const conta = await createUser({ username: 'dora', email: 'dora@exemplo.dev', name: 'Dora', role: 'editor' });
     const psk = await createApiKey({ userUuid: conta.uuid, name: longo('P'), prefix: 'psklongo', keyHash: 'x' });
     await recordSkillAccess({
       skillUuid: skill.uuid, kind: 'view', surface: 'admin-tool', origin: 'mcp-admin', auth: 'user',

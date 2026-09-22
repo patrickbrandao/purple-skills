@@ -89,7 +89,7 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
 
-    anaUuid = (await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
+    anaUuid = (await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
   }, 60_000);
 
   afterAll(async () => {
@@ -269,8 +269,15 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     // o que `migrate.integration.test.ts` mede, e o motivo de o CLI recusar a
     // reaplicação retroativa. Aqui ela é de propósito, num banco descartável:
     // `runMigrations` sem `refuseRetroactive`.
-    await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [NOVAS]);
-    expect(await runMigrations(url!)).toEqual(NOVAS);
+    //
+    // O `022` fica **fora** da segunda passada: ele cria um GIN sobre
+    // `skill_accesses.user_email`, e o `033` apagou essa coluna ao trocar o
+    // e-mail pelo username. Reaplicado sobre o schema de hoje ele falha — é a
+    // idempotência "da época do arquivo" de novo, e quem mede essa recusa é
+    // `accesses.integration.test.ts`.
+    const REEXECUTADAS = NOVAS.filter((file) => file !== '022-busca-por-substring.sql');
+    await raw.query('DELETE FROM schema_migrations WHERE name = ANY($1)', [REEXECUTADAS]);
+    expect(await runMigrations(url!)).toEqual(REEXECUTADAS);
     expect((await listVirtualMcps()).filter((m) => m.slug.startsWith('public'))).toHaveLength(2);
     expect((await resolveDefaultVirtualMcp()).mcp?.slug).toBe('public-2');
     const { rows: objetos } = await raw.query<{ n: number }>(

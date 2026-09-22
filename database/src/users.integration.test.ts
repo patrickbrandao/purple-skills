@@ -26,15 +26,20 @@ import {
   createUser,
   getApiKeyByPrefix,
   getUserByEmail,
+  getUserByLogin,
+  getUserByUsername,
   getUserByUuid,
   listApiKeys,
   listAudit,
   listAuditPage,
   listUsers,
+  nextFreeUsername,
   recordAccountAudit,
+  reserveUsername,
   registerFailedLogin,
   registerSuccessfulLogin,
   revokeApiKey,
+  setAvatar,
   stats,
   touchApiKey,
   updateUser,
@@ -103,8 +108,8 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     // instalação fica com skills e catálogos sem dono.
     const primeiro = { name: 'Primeiro', role: 'admin' as const, onlyIfTableEmpty: true };
     const resultados = await Promise.allSettled([
-      createUser({ ...primeiro, email: 'um@exemplo.dev' }),
-      createUser({ ...primeiro, email: 'dois@exemplo.dev' }),
+      createUser({ ...primeiro, username: 'conta-um', email: 'um@exemplo.dev' }),
+      createUser({ ...primeiro, username: 'dois', email: 'dois@exemplo.dev' }),
     ]);
 
     expect(resultados.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
@@ -115,13 +120,13 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
 
     // Com a tabela cheia é 409 sem gravar — o `/api/setup` fechado para sempre.
     const cheia = await capture(
-      createUser({ ...primeiro, email: 'tres@exemplo.dev' }),
+      createUser({ ...primeiro, username: 'tres', email: 'tres@exemplo.dev' }),
     );
     expect(cheia.status).toBe(409);
     expect(await countUsers()).toBe(1);
 
     // Sem o campo, a criação comum continua funcionando com a tabela cheia.
-    const comum = await createUser({ email: 'quatro@exemplo.dev', name: 'Quatro', role: 'membro' });
+    const comum = await createUser({ username: 'quatro', email: 'quatro@exemplo.dev', name: 'Quatro', role: 'membro' });
     expect(comum.role).toBe('membro');
 
     // A tabela volta ao zero: os casos seguintes partem de uma base limpa.
@@ -134,7 +139,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     // tabela, com qualquer papel, e quem confere é o chamador. O resultado é o
     // estado do relatório: há conta, e ninguém que possa promover ninguém.
     expect(await countUsers()).toBe(0);
-    const pessoa = await createUser({ email: 'Pessoa@Exemplo.dev', name: 'Pessoa', role: 'membro' });
+    const pessoa = await createUser({ username: 'pessoa', email: 'Pessoa@Exemplo.dev', name: 'Pessoa', role: 'membro' });
     expect((await listUsers()).filter((u) => u.role === 'admin' && u.isActive)).toHaveLength(0);
 
     // A saída é "Instalação sem administrador" do `README.md`; o SQL é o de lá,
@@ -146,15 +151,17 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
         SET role = 'admin', is_active = true, token_version = token_version + 1, updated_at = now()
         WHERE lower(email) = lower('${email}')
           AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND is_active)
-        RETURNING email
+        RETURNING username
       )
       INSERT INTO audit_log (action, source, actor_label, target_label)
-      SELECT 'user.role', 'web-admin', 'sql-manual', email || ' → admin' FROM promovida
+      SELECT 'user.role', 'web-admin', 'sql-manual', username || ' → admin' FROM promovida
       RETURNING target_label
     `;
 
     const primeira = await raw.query<{ target_label: string }>(receita('pessoa@exemplo.dev'));
-    expect(primeira.rows).toEqual([{ target_label: 'Pessoa@Exemplo.dev → admin' }]);
+    // A conta é **procurada** pelo e-mail (é o que quem opera tem na mão) e o
+    // rótulo gravado é o **username**, como toda linha da trilha desde o `033`.
+    expect(primeira.rows).toEqual([{ target_label: 'pessoa → admin' }]);
 
     const promovida = await getUserByUuid(pessoa.uuid);
     expect(promovida?.role).toBe('admin');
@@ -163,12 +170,12 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
 
     const daReceita = async () => (await listAudit(20)).filter((e) => e.actorLabel === 'sql-manual');
     expect(await daReceita()).toMatchObject([
-      { action: 'user.role', source: 'web-admin', actorUserUuid: null, targetLabel: 'Pessoa@Exemplo.dev → admin' },
+      { action: 'user.role', source: 'web-admin', actorUserUuid: null, targetLabel: 'pessoa → admin' },
     ]);
 
     // Segura ao repetir: com um admin ativo ela não promove nem audita — nem a
     // mesma conta de novo, nem uma segunda.
-    const outra = await createUser({ email: 'outra@exemplo.dev', name: 'Outra', role: 'membro' });
+    const outra = await createUser({ username: 'outra', email: 'outra@exemplo.dev', name: 'Outra', role: 'membro' });
     expect((await raw.query(receita('pessoa@exemplo.dev'))).rows).toHaveLength(0);
     expect((await raw.query(receita('outra@exemplo.dev'))).rows).toHaveLength(0);
     expect((await getUserByUuid(pessoa.uuid))?.tokenVersion).toBe(pessoa.tokenVersion + 1);
@@ -183,6 +190,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect(await countUsers()).toBe(0);
 
     const ana = await createUser({
+      username: 'ana',
       email: 'Ana@Exemplo.dev',
       name: 'Ana',
       role: 'admin',
@@ -210,7 +218,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
 
   it('recusa um segundo cadastro com o mesmo e-mail, em qualquer caixa', async () => {
     const err = await capture(
-      createUser({ email: 'ana@exemplo.dev', name: 'Outra Ana', role: 'membro' }),
+      createUser({ username: 'outra-ana', email: 'ana@exemplo.dev', name: 'Outra Ana', role: 'membro' }),
     );
 
     expect(err).toBeInstanceOf(AppError);
@@ -219,8 +227,171 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect(await countUsers()).toBe(1);
   });
 
+  it('acha a conta pelo username e pelo identificador único do login', async () => {
+    // A unicidade do username é por `lower(username)`, como a do e-mail; a
+    // busca cai no mesmo índice.
+    expect((await getUserByUsername('ANA'))?.uuid).toBe(anaUuid);
+    // Texto que não é um username válido é "não existe", não erro de servidor
+    // — o mesmo que um uuid torto recebe em `getUserByUuid`.
+    expect(await getUserByUsername('a')).toBeNull();
+    expect(await getUserByUsername('ana@exemplo.dev')).toBeNull();
+    expect(await getUserByUsername('admin')).toBeNull();
+
+    // O campo único do login (`docs/19` decisão 3): tem `@`, é e-mail; não
+    // tem, é username. É a recusa do `@` em `normalizeUsername` que torna a
+    // regra decidível — os dois conjuntos não se tocam.
+    expect((await getUserByLogin('ana'))?.uuid).toBe(anaUuid);
+    expect((await getUserByLogin('ANA@exemplo.DEV'))?.uuid).toBe(anaUuid);
+    expect(await getUserByLogin('ninguem')).toBeNull();
+    expect(await getUserByLogin('ninguem@exemplo.dev')).toBeNull();
+    expect(await getUserByLogin('   ')).toBeNull();
+  });
+
+  it('recusa username torto e o que já é de uma conta viva; o abandonado nunca volta', async () => {
+    // Validado aqui dentro mesmo com o painel já validando antes: o mcp-admin,
+    // o seed e qualquer script passam pelo mesmo caminho.
+    for (const torto of ['ab', 'ana@exemplo', '-ana', 'ana..souza', 'admin', '']) {
+      const err = await capture(
+        createUser({ username: torto, email: `t${torto}@exemplo.dev`, name: 'T', role: 'membro' }),
+      );
+      expect(err.status).toBe(400);
+    }
+
+    // Conta **viva** com o nome: 409 dizendo isso.
+    const emUso = await capture(
+      createUser({ username: 'ANA', email: 'nova@exemplo.dev', name: 'Nova', role: 'membro' }),
+    );
+    expect(emUso.status).toBe(409);
+    expect(emUso.message).toBe('Já existe uma conta com o username "ana"');
+
+    // Conta que passou por aqui e foi embora: a reserva fica no livro, sem
+    // dono, e a mensagem é **outra** — quem administra precisa saber se o nome
+    // está ocupado agora ou queimado para sempre (`docs/19` decisão 6).
+    const efemera = await createUser({
+      username: 'efemera',
+      email: 'efemera@exemplo.dev',
+      name: 'Efêmera',
+      role: 'membro',
+    });
+    await raw.query('DELETE FROM users WHERE uuid = $1', [efemera.uuid]);
+    expect(
+      (await raw.query('SELECT user_uuid, released_at FROM usernames WHERE username_lower = $1', [
+        'efemera',
+      ])).rows,
+    ).toEqual([{ user_uuid: null, released_at: null }]);
+
+    const gasto = await capture(
+      createUser({ username: 'efemera', email: 'outra@exemplo.dev', name: 'Outra', role: 'membro' }),
+    );
+    expect(gasto.status).toBe(409);
+    expect(gasto.message).toBe('O username "efemera" já foi usado nesta instalação');
+    expect(await countUsers()).toBe(1);
+  });
+
+  it('trocar o username libera o antigo sem apagá-lo, e o antigo não volta a circular', async () => {
+    const nova = await createUser({
+      username: 'primeiro-nome',
+      email: 'troca@exemplo.dev',
+      name: 'Troca',
+      role: 'membro',
+    });
+
+    const depois = await updateUser(nova.uuid, { username: 'SEGUNDO-NOME' });
+    expect(depois.username).toBe('segundo-nome');
+    expect((await getUserByUsername('segundo-nome'))?.uuid).toBe(nova.uuid);
+    expect(await getUserByUsername('primeiro-nome')).toBeNull();
+
+    // O antigo continua no livro, liberado e com o uuid de quem era: é o que
+    // mantém legível a trilha congelada com ele.
+    const { rows } = await raw.query<{ username_lower: string; user_uuid: string | null; liberado: boolean }>(
+      `SELECT username_lower, user_uuid, released_at IS NOT NULL AS liberado
+         FROM usernames WHERE user_uuid = $1 ORDER BY username_lower`,
+      [nova.uuid],
+    );
+    expect(rows).toEqual([
+      { username_lower: 'primeiro-nome', user_uuid: nova.uuid, liberado: true },
+      { username_lower: 'segundo-nome', user_uuid: nova.uuid, liberado: false },
+    ]);
+
+    // E ninguém o toma de volta — nem a própria conta.
+    const volta = await capture(updateUser(nova.uuid, { username: 'primeiro-nome' }));
+    expect(volta.status).toBe(409);
+    expect(volta.message).toBe('O username "primeiro-nome" já foi usado nesta instalação');
+
+    // Regravar o nome que a conta já tem é no-op no livro: não gasta nome nem
+    // deixa linha nova.
+    const antes = (
+      await raw.query<{ n: number }>('SELECT count(*)::int AS n FROM usernames')
+    ).rows[0]?.n;
+    await updateUser(nova.uuid, { username: 'Segundo-Nome' });
+    expect(
+      (await raw.query<{ n: number }>('SELECT count(*)::int AS n FROM usernames')).rows[0]?.n,
+    ).toBe(antes);
+
+    // O nome de uma conta viva recusa com a outra mensagem.
+    const daAna = await capture(updateUser(nova.uuid, { username: 'ana' }));
+    expect(daAna.status).toBe(409);
+    expect(daAna.message).toBe('Já existe uma conta com o username "ana"');
+
+    // E o torto nem chega ao banco.
+    expect((await capture(updateUser(nova.uuid, { username: 'ab' }))).status).toBe(400);
+
+    await raw.query('DELETE FROM users WHERE uuid = $1', [nova.uuid]);
+  });
+
+  it('nextFreeUsername sugere e reserveUsername toma, consultando as duas fontes', async () => {
+    // "Livre" é livre em `users` **e** em `usernames`: `ana` é de conta viva e
+    // `efemera` está queimado pela conta apagada do caso acima.
+    expect(await nextFreeUsername('ana')).toBe('ana-2');
+    expect(await nextFreeUsername('efemera')).toBe('efemera-2');
+    expect(await nextFreeUsername('ninguem-usou')).toBe('ninguem-usou');
+    // É leitura: sugerir não gasta o nome, e a segunda chamada repete a
+    // primeira — quem fecha a corrida é o 409 de `createUser`.
+    expect(await nextFreeUsername('ninguem-usou')).toBe('ninguem-usou');
+    // Base inutilizável é 400 — a função não inventa base, quem chama decide o
+    // fallback (`usernameFromUuid`).
+    expect((await capture(nextFreeUsername('ab'))).status).toBe(400);
+
+    // O caminho do auto-provisionamento OIDC: sugerir e criar.
+    const sugerido = await nextFreeUsername('vinda-do-oidc');
+    const conta = await createUser({
+      username: sugerido,
+      email: 'oidc@exemplo.dev',
+      name: 'Vinda do OIDC',
+      role: 'membro',
+      oidcIssuer: 'https://exemplo.dev',
+      oidcSubject: 'sub-1',
+    });
+    expect(conta.username).toBe('vinda-do-oidc');
+    expect(
+      (await raw.query('SELECT user_uuid FROM usernames WHERE username_lower = $1', [sugerido]))
+        .rows,
+    ).toEqual([{ user_uuid: conta.uuid }]);
+
+    // `reserveUsername` **grava**, para uma conta que já existe: na colisão
+    // ele numera em vez de recusar, que é a diferença para
+    // `updateUser({ username })`.
+    expect(await reserveUsername('ana', conta.uuid)).toBe('ana-2');
+    expect((await getUserByUuid(conta.uuid))?.username).toBe('ana-2');
+    // O nome que a conta já tem é no-op, sem numerar de novo.
+    expect(await reserveUsername('ana-2', conta.uuid)).toBe('ana-2');
+    // E o anterior ficou liberado, sem sair do livro.
+    expect(
+      (await raw.query('SELECT released_at IS NOT NULL AS liberado FROM usernames WHERE username_lower = $1', [
+        'vinda-do-oidc',
+      ])).rows,
+    ).toEqual([{ liberado: true }]);
+    // Agora `ana-2` está em uso e a próxima sugestão pula para `ana-3`.
+    expect(await nextFreeUsername('ana')).toBe('ana-3');
+    // Conta que não existe é 404, e uuid torto também.
+    expect((await capture(reserveUsername('x-y-z', 'nao-e-uuid'))).status).toBe(404);
+
+    await raw.query('DELETE FROM users WHERE uuid = $1', [conta.uuid]);
+  });
+
   it('atualiza só o que foi informado e incrementa a versão do token', async () => {
     const bruno = await createUser({
+      username: 'bruno',
       email: 'bruno@exemplo.dev',
       name: 'Bruno',
       role: 'membro',
@@ -373,7 +544,7 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
       name: 'agente-do-ci',
       prefix: 'abc12345',
       userUuid: anaUuid,
-      userEmail: 'Ana@Exemplo.dev',
+      userUsername: 'ana',
     });
     const revogada = (await listApiKeys(anaUuid)).find((k) => k.id === chave.id);
     expect(revogada?.revokedAt).not.toBeNull();
@@ -399,12 +570,13 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     expect((await listApiKeys(brunoUuid))[0]?.revokedAt).toBeNull();
 
     // Sem dono = admin. Quem revogou não é o dono da chave, e é por isso que o
-    // retorno diz de quem ela era: o rótulo da auditoria é `<e-mail>: <nome>`.
+    // retorno diz de quem ela era: o rótulo da auditoria é `<username>: <nome>`
+    // — username desde o `033`, porque ele vai congelado para `audit_log`.
     expect(await revokeApiKey(chave.id)).toEqual({
       name: 'agente-do-bruno',
       prefix: 'def67890',
       userUuid: brunoUuid,
-      userEmail: 'bruno@exemplo.dev',
+      userUsername: 'bruno',
     });
     expect(await revokeApiKey(chave.id)).toBeNull();
     expect(await revokeApiKey('nao-e-uuid')).toBeNull();
@@ -606,6 +778,42 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     await updateUser(brunoUuid, { isActive: true });
   });
 
+  it('o carimbo do avatar acompanha a conta em toda leitura, inclusive nos RETURNING', async () => {
+    // `034`: `UserSummary.avatarUpdatedAt` existe para que uma lista de contas
+    // saiba se há foto sem uma requisição por linha. A coluna vem por
+    // subconsulta correlacionada dentro de `USER_COLUMNS`, e é isso que a faz
+    // valer também em `RETURNING` — onde não há `FROM` para juntar nada. Uma
+    // junção ali seria erro de sintaxe, e a conta criada voltaria sem o campo.
+    const nova = await createUser({
+      username: 'com-foto',
+      email: 'com-foto@exemplo.dev',
+      name: 'Com Foto',
+      role: 'membro',
+    });
+    expect(nova.avatarUpdatedAt).toBeNull();
+
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('users.integration'),
+    ]);
+    const { updatedAt } = await setAvatar(nova.uuid, png);
+
+    expect((await getUserByUuid(nova.uuid))?.avatarUpdatedAt).toBe(updatedAt);
+    expect((await getUserByEmail('com-foto@exemplo.dev'))?.avatarUpdatedAt).toBe(updatedAt);
+    expect((await getUserByUsername('com-foto'))?.avatarUpdatedAt).toBe(updatedAt);
+    expect((await listUsers()).find((u) => u.uuid === nova.uuid)?.avatarUpdatedAt).toBe(updatedAt);
+    // O RETURNING do UPDATE: é aqui que a subconsulta prova que vale.
+    expect((await updateUser(nova.uuid, { name: 'Com Foto 2' })).avatarUpdatedAt).toBe(updatedAt);
+
+    // Apagar a conta leva a foto (`ON DELETE CASCADE`) — sem ela, a linha
+    // ficaria órfã com os bytes dentro.
+    await raw.query('DELETE FROM users WHERE uuid = $1', [nova.uuid]);
+    const { rows } = await raw.query('SELECT count(*)::int AS n FROM user_avatars WHERE user_uuid = $1', [
+      nova.uuid,
+    ]);
+    expect(rows[0]).toEqual({ n: 0 });
+  });
+
   it('requireOtherActiveAdmin: sempre sobra um admin, mesmo com dois rebaixamentos juntos', async () => {
     // `tasks/049`. A checagem do app lê o estado **anterior** ao UPDATE do
     // vizinho; a invariante só se fecha com o UPDATE e a conferência na mesma
@@ -629,8 +837,8 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     // 5 rodadas terminaram com **zero** conta admin ativa.
     await updateUser(anaUuid, { isActive: false });
     for (let i = 0; i < 5; i++) {
-      const uma = await createUser({ email: `dupla-a${i}@exemplo.dev`, name: 'Dupla A', role: 'admin' });
-      const outra = await createUser({ email: `dupla-b${i}@exemplo.dev`, name: 'Dupla B', role: 'admin' });
+      const uma = await createUser({ username: `dupla-a${i}`, email: `dupla-a${i}@exemplo.dev`, name: 'Dupla A', role: 'admin' });
+      const outra = await createUser({ username: `dupla-b${i}`, email: `dupla-b${i}@exemplo.dev`, name: 'Dupla B', role: 'admin' });
 
       const disputa = await Promise.allSettled([
         updateUser(uma.uuid, { role: 'editor', requireOtherActiveAdmin: true }),

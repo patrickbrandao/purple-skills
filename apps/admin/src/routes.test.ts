@@ -10,6 +10,8 @@ process.env.SMTP_URL ??= 'smtp://localhost:1025';
 const db = vi.hoisted(() => ({
   countUsers: vi.fn(),
   getUserByEmail: vi.fn(),
+  getUserByUsername: vi.fn(),
+  nextFreeUsername: vi.fn(),
   createUser: vi.fn(),
   recordAccountAudit: vi.fn(),
   listAuditPage: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock('@purple-skills/db', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   countUsers: db.countUsers,
   getUserByEmail: db.getUserByEmail,
+  getUserByUsername: db.getUserByUsername,
+  nextFreeUsername: db.nextFreeUsername,
   createUser: db.createUser,
   recordAccountAudit: db.recordAccountAudit,
   // A trilha de auditoria: o teste da paginação de `/api/audit` confere o que chega aqui.
@@ -37,6 +41,10 @@ const { api, csrfGuard, sessionPayload } = await import('./api.js');
 beforeEach(() => {
   db.countUsers.mockReset();
   db.getUserByEmail.mockReset();
+  db.getUserByUsername.mockReset();
+  db.nextFreeUsername.mockReset();
+  // Sem colisão, o candidato derivado do nome volta como veio.
+  db.nextFreeUsername.mockImplementation(async (base: string) => base);
   db.createUser.mockReset();
   db.recordAccountAudit.mockReset();
 });
@@ -154,8 +162,8 @@ describe('papéis exigidos pelas rotas', () => {
     ['post', '/api/skills/:slug/files/*path'],
     ['delete', '/api/skills/:slug/files/*path'],
     ['post', '/api/skills/:slug/files'],
-    ['put', '/api/skills/:slug/access/:email'],
-    ['delete', '/api/skills/:slug/access/:email'],
+    ['put', '/api/skills/:slug/access/:username'],
+    ['delete', '/api/skills/:slug/access/:username'],
     ['put', '/api/skills/:slug/mcps/:mcp'],
     ['delete', '/api/skills/:slug/mcps/:mcp'],
     ['get', '/api/mcps/:slug'],
@@ -163,7 +171,7 @@ describe('papéis exigidos pelas rotas', () => {
     ['delete', '/api/mcps/:slug'],
     ['put', '/api/mcps/:slug/skills'],
     ['post', '/api/mcps/:slug/keys'],
-    ['put', '/api/mcps/:slug/access/:email'],
+    ['put', '/api/mcps/:slug/access/:username'],
     ['put', '/api/mcps/:slug/canvas'],
     ['get', '/api/mcps/:slug/online'],
     ['get', '/api/mcps/:slug/sessions'],
@@ -175,7 +183,7 @@ describe('papéis exigidos pelas rotas', () => {
     ['put', '/api/catalogs/:slug/skills'],
     ['put', '/api/catalogs/:slug/skills/:skill'],
     ['delete', '/api/catalogs/:slug/skills/:skill'],
-    ['put', '/api/catalogs/:slug/access/:email'],
+    ['put', '/api/catalogs/:slug/access/:username'],
     ['put', '/api/mcps/:slug/catalogs'],
     ['put', '/api/mcps/:slug/catalogs/:catalog'],
     ['delete', '/api/mcps/:slug/catalogs/:catalog'],
@@ -211,24 +219,30 @@ describe('papéis exigidos pelas rotas', () => {
  * A busca de contas é aberta a qualquer sessão (decisão 13), então o que ela
  * devolve é superfície de ataque: o `uuid` da conta é o `sub` do cookie de
  * sessão, e entregá-lo com o papel de cada conta ativa diria a um membro qual
- * crachá forjar. Aqui a conta se identifica pelo e-mail, e o `uuid` que sai é
- * apelido dele — o do banco não passa da camada do app.
+ * crachá forjar. Aqui a conta se identifica pelo **username**, e o `uuid` que
+ * sai é apelido dele — o do banco não passa da camada do app.
  */
 describe('GET /api/users/lookup: o uuid da conta não sai', () => {
   const doBanco = {
     uuid: '3f2b8c4e-1a6d-4b7f-9c0e-8d5a2f1b6c37',
-    email: 'ana@exemplo.dev',
+    username: 'ana',
     name: 'Ana',
     role: 'admin' as const,
   };
 
-  it('troca o uuid pelo e-mail e mantém nome e papel', () => {
+  it('troca o uuid pelo username e mantém nome e papel', () => {
     expect(withoutUuid(doBanco)).toEqual({
-      email: 'ana@exemplo.dev',
+      username: 'ana',
       name: 'Ana',
       role: 'admin',
-      uuid: 'ana@exemplo.dev',
+      uuid: 'ana',
     });
+  });
+
+  it('o e-mail não sai por campo nenhum', () => {
+    // A busca é aberta a qualquer conta logada: um endereço aqui seria o
+    // vazamento que o `docs/19-username.md` fechou (decisão 10).
+    expect(JSON.stringify(withoutUuid(doBanco))).not.toMatch(/\@/);
   });
 
   it('o uuid do banco não aparece em nenhum campo do payload', () => {
@@ -238,12 +252,15 @@ describe('GET /api/users/lookup: o uuid da conta não sai', () => {
 
 /**
  * Transferir dono chega por `ownerUserUuid`, e o painel manda ali o que a busca
- * devolveu: o e-mail. O UUID cru continua aceito para quem integra pela REST,
- * mas nada além dos dois entra — antes, qualquer texto ia ao banco e voltava 500.
+ * devolveu: o **username**. O UUID cru continua aceito para quem integra pela
+ * REST, mas nada além dos dois entra — antes, qualquer texto ia ao banco e
+ * voltava 500. E-mail tem recusa própria (`docs/19-username.md` decisão 9).
  */
 describe('ownerFrom', () => {
   const DONA = {
     uuid: '3f2b8c4e-1a6d-4b7f-9c0e-8d5a2f1b6c37',
+    username: 'ana',
+    avatarUpdatedAt: null,
     email: 'ana@exemplo.dev',
     name: 'Ana',
     role: 'editor' as const,
@@ -259,18 +276,43 @@ describe('ownerFrom', () => {
     await expect(ownerFrom(DONA, 'owner', ` ${DONA.uuid} `, 'skill')).resolves.toBe(DONA.uuid);
   });
 
-  it.each([['uuid-editor'], ['ana'], ['  '], [42], [{}]])(
+  it.each([['a'], ['-ana'], ['ana..silva'], ['  '], [42], [{}]])(
     'recusa %j com 400, sem chegar ao banco',
     async (raw) => {
       await expect(ownerFrom(DONA, 'owner', raw, 'skill')).rejects.toMatchObject({
         status: 400,
         code: 'bad_request',
       });
+      expect(db.getUserByUsername).not.toHaveBeenCalled();
     },
   );
 
+  it('e-mail é 400 com mensagem própria, e não cai no formato genérico', async () => {
+    // Quem manda um endereço aqui está integrando contra a API anterior: a
+    // recusa precisa dizer que o e-mail **parou** de identificar contas, senão
+    // "precisa ser o usuário" parece um erro de digitação.
+    await expect(ownerFrom(DONA, 'owner', 'ana@exemplo.dev', 'skill')).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining('deixou de identificar contas'),
+    });
+    expect(db.getUserByUsername).not.toHaveBeenCalled();
+  });
+
+  it('um username de conta ativa vira o uuid dela', async () => {
+    db.getUserByUsername.mockResolvedValue({ uuid: 'uuid-bia', username: 'bia', isActive: true });
+
+    await expect(ownerFrom(DONA, 'owner', ' Bia ', 'skill')).resolves.toBe('uuid-bia');
+    expect(db.getUserByUsername).toHaveBeenCalledWith('bia');
+  });
+
+  it('conta desativada é 404: dar o objeto a quem não entra não faz sentido', async () => {
+    db.getUserByUsername.mockResolvedValue({ uuid: 'uuid-saiu', username: 'saiu', isActive: false });
+
+    await expect(ownerFrom(DONA, 'owner', 'saiu', 'skill')).rejects.toMatchObject({ status: 404 });
+  });
+
   it('sem ser dono, a transferência para antes de resolver a conta', async () => {
-    await expect(ownerFrom(DONA, 'manage', 'outra@exemplo.dev', 'skill')).rejects.toMatchObject({ status: 403 });
+    await expect(ownerFrom(DONA, 'manage', 'outra', 'skill')).rejects.toMatchObject({ status: 403 });
   });
 });
 
@@ -354,7 +396,7 @@ describe('POST /api/skills/:slug/files/*path (criar arquivo)', () => {
  * uma linha de "erro inesperado" no log por requisição — três delas anônimas.
  */
 describe('corpo ausente é 400, não 500', () => {
-  const ADMIN = { uuid: 'u-1', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+  const ADMIN = { uuid: 'u-1', username: 'admin', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
 
   const rotas: [string, string, Record<string, unknown>][] = [
     ['post', '/api/setup', { ip: '198.51.100.1' }],
@@ -387,10 +429,10 @@ describe('corpo ausente é 400, não 500', () => {
 
   it('corpo presente segue para a validação de sempre', async () => {
     // E-mail sem senha: `loginWithPassword` recusa antes do banco.
-    const res = await chamar('post', '/api/login', { ip: '198.51.100.5', body: { email: 'ana@exemplo.dev', password: '' } });
+    const res = await chamar('post', '/api/login', { ip: '198.51.100.5', body: { identifier: 'ana@exemplo.dev', password: '' } });
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: 'unauthorized', message: 'E-mail ou senha incorretos' });
+    expect(res.body).toEqual({ error: 'unauthorized', message: 'Usuário, e-mail ou senha incorretos' });
   });
 });
 
@@ -399,7 +441,7 @@ describe('corpo ausente é 400, não 500', () => {
  * objeto sem protótipo: `.trim()` e até `String()` estouravam neles, como 500.
  */
 describe('campo multipart repetido ou aninhado é 400, não 500', () => {
-  const ADMIN = { uuid: 'u-1', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+  const ADMIN = { uuid: 'u-1', username: 'admin', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
   const aninhado = () => Object.assign(Object.create(null) as Record<string, unknown>, { a: 'x' });
 
   function pacote(): Buffer {
@@ -695,7 +737,7 @@ describe('limitador das rotas de credencial', () => {
   const TETO = config.loginIpMaxAttempts;
   /** E-mail sem senha: 401 de `loginWithPassword`, sem tocar o banco. */
   const tentar = (ip: string | undefined) =>
-    chamar('post', '/api/login', { ip, body: { email: 'ana@exemplo.dev', password: '' } });
+    chamar('post', '/api/login', { ip, body: { identifier: 'ana@exemplo.dev', password: '' } });
 
   it('IPv6 conta por /64: trocar de endereço dentro do prefixo não rende cota nova', async () => {
     for (let i = 1; i <= TETO; i += 1) {
@@ -765,8 +807,8 @@ describe('POST /api/logout', () => {
  * auto-provisionamento por SSO com a tabela vazia, está em `accounts.test.ts`.
  */
 describe('POST /api/users na sessão de bootstrap', () => {
-  const BOOTSTRAP = { uuid: null, email: '', name: 'Administrador', role: 'admin', mustChangePassword: false, legacy: true };
-  const ADMIN = { uuid: 'u-1', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+  const BOOTSTRAP = { uuid: null, username: '', email: '', name: 'Administrador', role: 'admin', mustChangePassword: false, legacy: true };
+  const ADMIN = { uuid: 'u-1', username: 'admin', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
 
   // Nem como `admin`: a conta nasceria sem o `onlyIfTableEmpty` do setup (a
   // corrida do primeiro administrador) e sem adotar o que a sessão criou.
@@ -805,7 +847,7 @@ describe('POST /api/users na sessão de bootstrap', () => {
     expect(res.statusCode).toBe(201);
     expect(db.createUser).toHaveBeenCalledWith(expect.objectContaining({ email: 'ana@exemplo.dev', role: 'membro' }));
     expect(db.recordAccountAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.create', actor: { userUuid: 'u-1', label: 'admin@teste.local' } }),
+      expect.objectContaining({ action: 'user.create', actor: { userUuid: 'u-1', label: 'admin' } }),
     );
   });
 });
@@ -818,7 +860,7 @@ describe('POST /api/users na sessão de bootstrap', () => {
  * erro do painel e o log fica limpo.
  */
 describe('campo de texto que não é texto é 400, não 500', () => {
-  const ADMIN = { uuid: 'u-1', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
+  const ADMIN = { uuid: 'u-1', username: 'admin', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false };
   const torto = { toString: 1 };
 
   const rotas: [string, string, Record<string, unknown>][] = [
@@ -869,7 +911,16 @@ describe('GET /api/session', () => {
 
   it('com sessão, os campos de operação voltam', () => {
     const body = sessionPayload(
-      { uuid: 'u-1', email: 'admin@teste.local', name: 'Admin', role: 'admin', mustChangePassword: false, legacy: false },
+      {
+        uuid: 'u-1',
+        username: 'admin',
+        avatarUpdatedAt: null,
+        email: 'admin@teste.local',
+        name: 'Admin',
+        role: 'admin',
+        mustChangePassword: false,
+        legacy: false,
+      },
       3,
     ) as Record<string, unknown>;
 

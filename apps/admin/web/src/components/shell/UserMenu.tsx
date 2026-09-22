@@ -29,7 +29,12 @@ export function UserMenu({
 }) {
   return (
     <Menu trigger={trigger} align={align} up={up} className={className}>
-      <MenuHeading>{user.legacy ? 'sessão de bootstrap' : user.email}</MenuHeading>
+      {/*
+        O identificador público da conta, e não o e-mail: é por ele que as
+        outras contas veem esta pessoa (`docs/19-username.md` decisão 1). O
+        e-mail continua visível para a própria pessoa, na tela Conta.
+      */}
+      <MenuHeading>{user.legacy ? 'sessão de bootstrap' : `@${user.username}`}</MenuHeading>
       {/* A sessão de bootstrap não tem conta: no lugar de "Minha conta", o caminho para criá-la. */}
       {user.legacy ? (
         <MenuItem onSelect={() => onLogout('setup')} icon={<UserPlus />}>

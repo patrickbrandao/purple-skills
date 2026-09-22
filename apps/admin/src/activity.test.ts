@@ -33,6 +33,8 @@ const { FUSOS_MAX, report, series } = await import('./activity.js');
 
 const ADMIN: AuthUser = {
   uuid: 'uuid-admin',
+  username: 'admin',
+  avatarUpdatedAt: null,
   email: 'admin@exemplo.dev',
   name: 'Admin',
   role: 'admin',

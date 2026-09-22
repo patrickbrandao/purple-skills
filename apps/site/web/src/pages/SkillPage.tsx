@@ -6,6 +6,7 @@ import {
   fetchSkill,
   formatCount,
   formatDate,
+  profilePath,
   type SkillDetail,
 } from '../api.js';
 import { SkillDoc } from '../components/SkillDoc.js';
@@ -19,6 +20,7 @@ import {
   GlobeIcon,
   PlugIcon,
   TagIcon,
+  UserIcon,
 } from '../components/Icons.js';
 import { useMeta } from '../useMeta.js';
 import { fraseViaMcp, viaMcp } from '../viaMcp.js';
@@ -119,6 +121,25 @@ export function SkillPage() {
           )}
 
           <div className="skill-meta">
+            {/*
+              A autoria, pelo username (`docs/19-username.md` decisão 11). Sem
+              dono — skill órfã, criada pela sessão de bootstrap ou pelo token
+              global — a página simplesmente não credita ninguém, em vez de
+              dizer "sem dono": quem lê o site não tem o que fazer com isso.
+            */}
+            {skill.ownerUsername && (
+              <span>
+                <UserIcon />{' '}
+                {/* Vira link só quando o dono publicou o perfil
+                    (`docs/20-perfil.md` §7): sem a conferência, o site
+                    apontaria para 404 em toda conta que nunca abriu a tela. */}
+                {skill.ownerHasProfile ? (
+                  <Link to={profilePath(skill.ownerUsername)}>por @{skill.ownerUsername}</Link>
+                ) : (
+                  <>por @{skill.ownerUsername}</>
+                )}
+              </span>
+            )}
             <span>
               <EyeIcon /> {formatCount(skill.viewCount)} acessos
             </span>

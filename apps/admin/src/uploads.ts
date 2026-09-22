@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import multer from 'multer';
+import { AVATAR_MAX_BYTES } from '@purple-skills/shared';
 import { config } from './config.js';
 
 /** Arquivos por requisição: o teto do `upload.array('files', …)` do envio avulso. */
@@ -94,6 +95,36 @@ export const upload = multer({
     files: MAX_FILES_PER_REQUEST,
     fields: MAX_FIELDS_PER_REQUEST,
     parts: MAX_FILES_PER_REQUEST + MAX_FIELDS_PER_REQUEST + 1,
+  },
+  defParamCharset: 'utf8',
+});
+
+/**
+ * O multer do **avatar**: um arquivo só, e o corte no stream.
+ *
+ * O `upload` de cima corta pelo teto do painel (`ADMIN_MAX_UPLOAD_BYTES`, 64 MB
+ * por padrão), que é o do .zip de uma skill. Um avatar cabe em 512 KB
+ * (`AVATAR_MAX_BYTES`), e a conferência de `apps/admin/src/profile.ts` acontece
+ * **depois** de receber os bytes: sem este limite, uma conta logada podia
+ * empurrar 64 MB para a memória do processo a cada requisição e só então ouvir
+ * "a foto precisa ter até 512 KB".
+ *
+ * A folga de 64 KB é para o envelope multipart — delimitadores, cabeçalho de
+ * parte, o nome do campo. O `fileSize` do multer mede o **arquivo**, não a
+ * requisição, então a folga é do `limitRequestBytes`; aqui ela só evita que um
+ * arquivo de exatamente 512 KB seja cortado por um byte de contabilidade.
+ *
+ * A conferência de `profile.ts` **fica**: este limite responde com o erro do
+ * multer, genérico; o de lá é a regra da rota, com a mensagem que explica o
+ * formato e o SVG. E é o de lá que vale se alguém montar outro caminho.
+ */
+export const avatarUpload = multer({
+  storage: memory,
+  limits: {
+    fileSize: AVATAR_MAX_BYTES + 64 * 1024,
+    files: 1,
+    fields: 0,
+    parts: 2,
   },
   defParamCharset: 'utf8',
 });

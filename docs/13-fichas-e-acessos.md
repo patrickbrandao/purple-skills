@@ -217,6 +217,10 @@ filtro de estado e a coluna de estado; os selects e os links de ação que
 viviam em cada linha saem. "Nova conta" é um modal: a senha temporária é
 mostrada nele, uma vez, e o botão "Já anotei" leva à ficha da conta nova.
 
+> **O "avatar" deste cabeçalho ganhou foto** pelo [`20`](20-perfil.md): era
+> sempre o monograma das iniciais, e ele continua sendo o padrão — a imagem
+> entra na frente quando a conta enviou uma. Nada mais desta seção muda.
+
 Cabeçalho: avatar, nome com os selos (você, papel, desativada, senha
 temporária, SSO, bloqueada), e-mail, último acesso e datas; o botão
 **Editar**. Avisos de conta desativada e de login bloqueado acima das guias.

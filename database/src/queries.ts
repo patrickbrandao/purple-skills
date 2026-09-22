@@ -1,6 +1,10 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
+  AVATAR_MAX_BYTES,
+  AVATAR_MIME_TYPES,
+  BIO_MAX_LENGTH,
   MCP_CALL_BUCKET_MS,
+  PROFILE_LINKS_MAX,
   QUARANTINE_APPROVERS,
   QUARANTINE_APPROVERS_DEFAULT,
   QUARANTINE_APPROVERS_SETTING,
@@ -11,17 +15,24 @@ import {
   isQuarantineApprovers,
   isRole,
   isSkillMd,
+  isEmailLogin,
   isTextualContent,
   isValidSlug,
   mcpCallFamily,
   mimeTypeFor,
+  normalizeBio,
+  normalizeProfileLinks,
   normalizeRelativePath,
   normalizeSkillIcon,
+  normalizeUsername,
+  normalizeWebsite,
+  sniffAvatarMime,
   skillMetaFromMarkdown,
   skillScore,
   slugify,
   stripFrontmatter,
   uniqueSlug,
+  usernameWithSuffix,
   type AccessLevel,
   type AccessScope,
   type ActivityDay,
@@ -48,8 +59,11 @@ import {
   type McpSessionPage,
   type McpSessionSummary,
   type McpSessionTransport,
+  type AvatarMime,
+  type ProfileLink,
   type PublicCatalog,
   type PublicCatalogDetail,
+  type PublicProfile,
   type PublicVirtualMcp,
   type QuarantineApprovers,
   type QuarantineDetail,
@@ -71,6 +85,7 @@ import {
   type SkillAccessPage,
   type SkillAccessSurface,
   type UserLookup,
+  type UserProfile,
   type UserSummary,
   type VirtualMcpCatalog,
   type VirtualMcpCatalogInput,
@@ -323,6 +338,46 @@ const OPEN_MCP_EXPOSURE: SQL = sql`EXISTS (
   WHERE m.is_open AND m.is_active AND ${exposedIn(sql`m.uuid`)}
 )`;
 
+/**
+ * O dono (`owner`, a coluna de quem chama) tem **página de perfil** — é o
+ * booleano que decide se o `por @fulano` da ficha vira link para
+ * `/u/<username>` ou fica no texto de hoje (`docs/20-perfil.md` §7). Sem ele o
+ * site apontaria para 404 em toda conta que nunca abriu o perfil. Serve à
+ * skill (`skillColumns`) e ao catálogo público (`PUBLIC_CATALOG_COLUMNS`), que
+ * creditam o dono do mesmo jeito.
+ *
+ * A pergunta é exatamente a que `getPublicProfile` responde — perfil público
+ * **e** conta ativa —, e as duas condições andam juntas de propósito: se aqui
+ * bastasse `is_public`, a ficha de uma skill cujo dono foi desativado viraria
+ * um link para a página que a desativação acabou de derrubar. Username
+ * inexistente não entra na conta: quem não tem conta não tem skill.
+ *
+ * É o **único** dado de perfil que viaja na ficha: bio, foto e links ficam na
+ * rota do perfil, que é onde alguém foi vê-los de propósito.
+ *
+ * Vale em **toda** visibilidade, inclusive a do site — como o dono desde a
+ * `033`.
+ *
+ * **A forma é subconsulta escalar, e não `EXISTS`, por medida.** As duas dizem
+ * a mesma coisa, mas o planejador trata um `EXISTS` correlacionado por
+ * igualdade como *hashed SubPlan*: ele materializa o conjunto inteiro das
+ * contas com perfil público uma vez por consulta e depois consulta o hash.
+ * Isso é ótimo com 60 perfis e péssimo com muitos — na listagem do site
+ * (5 000 skills, página de 24), com 50 000 contas e 50 060 perfis, o `EXISTS`
+ * levou a consulta de 3,9 ms para **10,9 ms**; a versão com dois `EXISTS`
+ * (perfil e conta separados), para 14,1 ms. A escalar não pode ser hasheada e
+ * é avaliada por linha: 24 buscas no `user_profiles_public_idx` (**Index Only
+ * Scan**, `Heap Fetches: 0` — o índice parcial do `034` existe para isto),
+ * 4,2 ms, ou **+0,24 ms** sobre a mesma listagem sem a coluna. Com 60 perfis
+ * as três formas empatam dentro do ruído; a escalar é a única que não piora
+ * quando a instalação cresce.
+ */
+const ownerHasProfile = (owner: SQL): SQL => sql`COALESCE((
+  SELECT true FROM user_profiles p JOIN users u ON u.uuid = p.user_uuid
+  WHERE p.user_uuid = ${owner} AND p.is_public AND u.is_active
+  LIMIT 1
+), false)`;
+
 /** A skill `s` tem participação ativa em algum catálogo público e ligado (`docs/12` decisão 5). */
 const PUBLIC_CATALOG_EXPOSURE: SQL = sql`EXISTS (
   SELECT 1 FROM catalog_skills cs JOIN catalogs c ON c.uuid = cs.catalog_uuid
@@ -463,15 +518,23 @@ function surfaceFlag(alias: 'v' | 'vc', surface: VirtualSurface): SQL {
  * que a conta vê (público e ligado, dela ou concedido a ela); no site,
  * nenhum — é o painel "Nos catálogos" da página da skill.
  *
- * E, desde o `017`, o dono (`owner_user_uuid`, `owner_email`), o flag
+ * E, desde o `017`, o dono (`owner_user_uuid`, `owner_username`), o flag
  * `is_public` e o `access` da conta que lê (`accessColumn`).
  *
- * **O dono não sai na visibilidade do site.** Em `'open'` as duas colunas vêm
- * nulas, como o `access` e o `catalogs` já vinham: o e-mail do dono é dado
- * pessoal que o `docs/12` §10 aceita expor a **conta logada**, não ao
- * visitante anônimo (`tasks/002`), e o app do site já corta os dois campos da
- * resposta. Aqui é o outro lado da mesma decisão — e o efeito é parar de pagar
- * uma subconsulta de e-mail **por linha** cujo resultado ninguém lê.
+ * **O dono sai em toda visibilidade, inclusive a do site.** Era o contrário
+ * até o `033`: em `'open'` as duas colunas vinham nulas porque o rótulo do
+ * dono era o **e-mail**, dado pessoal que o `docs/12` §10 aceitava expor a
+ * conta logada e não ao anônimo (`tasks/002`). O rótulo agora é o username, e
+ * a decisão 11 do `docs/19` é explícita: a ficha pública credita o dono por
+ * `@username` — o username é dado público justamente para poder ser creditado.
+ * O que continua fora da resposta anônima é o `ownerUserUuid`, e quem o corta
+ * é a lista de permissão de `apps/site/src/api.ts`: ele é o `sub` do cookie de
+ * sessão do painel (`tasks/001`).
+ *
+ * Ao lado deles, desde o `034`, `ownerHasProfile`: se o
+ * `por @fulano` vira link para `/u/<username>` ou fica no texto. Também em toda
+ * visibilidade, e também um probe por linha — o do índice parcial do perfil
+ * público.
  */
 function skillColumns(options: ReadOptions): SQL {
   const mode = readMode(options);
@@ -497,13 +560,13 @@ function skillColumns(options: ReadOptions): SQL {
   // site, catálogo privado não é nomeado (`tasks/002`). Sem isto, a resposta
   // anônima dizia por qual catálogo fechado a skill chegava a um vMCP aberto.
   const catalogNameFilter = mode.kind === 'open' ? sql`c.is_public` : sql`true`;
-  // No site o dono não sai (`tasks/002`): as duas colunas viram nulo literal e
-  // a subconsulta do e-mail deixa de rodar por linha.
-  const ownerColumns =
-    mode.kind === 'open'
-      ? sql`NULL::uuid AS owner_user_uuid, NULL::text AS owner_email`
-      : sql`s.owner_user_uuid,
-  (SELECT u.email FROM users u WHERE u.uuid = s.owner_user_uuid) AS owner_email`;
+  // A subconsulta do dono roda em toda visibilidade desde o `033`: o site
+  // credita o dono por `@username` (`docs/19` decisão 11), e o username é o
+  // dado que existe para ser creditado. Ela custa uma busca pela PK de `users`
+  // por linha — o preço de uma página do site mostrar quem publicou.
+  const ownerColumns = sql`s.owner_user_uuid,
+  (SELECT u.username FROM users u WHERE u.uuid = s.owner_user_uuid) AS owner_username,
+  ${ownerHasProfile(sql`s.owner_user_uuid`)} AS owner_has_profile`;
   return sql`
   s.uuid, s.slug, s.name, s.description, s.icon, s.is_active, s.is_public,
   ${ownerColumns},
@@ -616,7 +679,8 @@ function toSummary(row: Row): SkillSummary {
     isActive: Boolean(row.is_active),
     isPublic: Boolean(row.is_public),
     ownerUserUuid: row.owner_user_uuid ?? null,
-    ownerEmail: row.owner_email ?? null,
+    ownerUsername: row.owner_username ?? null,
+    ownerHasProfile: Boolean(row.owner_has_profile),
     access: toAccess(row.access),
     mcps: toSkillMcpRefs(row.mcps),
     catalogs: toSkillCatalogRefs(row.catalogs),
@@ -2370,15 +2434,27 @@ export type UserRecord = UserSummary & {
   oidcSubject: string | null;
 };
 
+/**
+ * As colunas de `UserRecord`, mais o carimbo do avatar (`034`).
+ *
+ * O carimbo vem por **subconsulta correlacionada**, e não por `LEFT JOIN`, por
+ * duas razões: a lista é usada também em `RETURNING` (onde não há `FROM` para
+ * juntar nada), e citar `user_avatars` por junção convidaria alguém a
+ * acrescentar `bytes` ao `SELECT` — que é o que a tabela separada existe para
+ * impedir. Custa um probe pela PK por linha e devolve nulo quando não há foto,
+ * que é o estado da esmagadora maioria das contas.
+ */
 const USER_COLUMNS = sql`
-  uuid, email, name, password_hash, role, is_active, token_version,
+  uuid, username, email, name, password_hash, role, is_active, token_version,
   must_change_password, oidc_issuer, oidc_subject, locked_until, failed_attempts,
-  last_login_at, created_at, updated_at
+  last_login_at, created_at, updated_at,
+  (SELECT a.updated_at FROM user_avatars a WHERE a.user_uuid = users.uuid) AS avatar_updated_at
 `;
 
 function toUserRecord(row: Row): UserRecord {
   return {
     uuid: row.uuid,
+    username: row.username,
     email: row.email,
     name: row.name,
     role: row.role as Role,
@@ -2388,6 +2464,7 @@ function toUserRecord(row: Row): UserRecord {
     oidcIssuer: row.oidc_issuer ?? null,
     lockedUntil: iso(row.locked_until),
     lastLoginAt: iso(row.last_login_at),
+    avatarUpdatedAt: iso(row.avatar_updated_at),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
     passwordHash: row.password_hash ?? null,
@@ -2446,6 +2523,43 @@ export async function getUserByEmail(email: string): Promise<UserRecord | null> 
   return row ? toUserRecord(row) : null;
 }
 
+/**
+ * Busca por `lower(username)`, que é como a unicidade é garantida no banco
+ * (`users_username_lower_uniq`, `033`). Irmã de `getUserByEmail`.
+ *
+ * O texto passa por `normalizeUsername` antes de virar consulta: o que não é
+ * um username válido não é de conta nenhuma, e devolver `null` sem ir ao banco
+ * é o mesmo "não existe" que um uuid torto recebe em `getUserByUuid`.
+ */
+export async function getUserByUsername(username: string): Promise<UserRecord | null> {
+  const wanted = normalizeUsername(username);
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT ${USER_COLUMNS} FROM users WHERE lower(username) = ${wanted} LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? toUserRecord(row) : null;
+}
+
+/**
+ * O campo único do login, "usuário ou e-mail" (`docs/19` decisão 3): tem `@`,
+ * é e-mail; não tem, é username.
+ *
+ * A regra é decidível porque `normalizeUsername` recusa `@` — os dois
+ * conjuntos não se tocam e não há caso ambíguo. Quem decide de que lado cai é
+ * `isEmailLogin`, do shared, e não uma segunda cópia da regra aqui.
+ *
+ * O erro do login continua genérico e o rate limiting do
+ * `docs/05-accounts-and-roles.md` §2.7 não muda: ele conta tentativas na mesma
+ * **conta**, tenha ela sido nomeada por um lado ou pelo outro.
+ */
+export async function getUserByLogin(identifier: string): Promise<UserRecord | null> {
+  const wanted = (identifier ?? '').trim();
+  if (!wanted) return null;
+  return isEmailLogin(wanted) ? getUserByEmail(wanted) : getUserByUsername(wanted);
+}
+
 export async function getUserByOidc(issuer: string, subject: string): Promise<UserRecord | null> {
   if (!issuer?.trim() || !subject?.trim()) return null;
 
@@ -2468,7 +2582,165 @@ export async function getUserByOidc(issuer: string, subject: string): Promise<Us
  */
 const ADMIN_POPULATION_LOCK = 'purple-skills:admins';
 
+// ------------------------------------------------- o livro de usernames -----
+
+/**
+ * O username como ele vai para o banco, ou 400.
+ *
+ * O painel já chama `normalizeUsername` e recusa antes de tocar no banco, mas
+ * a conferência é repetida aqui de propósito: o mcp-admin, o seed e qualquer
+ * script também passam por `createUser`/`updateUser`, e a regra tem de valer
+ * para todos os caminhos. Quem decide o que vale é
+ * `packages/shared/src/username.ts`, nunca uma segunda cópia da regra.
+ */
+function requireUsername(value: unknown): string {
+  const raw = optionalText(value, 'username')?.trim() ?? '';
+  if (!raw) throw badRequest('O campo "username" é obrigatório');
+
+  const username = normalizeUsername(raw);
+  if (!username) {
+    throw badRequest(
+      `Username inválido: "${raw}" (3 a 32 caracteres, letras, números, ".", "_" e "-",` +
+        ' sem começar ou terminar em pontuação e sem duas seguidas)',
+    );
+  }
+  return username;
+}
+
+/** Quantos candidatos `nextFreeUsername`/`reserveUsername` tentam antes de desistir. */
+const USERNAME_SUFFIX_MAX = 1000;
+
+/**
+ * Grava a tomada de um username no livro (`usernames`, `033`); `false` se o
+ * nome já está lá.
+ *
+ * Tomar é **inserir**: a PK em `lower(username)` é o que torna a reserva
+ * atômica e permanente, e é ela que impede o `@joao` de uma trilha de 2025 de
+ * ser outra pessoa em 2026 (decisão 6).
+ *
+ * `DO NOTHING`, e **nunca** um `DO UPDATE` que reaproveitasse a linha de quem
+ * já passou por ela. A tentação existe — uma linha com `user_uuid` nulo e
+ * `released_at` nulo parece "reservada e nunca usada" — mas ela é também o
+ * estado de uma conta **apagada**: a FK é `ON DELETE SET NULL`, e a remoção da
+ * conta deixa exatamente essa forma. Adotá-la devolveria a circulação o nome
+ * de quem foi embora, que é o que a decisão 6 existe para proibir.
+ */
+async function takeUsernameTx(tx: Tx, username: string, userUuid: string | null): Promise<boolean> {
+  const taken = await tx.execute(sql`
+    INSERT INTO usernames (username_lower, user_uuid)
+    VALUES (${username}, ${userUuid})
+    ON CONFLICT (username_lower) DO NOTHING
+    RETURNING username_lower
+  `);
+  return (taken.rows as Row[]).length > 0;
+}
+
+/** O 409 de quem tentou tomar um username que esta instalação já gastou. */
+const usernameSpent = (username: string) =>
+  conflict(`O username "${username}" já foi usado nesta instalação`);
+
+/**
+ * O primeiro candidato **livre**, consultando as duas fontes: `users.username`
+ * (o que está em uso agora) e `usernames` (tudo que esta instalação já gastou,
+ * inclusive o que foi abandonado). Livre quer dizer livre nas duas — um nome
+ * abandonado não é oferecido, que é a decisão 6.
+ *
+ * A numeração é `usernameWithSuffix` do shared (`joao`, `joao-2`, `joao-3`, …,
+ * truncando o radical para o sufixo caber em 32), a mesma do backfill da
+ * `033`. É a sugestão do formulário de criar conta e o nome que o
+ * auto-provisionamento OIDC passa a `createUser`.
+ *
+ * **Não inventa base**: `base` inutilizável é 400. Quem tem um nome que não dá
+ * username (vazio, só pontuação, reservado) passa o fallback
+ * `usernameFromUuid(uuid)`, como faz o backfill — a decisão de qual fallback
+ * usar é de quem chama, não daqui.
+ *
+ * É leitura, não reserva: entre a sugestão e a gravação outra conta pode tomar
+ * o nome, e quem fecha essa janela é o 409 de `createUser`.
+ */
+export async function nextFreeUsername(base: string): Promise<string> {
+  const wanted = requireUsername(base);
+
+  const result = await db().execute(sql`
+    SELECT lower(username) AS nome FROM users
+     WHERE lower(username) = ${wanted} OR lower(username) LIKE ${`${wanted}-%`}
+    UNION
+    SELECT username_lower AS nome FROM usernames
+     WHERE username_lower = ${wanted} OR username_lower LIKE ${`${wanted}-%`}
+  `);
+  const ocupados = new Set((result.rows as Row[]).map((row) => row.nome as string));
+
+  for (let n = 1; n <= USERNAME_SUFFIX_MAX; n += 1) {
+    const candidato = usernameWithSuffix(wanted, n);
+    // O radical truncado pode colidir com um nome que o `LIKE` não pegou
+    // (`joao-silva` → `joao-sil-100`); por isso o teto e não um `while` cego.
+    if (candidato && !ocupados.has(candidato)) return candidato;
+  }
+  throw conflict(`Não há username livre derivado de "${wanted}"`);
+}
+
+/**
+ * Dá a uma conta **que já existe** o primeiro username livre derivado de
+ * `candidate`, resolvendo o sufixo numérico, e devolve o que ficou.
+ *
+ * É a irmã que **grava** de `nextFreeUsername`: a linha entra em `usernames`,
+ * o nome antigo da conta é liberado e `users.username` passa a ser o novo,
+ * tudo numa transação. A diferença para `updateUser({ username })` é o que
+ * acontece na colisão: lá é 409 (o admin pediu **aquele** nome), aqui é o
+ * próximo sufixo — é o que serve a um caminho que não pode falhar, como uma
+ * importação ou um reparo.
+ *
+ * A conta precisa existir porque `usernames.user_uuid` tem FK: uma reserva sem
+ * dono seria um nome queimado que ninguém poderia tomar depois (a linha não é
+ * adotável — ver `takeUsernameTx`). Quem ainda não tem conta usa
+ * `nextFreeUsername` e passa o resultado a `createUser`, que fecha a corrida
+ * com o 409.
+ */
+export async function reserveUsername(candidate: string, userUuid: string): Promise<string> {
+  const base = requireUsername(candidate);
+  if (!isUuid(userUuid)) throw notFound(`Conta não encontrada: ${String(userUuid)}`);
+
+  return db().transaction(async (tx) => {
+    const found = await tx.execute(sql`SELECT username FROM users WHERE uuid = ${userUuid} FOR UPDATE`);
+    const row = (found.rows as Row[])[0];
+    if (!row) throw notFound(`Conta não encontrada: ${userUuid}`);
+    const antigo = (row.username as string).toLowerCase();
+
+    for (let n = 1; n <= USERNAME_SUFFIX_MAX; n += 1) {
+      const tentativa = usernameWithSuffix(base, n);
+      if (!tentativa) continue;
+      if (tentativa === antigo) return antigo;
+      // Um nome em uso por conta viva também está no livro (o `033` semeou
+      // `usernames` com todos), mas a conferência em `users` fica: é ela que
+      // diz a regra do produto — não existe username fora de `users` — em vez
+      // de confiar na semeadura.
+      const emUso = await tx.execute(sql`
+        SELECT 1 FROM users WHERE lower(username) = ${tentativa} LIMIT 1
+      `);
+      if ((emUso.rows as Row[]).length > 0) continue;
+      if (!(await takeUsernameTx(tx, tentativa, userUuid))) continue;
+
+      await tx.execute(sql`
+        UPDATE usernames SET released_at = now()
+        WHERE username_lower = ${antigo} AND released_at IS NULL
+      `);
+      await tx.execute(sql`
+        UPDATE users SET username = ${tentativa}, updated_at = now() WHERE uuid = ${userUuid}
+      `);
+      return tentativa;
+    }
+    throw conflict(`Não há username livre derivado de "${base}"`);
+  });
+}
+
 export type CreateUserInput = {
+  /**
+   * O identificador público da conta (`docs/19` decisão 1). Obrigatório e
+   * único por `lower(username)`; `normalizeUsername` do shared decide o que
+   * vale. Quem não tem um nome que dê username usa `nextFreeUsername` sobre
+   * `usernameFromName(name)` ou, em último caso, `usernameFromUuid(uuid)`.
+   */
+  username: string;
   email: string;
   name: string;
   role: Role;
@@ -2510,15 +2782,20 @@ export async function createUser(input: CreateUserInput): Promise<UserRecord> {
   const name = (input.name ?? '').trim();
   if (!name) throw badRequest('O campo "name" é obrigatório');
 
+  // A caixa do username **não** é preservada, ao contrário da do e-mail: o
+  // endereço é da pessoa, o username é identificador público, e `@Joao` e
+  // `@joao` na mesma tela é confusão sem ganho (`docs/19` §3).
+  const username = requireUsername(input.username);
+
   if (!isRole(input.role)) throw badRequest(`Papel inválido: ${String(input.role)}`);
 
   const insert = sql`
     INSERT INTO users (
-      email, name, password_hash, role, is_active, must_change_password,
+      username, email, name, password_hash, role, is_active, must_change_password,
       oidc_issuer, oidc_subject
     )
     VALUES (
-      ${email}, ${name}, ${input.passwordHash ?? null}, ${input.role},
+      ${username}, ${email}, ${name}, ${input.passwordHash ?? null}, ${input.role},
       ${input.isActive !== false}, ${input.mustChangePassword === true},
       ${input.oidcIssuer ?? null}, ${input.oidcSubject ?? null}
     )
@@ -2526,8 +2803,12 @@ export async function createUser(input: CreateUserInput): Promise<UserRecord> {
   `;
 
   try {
-    if (input.onlyIfTableEmpty === true) {
-      return await db().transaction(async (tx) => {
+    // Sempre em transação, desde o `033`: a conta e a linha do livro de
+    // usernames entram juntas ou não entram. Uma conta gravada sem a reserva
+    // deixaria o nome livre para outra pessoa depois que ela fosse apagada, que
+    // é justamente o que a decisão 6 proíbe.
+    return await db().transaction(async (tx) => {
+      if (input.onlyIfTableEmpty === true) {
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(hashtextextended(${ADMIN_POPULATION_LOCK}, 0))`,
         );
@@ -2535,16 +2816,21 @@ export async function createUser(input: CreateUserInput): Promise<UserRecord> {
         if (Number((total.rows as Row[])[0]?.total ?? 0) > 0) {
           throw conflict('Este painel já tem contas: o primeiro administrador já foi criado');
         }
-        const created = await tx.execute(insert);
-        return toUserRecord((created.rows as Row[])[0]);
-      });
-    }
-
-    const result = await db().execute(insert);
-    return toUserRecord((result.rows as Row[])[0]);
+      }
+      // O INSERT em `users` vem primeiro, e é o índice único que separa as duas
+      // recusas: quem esbarra nele tem uma conta **viva** com aquele nome; quem
+      // passa por ele e esbarra no livro está pedindo um nome **abandonado**.
+      const created = await tx.execute(insert);
+      const user = toUserRecord((created.rows as Row[])[0]);
+      if (!(await takeUsernameTx(tx, username, user.uuid))) throw usernameSpent(username);
+      return user;
+    });
   } catch (err) {
     if (isUniqueViolation(err, 'users_oidc_uniq')) {
       throw conflict('Já existe uma conta vinculada a essa identidade OIDC');
+    }
+    if (isUniqueViolation(err, 'users_username_lower_uniq')) {
+      throw conflict(`Já existe uma conta com o username "${username}"`);
     }
     if (isUniqueViolation(err)) {
       throw conflict(`Já existe uma conta com o e-mail "${email}"`);
@@ -2555,6 +2841,18 @@ export async function createUser(input: CreateUserInput): Promise<UserRecord> {
 
 export type UpdateUserInput = {
   name?: string;
+  /**
+   * Trocar o identificador público da conta — **só admin** (`docs/19`
+   * decisão 5); quem confere o papel é o app. Na mesma transação o nome novo
+   * entra em `usernames`, o antigo recebe `released_at` e `users` é
+   * atualizada: o antigo não volta a circular, e a trilha congelada com ele
+   * continua apontando para quem era (decisão 6).
+   *
+   * Informar o username que a conta **já tem** é no-op nas duas tabelas — não
+   * gasta o nome nem gera linha nova no livro —, e só carimba `updated_at`
+   * como qualquer PATCH.
+   */
+  username?: string;
   role?: Role;
   isActive?: boolean;
   passwordHash?: string | null;
@@ -2617,6 +2915,8 @@ export async function updateUser(uuid: string, input: UpdateUserInput): Promise<
     if (!name) throw badRequest('O campo "name" não pode ficar vazio');
     sets.push(sql`name = ${name}`);
   }
+  const novoUsername = input.username === undefined ? null : requireUsername(input.username);
+  if (novoUsername !== null) sets.push(sql`username = ${novoUsername}`);
   if (input.role !== undefined) {
     if (!isRole(input.role)) throw badRequest(`Papel inválido: ${String(input.role)}`);
     sets.push(sql`role = ${input.role}`);
@@ -2655,29 +2955,42 @@ export async function updateUser(uuid: string, input: UpdateUserInput): Promise<
   `;
 
   try {
-    if (input.requireOtherActiveAdmin === true) {
+    // Transação quando a escrita precisa de mais de um comando: a invariante
+    // "sempre sobra um administrador" e a troca de username, que mexe em
+    // `users` **e** em `usernames`. Os demais caminhos (senha, logout, vínculo
+    // OIDC) continuam num comando só, sem transação nem lock.
+    if (novoUsername !== null || input.requireOtherActiveAdmin === true) {
       return await db().transaction(async (tx) => {
-        await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(hashtextextended(${ADMIN_POPULATION_LOCK}, 0))`,
-        );
-        // O UPDATE vem primeiro e a invariante é conferida sobre o estado
-        // **depois** dele: assim não importa qual campo mudou. Nada de
-        // `FOR UPDATE`/`FOR SHARE` nas linhas dos outros admins — duas
-        // transações travando a linha uma da outra dariam deadlock (40P01), que
-        // o app devolveria como 500.
+        if (input.requireOtherActiveAdmin === true) {
+          await tx.execute(
+            sql`SELECT pg_advisory_xact_lock(hashtextextended(${ADMIN_POPULATION_LOCK}, 0))`,
+          );
+        }
+        // O livro de usernames é acertado **antes** do UPDATE, com a linha da
+        // conta travada: é ele que recusa o nome já gasto, e recusar depois de
+        // gravar deixaria a transação desfazendo trabalho à toa.
+        if (novoUsername !== null) await trocaUsernameTx(tx, uuid, novoUsername);
+
+        // O UPDATE vem antes da conferência de administradores e a invariante é
+        // medida sobre o estado **depois** dele: assim não importa qual campo
+        // mudou. Nada de `FOR UPDATE`/`FOR SHARE` nas linhas dos outros admins
+        // — duas transações travando a linha uma da outra dariam deadlock
+        // (40P01), que o app devolveria como 500.
         const result = await tx.execute(update);
         const row = (result.rows as Row[])[0];
         if (!row) throw notFound(`Conta não encontrada: ${uuid}`);
 
-        const others = await tx.execute(sql`
-          SELECT EXISTS (
-            SELECT 1 FROM users WHERE role = 'admin' AND is_active AND uuid <> ${uuid}
-          ) AS found
-        `);
-        if (!(others.rows as Row[])[0]?.found) {
-          // O texto é o que o painel já mostra (`accounts.ts`): a recusa do
-          // banco não pode aparecer diferente da recusa do app.
-          throw badRequest('Esta é a última conta de administrador ativa — promova outra antes');
+        if (input.requireOtherActiveAdmin === true) {
+          const others = await tx.execute(sql`
+            SELECT EXISTS (
+              SELECT 1 FROM users WHERE role = 'admin' AND is_active AND uuid <> ${uuid}
+            ) AS found
+          `);
+          if (!(others.rows as Row[])[0]?.found) {
+            // O texto é o que o painel já mostra (`accounts.ts`): a recusa do
+            // banco não pode aparecer diferente da recusa do app.
+            throw badRequest('Esta é a última conta de administrador ativa — promova outra antes');
+          }
         }
         return toUserRecord(row);
       });
@@ -2691,8 +3004,49 @@ export async function updateUser(uuid: string, input: UpdateUserInput): Promise<
     if (isUniqueViolation(err, 'users_oidc_uniq')) {
       throw conflict('Já existe uma conta vinculada a essa identidade OIDC');
     }
+    // A corrida: outra transação tomou o nome entre a conferência e o UPDATE.
+    if (isUniqueViolation(err, 'users_username_lower_uniq')) {
+      throw conflict(`Já existe uma conta com o username "${novoUsername}"`);
+    }
     throw err;
   }
+}
+
+/**
+ * A troca de username dentro da transação de `updateUser` (`docs/19`
+ * decisão 5): toma o nome novo no livro e marca o antigo como liberado.
+ *
+ * O antigo recebe `released_at` e **mantém** `user_uuid`: a linha passa a
+ * dizer "foi desta conta e não é de ninguém", que é o que torna legível uma
+ * trilha congelada com o nome velho. Ela nunca é apagada — reciclar é o que a
+ * decisão 6 proíbe.
+ *
+ * As duas recusas são distintas de propósito: o nome de uma conta **viva** é
+ * 409 "já existe uma conta com o username", e o de uma conta que passou por
+ * aqui é 409 "já foi usado nesta instalação". Quem administra precisa saber se
+ * o nome está ocupado agora ou queimado para sempre.
+ */
+async function trocaUsernameTx(tx: Tx, uuid: string, novo: string): Promise<void> {
+  const found = await tx.execute(sql`SELECT username FROM users WHERE uuid = ${uuid} FOR UPDATE`);
+  const row = (found.rows as Row[])[0];
+  if (!row) throw notFound(`Conta não encontrada: ${uuid}`);
+
+  const antigo = (row.username as string).toLowerCase();
+  // Regravar o mesmo nome não gasta nada e não deixa linha no livro.
+  if (antigo === novo) return;
+
+  const emUso = await tx.execute(sql`
+    SELECT 1 FROM users WHERE lower(username) = ${novo} AND uuid <> ${uuid} LIMIT 1
+  `);
+  if ((emUso.rows as Row[]).length > 0) {
+    throw conflict(`Já existe uma conta com o username "${novo}"`);
+  }
+  if (!(await takeUsernameTx(tx, novo, uuid))) throw usernameSpent(novo);
+
+  await tx.execute(sql`
+    UPDATE usernames SET released_at = now()
+    WHERE username_lower = ${antigo} AND released_at IS NULL
+  `);
 }
 
 /**
@@ -2747,6 +3101,651 @@ export async function registerSuccessfulLogin(uuid: string): Promise<void> {
     UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = now()
     WHERE uuid = ${uuid}
   `);
+}
+
+// ----------------------------------------------------------------- perfil ---
+
+/**
+ * O perfil (`034`, `docs/20-perfil.md`): a foto, a bio, o site e os links de
+ * uma conta, mais a página pública em `/u/<username>`.
+ *
+ * Três coisas que o desenho grava e que valem ler antes de mexer:
+ *
+ * - **a linha de `user_profiles` nasce no primeiro salvamento**, não com a
+ *   conta. Quem nunca abriu a tela não tem linha, e `getProfile` devolve o
+ *   perfil **vazio e privado**: "sem perfil" e "perfil em branco" são o mesmo
+ *   estado para quem lê. Conta que não existe é outra coisa, e é 404;
+ * - **os bytes da foto moram em `user_avatars`** e só saem por `getAvatar` /
+ *   `getAvatarByUsername`. Nenhuma leitura de perfil os toca — `hasAvatar` e
+ *   `avatarUpdatedAt` vêm de um `LEFT JOIN` que não cita a coluna `bytes`, e
+ *   por isso o TOAST dela nem é aberto;
+ * - **a regra do que vale é do shared** (`packages/shared/src/profile.ts`):
+ *   `normalizeBio`, `normalizeWebsite`, `normalizeProfileLinks` e
+ *   `sniffAvatarMime`. Aqui elas são chamadas, nunca reescritas — o mesmo
+ *   papel que `normalizeUsername` tem na `033`. Os CHECKs do banco são teto e
+ *   lista fechada, a última linha de defesa para um caminho de escrita novo.
+ *
+ * A edição do próprio perfil **não entra na trilha**, pelo mesmo critério que
+ * mantém o login fora dela (`docs/05` §2.8): mudaria a ordem de grandeza do
+ * log. A **limpeza pelo admin** (`clearProfile`) entra, porque é ato de um
+ * sobre outro.
+ */
+
+/**
+ * O que `saveProfile` aceita. Campo ausente **não é regravado** — é o PATCH do
+ * painel, e `{ isPublic: true }` sozinho não pode apagar a bio de ninguém.
+ *
+ * `websiteUrl: null` é "apaga", e é a única forma de limpar o campo: em
+ * `normalizeWebsite`, `undefined` e `null` devolvem o mesmo `null`, então quem
+ * decide entre "não mexe" e "apaga" é a presença da chave, aferida aqui antes
+ * de chamar.
+ *
+ * `name` é o **nome de exibição**, que mora em `users` e não aqui (decisão 1):
+ * a coluna já existia e o que muda é quem escreve. Esta é a única escrita em
+ * `users` que não passa por `updateUser`, e por isso ela grava **só** o nome —
+ * papel, estado, e-mail e username continuam onde estavam.
+ */
+export type SaveProfileInput = {
+  name?: string;
+  bio?: string;
+  websiteUrl?: string | null;
+  links?: ProfileLink[];
+  isPublic?: boolean;
+};
+
+/**
+ * O avatar sem os bytes: o que `setAvatar` devolve e o ETag precisa.
+ *
+ * `sha256` sai **cru**, como está na coluna, e não em hexadecimal: quem serve a
+ * imagem é que decide a forma do ETag (`avatarHeaders` do shared o quer em hex,
+ * e as duas rotas convertem na linha em que montam o cabeçalho). É a mesma
+ * postura das duas leituras de avatar não olharem `is_public` — a função é
+ * burra, a apresentação é de quem chama.
+ */
+export type AvatarMeta = {
+  mime: AvatarMime;
+  /** SHA-256 dos bytes gravados, 32 bytes; `toString('hex')` dá o ETag. */
+  sha256: Buffer;
+  updatedAt: string;
+};
+
+/** O avatar inteiro: o que a rota que serve a imagem precisa. */
+export type Avatar = AvatarMeta & { bytes: Buffer };
+
+/** O que a pessoa publicou e o site já mostrava (decisão 7). */
+export type PublicByOwner = { skills: SkillSummary[]; catalogs: PublicCatalog[] };
+
+/**
+ * As colunas de `UserProfile`. Parte de `users` (o username e o nome de
+ * exibição) e completa com `user_profiles`, que **pode não existir**: os
+ * `COALESCE` são o perfil vazio e privado de quem nunca salvou.
+ *
+ * `user_avatars` entra pelo `LEFT JOIN` só para dizer **se** há foto e de
+ * quando ela é. A coluna `bytes` não é citada em lugar nenhum daqui de
+ * propósito: citá-la faria cada leitura de perfil arrastar até 512 KB para
+ * descartar.
+ */
+const PROFILE_COLUMNS = sql`
+  u.username, u.name,
+  COALESCE(p.bio, '') AS bio,
+  p.website_url,
+  COALESCE(p.links, '[]'::jsonb) AS links,
+  COALESCE(p.is_public, false) AS is_public,
+  (a.user_uuid IS NOT NULL) AS has_avatar,
+  a.updated_at AS avatar_updated_at
+`;
+
+const PROFILE_FROM = sql`
+  FROM users u
+  LEFT JOIN user_profiles p ON p.user_uuid = u.uuid
+  LEFT JOIN user_avatars a ON a.user_uuid = u.uuid
+`;
+
+/**
+ * Os links gravados, passados de novo pela regra do shared.
+ *
+ * Parece redundante — o que entrou já foi normalizado —, mas a coluna é JSONB
+ * e o CHECK do banco só garante "array de até 8". Uma linha escrita à mão, um
+ * backup de outra versão ou um `UPDATE` de manutenção podem pôr qualquer coisa
+ * ali, e a leitura não é lugar de explodir: `normalizeProfileLinks` devolve
+ * `null` para o que não vale, e `null` vira lista vazia.
+ */
+function toProfileLinks(value: unknown): ProfileLink[] {
+  const bruto = typeof value === 'string' ? JSON.parse(value) : value;
+  return normalizeProfileLinks(bruto) ?? [];
+}
+
+function toUserProfile(row: Row): UserProfile {
+  return {
+    username: row.username,
+    name: row.name,
+    bio: row.bio ?? '',
+    websiteUrl: row.website_url ?? null,
+    links: toProfileLinks(row.links),
+    isPublic: Boolean(row.is_public),
+    hasAvatar: Boolean(row.has_avatar),
+    avatarUpdatedAt: iso(row.avatar_updated_at),
+  };
+}
+
+/**
+ * O perfil como a própria conta o vê. Conta **sem linha** de perfil devolve o
+ * objeto vazio e privado — é o que a tela abre na primeira vez, e é o que faz
+ * "sem perfil" e "perfil em branco" serem o mesmo estado para quem lê.
+ *
+ * Conta inexistente (ou uuid torto) é **404**, e não `null` como nas demais
+ * leituras deste módulo. Duas razões: `saveProfile` e `clearProfile` já
+ * respondem 404 ao mesmo caso, e um `null` aqui significaria "esta conta não
+ * existe" no lugar exato em que o chamador está perguntando por um perfil —
+ * a confusão que faz um app tratar o retorno como se nunca fosse nulo. Quem
+ * chama sempre tem uma conta na mão (a sessão, ou um uuid que ele mesmo acabou
+ * de resolver).
+ */
+export async function getProfile(userUuid: string): Promise<UserProfile> {
+  if (!isUuid(userUuid)) throw notFound(`Conta não encontrada: ${String(userUuid)}`);
+
+  const result = await db().execute(sql`
+    SELECT ${PROFILE_COLUMNS} ${PROFILE_FROM} WHERE u.uuid = ${userUuid}::uuid LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) throw notFound(`Conta não encontrada: ${userUuid}`);
+  return toUserProfile(row);
+}
+
+/**
+ * Salva o perfil da própria conta — o `INSERT … ON CONFLICT DO UPDATE` que faz
+ * a linha nascer no primeiro salvamento.
+ *
+ * O upsert acontece **sempre**, mesmo numa chamada que só troca o `name`: é o
+ * que torna literal a regra "a linha nasce no primeiro salvamento", e a linha
+ * em branco com `is_public = false` é indistinguível da ausência para toda
+ * leitura. O `SET` nunca fica vazio porque `updated_at` entra sozinho.
+ *
+ * Tudo numa transação: o nome mora em `users` e o resto em `user_profiles`, e
+ * um PATCH que gravasse metade seria uma tela que mostra o nome novo com a bio
+ * velha. A ordem é `users` primeiro, depois `user_profiles` — a mesma de
+ * `clearProfile`, e é ela que impede que dois salvamentos simultâneos se
+ * travem em sentidos opostos.
+ *
+ * As recusas são 400 com o campo nomeado; conta inexistente é 404, inclusive
+ * quando quem a descobre é a chave estrangeira do upsert.
+ */
+export async function saveProfile(
+  userUuid: string,
+  input: SaveProfileInput,
+): Promise<UserProfile> {
+  if (!isUuid(userUuid)) throw notFound(`Conta não encontrada: ${String(userUuid)}`);
+
+  // O nome de exibição segue a regra de `updateUser`: aparado e não vazio. Um
+  // perfil sem nome deixaria a página pública creditando o vazio.
+  const nome = input.name === undefined ? undefined : optionalText(input.name, 'name')?.trim();
+  if (input.name !== undefined && !nome) throw badRequest('O campo "name" não pode ficar vazio');
+
+  let bio: string | undefined;
+  if (input.bio !== undefined) {
+    if (input.bio !== null && typeof input.bio !== 'string') {
+      throw badRequest('O campo "bio" deve ser uma string');
+    }
+    const normalizada = normalizeBio(input.bio);
+    if (normalizada === null) {
+      throw badRequest(`O campo "bio" passa de ${BIO_MAX_LENGTH} caracteres`);
+    }
+    // O caractere nulo não cabe em `text` e o Postgres recusa o **parâmetro**
+    // com 22021 antes de olhar a consulta — sem esta linha, uma bio colada de
+    // um arquivo binário viraria 500 com o SQL inteiro no log (`tasks/038`).
+    if (normalizada.includes(NUL)) {
+      throw badRequest('O campo "bio" não pode conter o caractere nulo');
+    }
+    bio = normalizada;
+  }
+
+  let site: string | null | undefined;
+  if (input.websiteUrl !== undefined) {
+    const normalizado = normalizeWebsite(input.websiteUrl);
+    if (normalizado === false) {
+      throw badRequest('O campo "websiteUrl" deve ser uma URL http(s) absoluta');
+    }
+    site = normalizado;
+  }
+
+  let links: ProfileLink[] | undefined;
+  if (input.links !== undefined) {
+    const normalizados = normalizeProfileLinks(input.links);
+    if (normalizados === null) {
+      throw badRequest(
+        `O campo "links" aceita até ${PROFILE_LINKS_MAX} entradas de rótulo e ` +
+          `URL http(s), sem repetir a mesma URL`,
+      );
+    }
+    // JSONB não guarda o caractere nulo **nem escapado**: a sequência de seis
+    // caracteres que o `JSON.stringify` produz é recusada pelo servidor com
+    // 22P05, no meio da transação e com o SQL no log. Por isso a conferência é
+    // nas cadeias, e não no JSON já serializado — ali o byte já virou texto e
+    // o `includes` não o acha.
+    if (normalizados.some((link) => link.label.includes(NUL) || link.url.includes(NUL))) {
+      throw badRequest('O campo "links" não pode conter o caractere nulo');
+    }
+    links = normalizados;
+  }
+
+  const publico = optionalBoolean(input.isPublic, 'isPublic');
+
+  const sets: SQL[] = [];
+  if (bio !== undefined) sets.push(sql`bio = ${bio}`);
+  if (site !== undefined) sets.push(sql`website_url = ${site}`);
+  if (links !== undefined) sets.push(sql`links = ${JSON.stringify(links)}::jsonb`);
+  if (publico !== undefined) sets.push(sql`is_public = ${publico}`);
+  sets.push(sql`updated_at = now()`);
+
+  try {
+    return await db().transaction(async (tx) => {
+      if (nome !== undefined) {
+        // `updated_at` de `users` é "última alteração da conta", e trocar o
+        // nome de exibição é uma. O que a decisão 1 permite é **só** isto:
+        // papel, estado e username continuam sendo de `updateUser`.
+        const alterada = await tx.execute(sql`
+          UPDATE users SET name = ${nome}, updated_at = now()
+          WHERE uuid = ${userUuid}::uuid
+          RETURNING uuid
+        `);
+        if ((alterada.rows as Row[]).length === 0) {
+          throw notFound(`Conta não encontrada: ${userUuid}`);
+        }
+      }
+
+      await tx.execute(sql`
+        INSERT INTO user_profiles (user_uuid, bio, website_url, links, is_public)
+        VALUES (
+          ${userUuid}::uuid,
+          ${bio ?? ''},
+          ${site ?? null},
+          ${JSON.stringify(links ?? [])}::jsonb,
+          ${publico ?? false}
+        )
+        ON CONFLICT (user_uuid) DO UPDATE SET ${sql.join(sets, sql`, `)}
+      `);
+
+      const lido = await tx.execute(sql`
+        SELECT ${PROFILE_COLUMNS} ${PROFILE_FROM} WHERE u.uuid = ${userUuid}::uuid LIMIT 1
+      `);
+      const row = (lido.rows as Row[])[0];
+      if (!row) throw notFound(`Conta não encontrada: ${userUuid}`);
+      return toUserProfile(row);
+    });
+  } catch (err) {
+    // A conta não existe: quem descobre é a FK do upsert quando a chamada não
+    // trouxe `name` (sem ele não há UPDATE em `users` para acusar antes).
+    if (isForeignKeyViolation(err)) throw notFound(`Conta não encontrada: ${userUuid}`);
+    throw err;
+  }
+}
+
+/**
+ * "Limpar perfil" do admin (decisão 6): esvazia os campos públicos, desliga o
+ * `is_public`, **apaga a foto** e grava `user.profile` na trilha — tudo numa
+ * transação, porque metade de uma moderação é pior do que nenhuma.
+ *
+ * É o único caminho pelo qual alguém que não é o dono mexe no perfil, e ele
+ * não escreve texto: o admin apaga, nunca corrige no lugar da pessoa. O que
+ * some é o que estava publicado; o `name` fica (é campo de conta, de
+ * `updateUser`) e a conta continua exatamente como estava.
+ *
+ * A foto sai mesmo quando não há linha de perfil: `user_avatars` é
+ * independente de `user_profiles`, e uma conta pode ter enviado foto sem nunca
+ * ter salvo um campo público.
+ *
+ * **Audita sempre**, inclusive quando não havia nada a limpar. A linha registra
+ * o ato de quem administra — e decidir "não havia nada" dependeria de uma
+ * leitura que a próxima escrita concorrente já teria desmentido. Conta
+ * inexistente (ou uuid torto) é 404, sem auditar.
+ */
+export async function clearProfile(
+  userUuid: string,
+  source: AuditSource,
+  actor?: AuditActor,
+): Promise<UserProfile> {
+  if (!isUuid(userUuid)) throw notFound(`Conta não encontrada: ${String(userUuid)}`);
+
+  return db().transaction(async (tx) => {
+    const found = await tx.execute(sql`
+      SELECT username, name FROM users WHERE uuid = ${userUuid}::uuid LIMIT 1
+    `);
+    const conta = (found.rows as Row[])[0];
+    if (!conta) throw notFound(`Conta não encontrada: ${userUuid}`);
+
+    // Sem `INSERT`: não há o que limpar numa conta que nunca salvou perfil, e
+    // criar a linha em branco aqui seria o admin abrindo perfil para alguém.
+    await tx.execute(sql`
+      UPDATE user_profiles
+         SET bio = '', website_url = NULL, links = '[]'::jsonb,
+             is_public = false, updated_at = now()
+       WHERE user_uuid = ${userUuid}::uuid
+    `);
+    await tx.execute(sql`DELETE FROM user_avatars WHERE user_uuid = ${userUuid}::uuid`);
+
+    await auditTx(tx, {
+      skillUuid: null,
+      skillSlug: null,
+      filePath: null,
+      action: 'user.profile',
+      source,
+      previousContent: null,
+      actor,
+      targetLabel: conta.username as string,
+    });
+
+    return {
+      username: conta.username as string,
+      name: conta.name as string,
+      bio: '',
+      websiteUrl: null,
+      links: [],
+      isPublic: false,
+      hasAvatar: false,
+      avatarUpdatedAt: null,
+    };
+  });
+}
+
+// ------------------------------------------------------------------ foto ---
+
+/**
+ * Grava a foto da conta; enviar de novo substitui (uma foto por conta).
+ *
+ * **O tipo é decidido pelos bytes**, por `sniffAvatarMime` — nunca pela
+ * extensão nem pelo `Content-Type` da parte multipart, que são texto que quem
+ * envia escolhe. O argumento `mime` é opcional e serve para o chamador
+ * **confirmar** o que sniffou: informado e diferente dos bytes, é 400. Um app
+ * que repasse o tipo declarado pelo cliente recebe essa recusa com os dois
+ * valores na mensagem, em vez de gravar uma mentira que a rota depois serve.
+ *
+ * A conferência é repetida aqui mesmo com o painel já a fazendo, pela razão de
+ * `requireUsername` em `createUser`: o mcp-admin, um script e um caminho novo
+ * chegam por esta porta, e a regra não pode depender de quem chamou.
+ *
+ * O `sha256` é calculado **pelo banco** sobre os bytes gravados, num CTE que
+ * os manda uma vez só. É o ETag da rota que serve a imagem (`avatarHeaders` do
+ * shared), e o CHECK `user_avatars_sha256_chk` garante que ele nunca descreve
+ * outros bytes.
+ */
+export async function setAvatar(
+  userUuid: string,
+  bytes: Uint8Array,
+  mime?: string,
+): Promise<AvatarMeta> {
+  if (!isUuid(userUuid)) throw notFound(`Conta não encontrada: ${String(userUuid)}`);
+  if (!ArrayBuffer.isView(bytes)) throw badRequest('A foto precisa vir como bytes');
+
+  const buffer = Buffer.isBuffer(bytes)
+    ? bytes
+    : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (buffer.length === 0) throw badRequest('A foto está vazia');
+  if (buffer.length > AVATAR_MAX_BYTES) {
+    throw badRequest(`A foto passa de ${Math.floor(AVATAR_MAX_BYTES / 1024)} KB`);
+  }
+
+  const tipo = sniffAvatarMime(buffer);
+  if (!tipo) {
+    throw badRequest(`Formato de imagem não reconhecido: use ${AVATAR_MIME_TYPES.join(', ')}`);
+  }
+  if (mime !== undefined && mime !== tipo) {
+    throw badRequest(
+      `O tipo informado (${String(mime)}) não corresponde aos bytes enviados (${tipo})`,
+    );
+  }
+
+  try {
+    const result = await db().execute(sql`
+      WITH nova AS (SELECT ${buffer}::bytea AS bytes)
+      INSERT INTO user_avatars (user_uuid, bytes, mime, sha256)
+      SELECT ${userUuid}::uuid, nova.bytes, ${tipo}, sha256(nova.bytes) FROM nova
+      ON CONFLICT (user_uuid) DO UPDATE
+        SET bytes = EXCLUDED.bytes, mime = EXCLUDED.mime,
+            sha256 = EXCLUDED.sha256, updated_at = now()
+      RETURNING mime, sha256, updated_at
+    `);
+    const row = (result.rows as Row[])[0];
+    return {
+      mime: row.mime as AvatarMime,
+      sha256: row.sha256 as Buffer,
+      updatedAt: new Date(row.updated_at).toISOString(),
+    };
+  } catch (err) {
+    if (isForeignKeyViolation(err)) throw notFound(`Conta não encontrada: ${userUuid}`);
+    throw err;
+  }
+}
+
+/** Apaga a foto. `false` = não havia nenhuma — não é erro, é o estado normal. */
+export async function deleteAvatar(userUuid: string): Promise<boolean> {
+  if (!isUuid(userUuid)) return false;
+
+  const result = await db().execute(sql`
+    DELETE FROM user_avatars WHERE user_uuid = ${userUuid}::uuid RETURNING user_uuid
+  `);
+  return (result.rows as Row[]).length > 0;
+}
+
+/**
+ * Os bytes da foto, o tipo e o hash — a rota que serve a imagem.
+ *
+ * **Não olha `is_public` nem `is_active`**, e isso é deliberado: o painel serve
+ * a foto a qualquer sessão logada (ela é o avatar das listas e das fichas, como
+ * o monograma), e o site confere `getPublicProfile` **antes** de pedir os
+ * bytes. A política é de quem chama; a função é burra de propósito, porque uma
+ * função que decidisse sozinha teria de decidir igual para as duas superfícies
+ * — e elas não são iguais.
+ */
+export async function getAvatar(userUuid: string): Promise<Avatar | null> {
+  if (!isUuid(userUuid)) return null;
+
+  const result = await db().execute(sql`
+    SELECT bytes, mime, sha256, updated_at
+    FROM user_avatars WHERE user_uuid = ${userUuid}::uuid LIMIT 1
+  `);
+  return toAvatar((result.rows as Row[])[0]);
+}
+
+/**
+ * A irmã de `getAvatar` endereçada pelo username, para o site servir
+ * `/u/:username/avatar` **sem** passar por `getUserByUsername` — que devolve
+ * `UserRecord`, com hash de senha, `token_version` e o subject OIDC dentro. Pôr
+ * material de autenticação na mão de um app anônimo para desenhar uma imagem é
+ * o oposto do que a `033` fez.
+ *
+ * Também não olha `is_public` nem `is_active`, pela razão de `getAvatar`: quem
+ * decide é o chamador, e no site quem decide é o `getPublicProfile` que vem
+ * antes — sem ele, a foto de um perfil recém-tornado privado continuaria
+ * servida a quem tivesse a URL, e a URL é pública por construção, porque
+ * esteve numa página.
+ */
+export async function getAvatarByUsername(username: string): Promise<Avatar | null> {
+  const wanted = normalizeUsername(username);
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT a.bytes, a.mime, a.sha256, a.updated_at
+    FROM user_avatars a JOIN users u ON u.uuid = a.user_uuid
+    WHERE lower(u.username) = ${wanted} LIMIT 1
+  `);
+  return toAvatar((result.rows as Row[])[0]);
+}
+
+function toAvatar(row: Row | undefined): Avatar | null {
+  if (!row) return null;
+  return {
+    bytes: row.bytes as Buffer,
+    mime: row.mime as AvatarMime,
+    sha256: row.sha256 as Buffer,
+    updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+/**
+ * Só o carimbo da foto, para o painel montar a URL com cache-buster sem ler a
+ * imagem. `null` = não há foto.
+ *
+ * A consulta não cita `bytes`: é uma leitura de índice mais uma linha estreita,
+ * e é por isso que ela pode aparecer numa lista de contas sem custar um
+ * megabyte por tela.
+ */
+export async function avatarStamp(userUuid: string): Promise<string | null> {
+  if (!isUuid(userUuid)) return null;
+
+  const result = await db().execute(sql`
+    SELECT updated_at FROM user_avatars WHERE user_uuid = ${userUuid}::uuid LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  return row ? new Date(row.updated_at).toISOString() : null;
+}
+
+// --------------------------------------------------------- página pública ---
+
+/**
+ * O casamento da rota pública, em um lugar só: o username, o perfil ligado e a
+ * conta ativa, sobre `users u` e `user_profiles p`.
+ *
+ * Ele é compartilhado por `getPublicProfile` e `isProfilePublic` de propósito.
+ * As duas respondem à **mesma** pergunta em superfícies diferentes (a página e
+ * a imagem), e duas cópias do predicado divergiriam no dia em que uma condição
+ * mudasse — e a divergência apareceria como uma foto que continua sendo
+ * servida depois de a página ter sumido, que é justamente o que não pode
+ * acontecer.
+ *
+ * O `username` já vem normalizado por quem chama. Os dois índices que o plano
+ * usa são `users_username_lower_uniq` (`033`) e `user_profiles_public_idx`
+ * (`034`).
+ */
+const PERFIL_PUBLICO = (username: string): SQL =>
+  sql`lower(u.username) = ${username} AND p.is_public AND u.is_active`;
+
+/**
+ * A pergunta da rota da imagem: **esta pessoa tem página de perfil?**
+ *
+ * Existe para o site não pagar a listagem inteira de alguém a cada `<img>`.
+ * `GET /u/:username/avatar` precisa conferir `is_public`/`is_active` antes de
+ * servir os bytes, e fazer isso com `getPublicProfile` arrastava junto as
+ * skills e os catálogos públicos da pessoa — materializados com
+ * `skillColumns`, subconsultas por linha e tudo — só para serem descartados.
+ * Numa conta com 200 skills públicas, abrir a página do perfil montava essas
+ * 200 linhas **duas vezes**: uma para a página e outra para a foto, numa rota
+ * anônima. É a mesma família do custo medido em `ownerHasProfile`: trabalho
+ * proporcional ao acervo numa consulta que não precisa dele.
+ *
+ * Duas buscas de índice e nenhuma linha de skill ou catálogo. O predicado é o
+ * `PERFIL_PUBLICO` de `getPublicProfile`, e não uma cópia.
+ *
+ * **Não substitui a conferência, substitui o custo dela.** A política continua
+ * sendo de quem chama: `getAvatarByUsername` segue burra, e é o site que
+ * pergunta primeiro. Username torto ou inexistente é `false`, como perfil
+ * privado e conta desativada — os quatro casos são indistinguíveis, pela razão
+ * de `getPublicProfile`.
+ */
+export async function isProfilePublic(username: string): Promise<boolean> {
+  const wanted = normalizeUsername(username);
+  if (!wanted) return false;
+
+  const result = await db().execute(sql`
+    SELECT 1 FROM users u JOIN user_profiles p ON p.user_uuid = u.uuid
+    WHERE ${PERFIL_PUBLICO(wanted)}
+    LIMIT 1
+  `);
+  return (result.rows as Row[]).length > 0;
+}
+
+/**
+ * O perfil como o **site anônimo** o vê. Só existe com `is_public` **e** a
+ * conta ativa; nos demais casos é `null`, sem distinguir o motivo.
+ *
+ * Perfil privado, conta desativada e username inexistente são o mesmo `null` de
+ * propósito (`docs/20` §7): distinguir os dois primeiros do terceiro seria
+ * responder "esta conta existe, mas não quer ser vista", que é exatamente a
+ * informação que o opt-in existe para não dar.
+ *
+ * O `username` devolvido é o **canônico** — o que está gravado, em caixa baixa
+ * —, e não o que veio da URL: é com ele que o site monta a chamada seguinte
+ * (o avatar) sem propagar a grafia de quem digitou.
+ */
+export async function getPublicProfile(username: string): Promise<PublicProfile | null> {
+  const wanted = normalizeUsername(username);
+  if (!wanted) return null;
+
+  const result = await db().execute(sql`
+    SELECT u.uuid, u.username, u.name, p.bio, p.website_url, p.links,
+           (a.user_uuid IS NOT NULL) AS has_avatar, a.updated_at AS avatar_updated_at
+    FROM users u
+    JOIN user_profiles p ON p.user_uuid = u.uuid
+    LEFT JOIN user_avatars a ON a.user_uuid = u.uuid
+    WHERE ${PERFIL_PUBLICO(wanted)}
+    LIMIT 1
+  `);
+  const row = (result.rows as Row[])[0];
+  if (!row) return null;
+
+  const publicado = await publicByOwnerUuid(row.uuid as string);
+  return {
+    username: row.username,
+    name: row.name,
+    bio: row.bio ?? '',
+    websiteUrl: row.website_url ?? null,
+    links: toProfileLinks(row.links),
+    hasAvatar: Boolean(row.has_avatar),
+    avatarUpdatedAt: iso(row.avatar_updated_at),
+    ...publicado,
+  };
+}
+
+/**
+ * As skills e os catálogos **já públicos** de uma conta — a decisão 7 do
+ * `docs/20`. Estar no perfil não torna nada visível: o recorte das skills é o
+ * mesmo `OPEN_EXPOSURE` do site (pública, em vMCP aberto e ligado, ou em
+ * catálogo público e ligado — sempre com a skill ligada), e o dos catálogos é
+ * o mesmo de `listPublicCatalogs`.
+ *
+ * **Não filtra `users.is_active`**: uma conta desativada continua sem página
+ * de perfil (quem recusa é `getPublicProfile`), mas as skills públicas dela
+ * seguem no site como sempre estiveram — desativar uma conta nunca despublicou
+ * o acervo dela, e não é aqui que isso mudaria. Username inexistente ou torto
+ * devolve as duas listas vazias, não erro.
+ */
+export async function listPublicByOwner(username: string): Promise<PublicByOwner> {
+  const wanted = normalizeUsername(username);
+  if (!wanted) return { skills: [], catalogs: [] };
+
+  const found = await db().execute(sql`
+    SELECT uuid FROM users WHERE lower(username) = ${wanted} LIMIT 1
+  `);
+  const row = (found.rows as Row[])[0];
+  if (!row) return { skills: [], catalogs: [] };
+
+  return publicByOwnerUuid(row.uuid as string);
+}
+
+/**
+ * O corpo de `listPublicByOwner`, pelo uuid que `getPublicProfile` já tem em
+ * mãos — sem procurar o username uma segunda vez.
+ *
+ * As duas listas vêm **inteiras**, sem paginação, como em `getPublicCatalog`:
+ * a página desenha o que a pessoa publicou, e um "ver mais" que ninguém pediu
+ * seria outra decisão. Quem publica centenas de skills paga uma página grande.
+ */
+async function publicByOwnerUuid(ownerUuid: string): Promise<PublicByOwner> {
+  const skills = await db().execute(sql`
+    SELECT ${skillColumns({ visibility: 'open' })}
+    FROM skills s
+    WHERE s.owner_user_uuid = ${ownerUuid}::uuid AND ${OPEN_EXPOSURE}
+    ORDER BY s.name ASC, s.slug ASC
+  `);
+  const catalogs = await db().execute(sql`
+    SELECT ${PUBLIC_CATALOG_COLUMNS} ${PUBLIC_CATALOG_FROM}
+    WHERE c.owner_user_uuid = ${ownerUuid}::uuid AND c.is_public AND c.is_active
+    ORDER BY c.name ASC, c.slug ASC
+  `);
+
+  return {
+    skills: (skills.rows as Row[]).map(toSummary),
+    catalogs: (catalogs.rows as Row[]).map(toPublicCatalog),
+  };
 }
 
 // ------------------------------------------------------------ chaves de API --
@@ -2812,14 +3811,16 @@ export async function createApiKey(input: {
  * O que a revogação de uma chave `psk_` devolve: o que identifica a chave numa
  * linha de auditoria, lido no próprio UPDATE. O app rotula o `key.revoke` como
  * rotulou o `key.create` — pelo nome e pelo prefixo — em vez do uuid, que não
- * aparece em tela nenhuma (`tasks/040`). `userEmail` é o dono da chave, que com
- * o admin revogando não é quem chamou.
+ * aparece em tela nenhuma (`tasks/040`). `userUsername` é o dono da chave, que
+ * com o admin revogando não é quem chamou; era o e-mail até o `033`, e virou
+ * username pela mesma regra de toda projeção de rótulo de conta (`docs/19`
+ * §4.1) — este aqui vai para `audit_log`, onde ficaria congelado para sempre.
  */
 export type RevokedApiKey = {
   name: string;
   prefix: string;
   userUuid: string;
-  userEmail: string;
+  userUsername: string;
 };
 
 /**
@@ -2849,7 +3850,7 @@ export async function revokeApiKey(
       AND k.revoked_at IS NULL
       AND (${owner}::uuid IS NULL OR k.user_uuid = ${owner}::uuid)
       AND u.uuid = k.user_uuid
-    RETURNING k.name, k.prefix, k.user_uuid, u.email
+    RETURNING k.name, k.prefix, k.user_uuid, u.username
   `);
   const row = (result.rows as Row[])[0];
   if (!row) return null;
@@ -2857,7 +3858,7 @@ export async function revokeApiKey(
     name: row.name,
     prefix: row.prefix,
     userUuid: row.user_uuid,
-    userEmail: row.email,
+    userUsername: row.username,
   };
 }
 
@@ -3004,6 +4005,7 @@ export async function recordAccountAudit(entry: {
     | 'user.activate'
     | 'user.password'
     | 'user.link'
+    | 'user.username'
     | 'key.create'
     | 'key.revoke'
     | 'mcp.key.create'
@@ -3071,6 +4073,8 @@ const AUDIT_ACTIONS: readonly AuditAction[] = [
   'user.activate',
   'user.password',
   'user.link',
+  'user.username',
+  'user.profile',
   'key.create',
   'key.revoke',
   'mcp.create',
@@ -3365,7 +4369,7 @@ function virtualMcpColumns({ onlineWindowMs, viewer }: VirtualMcpReadOptions): S
 
   return sql`
   m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
-  m.owner_user_uuid, u.email AS owner_email, m.layout, ${access} AS access,
+  m.owner_user_uuid, u.username AS owner_username, m.layout, ${access} AS access,
   c.skill_count, c.tool_count, c.prompt_count, c.resource_count,
   (SELECT count(*) FROM virtual_mcp_keys k
     WHERE k.virtual_mcp_uuid = m.uuid AND k.revoked_at IS NULL)::int AS active_key_count,
@@ -3422,7 +4426,7 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     isActive: Boolean(row.is_active),
     isOpen: Boolean(row.is_open),
     ownerUserUuid: row.owner_user_uuid ?? null,
-    ownerEmail: row.owner_email ?? null,
+    ownerUsername: row.owner_username ?? null,
     access: toAccess(row.access),
     skillCount: Number(row.skill_count ?? 0),
     toolCount: Number(row.tool_count ?? 0),
@@ -4200,7 +5204,7 @@ function catalogColumns({ viewer }: CatalogReadOptions): SQL {
   const access = accessColumn(readMode({ visibility: 'all', viewer }), sql`c.owner_user_uuid`, catalogGrantOf);
   return sql`
   c.uuid, c.slug, c.name, c.description, c.is_active, c.is_public, c.owner_user_uuid,
-  u.email AS owner_email, ${access} AS access, c.view_count, c.download_count,
+  u.username AS owner_username, ${access} AS access, c.view_count, c.download_count,
   (SELECT count(*) FROM catalog_skills cs WHERE cs.catalog_uuid = c.uuid)::int AS skill_count,
   (SELECT count(*) FROM catalog_skills cs JOIN skills s ON s.uuid = cs.skill_uuid
     WHERE cs.catalog_uuid = c.uuid AND cs.is_active AND s.is_active)::int AS active_skill_count,
@@ -4219,7 +5223,7 @@ function toCatalogSummary(row: Row): CatalogSummary {
     description: row.description ?? '',
     isActive: Boolean(row.is_active),
     ownerUserUuid: row.owner_user_uuid ?? null,
-    ownerEmail: row.owner_email ?? null,
+    ownerUsername: row.owner_username ?? null,
     isPublic: Boolean(row.is_public),
     access: toAccess(row.access),
     skillCount: Number(row.skill_count ?? 0),
@@ -5052,7 +6056,10 @@ async function lockGrantedObjectTx(tx: Tx, spec: GrantSpec, where: SQL): Promise
  * Conta torta, inexistente ou desativada é 400; `null` (deixar órfão) passa.
  * Trava o objeto antes de mexer nas concessões, na mesma ordem de
  * `setGrant`/`removeGrant`, para dois caminhos concorrentes não se
- * cruzarem. Devolve o e-mail do novo dono, para o label da auditoria.
+ * cruzarem. Devolve o **username** do novo dono, para o label da auditoria —
+ * é ele que fica congelado em `target_label` para sempre (`docs/19` §4.1), e
+ * congelar ali um endereço de e-mail era metade do vazamento que o `033`
+ * fechou.
  */
 async function transferOwnerTx(
   tx: Tx,
@@ -5066,28 +6073,31 @@ async function transferOwnerTx(
   if (!isUuid(newOwner)) throw badRequest(`Conta não encontrada: ${String(newOwner)}`);
 
   const found = await tx.execute(
-    sql`SELECT email, is_active FROM users WHERE uuid = ${newOwner} FOR SHARE`,
+    sql`SELECT username, is_active FROM users WHERE uuid = ${newOwner} FOR SHARE`,
   );
   const user = (found.rows as Row[])[0];
   if (!user) throw badRequest(`Conta não encontrada: ${newOwner}`);
   if (!user.is_active) {
-    throw badRequest(`A conta "${user.email}" está desativada e não pode receber a transferência`);
+    throw badRequest(
+      `A conta "${user.username}" está desativada e não pode receber a transferência`,
+    );
   }
 
   await tx.execute(sql`
     DELETE FROM ${sql.raw(spec.table)}
     WHERE ${sql.raw(spec.column)} = ${objectUuid} AND user_uuid = ${newOwner}
   `);
-  return user.email as string;
+  return user.username as string;
 }
 
 /**
  * O `target_label` de um `update` de catálogo ou vMCP: só o slug, ou
- * `<slug> <email do novo dono>` numa transferência (`docs/12` §8). Deixar
- * órfão (`null`) não muda o label: não há e-mail a registrar.
+ * `<slug> <username do novo dono>` numa transferência (`docs/12` §8, com o
+ * rótulo do `docs/19`). Deixar órfão (`null`) não muda o label: não há conta a
+ * registrar.
  */
-function transferLabel(slug: string, newOwnerEmail: string | null | undefined): string {
-  return newOwnerEmail ? `${slug} ${newOwnerEmail}` : slug;
+function transferLabel(slug: string, newOwnerUsername: string | null | undefined): string {
+  return newOwnerUsername ? `${slug} ${newOwnerUsername}` : slug;
 }
 
 /**
@@ -5099,27 +6109,27 @@ function transferLabel(slug: string, newOwnerEmail: string | null | undefined): 
  */
 function grantsQuery(spec: GrantSpec, objectUuid: string, userUuid?: string): SQL {
   return sql`
-    SELECT g.user_uuid, u.email, u.name, u.role, u.is_active, g.level,
-           g.granted_by_user_uuid, gb.email AS granted_by_email, g.created_at
+    SELECT g.user_uuid, u.username, u.name, u.role, u.is_active, g.level,
+           g.granted_by_user_uuid, gb.username AS granted_by_username, g.created_at
     FROM ${sql.raw(spec.table)} g
     JOIN users u ON u.uuid = g.user_uuid
     LEFT JOIN users gb ON gb.uuid = g.granted_by_user_uuid
     WHERE g.${sql.raw(spec.column)} = ${objectUuid}
       ${userUuid === undefined ? sql`` : sql`AND g.user_uuid = ${userUuid}`}
-    ORDER BY u.name ASC, u.email ASC
+    ORDER BY u.name ASC, u.username ASC
   `;
 }
 
 function toGrant(row: Row): Grant {
   return {
     userUuid: row.user_uuid,
-    email: row.email,
+    username: row.username,
     name: row.name,
     role: row.role as Role,
     isActive: row.is_active === true,
     level: row.level as AccessLevel,
     grantedByUserUuid: row.granted_by_user_uuid ?? null,
-    grantedByEmail: row.granted_by_email ?? null,
+    grantedByUsername: row.granted_by_username ?? null,
     createdAt: new Date(row.created_at).toISOString(),
   };
 }
@@ -5137,8 +6147,8 @@ async function listGrants(spec: GrantSpec, objectUuid: string): Promise<Grant[]>
  * admin — os dois já têm tudo, e uma linha para eles seria ruído. Slug
  * desconhecido é 404. Ao mudar o nível a linha é reescrita inteira (nível,
  * quem concedeu e quando): ela descreve a concessão **atual**. Audita
- * `*.share` com `email:nível` (e o slug antes, em catálogo e vMCP) e devolve
- * a concessão. A checagem de que o chamador tem `manage` é do app.
+ * `*.share` com `username:nível` (e o slug antes, em catálogo e vMCP) e
+ * devolve a concessão. A checagem de que o chamador tem `manage` é do app.
  */
 async function setGrant(
   spec: GrantSpec,
@@ -5158,16 +6168,16 @@ async function setGrant(
     const object = await lockGrantedObjectTx(tx, spec, sql`slug = ${wantedSlug}`);
 
     const found = await tx.execute(
-      sql`SELECT email, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
+      sql`SELECT username, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
     );
     const user = (found.rows as Row[])[0];
     if (!user) throw badRequest(`Conta não encontrada: ${userUuid}`);
-    if (!user.is_active) throw badRequest(`A conta "${user.email}" está desativada`);
+    if (!user.is_active) throw badRequest(`A conta "${user.username}" está desativada`);
     if (user.role === 'admin') {
-      throw badRequest(`"${user.email}" é administrador e já tem acesso a tudo`);
+      throw badRequest(`"${user.username}" é administrador e já tem acesso a tudo`);
     }
     if (object.ownerUserUuid === userUuid) {
-      throw badRequest(`"${user.email}" é o dono e já tem acesso a tudo`);
+      throw badRequest(`"${user.username}" é o dono e já tem acesso a tudo`);
     }
 
     await tx.execute(sql`
@@ -5179,7 +6189,10 @@ async function setGrant(
         granted_by_user_uuid = EXCLUDED.granted_by_user_uuid,
         created_at = now()
     `);
-    await auditTx(tx, grantAudit(spec, 'share', object, `${user.email}:${level}`, source, actor));
+    await auditTx(
+      tx,
+      grantAudit(spec, 'share', object, `${user.username}:${level}`, source, actor),
+    );
 
     const grant = (await tx.execute(grantsQuery(spec, object.uuid, userUuid)).then(
       (r) => (r.rows as Row[])[0],
@@ -5191,7 +6204,7 @@ async function setGrant(
 /**
  * Revoga a concessão de uma conta num objeto. Concessão inexistente (ou
  * conta torta) é 404 e nada é auditado; slug desconhecido também. Audita
- * `*.unshare` com o e-mail (e o slug antes, em catálogo e vMCP).
+ * `*.unshare` com o username (e o slug antes, em catálogo e vMCP).
  */
 async function removeGrant(
   spec: GrantSpec,
@@ -5211,18 +6224,22 @@ async function removeGrant(
       WHERE g.${sql.raw(spec.column)} = ${object.uuid}
         AND g.user_uuid = ${userUuid}
         AND u.uuid = g.user_uuid
-      RETURNING u.email
+      RETURNING u.username
     `);
     const row = (removed.rows as Row[])[0];
     if (!row) throw notFound(`A conta não tem concessão neste ${spec.label.toLowerCase()}`);
-    await auditTx(tx, grantAudit(spec, 'unshare', object, row.email as string, source, actor));
+    await auditTx(tx, grantAudit(spec, 'unshare', object, row.username as string, source, actor));
   });
 }
 
 /**
  * A linha de auditoria de uma concessão (`docs/12` §8): na skill, com
- * `skill_uuid`/`skill_slug` e `email:nível` (ou só o e-mail) no label; em
+ * `skill_uuid`/`skill_slug` e `username:nível` (ou só o username) no label; em
  * catálogo e vMCP, sem skill e com o slug antes, separado por espaço.
+ *
+ * O rótulo é **congelado**, e por isso é username desde o `033`: `audit_log`
+ * nunca é podada, e um endereço de e-mail gravado aqui ficaria legível para
+ * quem lê a trilha muito depois de a conta sumir.
  */
 function grantAudit(
   spec: GrantSpec,
@@ -5351,7 +6368,7 @@ export async function adoptOrphans(
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${ADOPT_ORPHANS_LOCK}, 0))`);
 
     const found = await tx.execute(
-      sql`SELECT email, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
+      sql`SELECT username, role, is_active FROM users WHERE uuid = ${userUuid} FOR SHARE`,
     );
     const user = (found.rows as Row[])[0];
     if (!user || user.role !== 'admin' || !user.is_active) return notAdopted();
@@ -5363,9 +6380,9 @@ export async function adoptOrphans(
     `);
     if ((others.rows as Row[])[0]?.found) return notAdopted();
 
-    const email = user.email as string;
-    const skills = await adoptOrphansTx(tx, GRANTS.skill, userUuid, email, source, actor);
-    const catalogs = await adoptOrphansTx(tx, GRANTS.catalog, userUuid, email, source, actor);
+    const username = user.username as string;
+    const skills = await adoptOrphansTx(tx, GRANTS.skill, userUuid, username, source, actor);
+    const catalogs = await adoptOrphansTx(tx, GRANTS.catalog, userUuid, username, source, actor);
     return { adopted: true, skills, catalogs };
   });
 }
@@ -5383,19 +6400,19 @@ async function adoptOrphansTx(
   tx: Tx,
   spec: typeof GRANTS.skill | typeof GRANTS.catalog,
   userUuid: string,
-  email: string,
+  username: string,
   source: AuditSource,
   actor: AuditActor,
 ): Promise<number> {
   const onSkill = spec.table === 'skill_grants';
   const action: AuditAction = onSkill ? 'update' : 'catalog.update';
   // Os mesmos campos de `grantAudit` e de uma transferência: na skill, o uuid
-  // e o slug dela com o e-mail no label; no catálogo, sem skill e com o slug
-  // antes do e-mail. Os casts existem porque, num `INSERT … SELECT`, o
+  // e o slug dela com o username no label; no catálogo, sem skill e com o slug
+  // antes do username. Os casts existem porque, num `INSERT … SELECT`, o
   // Postgres não infere o tipo do parâmetro pela coluna de destino.
   const audited = onSkill
-    ? sql`a.uuid, a.slug, ${email}::text`
-    : sql`NULL::uuid, NULL::text, a.slug || ' ' || ${email}::text`;
+    ? sql`a.uuid, a.slug, ${username}::text`
+    : sql`NULL::uuid, NULL::text, a.slug || ' ' || ${username}::text`;
 
   const result = await tx.execute(sql`
     WITH adopted AS (
@@ -5426,11 +6443,17 @@ async function adoptOrphansTx(
 const USER_LOOKUP_MAX = 50;
 
 /**
- * A busca "Compartilhar com…" (`docs/12` decisão 13): contas **ativas** cujo
- * nome ou e-mail contém `q` (`ILIKE`), por nome. Menos de dois caracteres
- * (depois de aparar) devolve `[]` sem consultar — é o mínimo para não
- * listar a instalação inteira a cada tecla. Aberta a qualquer conta logada;
- * a checagem de sessão é do app.
+ * A busca "Compartilhar com…" (`docs/12` decisão 13, com o recorte do
+ * `docs/19` decisão 10): contas **ativas** cujo nome ou **username** contém
+ * `q` (`ILIKE`), por nome. Menos de dois caracteres (depois de aparar) devolve
+ * `[]` sem consultar — é o mínimo para não listar a instalação inteira a cada
+ * tecla. Aberta a qualquer conta logada; a checagem de sessão é do app.
+ *
+ * **O e-mail saiu dos dois lados**, e não só da projeção. Continuar a *casar*
+ * por endereço deixaria qualquer conta logada descobrir a qual username um
+ * e-mail corresponde — bastaria digitar o endereço e ler o resultado. A
+ * sondagem anula o sigilo mesmo com o campo fora da resposta, e é por isso que
+ * o `OR email ILIKE` não está mais aqui.
  */
 export async function lookupUsers(q: string, limit = 10): Promise<UserLookup[]> {
   const wanted = (optionalText(q, 'q') ?? '').trim();
@@ -5438,25 +6461,40 @@ export async function lookupUsers(q: string, limit = 10): Promise<UserLookup[]> 
   const pattern = likePattern(wanted.slice(0, SEARCH_QUERY_MAX_LENGTH));
 
   const result = await db().execute(sql`
-    SELECT uuid, email, name, role FROM users
-    WHERE is_active AND (name ILIKE ${pattern} OR email ILIKE ${pattern})
-    ORDER BY name ASC, email ASC
+    SELECT uuid, username, name, role FROM users
+    WHERE is_active AND (name ILIKE ${pattern} OR username ILIKE ${pattern})
+    ORDER BY name ASC, username ASC
     LIMIT ${clamp(limit, 1, USER_LOOKUP_MAX)}
   `);
   return (result.rows as Row[]).map((row) => ({
     uuid: row.uuid,
-    email: row.email,
+    username: row.username,
     name: row.name,
     role: row.role as Role,
   }));
 }
 
-/** Os catálogos que o site lista (`docs/12` §7): públicos e ligados, sem dono nem concessões. */
+/**
+ * Os catálogos que o site lista (`docs/12` §7): públicos e ligados, sem
+ * concessões.
+ *
+ * O dono entra pelo **username** desde o `033` (`docs/19` decisão 11): a ficha
+ * pública credita quem publicou, na skill e no catálogo — e, desde o `034`,
+ * com `ownerHasProfile` ao lado, que diz se esse crédito vira link para
+ * `/u/<username>` (`docs/20` §7). `owner_user_uuid`
+ * fica fora — é o `sub` do cookie de sessão do painel e não tem uso numa
+ * página anônima. Por isso o `LEFT JOIN`, e não uma subconsulta: a listagem
+ * tem poucas linhas e o dono é sempre um só.
+ */
 const PUBLIC_CATALOG_COLUMNS = sql`
-  c.uuid, c.slug, c.name, c.description,
+  c.uuid, c.slug, c.name, c.description, u.username AS owner_username,
+  ${ownerHasProfile(sql`c.owner_user_uuid`)} AS owner_has_profile,
   (SELECT count(*) FROM catalog_skills cs JOIN skills s ON s.uuid = cs.skill_uuid
     WHERE cs.catalog_uuid = c.uuid AND cs.is_active AND s.is_active)::int AS skill_count
 `;
+
+/** O `FROM` das duas leituras públicas de catálogo, com o dono ao lado. */
+const PUBLIC_CATALOG_FROM = sql`FROM catalogs c LEFT JOIN users u ON u.uuid = c.owner_user_uuid`;
 
 function toPublicCatalog(row: Row): PublicCatalog {
   return {
@@ -5464,6 +6502,8 @@ function toPublicCatalog(row: Row): PublicCatalog {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    ownerUsername: row.owner_username ?? null,
+    ownerHasProfile: Boolean(row.owner_has_profile),
     skillCount: Number(row.skill_count ?? 0),
   };
 }
@@ -5475,7 +6515,7 @@ function toPublicCatalog(row: Row): PublicCatalog {
  */
 export async function listPublicCatalogs(): Promise<PublicCatalog[]> {
   const result = await db().execute(sql`
-    SELECT ${PUBLIC_CATALOG_COLUMNS} FROM catalogs c
+    SELECT ${PUBLIC_CATALOG_COLUMNS} ${PUBLIC_CATALOG_FROM}
     WHERE c.is_public AND c.is_active
     ORDER BY c.name ASC, c.slug ASC
   `);
@@ -5495,7 +6535,7 @@ export async function getPublicCatalog(slug: string): Promise<PublicCatalogDetai
   if (!wanted) return null;
 
   const found = await db().execute(sql`
-    SELECT ${PUBLIC_CATALOG_COLUMNS} FROM catalogs c
+    SELECT ${PUBLIC_CATALOG_COLUMNS} ${PUBLIC_CATALOG_FROM}
     WHERE c.slug = ${wanted} AND c.is_public AND c.is_active
     LIMIT 1
   `);
@@ -6115,7 +7155,7 @@ function accessPort(surface: SkillAccessSurface): VirtualSurface {
  * aplicam (não há vMCP) e nenhum contador é tocado.
  *
  * As cópias (slug e nome da skill e do vMCP, nome da chave `psv_` por
- * `keyId`, da `psk_` por `apiKeyId`, e-mail por `userUuid`) são resolvidas
+ * `keyId`, da `psk_` por `apiKeyId`, username por `userUuid`) são resolvidas
  * aqui, num INSERT ... SELECT só: é o que fica legível depois que o objeto
  * some. `kind`, `surface`, `origin` e `auth` fora dos CHECKs e `skillUuid`
  * torto são 400 — é bug de quem chama. Uuid torto num campo **opcional** é
@@ -6130,7 +7170,7 @@ function accessPort(surface: SkillAccessSurface): VirtualSurface {
  * controle — o byte nulo derrubava a linha **e** os contadores, `tasks/038`
  * —, aparados e cortados em `MCP_SESSION_LABEL_MAX` (512). As **cópias de
  * nome** (skill, vMCP, chave `psv_`, chave `psk_` e cada catálogo) são
- * cortadas no mesmo teto: slug (96) e e-mail (254) já têm limite na entrada,
+ * cortadas no mesmo teto: slug (96) e username (32) já têm limite na entrada,
  * nome não tem nenhum, e a linha é copiada a cada leitura numa tabela que
  * nunca é podada (`tasks/042`). Cortar, e não um `CHECK`, pelo mesmo motivo
  * dos rótulos: o registro vale mais do que o campo.
@@ -6186,14 +7226,14 @@ export async function recordSkillAccess(input: SkillAccessInput): Promise<void> 
         skill_uuid, skill_slug, skill_name, kind, surface, origin, auth,
         virtual_mcp_uuid, virtual_mcp_slug, virtual_mcp_name,
         catalog_uuids, catalog_slugs, catalog_names,
-        key_id, key_name, api_key_id, api_key_name, user_uuid, user_email,
+        key_id, key_name, api_key_id, api_key_name, user_uuid, user_username,
         session_id, ip, user_agent, client_name, client_version
       )
       SELECT
         s.uuid, s.slug, left(s.name, ${teto}), ${kind}, ${surface}, ${origin}, ${auth},
         m.uuid, m.slug, left(m.name, ${teto}),
         COALESCE(p.uuids, '{}'::uuid[]), COALESCE(p.slugs, '{}'::text[]), COALESCE(p.names, '{}'::text[]),
-        k.id, left(k.name, ${teto}), ak.id, left(ak.name, ${teto}), u.uuid, u.email,
+        k.id, left(k.name, ${teto}), ak.id, left(ak.name, ${teto}), u.uuid, u.username,
         ${sessionLabel(input.sessionId, 'sessionId')},
         ${sessionLabel(input.ip, 'ip')},
         ${sessionLabel(input.userAgent, 'userAgent')},
@@ -6237,7 +7277,7 @@ export type ListSkillAccessesOptions = {
   userUuid?: string;
   /** Uma chave `psk_` só — normalmente junto com `userUuid`. */
   apiKeyId?: string;
-  /** `ILIKE %q%` em `user_email`, `api_key_name`, `key_name`, `ip`, `client_name` e `session_id`. */
+  /** `ILIKE %q%` em `user_username`, `api_key_name`, `key_name`, `ip`, `client_name` e `session_id`. */
   q?: string;
   /** Igualdade; fora do `CHECK` é 400. */
   origin?: SkillAccessOrigin;
@@ -6261,7 +7301,7 @@ const SKILL_ACCESS_COLUMNS = sql`
          WITH ORDINALITY AS p(uuid, slug, name, ord)
     LEFT JOIN catalogs c ON c.uuid = p.uuid
   ), '[]'::json) AS catalogs,
-  a.key_id, a.key_name, a.api_key_id, a.api_key_name, a.user_uuid, a.user_email,
+  a.key_id, a.key_name, a.api_key_id, a.api_key_name, a.user_uuid, a.user_username,
   a.session_id, a.ip, a.user_agent, a.client_name, a.client_version, a.created_at
 `;
 
@@ -6287,7 +7327,7 @@ function toSkillAccessEntry(row: Row): SkillAccessEntry {
     apiKeyId: row.api_key_id ?? null,
     apiKeyName: row.api_key_name ?? null,
     userUuid: row.user_uuid ?? null,
-    userEmail: row.user_email ?? null,
+    userUsername: row.user_username ?? null,
     sessionId: row.session_id ?? null,
     ip: row.ip ?? null,
     userAgent: row.user_agent ?? null,
@@ -6348,7 +7388,7 @@ export async function listSkillAccesses(
   if (q) {
     const pattern = likePattern(q);
     conditions.push(sql`(
-      a.user_email ILIKE ${pattern}
+      a.user_username ILIKE ${pattern}
       OR a.api_key_name ILIKE ${pattern}
       OR a.key_name ILIKE ${pattern}
       OR a.ip ILIKE ${pattern}
@@ -8211,7 +9251,7 @@ function sessionLabel(value: unknown, field: string): string | null {
 /** As colunas de `QuarantineSummary`: o envio, o dono e os números da pasta. */
 const QUARANTINE_COLUMNS = sql`
   q.uuid, q.name, q.description, q.source_filename, q.owner_user_uuid,
-  u.email AS owner_email, n.total AS file_count, n.bytes AS size_bytes,
+  u.username AS owner_username, n.total AS file_count, n.bytes AS size_bytes,
   q.created_at, q.updated_at
 `;
 
@@ -8238,7 +9278,7 @@ function toQuarantineSummary(row: Row): QuarantineSummary {
     description: row.description ?? '',
     sourceFilename: row.source_filename ?? null,
     ownerUserUuid: row.owner_user_uuid ?? null,
-    ownerEmail: row.owner_email ?? null,
+    ownerUsername: row.owner_username ?? null,
     fileCount: Number(row.file_count ?? 0),
     sizeBytes: Number(row.size_bytes ?? 0),
     createdAt: new Date(row.created_at).toISOString(),

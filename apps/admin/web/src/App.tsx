@@ -52,6 +52,7 @@ import { useTheme } from './themeStore.js';
 import { LoginPage } from './pages/LoginPage.js';
 import { ChangePasswordPage } from './pages/ChangePasswordPage.js';
 import { AccountPage } from './pages/AccountPage.js';
+import { AccountEditorPage } from './pages/AccountEditorPage.js';
 import { UsersPage } from './pages/UsersPage.js';
 import { UserPage } from './pages/UserPage.js';
 import { UserEditorPage } from './pages/UserEditorPage.js';
@@ -274,7 +275,14 @@ function Shell({
         {/* A sessão de bootstrap não tem conta: não há senha para trocar nem chave para emitir. */}
         <Route
           path="/account"
-          element={user.legacy ? <Navigate to="/mcps" replace /> : <AccountPage user={user} onChanged={onRefresh} />}
+          element={user.legacy ? <Navigate to="/mcps" replace /> : <AccountPage user={user} />}
+        />
+        {/* A leitura e a edição em endereços diferentes, como nas contas de admin. */}
+        <Route
+          path="/account/edit"
+          element={
+            user.legacy ? <Navigate to="/mcps" replace /> : <AccountEditorPage user={user} onChanged={onRefresh} />
+          }
         />
         <Route
           path="/account/admin-keys"

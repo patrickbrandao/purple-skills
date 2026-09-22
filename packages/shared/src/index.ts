@@ -13,6 +13,8 @@ export * from './secrets.js';
 export * from './password.js';
 export * from './apikey.js';
 export * from './email.js';
+export * from './username.js';
+export * from './profile.js';
 export * from './roles.js';
 export * from './quarantine.js';
 export * from './session.js';

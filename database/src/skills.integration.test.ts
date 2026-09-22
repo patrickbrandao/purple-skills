@@ -35,6 +35,7 @@ import {
   readAllFiles,
   replaceSkillTexts,
   resolveRagSpace,
+  saveProfile,
   setSkillGrant,
   type ListOptions,
 } from './queries.js';
@@ -243,12 +244,12 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
     let fonteUuid = '';
     let copiaSlug = '';
 
-    const dona = { userUuid: '', label: 'dona@exemplo.dev' };
+    const dona = { userUuid: '', label: 'dona' };
 
     beforeAll(async () => {
-      donaUuid = (await createUser({ email: 'dona@exemplo.dev', name: 'Dona', role: 'admin' })).uuid;
+      donaUuid = (await createUser({ username: 'dona', email: 'dona@exemplo.dev', name: 'Dona', role: 'admin' })).uuid;
       clonadorUuid = (
-        await createUser({ email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
+        await createUser({ username: 'clonador', email: 'clonador@exemplo.dev', name: 'Clonador', role: 'editor' })
       ).uuid;
       dona.userUuid = donaUuid;
 
@@ -292,6 +293,10 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
       );
       await addCatalogSkill(grupo.uuid, 'fonte-da-copia', SOURCE, dona);
       await setSkillGrant('fonte-da-copia', clonadorUuid, 'edit', SOURCE, dona);
+
+      // A dona tem página de perfil; quem clona, não. É o que separa o
+      // `ownerHasProfile` da fonte do da cópia (`034`).
+      await saveProfile(donaUuid, { bio: 'Mantenho a fonte.', isPublic: true });
     }, 60_000);
 
     it('copia propriedades, arquivos e tags; nasce privada, flutuante, sem concessão e pendente de RAG', async () => {
@@ -302,7 +307,7 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
 
       const copia = await cloneSkill(fonteUuid, { ownerUserUuid: clonadorUuid }, SOURCE, {
         userUuid: clonadorUuid,
-        label: 'clonador@exemplo.dev',
+        label: 'clonador',
       });
       copiaSlug = copia.slug;
 
@@ -316,12 +321,18 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
         isActive: false,
         isPublic: false,
         ownerUserUuid: clonadorUuid,
-        ownerEmail: 'clonador@exemplo.dev',
+        ownerUsername: 'clonador',
         viewCount: 0,
         downloadCount: 0,
         tags: ['alfa', 'zeta'],
         skillMd: '# fonte\n\nCorpo da fonte.',
       });
+      // `ownerHasProfile` é do **dono da linha**, e a cópia tem outro dono: a
+      // fonte credita `@dona`, que tem página; a cópia credita `@clonador`,
+      // que não — e o `por @fulano` dela fica no texto, sem link para 404.
+      expect(original?.ownerHasProfile).toBe(true);
+      expect(copia.ownerHasProfile).toBe(false);
+
       // Flutuante e sem concessão: o clone não entra em vMCP nem em catálogo,
       // e quem clonou é o dono — não há a quem conceder.
       expect(copia.mcps).toEqual([]);
@@ -364,7 +375,7 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
         skillUuid: copia.uuid,
         targetLabel: 'fonte-da-copia -> fonte-da-copia-2',
         actorUserUuid: clonadorUuid,
-        actorLabel: 'clonador@exemplo.dev',
+        actorLabel: 'clonador',
         filePath: null,
       });
       // E nenhuma `create` da cópia: a clonagem não aparece duas vezes.
@@ -381,7 +392,7 @@ describe.skipIf(!url)('skills: slug gerado no teto, paginação com desempate e 
       expect(terceira.slug).toBe('fonte-da-copia-3');
       expect(terceira.name).toBe('Outro nome');
       expect(terceira.ownerUserUuid).toBeNull();
-      expect(terceira.ownerEmail).toBeNull();
+      expect(terceira.ownerUsername).toBeNull();
 
       // Nome vazio é "o mesmo nome do original".
       const quarta = await cloneSkill(fonteUuid, { name: '   ' }, SOURCE, dona);

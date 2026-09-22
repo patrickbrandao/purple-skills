@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, Globe, KeyRound, Search, UserRound } from 'lucide-react';
 import {
+  atUser,
   formatDateTime,
   formatRelative,
   type AccessLogQuery,
@@ -37,7 +38,7 @@ const KIND_LABEL: Record<SkillAccessKind, string> = { view: 'leitura', download:
 /**
  * A guia "Acessos" da skill e do catálogo (`docs/13-fichas-e-acessos.md`):
  * os últimos registros de leitura, mais novos primeiro, com a barra de
- * ferramentas que filtra por quem leu — o e-mail da conta (pelo mcp-admin),
+ * ferramentas que filtra por quem leu — o usuário da conta (pelo mcp-admin),
  * o nome da chave `psv_` do servidor, o IP ou o cliente — e por origem. A
  * mesma tabela serve às duas fichas: no catálogo ela mostra também a skill.
  */
@@ -183,7 +184,7 @@ function Who({ entry }: { entry: SkillAccessEntry }) {
       <>
         <span className="row-title flex items-center gap-1.5">
           <UserRound style={{ width: 13, height: 13, color: 'var(--text-faint)' }} />
-          {entry.userEmail ?? 'conta removida'}
+          {atUser(entry.userUsername, 'conta removida')}
         </span>
         {entry.apiKeyName && <span className="row-sub">chave psk · {entry.apiKeyName}</span>}
       </>

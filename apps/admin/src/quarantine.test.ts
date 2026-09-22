@@ -12,6 +12,8 @@ const { SESSAO, db } = vi.hoisted(() => ({
   SESSAO: {
     atual: {
       uuid: 'uuid-admin',
+      username: 'admin',
+      avatarUpdatedAt: null,
       email: 'admin@exemplo.dev',
       name: 'Admin',
       role: 'admin' as Papel,
@@ -67,7 +69,7 @@ const envio = {
   description: 'Revisa pull requests.',
   sourceFilename: 'revisor.zip',
   ownerUserUuid: DONO,
-  ownerEmail: 'dono@exemplo.dev',
+  ownerUsername: 'dono@exemplo.dev',
   fileCount: 2,
   sizeBytes: 120,
   createdAt: '2026-09-20T10:00:00.000Z',
@@ -82,7 +84,7 @@ let running: Server | undefined;
 let porta = 0;
 
 function comoSessao(role: Papel, uuid: string | null = 'uuid-sessao') {
-  SESSAO.atual = { ...SESSAO.atual, role, uuid: uuid as string, email: `${role}@exemplo.dev` };
+  SESSAO.atual = { ...SESSAO.atual, role, uuid: uuid as string, username: role, email: `${role}@exemplo.dev` };
 }
 
 beforeEach(async () => {
@@ -179,13 +181,13 @@ describe('GET /api/quarantine — o recorte da fila', () => {
     expect(db.listQuarantine.mock.calls[0]![0]).toMatchObject({ ownerUserUuid: 'uuid-membro' });
   });
 
-  // O dono sai pelo e-mail em toda ficha e lista do painel (`access.ownerByEmail`).
+  // O dono sai pelo e-mail em toda ficha e lista do painel (`access.ownerByUsername`).
   it('o uuid do dono não sai na lista', async () => {
     const res = await pedir('GET', '/api/quarantine');
     const [item] = json(res).items as Record<string, unknown>[];
 
     expect(item!.ownerUserUuid).toBe('dono@exemplo.dev');
-    expect(item!.ownerEmail).toBe('dono@exemplo.dev');
+    expect(item!.ownerUsername).toBe('dono@exemplo.dev');
   });
 });
 
@@ -231,7 +233,7 @@ describe('POST /api/quarantine/:uuid/promote — o portão', () => {
       grants: [],
       access: 'owner',
       ownerUserUuid: DONO,
-      ownerEmail: 'dono@exemplo.dev',
+      ownerUsername: 'dono@exemplo.dev',
       mcps: [],
       catalogs: [],
       tags: [],

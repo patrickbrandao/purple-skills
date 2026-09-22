@@ -33,6 +33,9 @@ const db = vi.hoisted(() => ({
   getSkillDetail: vi.fn(),
   getSkillSummary: vi.fn(),
   getPublicCatalog: vi.fn(),
+  getPublicProfile: vi.fn(),
+  isProfilePublic: vi.fn(),
+  getAvatarByUsername: vi.fn(),
   listPublicCatalogs: vi.fn(),
   listOpenVirtualMcps: vi.fn(),
   resolveDefaultVirtualMcp: vi.fn(),
@@ -83,6 +86,18 @@ const SUMMARY = {
   isActive: true,
   isPublic: true,
   ownerUserUuid: '11111111-1111-4111-8111-111111111111',
+  ownerUsername: 'dona',
+  ownerHasProfile: true,
+  /**
+   * **Campo que o banco não devolve mais**, posto aqui de propósito.
+   *
+   * Depois do `docs/19-username.md` nenhum objeto que o site lê carrega
+   * e-mail — o que torna a guarda `ENDERECO` vazia se a amostra também não
+   * carregar. Este campo é a regressão simulada: se alguém voltar a espalhar
+   * o objeto do banco (`...detail`) em vez de projetá-lo campo a campo, ou se
+   * um endereço voltar a um tipo compartilhado, é por aqui que a suíte
+   * reclama. Ele não está em `CAMPOS_DA_SKILL`, então a projeção o corta.
+   */
   ownerEmail: 'dona@exemplo.dev',
   access: null,
   mcps: [VMCP],
@@ -99,12 +114,12 @@ const SUMMARY = {
 /** Uma concessão, que `getSkillDetail` anexa em qualquer visibilidade. */
 const GRANT = {
   userUuid: '22222222-2222-4222-8222-222222222222',
-  email: 'colega@exemplo.dev',
+  username: 'colega',
   name: 'Colega',
   role: 'membro',
   level: 'manage',
   grantedByUserUuid: '11111111-1111-4111-8111-111111111111',
-  grantedByEmail: 'dona@exemplo.dev',
+  grantedByUsername: 'dona',
   createdAt: '2026-01-03T00:00:00.000Z',
 };
 
@@ -124,6 +139,16 @@ const CAMPOS_DA_SKILL = [
   'icon',
   'mcps',
   'name',
+  // A lista é comparada **ordenada**, então estas duas vêm em ordem
+  // alfabética, e não na ordem em que foram decididas.
+  //
+  // O booleano que decide se o crédito vira link para `/u/<username>`
+  // (`docs/20-perfil.md` §7). Repare que é só ele: bio, foto e links **não**
+  // entram nesta lista, e o teste de campos é o que garante isso.
+  'ownerHasProfile',
+  // A autoria (`docs/19-username.md` decisão 11). Repare que `ownerUserUuid`
+  // continua em `PROIBIDOS` — o que passou a ser público é o username, e só ele.
+  'ownerUsername',
   'score',
   'slug',
   'tags',
@@ -145,8 +170,20 @@ const CAMPOS_DO_VMCP = [
   'uuid',
 ];
 
+/**
+ * Forma de e-mail, para a guarda que varre o corpo inteiro.
+ *
+ * A lista de campos acima diz o que sai; esta regra diz o que **não** pode
+ * aparecer em lugar nenhum do JSON, com qualquer nome de campo. Desde o
+ * `docs/19-username.md` o e-mail é dado privado (decisão 8) e a página pública
+ * credita o dono pelo username — uma projeção que voltasse a espalhar o objeto
+ * do banco (`...detail`) passaria pela lista de campos da skill e seria pega
+ * aqui, pelo endereço dentro de `grants`.
+ */
+const ENDERECO = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+
 /** Os campos que não podem sair em nenhuma das rotas anônimas. */
-const PROIBIDOS = ['ownerUserUuid', 'ownerEmail', 'grants', 'access', 'isPublic', 'isActive', 'catalogs'];
+const PROIBIDOS = ['ownerUserUuid', 'grants', 'access', 'isPublic', 'isActive', 'catalogs'];
 
 type Rota = { path: string; methods: Record<string, boolean>; stack: { handle: RequestHandler }[] };
 
@@ -194,6 +231,9 @@ describe('o JSON anônimo do site', () => {
   it('a amostra do banco carrega tudo o que não pode sair', () => {
     for (const campo of PROIBIDOS) expect(DETAIL).toHaveProperty(campo);
     expect(VMCP.catalogs.length).toBeGreaterThan(0);
+    // E carrega um e-mail, pelo `ownerEmail` da amostra: sem ele a guarda
+    // `ENDERECO` das rotas passaria por não haver o que encontrar.
+    expect(JSON.stringify(DETAIL)).toMatch(ENDERECO);
   });
 
   it('a lista de skills leva só os campos da página', async () => {
@@ -224,6 +264,10 @@ describe('o JSON anônimo do site', () => {
 
     expect(Object.keys(body).sort()).toEqual([...CAMPOS_DA_SKILL, 'files', 'skillMd'].sort());
     for (const campo of PROIBIDOS) expect(body).not.toHaveProperty(campo);
+    // Nenhum endereço de e-mail no corpo inteiro, com qualquer nome de campo.
+    expect(JSON.stringify(body)).not.toMatch(ENDERECO);
+    // O dono sai, e sai pelo username (`docs/19-username.md` decisão 11).
+    expect(body.ownerUsername).toBe('dona');
     // O frontmatter sai do corpo: os metadados já são campos do JSON.
     expect(body.skillMd).toBe('# Minha Skill\n');
     // A leitura conta, como antes.
@@ -273,7 +317,56 @@ describe('o JSON anônimo do site', () => {
 
     expect(Object.keys(membro).sort()).toEqual(CAMPOS_DA_SKILL);
     for (const campo of PROIBIDOS) expect(membro).not.toHaveProperty(campo);
+    expect(JSON.stringify(body)).not.toMatch(ENDERECO);
     expect(body.skillCount).toBe(1);
+  });
+
+  /**
+   * O perfil público (`docs/20-perfil.md` §7) é a rota anônima mais nova, e a
+   * única que responde com um **espalhamento** (`{ ...perfil, skills: … }`) —
+   * a forma que o `docs/19` §7 nomeia como o vetor de vazamento, e que já
+   * mandou e-mail de dono para quem não tem login uma vez (`tasks/002`).
+   *
+   * Hoje `PublicProfile` é montado campo a campo no banco e não carrega nada
+   * de sensível. Este caso existe para que **acrescentar um campo a ele** seja
+   * uma decisão, e não um acidente: a amostra leva e-mail e uuid de conta, e
+   * os dois têm de morrer na projeção.
+   */
+  it('o perfil público não leva e-mail nem uuid de conta', async () => {
+    db.getPublicProfile.mockResolvedValue({
+      username: 'dona',
+      name: 'Dona da Skill',
+      bio: 'Mantenho as skills de git.',
+      websiteUrl: 'https://exemplo.dev',
+      links: [{ label: 'GitHub', url: 'https://github.com/dona' }],
+      hasAvatar: true,
+      avatarUpdatedAt: '2026-01-04T00:00:00.000Z',
+      skills: [SUMMARY],
+      catalogs: [
+        {
+          uuid: 'cat-1',
+          slug: 'meu-catalogo',
+          name: 'Meu catálogo',
+          description: 'Uma prateleira',
+          ownerUsername: 'dona',
+          ownerHasProfile: true,
+          skillCount: 1,
+        },
+      ],
+      // Campos que o banco não devolve, postos aqui de propósito — a mesma
+      // regressão simulada do `ownerEmail` da amostra de skill.
+      ownerEmail: 'dona@exemplo.dev',
+      userUuid: '11111111-1111-4111-8111-111111111111',
+    });
+
+    const body = await chamar('/api/profiles/:username', { username: 'dona' });
+    const skill = (body.skills as Record<string, unknown>[])[0]!;
+
+    expect(body.username).toBe('dona');
+    expect(Object.keys(skill).sort()).toEqual(CAMPOS_DA_SKILL);
+    for (const campo of PROIBIDOS) expect(skill).not.toHaveProperty(campo);
+    expect(JSON.stringify(body)).not.toMatch(ENDERECO);
+    expect(JSON.stringify(body)).not.toContain('11111111-1111-4111-8111-111111111111');
   });
 });
 

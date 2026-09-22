@@ -49,8 +49,8 @@ Important rules:
   (slug, state, public/open, MCP keys and the grants). Deleting and transferring
   ownership belong only to the owner and to an admin. A credential only lists what
   is its own, what was granted to it and what is public/open (list_* accepts
-  scope: mine, shared, public). share_<type>(slug, email, level) / unshare_<type>
-  grant and revoke; transfer_<type>(slug, email) changes the owner. A skill inside
+  scope: mine, shared, public). share_<type>(slug, username, level) / unshare_<type>
+  grant and revoke; transfer_<type>(slug, username) changes the owner. A skill inside
   an open MCP or a public catalog is readable by anyone, even when private — the
   tools warn about it.
 - Virtual MCPs (tools *_virtual_mcp*): read-only servers at /virtual/<slug>/mcp
@@ -701,20 +701,35 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
 
   // ------------------------------------------------------------- acesso ---
 
+  // A conta é o **username**, nunca o e-mail (`docs/19-username.md` decisão 9).
+  // A descrição diz isso explicitamente porque quem preenche o argumento é um
+  // agente: sem a frase, um modelo que já viu a API antiga tentaria um endereço,
+  // e a recusa ("Informe o usuário da conta") não explicaria a troca. E ele não
+  // teria onde achar um e-mail — nenhuma tool devolve um.
   const accessInput = {
     slug: z.string().describe('Slug of the object.'),
-    email: z.string().describe('E-mail of the (active) account that receives the access.'),
+    username: z
+      .string()
+      .describe(
+        'Username of the (active) account that receives the access — never an e-mail address.',
+      ),
     level: z
       .enum(['view', 'edit', 'manage'])
       .describe('view: read; edit: content/members/links; manage: properties, keys and grants.'),
   };
   const unshareInput = {
     slug: z.string().describe('Slug of the object.'),
-    email: z.string().describe('E-mail of the account that loses the access — active or disabled (the grant of a disabled account stays in the list, inert, until it is revoked).'),
+    username: z
+      .string()
+      .describe(
+        'Username of the account that loses the access — active or disabled (the grant of a disabled account stays in the list, inert, until it is revoked).',
+      ),
   };
   const transferInput = {
     slug: z.string().describe('Slug of the object.'),
-    email: z.string().describe('E-mail of the (active) account that becomes the owner.'),
+    username: z
+      .string()
+      .describe('Username of the (active) account that becomes the owner — never an e-mail address.'),
   };
 
   server.registerTool(

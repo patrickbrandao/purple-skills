@@ -23,7 +23,7 @@ import {
   type VirtualMcpCatalogInput,
   type VirtualMcpDetail,
 } from '@purple-skills/shared';
-import { accountByEmail, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
+import { accountByUsername, assertAccess, assertSkillsViewable, grantOf, levelFrom, viewerOf } from './access.js';
 import type { Caller } from './auth.js';
 import { assertNameFits } from './mcps.js';
 
@@ -57,13 +57,13 @@ const view = (catalog: CatalogDetail) => ({
   description: catalog.description,
   isActive: catalog.isActive,
   isPublic: catalog.isPublic,
-  owner: catalog.ownerEmail,
+  owner: catalog.ownerUsername,
   access: catalog.access,
   // A lista de concessões só para quem as administra (`docs/12` decisão 11).
   // `isActive: false` é a conta desativada: a linha fica, inerte, volta a valer
   // se a conta for reativada — e `unshare_catalog` a revoga assim mesmo.
   grants: canManage(catalog.access)
-    ? catalog.grants.map((grant) => ({ email: grant.email, name: grant.name, level: grant.level, isActive: grant.isActive }))
+    ? catalog.grants.map((grant) => ({ username: grant.username, name: grant.name, level: grant.level, isActive: grant.isActive }))
     : undefined,
   activeSkills: catalog.activeSkillCount,
   views: catalog.viewCount,
@@ -125,7 +125,7 @@ export function createCatalogHandlers(caller: Caller) {
           name: catalog.name,
           isActive: catalog.isActive,
           isPublic: catalog.isPublic,
-          owner: catalog.ownerEmail,
+          owner: catalog.ownerUsername,
           access: catalog.access,
           skills: catalog.skillCount,
           activeSkills: catalog.activeSkillCount,
@@ -271,26 +271,26 @@ export function createCatalogHandlers(caller: Caller) {
 
     // ----------------------------------------------------------- acesso ---
 
-    async share_catalog(args: { slug: string; email: string; level: string }): Promise<ToolResult> {
+    async share_catalog(args: { slug: string; username: string; level: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       const grant = await setCatalogGrant(current.slug, target.uuid, levelFrom(args.level), SOURCE, actor);
-      return text(`${grant.email} agora pode ${ACCESS_LABEL[grant.level]} o catálogo "${current.slug}".`);
+      return text(`${grant.username} agora pode ${ACCESS_LABEL[grant.level]} o catálogo "${current.slug}".`);
     },
 
     /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`. */
-    async unshare_catalog(args: { slug: string; email: string }): Promise<ToolResult> {
+    async unshare_catalog(args: { slug: string; username: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'manage');
-      const grant = grantOf(current.grants, args.email, 'neste catálogo');
+      const grant = grantOf(current.grants, args.username, 'neste catálogo');
       await removeCatalogGrant(current.slug, grant.userUuid, SOURCE, actor);
-      return text(`${grant.email} perdeu o acesso ao catálogo "${current.slug}".`);
+      return text(`${grant.username} perdeu o acesso ao catálogo "${current.slug}".`);
     },
 
-    async transfer_catalog(args: { slug: string; email: string }): Promise<ToolResult> {
+    async transfer_catalog(args: { slug: string; username: string }): Promise<ToolResult> {
       const current = await managed(args.slug, 'owner');
-      const target = await accountByEmail(args.email);
+      const target = await accountByUsername(args.username);
       await updateCatalog(current.uuid, { ownerUserUuid: target.uuid }, SOURCE, actor);
-      return text(`O catálogo "${current.slug}" agora é de ${target.email}.`);
+      return text(`O catálogo "${current.slug}" agora é de ${target.username}.`);
     },
 
     /**

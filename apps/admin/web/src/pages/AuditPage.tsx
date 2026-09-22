@@ -114,7 +114,7 @@ function Trail() {
             setActor(e.target.value);
             setOffset(0);
           }}
-          placeholder="Ator (e-mail, token-global…)"
+          placeholder="Ator (usuário, token-global…)"
         />
         <select
           className="field"

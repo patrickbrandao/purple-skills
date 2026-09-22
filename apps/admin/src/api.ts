@@ -38,6 +38,7 @@ import {
   composeSkillMd,
   createRateLimiter,
   isAccessScope,
+  avatarHeaders,
   contentDisposition,
   extractArchive,
   isSkillMd,
@@ -78,6 +79,7 @@ import {
 import * as access from './access.js';
 import { gravarRag, lerPainelRag, limparRecusasRag, reindexarRag } from './rag.js';
 import * as accesses from './accesses.js';
+import * as profile from './profile.js';
 import * as activity from './activity.js';
 import * as quarantine from './quarantine.js';
 import * as mcps from './mcps.js';
@@ -101,7 +103,13 @@ import {
   updateAccount,
 } from './accounts.js';
 import { config, oidcEnabled, resetLinkBaseUrl, smtpEnabled } from './config.js';
-import { MAX_FILES_PER_REQUEST, limitRequestBytes, rejectOversizedBatch, upload } from './uploads.js';
+import {
+  MAX_FILES_PER_REQUEST,
+  avatarUpload,
+  limitRequestBytes,
+  rejectOversizedBatch,
+  upload,
+} from './uploads.js';
 import { streamSkillZip } from './zip.js';
 
 const SOURCE = 'web-admin' as const;
@@ -413,6 +421,8 @@ export function sessionPayload(user: AuthUser | null, totalUsers: number) {
     user: user
       ? {
           uuid: user.uuid,
+          username: user.username,
+          avatarUpdatedAt: user.avatarUpdatedAt,
           email: user.email,
           name: user.name,
           role: user.role,
@@ -472,7 +482,13 @@ api.post(
     }
     if (throttled(req, res)) return;
 
-    const body = jsonBody(req) as { password?: unknown; email?: unknown; name?: unknown; adminPassword?: unknown };
+    const body = jsonBody(req) as {
+      password?: unknown;
+      username?: unknown;
+      email?: unknown;
+      name?: unknown;
+      adminPassword?: unknown;
+    };
     if (!checkBootstrapPassword(body.adminPassword)) {
       res.status(401).json({
         error: 'unauthorized',
@@ -481,7 +497,12 @@ api.post(
       return;
     }
 
-    const user = await bootstrapAdmin({ email: body.email, name: body.name, password: body.password });
+    const user = await bootstrapAdmin({
+      username: body.username,
+      email: body.email,
+      name: body.name,
+      password: body.password,
+    });
     loginLimiter.reset(limiterKey(req));
     issueSession(req, res, { uuid: user.uuid, role: user.role, tokenVersion: 0 });
     res.status(201).json({ authenticated: true, user });
@@ -494,15 +515,15 @@ api.post(
   route(async (req, res) => {
     if (throttled(req, res)) return;
 
-    const body = jsonBody(req) as { email?: unknown; password?: unknown };
+    const body = jsonBody(req) as { identifier?: unknown; password?: unknown };
 
-    // Login legado, sem e-mail: só enquanto não existe conta nenhuma. Depois
-    // do primeiro usuário a ADMIN_PASSWORD fica inerte (§2.3).
-    if (body.email === undefined || body.email === '') {
+    // Login legado, sem identificador: só enquanto não existe conta nenhuma.
+    // Depois do primeiro usuário a ADMIN_PASSWORD fica inerte (§2.3).
+    if (body.identifier === undefined || body.identifier === '') {
       if ((await countUsers()) > 0) {
         res.status(401).json({
           error: 'unauthorized',
-          message: 'Este painel usa contas: informe e-mail e senha',
+          message: 'Este painel usa contas: informe usuário ou e-mail, e a senha',
         });
         return;
       }
@@ -533,6 +554,8 @@ api.post(
       authenticated: true,
       user: {
         uuid: outcome.user.uuid,
+        username: outcome.user.username,
+        avatarUpdatedAt: outcome.user.avatarUpdatedAt,
         email: outcome.user.email,
         name: outcome.user.name,
         role: outcome.user.role,
@@ -678,9 +701,13 @@ api.use('/api', requirePasswordChanged);
 
 // ------------------------------------------------------------- minha conta ---
 
+// A própria conta é uma das duas superfícies em que o e-mail continua saindo
+// (`docs/19-username.md` decisão 8) — a outra é `/api/users*`, de admin.
 api.get('/api/me', (req, res) => {
   res.json({
     uuid: req.user?.uuid ?? null,
+    username: req.user?.username ?? '',
+    avatarUpdatedAt: req.user?.avatarUpdatedAt ?? null,
     email: req.user?.email ?? '',
     name: req.user?.name ?? '',
     role: req.user?.role ?? 'membro',
@@ -708,6 +735,88 @@ api.post(
       });
     }
     res.json({ changed: true });
+  }),
+);
+
+// ----------------------------------------------------------------- perfil ---
+// `docs/20-perfil.md`. Quem escreve é o dono; o admin só tem o `clear`, lá
+// embaixo, junto das demais rotas de conta.
+
+api.get(
+  '/api/me/profile',
+  route(async (req, res) => {
+    res.json(await profile.mine(req.user!));
+  }),
+);
+
+/**
+ * **Sem `smallJson` aqui, e de propósito.** As rotas que o usam estão todas
+ * *antes* do `express.json({ limit: '32mb' })` da linha 691 — é isso que faz o
+ * teto de 4 KB delas valer. Numa rota depois dele o corpo **já foi lido**, o
+ * body-parser sai na hora ao ver `req._body` marcado, e o `smallJson` vira
+ * enfeite: um `PATCH` de 200 mil caracteres passava com 200.
+ *
+ * Quem segura o tamanho aqui é `normalizeBio`, que recusa pelo comprimento do
+ * texto **cru** antes de tocá-lo. É a defesa certa de qualquer jeito: ela vale
+ * mesmo para um corpo que chegue grande por outro caminho.
+ */
+api.patch(
+  '/api/me/profile',
+  route(async (req, res) => {
+    const body = jsonBody(req) as {
+      name?: unknown;
+      bio?: unknown;
+      websiteUrl?: unknown;
+      links?: unknown;
+      isPublic?: unknown;
+    };
+    res.json(await profile.save(req.user!, body));
+  }),
+);
+
+api.put(
+  '/api/me/profile/avatar',
+  limitRequestBytes,
+  // `avatarUpload`, não o `upload` do painel: o teto de lá é o do .zip de uma
+  // skill (64 MB), e sem um limite próprio a imagem era bufferizada inteira
+  // antes de a rota dizer que o máximo é 512 KB.
+  avatarUpload.single('file'),
+  route(async (req, res) => {
+    res.json(await profile.uploadAvatar(req.user!, req.file));
+  }),
+);
+
+api.delete(
+  '/api/me/profile/avatar',
+  route(async (req, res) => {
+    res.json(await profile.removeAvatar(req.user!));
+  }),
+);
+
+/**
+ * A foto de uma conta, para **qualquer sessão logada**: ela é o avatar das
+ * listas e das fichas do painel, como o monograma já é. O `is_public` do perfil
+ * decide o que sai para o anônimo, e quem serve aquilo é o `apps/site`.
+ *
+ * Fica pelo **username**, e não pelo uuid, porque é isso que o painel tem na
+ * mão em toda tela — a ACL, o dono e a busca de contas devolvem username
+ * (`docs/19-username.md`), e uma rota por uuid obrigaria a resolver o uuid só
+ * para desenhar uma imagem.
+ */
+api.get(
+  '/api/users/:username/avatar',
+  route(async (req, res) => {
+    const avatar = await profile.avatarOf(param(req, 'username'));
+    const sha256 = avatar.sha256.toString('hex');
+    res.set(avatarHeaders(avatar.mime, sha256));
+    // O 304 é o que torna barato o `max-age=0`: o navegador repergunta, e a
+    // resposta é o cabeçalho sozinho.
+    if (req.headers['if-none-match'] === `"${sha256}"`) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader('Content-Length', String(avatar.bytes.byteLength));
+    res.send(avatar.bytes);
   }),
 );
 
@@ -770,7 +879,13 @@ api.post(
         'A sessão de bootstrap não cria contas: saia e crie o primeiro administrador na tela de login (/?setup=1)',
       );
     }
-    const body = jsonBody(req) as { email?: unknown; name?: unknown; role?: unknown; password?: unknown };
+    const body = jsonBody(req) as {
+      username?: unknown;
+      email?: unknown;
+      name?: unknown;
+      role?: unknown;
+      password?: unknown;
+    };
     const created = await createAccount(actorFrom(req), body);
     res.status(201).json(created);
   }),
@@ -780,7 +895,14 @@ api.patch(
   '/api/users/:uuid',
   requireAdmin,
   route(async (req, res) => {
-    const body = jsonBody(req) as { name?: unknown; role?: unknown; isActive?: unknown };
+    // `username` só aqui, e não numa rota própria: trocar o username é de admin
+    // (`docs/19-username.md` decisão 5), e esta rota já é `requireAdmin`.
+    const body = jsonBody(req) as {
+      username?: unknown;
+      name?: unknown;
+      role?: unknown;
+      isActive?: unknown;
+    };
     res.json(await updateAccount(req.user!, param(req, 'uuid'), body));
   }),
 );
@@ -795,10 +917,11 @@ api.post(
 );
 
 // A busca de contas para compartilhar (`docs/12-acesso-granular.md` decisão
-// 13): qualquer sessão, só contas ativas, e só nome, e-mail e papel — o `uuid`
+// 13): qualquer sessão, só contas ativas, e só nome, usuário e papel — o `uuid`
 // da conta **não** sai daqui, porque ele é o `sub` do cookie de sessão e esta
 // rota é aberta a qualquer membro; quem recorta o payload é o `withoutUuid` do
-// `access.ts`, e quem transfere dono manda o e-mail. Fica antes de
+// `access.ts`, e quem transfere dono manda o username. O e-mail saiu também do
+// que a busca **casa** (`docs/19-username.md` decisão 10). Fica antes de
 // `/api/users/:uuid`, senão o Express a engole como um uuid.
 api.get(
   '/api/users/lookup',
@@ -843,6 +966,23 @@ api.get(
   }),
 );
 
+/**
+ * Limpar o perfil de uma conta (`docs/20-perfil.md` decisão 6): esvazia bio,
+ * site e links, desliga o público e apaga a foto.
+ *
+ * É `DELETE`, e não um `PATCH` com campos vazios, porque descreve o que
+ * acontece: o admin **apaga**, não escreve. Não existe rota de admin que
+ * *edite* o perfil de outra pessoa — moderar é tirar do ar, não reescrever com
+ * outras palavras.
+ */
+api.delete(
+  '/api/users/:uuid/profile',
+  requireAdmin,
+  route(async (req, res) => {
+    res.json(await profile.clear(req.user!, param(req, 'uuid')));
+  }),
+);
+
 // ----------------------------------------------------------- MCPs virtuais ---
 
 /**
@@ -884,17 +1024,17 @@ api.get(
 );
 
 api.put(
-  '/api/mcps/:slug/access/:email',
+  '/api/mcps/:slug/access/:username',
   route(async (req, res) => {
     const level = (req.body as { level?: unknown } | undefined)?.level;
-    res.json(await mcps.share(req.user!, param(req, 'slug'), param(req, 'email'), level));
+    res.json(await mcps.share(req.user!, param(req, 'slug'), param(req, 'username'), level));
   }),
 );
 
 api.delete(
-  '/api/mcps/:slug/access/:email',
+  '/api/mcps/:slug/access/:username',
   route(async (req, res) => {
-    await mcps.unshare(req.user!, param(req, 'slug'), param(req, 'email'));
+    await mcps.unshare(req.user!, param(req, 'slug'), param(req, 'username'));
     res.json({ revoked: true });
   }),
 );
@@ -996,17 +1136,17 @@ api.get(
 );
 
 api.put(
-  '/api/catalogs/:slug/access/:email',
+  '/api/catalogs/:slug/access/:username',
   route(async (req, res) => {
     const level = (req.body as { level?: unknown } | undefined)?.level;
-    res.json(await catalogs.share(req.user!, param(req, 'slug'), param(req, 'email'), level));
+    res.json(await catalogs.share(req.user!, param(req, 'slug'), param(req, 'username'), level));
   }),
 );
 
 api.delete(
-  '/api/catalogs/:slug/access/:email',
+  '/api/catalogs/:slug/access/:username',
   route(async (req, res) => {
-    await catalogs.unshare(req.user!, param(req, 'slug'), param(req, 'email'));
+    await catalogs.unshare(req.user!, param(req, 'slug'), param(req, 'username'));
     res.json({ revoked: true });
   }),
 );
@@ -1311,8 +1451,8 @@ api.get(
       viewer: viewerOf(req.user!),
       ...(isAccessScope(req.query.scope) ? { scope: req.query.scope } : {}),
     });
-    // O dono sai pelo e-mail, nunca pelo uuid da conta (`access.ownerByEmail`).
-    res.json({ ...page, items: page.items.map(access.ownerByEmail) });
+    // O dono sai pelo username, nunca pelo uuid da conta (`access.ownerByUsername`).
+    res.json({ ...page, items: page.items.map(access.ownerByUsername) });
   }),
 );
 
@@ -1550,7 +1690,7 @@ api.post(
         SOURCE,
         actorFrom(req),
       );
-      res.status(201).json(access.ownerByEmail(detail));
+      res.status(201).json(access.ownerByUsername(detail));
       return;
     }
 
@@ -1740,17 +1880,17 @@ api.get(
 );
 
 api.put(
-  '/api/skills/:slug/access/:email',
+  '/api/skills/:slug/access/:username',
   route(async (req, res) => {
     const level = (req.body as { level?: unknown } | undefined)?.level;
-    res.json(await access.shareSkill(req.user!, param(req, 'slug'), param(req, 'email'), level));
+    res.json(await access.shareSkill(req.user!, param(req, 'slug'), param(req, 'username'), level));
   }),
 );
 
 api.delete(
-  '/api/skills/:slug/access/:email',
+  '/api/skills/:slug/access/:username',
   route(async (req, res) => {
-    await access.unshareSkill(req.user!, param(req, 'slug'), param(req, 'email'));
+    await access.unshareSkill(req.user!, param(req, 'slug'), param(req, 'username'));
     res.json({ revoked: true });
   }),
 );
@@ -2076,8 +2216,8 @@ api.get(
       offset: asInt(req.query.offset, 0),
       search: typeof req.query.q === 'string' ? req.query.q : null,
     });
-    // O dono sai pelo e-mail, nunca pelo uuid da conta (`access.ownerByEmail`).
-    res.json({ ...page, items: page.items.map(access.ownerByEmail) });
+    // O dono sai pelo username, nunca pelo uuid da conta (`access.ownerByUsername`).
+    res.json({ ...page, items: page.items.map(access.ownerByUsername) });
   }),
 );
 
@@ -2092,7 +2232,7 @@ api.get(
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
     // `QuarantineSheet` é o contrato do painel: a ficha mais o `canPromote`.
     const sheet: QuarantineSheet = {
-      ...access.ownerByEmail(found),
+      ...access.ownerByUsername(found),
       canPromote: await quarantine.mayPromote(req.user!, found),
     };
     res.json(sheet);

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Download, FileArchive, Search, ShieldQuestion, Trash2, Upload } from 'lucide-react';
 import {
+  atUser,
   canCreate,
   deleteQuarantineItem,
   formatBytes,
@@ -142,7 +143,7 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
                     </Link>
                   </td>
                   <td className="hidden md:table-cell">
-                    <span className="row-sub">{item.ownerEmail ?? 'sem dono'}</span>
+                    <span className="row-sub">{atUser(item.ownerUsername, 'sem dono')}</span>
                   </td>
                   <td className="num hidden sm:table-cell">{num(item.fileCount)}</td>
                   <td className="num hidden sm:table-cell">{formatBytes(item.sizeBytes)}</td>

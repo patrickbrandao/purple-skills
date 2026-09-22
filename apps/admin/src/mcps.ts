@@ -47,15 +47,15 @@ import {
   type VirtualMcpSummary,
 } from '@purple-skills/shared';
 import {
-  accountByEmail,
+  accountByUsername,
   assertAccess,
   assertCanCreate,
   assertSkillsViewable,
   forbidden,
-  grantByEmail,
+  grantByUsername,
   grantOf,
   levelFrom,
-  ownerByEmail,
+  ownerByUsername,
   ownerFrom,
   withGrants,
 } from './access.js';
@@ -78,8 +78,8 @@ export async function listMine(user: AuthUser, rawScope?: unknown): Promise<Virt
     ...(isAccessScope(rawScope) ? { scope: rawScope } : {}),
     ...janela(),
   });
-  // O dono sai pelo e-mail, nunca pelo uuid da conta (`ownerByEmail`).
-  return items.map(ownerByEmail);
+  // O dono sai pelo username, nunca pelo uuid da conta (`ownerByUsername`).
+  return items.map(ownerByUsername);
 }
 
 /**
@@ -516,7 +516,7 @@ export async function resolveLinks(user: AuthUser, raw: unknown): Promise<SkillL
 /**
  * As chaves do servidor, para quem o administra. `createdByUserUuid` só sai
  * quando a chave é de quem está lendo: é uuid de conta, sem e-mail ao lado para
- * virar apelido, e o painel não mostra quem emitiu (ver `ownerByEmail`, em
+ * virar apelido, e o painel não mostra quem emitiu (ver `ownerByUsername`, em
  * `access.ts`). De outra conta ele sai nulo, como o de quem não é conta.
  */
 export async function listKeys(user: AuthUser, slug: string): Promise<VirtualMcpKeySummary[]> {
@@ -600,16 +600,16 @@ export async function revokeKey(user: AuthUser, slug: string, id: string): Promi
 
 // -------------------------------------------------------------- concessões ---
 
-export async function share(user: AuthUser, slug: string, email: string, rawLevel: unknown): Promise<Grant> {
+export async function share(user: AuthUser, slug: string, username: string, rawLevel: unknown): Promise<Grant> {
   const current = await load(user, slug, 'manage');
-  const target = await accountByEmail(email);
-  return grantByEmail(await setVirtualMcpGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
+  const target = await accountByUsername(username);
+  return grantByUsername(await setVirtualMcpGrant(current.slug, target.uuid, levelFrom(rawLevel), SOURCE, actorOf(user)));
 }
 
 /** Revogar vale para a conta em qualquer estado, inclusive desativada — ver `grantOf`, em `access.ts`. */
-export async function unshare(user: AuthUser, slug: string, email: string): Promise<void> {
+export async function unshare(user: AuthUser, slug: string, username: string): Promise<void> {
   const current = await load(user, slug, 'manage');
-  const grant = grantOf(current.grants, email, 'neste MCP virtual');
+  const grant = grantOf(current.grants, username, 'neste MCP virtual');
   await removeVirtualMcpGrant(current.slug, grant.userUuid, SOURCE, actorOf(user));
 }
 

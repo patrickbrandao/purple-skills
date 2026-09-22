@@ -35,6 +35,7 @@ const request = (cookie?: string) => ({ cookies: cookie ? { ps_admin: cookie } :
 
 const account = {
   uuid: 'uuid-1',
+  username: 'maria',
   email: 'maria@exemplo.com',
   name: 'Maria',
   role: 'editor' as const,
@@ -54,6 +55,7 @@ describe('resolução da sessão', () => {
 
     expect(await resolveUser(request(token))).toEqual({
       uuid: 'uuid-1',
+      username: 'maria',
       email: 'maria@exemplo.com',
       name: 'Maria',
       role: 'editor',

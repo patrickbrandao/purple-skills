@@ -100,16 +100,16 @@ async function applyChange(slug: string, change: PlannedChange): Promise<void> {
       await removeCatalogSkill(change.slug, slug);
       return;
     case 'grant':
-      await share('skill', slug, change.email, change.level);
+      await share('skill', slug, change.username, change.level);
       return;
     case 'revoke':
-      await unshare('skill', slug, change.email);
+      await unshare('skill', slug, change.username);
       return;
     case 'owner':
-      // `ownerUserUuid` aceita o e-mail (`admin/src/access.ts`, `ownerFrom`), e
-      // é o e-mail que a busca de contas devolve — o `uuid` saiu dela
-      // (`tasks/025`). Pelo e-mail, o servidor ainda confere conta ativa.
-      await updateSkill(slug, { ownerUserUuid: change.user.email });
+      // `ownerUserUuid` aceita o username (`admin/src/access.ts`, `ownerFrom`), e
+      // é o username que a busca de contas devolve — o `uuid` saiu dela
+      // (`tasks/025`). Pelo username, o servidor ainda confere conta ativa.
+      await updateSkill(slug, { ownerUserUuid: change.user.username });
       return;
   }
 }
@@ -312,8 +312,8 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
         title: `Transferir "${current.name}" para ${transfer.user.name}?`,
         description:
           user.role === 'admin'
-            ? `${transfer.user.email} passa a ser o dono, com todos os poderes sobre esta skill. A transferência é gravada por último.`
-            : `${transfer.user.email} passa a ser o dono, e você deixa de ser. Só um administrador ou o novo dono pode devolver. A transferência é gravada por último.`,
+            ? `@${transfer.user.username} passa a ser o dono, com todos os poderes sobre esta skill. A transferência é gravada por último.`
+            : `@${transfer.user.username} passa a ser o dono, e você deixa de ser. Só um administrador ou o novo dono pode devolver. A transferência é gravada por último.`,
         confirmLabel: 'Salvar e transferir',
         danger: user.role !== 'admin',
       });

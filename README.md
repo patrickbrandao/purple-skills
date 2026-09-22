@@ -423,7 +423,7 @@ que a conta faria no painel (ver [Contas, papéis e acesso](#contas-papéis-e-ac
 | `set_files_bulk(slug, zip_base64, replace?, confirm_deletions?)` | Importa uma árvore inteira de um `.zip`, preservando os caminhos (só a pasta raiz única que contém o `SKILL.md` — o formato do pacote baixado — é desembrulhada; uma subpasta enviada sozinha fica como veio) — por padrão o zip é o **estado completo** (omitidos são removidos, `SKILL.md` preservado). Se algo sairia, a chamada é **recusada** com a lista: repita com `confirm_deletions` igual ao **número exato** de arquivos a remover, ou com `replace: false` para só acrescentar e sobrescrever |
 | `delete_file(slug, path)` | Remove um arquivo (**bloqueado** para `SKILL.md`) |
 | `delete_skill(slug, confirm)` | Remove a skill (exige `confirm: true`; só o dono ou um admin) |
-| `share_skill(slug, email, level)` / `unshare_skill(slug, email)` / `transfer_skill(slug, email)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp` |
+| `share_skill(slug, username, level)` / `unshare_skill(slug, username)` / `transfer_skill(slug, username)` | Concede (`view`, `edit`, `manage`), revoga e transfere o dono; o mesmo para `*_catalog` e `*_mcp`. A conta é o **username**, nunca o e-mail |
 | `clone_skill(slug, name?, new_slug?)` / `clone_catalog(slug, name?, new_slug?)` / `clone_virtual_mcp(slug, name?, new_slug?)` | Copia o objeto; quem clona vira o dono e a cópia **nasce fechada** (nunca pública nem aberta). A skill leva arquivos e tags e nasce flutuante; o catálogo leva os membros com a participação de cada um; o servidor leva vínculos, canvas e concessões, **sem** as chaves `psv_`. Sem `name` fica o nome do original, sem `new_slug` o desempate automático (`-2`, `-3`…); `new_slug` já ocupado é 409. Exige `edit` no original e o papel de criar — no servidor, `manage` |
 | `list_tags()` / `get_stats()` | Navegação e métricas |
 | `list_virtual_mcps(scope?)` / `get_virtual_mcp(slug)` / `create_virtual_mcp(…)` / `update_virtual_mcp(…)` / `delete_virtual_mcp(slug, confirm)` | MCPs virtuais — alcance pelo acesso por objeto |
@@ -649,7 +649,24 @@ nunca é apagado.
 O painel usa **contas**. Numa instalação nova a tabela nasce vazia: a
 `ADMIN_PASSWORD` ainda entra sozinha e o painel oferece criar o primeiro
 administrador. A partir da primeira conta, ela fica **inerte** — o acesso passa
-a ser sempre por e-mail e senha.
+a ser sempre por conta e senha.
+
+Cada conta tem um **perfil**: o nome de exibição, uma foto e — se a pessoa
+quiser — descrição, site e links. O bloco público é **opt-in**: desligado, nada
+dele sai do painel; ligado, ele ganha página própria em `/u/<usuário>` no site,
+com as skills e os catálogos que a pessoa já tinha tornado públicos. Quem
+escreve é o dono da conta; um administrador só pode **limpar** um perfil, o que
+fica na trilha de auditoria. Detalhes em
+[`docs/20-perfil.md`](docs/20-perfil.md).
+
+Cada conta tem um **usuário** (`@fulano`) e um **e-mail**, e os dois papéis são
+diferentes. O usuário é o identificador público: é por ele que a conta aparece
+como dona de uma skill, na lista de quem tem acesso, na trilha de auditoria, na
+busca de "compartilhar com…" e na ficha pública do site. O e-mail é **privado** —
+só a própria pessoa e os administradores o veem — e serve a três coisas: entrar,
+recuperar a senha e casar a conta com uma identidade do SSO. No login, um campo
+só aceita os dois: com `@` é lido como e-mail, sem `@` como usuário. O desenho
+inteiro está em [`docs/19-username.md`](docs/19-username.md).
 
 | Ação | admin | editor | membro |
 |------|:-----:|:------:|:------:|

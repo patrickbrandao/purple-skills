@@ -107,8 +107,8 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
 
-    anaUuid = (await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
-    brunoUuid = (await createUser({ email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
+    anaUuid = (await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
+    brunoUuid = (await createUser({ username: 'bruno', email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' }))
       .uuid;
 
     // Quatro skills flutuantes e um servidor aberto e ligado, ainda vazio.
@@ -126,7 +126,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     await raw.end();
   });
 
-  const ana = { userUuid: '', label: 'ana@exemplo.dev' };
+  const ana = { userUuid: '', label: 'ana' };
 
   it('cria com slug gerado, dono e auditoria; lista por dono; atualiza e apaga', async () => {
     ana.userUuid = anaUuid;
@@ -146,7 +146,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
       description: 'do time',
       isActive: true,
       ownerUserUuid: brunoUuid,
-      ownerEmail: 'bruno@exemplo.dev',
+      ownerUsername: 'bruno',
       skillCount: 0,
       activeSkillCount: 0,
       mcpCount: 0,
@@ -160,7 +160,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     const segundo = await createCatalog({ name: 'Time de Dados', ownerUserUuid: null }, SOURCE, ana);
     expect(segundo.slug).toBe('time-de-dados-2');
     expect(segundo.ownerUserUuid).toBeNull();
-    expect(segundo.ownerEmail).toBeNull();
+    expect(segundo.ownerUsername).toBeNull();
 
     expect(
       (await capture(createCatalog({ name: 'X', slug: 'time-de-dados', ownerUserUuid: null }, SOURCE, ana))).status,
@@ -178,7 +178,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     );
     expect(criada?.skillUuid).toBeNull();
     expect(criada?.actorUserUuid).toBe(anaUuid);
-    expect(criada?.actorLabel).toBe('ana@exemplo.dev');
+    expect(criada?.actorLabel).toBe('ana');
     // A trilha paginada aceita a ação nova como filtro.
     expect((await listAuditPage({ action: 'catalog.create' })).total).toBe(2);
 
@@ -406,10 +406,11 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     expect(alfa?.mcps).toEqual([{ ...noServidorPorCatalogo, catalogs: [] }]);
     // Fora da leitura `'all'`, os catálogos da skill não vêm.
     expect(alfa?.catalogs).toEqual([]);
-    // E o dono também não: no site as duas colunas vêm nulas (`tasks/002`).
-    // Aqui as skills são órfãs, então o que a leitura `'all'` traz é nulo do
-    // mesmo jeito — quem prova o outro lado é `access.integration.test.ts`.
-    expect([alfa?.ownerUserUuid, alfa?.ownerEmail]).toEqual([null, null]);
+    // O dono continua nulo aqui porque estas skills são **órfãs** — não mais
+    // porque a visibilidade do site o esconda: desde o `033` o `ownerUsername`
+    // sai em toda leitura (`docs/19` decisão 11), e quem prova o outro lado é
+    // `access.integration.test.ts`.
+    expect([alfa?.ownerUserUuid, alfa?.ownerUsername]).toEqual([null, null]);
     expect((await getSkillSummary('alfa', { virtualMcp: skill }))?.catalogs).toEqual([]);
 
     // Vínculo direto só com Prompts: `alfa` some das ferramentas e aparece
@@ -804,7 +805,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     const antes = await auditedRows();
     const copia = await cloneCatalog(fonte.uuid, { ownerUserUuid: brunoUuid }, SOURCE, {
       userUuid: brunoUuid,
-      label: 'bruno@exemplo.dev',
+      label: 'bruno',
     });
 
     expect(copia).toMatchObject({
@@ -816,7 +817,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
       isActive: true,
       isPublic: false,
       ownerUserUuid: brunoUuid,
-      ownerEmail: 'bruno@exemplo.dev',
+      ownerUsername: 'bruno',
       viewCount: 0,
       downloadCount: 0,
       skillCount: 3,
@@ -837,7 +838,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
     const original = await getCatalogByUuid(fonte.uuid);
     expect(original?.isPublic).toBe(true);
     expect(original?.mcps.map((m) => m.slug)).toEqual(['servidor-do-clone']);
-    expect(original?.grants.map((g) => g.email)).toEqual(['bruno@exemplo.dev']);
+    expect(original?.grants.map((g) => g.username)).toEqual(['bruno']);
 
     // Uma linha só na trilha, com os dois lados no alvo e sem `catalog.create`.
     expect(await auditedRows()).toBe(antes + 1);
@@ -848,7 +849,7 @@ describe.skipIf(!url)('catálogos: grupos, precedência, desativações e contad
       skillSlug: null,
       targetLabel: 'fonte-do-clone -> fonte-do-clone-2',
       actorUserUuid: brunoUuid,
-      actorLabel: 'bruno@exemplo.dev',
+      actorLabel: 'bruno',
     });
 
     // O segundo clone é `-3`; o nome pedido não mexe no desempate.

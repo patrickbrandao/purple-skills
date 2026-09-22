@@ -58,8 +58,8 @@ let inaUuid = '';
 let publicMcpUuid = '';
 let eduMcpUuid = '';
 
-const edu: AuditActor = { userUuid: null, label: 'edu@exemplo.dev' };
-const ana: AuditActor = { userUuid: null, label: 'ana@exemplo.dev' };
+const edu: AuditActor = { userUuid: null, label: 'edu' };
+const ana: AuditActor = { userUuid: null, label: 'ana' };
 
 const ORPHAN_SKILLS = ['orfa-bootstrap', 'orfa-sem-ator', 'orfa-token'];
 
@@ -126,10 +126,10 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
   });
 
   it('monta o cenário: órfãos do token e do bootstrap, objetos com dono e o vMCP público órfão', async () => {
-    eduUuid = (await createUser({ email: 'edu@exemplo.dev', name: 'Edu', role: 'editor' })).uuid;
-    melUuid = (await createUser({ email: 'mel@exemplo.dev', name: 'Mel', role: 'membro' })).uuid;
+    eduUuid = (await createUser({ username: 'edu', email: 'edu@exemplo.dev', name: 'Edu', role: 'editor' })).uuid;
+    melUuid = (await createUser({ username: 'mel', email: 'mel@exemplo.dev', name: 'Mel', role: 'membro' })).uuid;
     // Ana começa editora: é assim que uma conta chega a admin com concessões.
-    anaUuid = (await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'editor' })).uuid;
+    anaUuid = (await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'editor' })).uuid;
     edu.userUuid = eduUuid;
     ana.userUuid = anaUuid;
 
@@ -167,7 +167,7 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
   it('sem admin nenhum: membro, editor, uuid torto e conta inexistente não agem nem gravam', async () => {
     const before = await auditCount();
 
-    expect(await adoptOrphans(melUuid, SOURCE, { userUuid: melUuid, label: 'mel@exemplo.dev' })).toEqual(NOT_ADOPTED);
+    expect(await adoptOrphans(melUuid, SOURCE, { userUuid: melUuid, label: 'mel' })).toEqual(NOT_ADOPTED);
     expect(await adoptOrphans(eduUuid, SOURCE, edu)).toEqual(NOT_ADOPTED);
     expect(await adoptOrphans(anaUuid, SOURCE, ana)).toEqual(NOT_ADOPTED);
     for (const torto of ['torto', '', '00000000-0000-0000-0000-000000000000', 42, null, undefined]) {
@@ -177,18 +177,18 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
     expect(await auditCount()).toBe(before);
     for (const slug of ORPHAN_SKILLS) expect(await ownerOf('skills', slug)).toBeNull();
     expect(await ownerOf('catalogs', 'orfao')).toBeNull();
-    expect((await listSkillGrants(await skillUuid('orfa-token'))).map((g) => g.email)).toEqual([
-      'ana@exemplo.dev',
-      'mel@exemplo.dev',
+    expect((await listSkillGrants(await skillUuid('orfa-token'))).map((g) => g.username)).toEqual([
+      'ana',
+      'mel',
     ]);
   });
 
   it('uma conta admin desativada não age, nem sendo a única admin', async () => {
-    inaUuid = (await createUser({ email: 'ina@exemplo.dev', name: 'Ina', role: 'admin' })).uuid;
+    inaUuid = (await createUser({ username: 'ina', email: 'ina@exemplo.dev', name: 'Ina', role: 'admin' })).uuid;
     await updateUser(inaUuid, { isActive: false });
     const before = await auditCount();
 
-    expect(await adoptOrphans(inaUuid, SOURCE, { userUuid: inaUuid, label: 'ina@exemplo.dev' })).toEqual(NOT_ADOPTED);
+    expect(await adoptOrphans(inaUuid, SOURCE, { userUuid: inaUuid, label: 'ina' })).toEqual(NOT_ADOPTED);
 
     expect(await auditCount()).toBe(before);
     expect(await ownerOf('skills', 'orfa-token')).toBeNull();
@@ -196,11 +196,11 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
 
   it('com duas contas admin ativas, nenhuma das duas age', async () => {
     await updateUser(anaUuid, { role: 'admin' });
-    biaUuid = (await createUser({ email: 'bia@exemplo.dev', name: 'Bia', role: 'admin' })).uuid;
+    biaUuid = (await createUser({ username: 'bia', email: 'bia@exemplo.dev', name: 'Bia', role: 'admin' })).uuid;
     const before = await auditCount();
 
     expect(await adoptOrphans(anaUuid, SOURCE, ana)).toEqual(NOT_ADOPTED);
-    expect(await adoptOrphans(biaUuid, SOURCE, { userUuid: biaUuid, label: 'bia@exemplo.dev' })).toEqual(NOT_ADOPTED);
+    expect(await adoptOrphans(biaUuid, SOURCE, { userUuid: biaUuid, label: 'bia' })).toEqual(NOT_ADOPTED);
 
     expect(await auditCount()).toBe(before);
     for (const slug of ORPHAN_SKILLS) expect(await ownerOf('skills', slug)).toBeNull();
@@ -210,7 +210,7 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
   it('a única admin ativa (a outra desativada) adota skills e catálogos órfãos, e só eles', async () => {
     await updateUser(biaUuid, { isActive: false });
     // Membro continua sem agir, mesmo havendo uma admin solitária.
-    expect(await adoptOrphans(melUuid, SOURCE, { userUuid: melUuid, label: 'mel@exemplo.dev' })).toEqual(NOT_ADOPTED);
+    expect(await adoptOrphans(melUuid, SOURCE, { userUuid: melUuid, label: 'mel' })).toEqual(NOT_ADOPTED);
 
     // Um passado fixo e a pendência de RAG limpa: qualquer toque aparece.
     await raw.query(`UPDATE skills SET updated_at = '2020-01-01T00:00:00Z', rag_stale = false`);
@@ -233,20 +233,20 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
     expect(await untouchable()).toEqual(snapshot);
 
     // A concessão de Ana some só onde ela virou dona; a de Mel fica, e a do vMCP também.
-    expect((await listSkillGrants(await skillUuid('orfa-token'))).map((g) => g.email)).toEqual(['mel@exemplo.dev']);
-    expect((await listSkillGrants(await skillUuid('do-edu'))).map((g) => `${g.email}:${g.level}`)).toEqual([
-      'ana@exemplo.dev:view',
+    expect((await listSkillGrants(await skillUuid('orfa-token'))).map((g) => g.username)).toEqual(['mel']);
+    expect((await listSkillGrants(await skillUuid('do-edu'))).map((g) => `${g.username}:${g.level}`)).toEqual([
+      'ana:view',
     ]);
     const orfao = await getCatalog('orfao');
     expect(await listCatalogGrants(orfao!.uuid)).toEqual([]);
-    expect((await listVirtualMcpGrants(publicMcpUuid)).map((g) => g.email)).toEqual(['ana@exemplo.dev']);
+    expect((await listVirtualMcpGrants(publicMcpUuid)).map((g) => g.username)).toEqual(['ana']);
     expect(await listVirtualMcpGrants(eduMcpUuid)).toEqual([]);
 
     // A leitura já mostra a dona.
     const summary = await getSkillSummary('orfa-token', { viewer: { role: 'admin', userUuid: anaUuid } });
-    expect(summary?.ownerEmail).toBe('ana@exemplo.dev');
+    expect(summary?.ownerUsername).toBe('ana');
     expect(summary?.access).toBe('owner');
-    expect(orfao?.ownerEmail).toBe('ana@exemplo.dev');
+    expect(orfao?.ownerUsername).toBe('ana');
 
     // Uma linha por objeto, no formato de uma transferência: skills por slug, depois o catálogo.
     expect(await auditCount()).toBe(before + 4);
@@ -258,8 +258,8 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
       source: 'web-admin',
       previous_content: null,
       actor_user_uuid: anaUuid,
-      actor_label: 'ana@exemplo.dev',
-      target_label: 'ana@exemplo.dev',
+      actor_label: 'ana',
+      target_label: 'ana',
     });
     expect(await lastAudit(4)).toEqual([
       skillLine('orfa-bootstrap', await skillUuid('orfa-bootstrap')),
@@ -273,18 +273,18 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
         source: 'web-admin',
         previous_content: null,
         actor_user_uuid: anaUuid,
-        actor_label: 'ana@exemplo.dev',
-        target_label: 'orfao ana@exemplo.dev',
+        actor_label: 'ana',
+        target_label: 'orfao ana',
       },
     ]);
     // E a trilha paginada acha as mesmas linhas pelos filtros de sempre.
-    expect((await listAuditPage({ actor: 'ana@exemplo.dev' })).total).toBe(4);
-    expect((await listAuditPage({ action: 'catalog.update', q: 'orfao ana@' })).total).toBe(1);
+    expect((await listAuditPage({ actor: 'ana' })).total).toBe(4);
+    expect((await listAuditPage({ action: 'catalog.update', q: 'orfao ana' })).total).toBe(1);
 
     // O `q` é **literal**: `%` casava a trilha inteira e `_` qualquer
     // caractere. O pior caso de LIKE também deixa de casar tudo.
     expect((await listAuditPage({ q: '%' })).total).toBe(0);
-    expect((await listAuditPage({ q: 'orfao_ana@' })).total).toBe(0);
+    expect((await listAuditPage({ q: 'orfao_ana' })).total).toBe(0);
     expect((await listAuditPage({ q: '%_'.repeat(60) })).total).toBe(0);
   });
 
@@ -325,7 +325,7 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
     const before = await auditCount();
 
     expect(await adoptOrphans(anaUuid, SOURCE, ana)).toEqual(NOT_ADOPTED);
-    expect(await adoptOrphans(biaUuid, SOURCE, { userUuid: biaUuid, label: 'bia@exemplo.dev' })).toEqual(NOT_ADOPTED);
+    expect(await adoptOrphans(biaUuid, SOURCE, { userUuid: biaUuid, label: 'bia' })).toEqual(NOT_ADOPTED);
     expect(await auditCount()).toBe(before);
     expect(await ownerOf('skills', 'orfa-tardia')).toBeNull();
 
@@ -344,7 +344,7 @@ describe.skipIf(!url)('adoção de órfãos pelo administrador solitário', () =
         previous_content: null,
         actor_user_uuid: null,
         actor_label: 'bootstrap',
-        target_label: 'ana@exemplo.dev',
+        target_label: 'ana',
       },
     ]);
 

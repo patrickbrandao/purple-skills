@@ -30,6 +30,7 @@ import {
   getPublicCatalog,
   getSkillDetail,
   getSkillSummary,
+  getUserByUuid,
   getVirtualMcp,
   linkCatalog,
   linkSkill,
@@ -47,6 +48,7 @@ import {
   removeCatalogGrant,
   removeSkillGrant,
   removeVirtualMcpGrant,
+  saveProfile,
   setCatalogGrant,
   setCatalogSkills,
   setSkillGrant,
@@ -91,9 +93,12 @@ const viewer = {
   carla: { role: 'membro', userUuid: '' } as Viewer,
   eva: { role: 'editor', userUuid: '' } as Viewer,
 };
-const ana = { userUuid: '', label: 'ana@exemplo.dev' };
-const bruno = { userUuid: '', label: 'bruno@exemplo.dev' };
-const eva = { userUuid: '', label: 'eva@exemplo.dev' };
+// O `label` do ator é o **username** desde o `033` (`docs/19` decisão 7): é o
+// que o painel passa (`actorOf`, em `apps/admin/src/auth.ts`) e é o que fica
+// congelado em `audit_log.actor_label`, que nunca é podada.
+const ana = { userUuid: '', label: 'ana' };
+const bruno = { userUuid: '', label: 'bruno' };
+const eva = { userUuid: '', label: 'eva' };
 
 /**
  * Aplica `schema/*.sql` até o número dado, como o runner faria numa base
@@ -217,11 +222,22 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     ]);
     expect(rows[0]?.role).toBe('membro');
 
+    // O `033` derivou o username do **nome** da conta legada, não da parte
+    // antes do `@` do e-mail: `Legado` → `legado`, e `legado@exemplo.dev`
+    // continua só no e-mail. O livro de usernames nasceu com a mesma linha.
+    const legada = await getUserByUuid(legadoUuid);
+    expect(legada?.username).toBe('legado');
+    expect(
+      (await raw.query('SELECT user_uuid, released_at FROM usernames WHERE username_lower = $1', ['legado'])).rows,
+    ).toEqual([{ user_uuid: legadoUuid, released_at: null }]);
+
     // O CHECK novo recusa o nome antigo e aceita o novo.
     await expect(
-      raw.query(`INSERT INTO users (email, name, role) VALUES ('x@exemplo.dev', 'X', 'leitor')`),
+      raw.query(
+        `INSERT INTO users (username, email, name, role) VALUES ('x', 'x@exemplo.dev', 'X', 'leitor')`,
+      ),
     ).rejects.toThrow(/users_role_check/);
-    expect((await capture(createUser({ email: 'y@exemplo.dev', name: 'Y', role: 'leitor' as never }))).status).toBe(400);
+    expect((await capture(createUser({ username: 'conta-y', email: 'y@exemplo.dev', name: 'Y', role: 'leitor' as never }))).status).toBe(400);
 
     // Nada nasce público; a skill migrada continua invisível no site.
     expect((await listSkills({ visibility: 'all' })).items.every((s) => !s.isPublic)).toBe(true);
@@ -229,11 +245,11 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
   });
 
   it('monta o cenário: cinco contas, um servidor aberto e um fechado, um catálogo público e um privado', async () => {
-    anaUuid = (await createUser({ email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
-    brunoUuid = (await createUser({ email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' })).uuid;
-    carlaUuid = (await createUser({ email: 'carla@exemplo.dev', name: 'Carla', role: 'membro' })).uuid;
-    doraUuid = (await createUser({ email: 'dora@exemplo.dev', name: 'Dora', role: 'membro' })).uuid;
-    evaUuid = (await createUser({ email: 'eva@exemplo.dev', name: 'Eva', role: 'editor' })).uuid;
+    anaUuid = (await createUser({ username: 'ana', email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
+    brunoUuid = (await createUser({ username: 'bruno', email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' })).uuid;
+    carlaUuid = (await createUser({ username: 'carla', email: 'carla@exemplo.dev', name: 'Carla', role: 'membro' })).uuid;
+    doraUuid = (await createUser({ username: 'dora', email: 'dora@exemplo.dev', name: 'Dora', role: 'membro' })).uuid;
+    evaUuid = (await createUser({ username: 'eva', email: 'eva@exemplo.dev', name: 'Eva', role: 'editor' })).uuid;
     await updateUser(doraUuid, { isActive: false });
 
     viewer.ana.userUuid = anaUuid;
@@ -251,7 +267,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
       bruno,
     );
     expect(minha.ownerUserUuid).toBe(brunoUuid);
-    expect(minha.ownerEmail).toBe('bruno@exemplo.dev');
+    expect(minha.ownerUsername).toBe('bruno');
     expect(minha.isPublic).toBe(false);
     expect(minha.access).toBe('owner');
     expect(minha.grants).toEqual([]);
@@ -310,13 +326,13 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     const naSkill = await setSkillGrant('da-eva', carlaUuid, 'view', SOURCE, eva);
     expect(naSkill).toMatchObject({
       userUuid: carlaUuid,
-      email: 'carla@exemplo.dev',
+      username: 'carla',
       name: 'Carla',
       role: 'membro',
       isActive: true,
       level: 'view',
       grantedByUserUuid: evaUuid,
-      grantedByEmail: 'eva@exemplo.dev',
+      grantedByUsername: 'eva',
     });
     expect(naSkill.createdAt).toMatch(/^\d{4}-/);
     await setVirtualMcpGrant('fechado', brunoUuid, 'view', SOURCE, eva);
@@ -479,8 +495,8 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     expect((await listCatalogs({ ownerUserUuid: evaUuid })).map((c) => c.slug)).toEqual(['priv', 'pub']);
     expect(await getCatalog('priv', { viewer: viewer.carla })).toBeNull();
     expect((await getCatalog('priv', { viewer: viewer.bruno }))?.access).toBe('edit');
-    expect((await getCatalog('priv'))?.grants.map((g) => [g.email, g.level])).toEqual([
-      ['bruno@exemplo.dev', 'edit'],
+    expect((await getCatalog('priv'))?.grants.map((g) => [g.username, g.level])).toEqual([
+      ['bruno', 'edit'],
     ]);
 
     const mcpsDe = async (v: Viewer, scope?: 'mine' | 'shared' | 'public') =>
@@ -499,7 +515,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     expect(await mcpsDe(viewer.ana, 'mine')).toEqual([]);
     expect(await getVirtualMcp('fechado', { viewer: viewer.carla })).toBeNull();
     expect((await getVirtualMcp('fechado', { viewer: viewer.bruno }))?.access).toBe('view');
-    expect((await getVirtualMcp('fechado'))?.grants.map((g) => g.email)).toEqual(['bruno@exemplo.dev']);
+    expect((await getVirtualMcp('fechado'))?.grants.map((g) => g.username)).toEqual(['bruno']);
     // Um vMCP aberto mas desligado só continua visível a quem o vê por dono ou concessão.
     await updateVirtualMcp(abertoUuid, { isActive: false }, SOURCE, eva);
     expect(await mcpsDe(viewer.carla)).toEqual([]);
@@ -569,26 +585,26 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
   it('as seis ações de auditoria, com o formato do label de cada tipo', async () => {
     const trilha = await listAudit(200);
 
-    const share = trilha.find((e) => e.action === 'skill.share' && e.targetLabel === 'carla@exemplo.dev:view' && e.skillSlug === 'da-eva');
+    const share = trilha.find((e) => e.action === 'skill.share' && e.targetLabel === 'carla:view' && e.skillSlug === 'da-eva');
     expect(share).toBeDefined();
     expect(share?.skillUuid).not.toBeNull();
-    expect(share?.actorLabel).toBe('eva@exemplo.dev');
-    expect(trilha.find((e) => e.action === 'skill.share' && e.targetLabel === 'bruno@exemplo.dev:manage')?.actorLabel).toBe('ana@exemplo.dev');
+    expect(share?.actorLabel).toBe('eva');
+    expect(trilha.find((e) => e.action === 'skill.share' && e.targetLabel === 'bruno:manage')?.actorLabel).toBe('ana');
 
     const unshare = trilha.find((e) => e.action === 'skill.unshare' && e.skillSlug === 'da-eva');
-    expect(unshare?.targetLabel).toBe('carla@exemplo.dev');
-    expect(unshare?.actorLabel).toBe('ana@exemplo.dev');
+    expect(unshare?.targetLabel).toBe('carla');
+    expect(unshare?.actorLabel).toBe('ana');
 
     const catalogShare = trilha.find((e) => e.action === 'catalog.share');
-    expect(catalogShare?.targetLabel).toBe('priv bruno@exemplo.dev:edit');
+    expect(catalogShare?.targetLabel).toBe('priv bruno:edit');
     expect(catalogShare?.skillUuid).toBeNull();
-    expect(trilha.find((e) => e.action === 'mcp.share')?.targetLabel).toBe('fechado bruno@exemplo.dev:view');
+    expect(trilha.find((e) => e.action === 'mcp.share')?.targetLabel).toBe('fechado bruno:view');
 
     await removeCatalogGrant('priv', brunoUuid, SOURCE, eva);
     await removeVirtualMcpGrant('fechado', brunoUuid, SOURCE, eva);
     const depois = await listAudit(20);
-    expect(depois.find((e) => e.action === 'catalog.unshare')?.targetLabel).toBe('priv bruno@exemplo.dev');
-    expect(depois.find((e) => e.action === 'mcp.unshare')?.targetLabel).toBe('fechado bruno@exemplo.dev');
+    expect(depois.find((e) => e.action === 'catalog.unshare')?.targetLabel).toBe('priv bruno');
+    expect(depois.find((e) => e.action === 'mcp.unshare')?.targetLabel).toBe('fechado bruno');
     // Sem as concessões nos contêineres, Bruno deixa de ver o que chegava por
     // elas; ficam as concessões diretas (`escondida`, `no-mcp-concedido`).
     expect(await slugsSeenBy({ viewer: viewer.bruno, scope: 'shared' })).toEqual([
@@ -621,19 +637,19 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     const daEva = (await getSkillSummary('da-eva', { visibility: 'all' }))!.uuid;
     const marcas = async (): Promise<[string, boolean][][]> =>
       (await Promise.all([listSkillGrants(daEva), listCatalogGrants(privUuid), listVirtualMcpGrants(fechadoUuid)])).map(
-        (grants) => grants.map((g): [string, boolean] => [g.email, g.isActive]),
+        (grants) => grants.map((g): [string, boolean] => [g.username, g.isActive]),
       );
     expect(await marcas()).toEqual([
-      [['carla@exemplo.dev', true]],
-      [['carla@exemplo.dev', true]],
-      [['carla@exemplo.dev', true]],
+      [['carla', true]],
+      [['carla', true]],
+      [['carla', true]],
     ]);
 
     await updateUser(carlaUuid, { isActive: false });
     expect(await marcas()).toEqual([
-      [['carla@exemplo.dev', false]],
-      [['carla@exemplo.dev', false]],
-      [['carla@exemplo.dev', false]],
+      [['carla', false]],
+      [['carla', false]],
+      [['carla', false]],
     ]);
     // O detalhe, que é o que o painel lê, traz a mesma marca.
     expect((await getCatalog('priv'))?.grants.map((g) => g.isActive)).toEqual([false]);
@@ -650,9 +666,9 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     await removeVirtualMcpGrant('fechado', carlaUuid, SOURCE, eva);
     expect(await marcas()).toEqual([[], [], []]);
     const trilha = await listAudit(10);
-    expect(trilha.find((e) => e.action === 'skill.unshare')?.targetLabel).toBe('carla@exemplo.dev');
-    expect(trilha.find((e) => e.action === 'catalog.unshare')?.targetLabel).toBe('priv carla@exemplo.dev');
-    expect(trilha.find((e) => e.action === 'mcp.unshare')?.targetLabel).toBe('fechado carla@exemplo.dev');
+    expect(trilha.find((e) => e.action === 'skill.unshare')?.targetLabel).toBe('carla');
+    expect(trilha.find((e) => e.action === 'catalog.unshare')?.targetLabel).toBe('priv carla');
+    expect(trilha.find((e) => e.action === 'mcp.unshare')?.targetLabel).toBe('fechado carla');
 
     // Reativada, a conta não recebe de volta o que foi revogado enquanto estava fora.
     await updateUser(carlaUuid, { isActive: true });
@@ -742,12 +758,12 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     // Bruno tinha `manage` em `escondida`; vira dono e a linha some.
     const transferida = await updateSkill('escondida', { ownerUserUuid: brunoUuid }, SOURCE, eva);
     expect(transferida.ownerUserUuid).toBe(brunoUuid);
-    expect(transferida.ownerEmail).toBe('bruno@exemplo.dev');
+    expect(transferida.ownerUsername).toBe('bruno');
     expect(transferida.grants).toEqual([]);
     expect((await getSkillSummary('escondida', { viewer: viewer.bruno }))?.access).toBe('owner');
     expect(await getSkillSummary('escondida', { viewer: viewer.eva })).toBeNull();
     const linha = (await listAudit(10)).find((e) => e.action === 'update' && e.skillSlug === 'escondida');
-    expect(linha?.targetLabel).toBe('bruno@exemplo.dev');
+    expect(linha?.targetLabel).toBe('bruno');
 
     expect((await capture(updateSkill('escondida', { ownerUserUuid: doraUuid }, SOURCE, bruno))).status).toBe(400);
     expect((await capture(updateSkill('escondida', { ownerUserUuid: '00000000-0000-0000-0000-000000000000' }, SOURCE, bruno))).status).toBe(400);
@@ -769,7 +785,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     const catalogo = await updateCatalog(privUuid, { ownerUserUuid: brunoUuid }, SOURCE, eva);
     expect(catalogo.ownerUserUuid).toBe(brunoUuid);
     expect(catalogo.grants).toEqual([]);
-    expect((await listAudit(5)).find((e) => e.action === 'catalog.update')?.targetLabel).toBe('priv bruno@exemplo.dev');
+    expect((await listAudit(5)).find((e) => e.action === 'catalog.update')?.targetLabel).toBe('priv bruno');
     expect((await capture(updateCatalog(privUuid, { ownerUserUuid: doraUuid }, SOURCE, bruno))).status).toBe(400);
     expect((await capture(updateCatalog(privUuid, { ownerUserUuid: 'torto' }, SOURCE, bruno))).status).toBe(400);
     expect((await getCatalog('priv'))?.ownerUserUuid).toBe(brunoUuid);
@@ -778,7 +794,7 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     const mcp = await updateVirtualMcp(fechadoUuid, { ownerUserUuid: brunoUuid }, SOURCE, eva);
     expect(mcp.ownerUserUuid).toBe(brunoUuid);
     expect(mcp.grants).toEqual([]);
-    expect((await listAudit(5)).find((e) => e.action === 'mcp.update')?.targetLabel).toBe('fechado bruno@exemplo.dev');
+    expect((await listAudit(5)).find((e) => e.action === 'mcp.update')?.targetLabel).toBe('fechado bruno');
     expect((await capture(updateVirtualMcp(fechadoUuid, { ownerUserUuid: doraUuid }, SOURCE, bruno))).status).toBe(400);
     expect((await getVirtualMcp('fechado'))?.ownerUserUuid).toBe(brunoUuid);
     // Devolve os dois à Eva para o resto do cenário.
@@ -809,45 +825,102 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     expect((await capture(updateCatalog(privUuid, { isPublic: 1 as never }, SOURCE, eva))).status).toBe(400);
   });
 
-  it('lookupUsers: contas ativas, por nome ou e-mail, mínimo de dois caracteres', async () => {
+  it('lookupUsers: contas ativas, por nome ou username, mínimo de dois caracteres', async () => {
     expect(await lookupUsers('a')).toEqual([]);
     expect(await lookupUsers('  e ')).toEqual([]);
     expect(await lookupUsers('')).toEqual([]);
-    // Dora está desativada e fica de fora; a ordem é por nome.
-    expect((await lookupUsers('exemplo')).map((u) => u.name)).toEqual(['Ana', 'Bruno', 'Carla', 'Eva', 'Legado']);
+
+    // Uma homônima só para medir a ordem e o `limit`: nenhum fragmento de dois
+    // caracteres casa duas das contas do cenário.
+    const paula = await createUser({
+      username: 'ana-paula',
+      email: 'paula@exemplo.dev',
+      name: 'Ana Paula',
+      role: 'membro',
+    });
+
+    // Casa por **nome**; Dora está desativada e fica de fora, e a ordem é por nome.
+    expect((await lookupUsers('an')).map((u) => u.name)).toEqual(['Ana', 'Ana Paula']);
+    expect((await lookupUsers('arl')).map((u) => u.name)).toEqual(['Carla']);
+    expect(await lookupUsers('Dora')).toEqual([]);
+    // Casa por **username** — e é o username que sai, no lugar do e-mail.
     expect(await lookupUsers('BRU')).toEqual([
-      { uuid: brunoUuid, email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' },
+      { uuid: brunoUuid, username: 'bruno', name: 'Bruno', role: 'editor' },
     ]);
-    expect((await lookupUsers('exemplo', 2)).map((u) => u.name)).toEqual(['Ana', 'Bruno']);
-    expect((await lookupUsers('exemplo', 0)).length).toBe(1);
+    expect((await lookupUsers('an', 1)).map((u) => u.name)).toEqual(['Ana']);
+    expect((await lookupUsers('an', 0)).length).toBe(1);
     expect(await lookupUsers('ninguem')).toEqual([]);
+
+    // **O e-mail saiu dos dois lados** (`docs/19` decisão 10). Devolver só o
+    // username mas continuar casando por endereço deixaria qualquer conta
+    // logada descobrir a qual username um e-mail corresponde, bastando
+    // digitá-lo: a sondagem anula o sigilo mesmo com o campo fora da resposta.
+    expect(await lookupUsers('exemplo')).toEqual([]);
+    expect(await lookupUsers('bruno@exemplo.dev')).toEqual([]);
+    expect(await lookupUsers('paula@')).toEqual([]);
+
     // O termo é **literal**: `%%` casava toda conta ativa e `_` qualquer
     // caractere (o mínimo de dois caracteres deixa `%` sozinho de fora).
     expect(await lookupUsers('%%')).toEqual([]);
     expect(await lookupUsers('bruno_exemplo')).toEqual([]);
-    expect(await lookupUsers('bruno@exemplo')).toHaveLength(1);
     expect((await capture(lookupUsers(123 as never))).status).toBe(400);
+
+    await raw.query('DELETE FROM users WHERE uuid = $1', [paula.uuid]);
+    // A conta foi embora e a reserva ficou, sem dono: o nome não volta a
+    // circular (`docs/19` decisão 6) e a trilha que o cite continua honesta.
+    expect(
+      (await raw.query('SELECT user_uuid FROM usernames WHERE username_lower = $1', ['ana-paula']))
+        .rows,
+    ).toEqual([{ user_uuid: null }]);
   });
 
   it('o site lista os catálogos públicos e ligados, com todos os membros ativos', async () => {
     // Um membro com participação desativada não conta nem aparece.
     await setCatalogSkills(pubUuid, [{ slug: 'no-catalogo-publico' }, { slug: 'escondida', isActive: false }], SOURCE, eva);
 
+    // O dono sai por **username** (`docs/19` decisão 11): a ficha pública
+    // credita quem publicou. `ownerUserUuid` continua fora daqui — é o `sub`
+    // do cookie de sessão do painel e não tem uso numa página anônima. Ao lado
+    // dele, `ownerHasProfile` (`034`): se esse crédito vira link para
+    // `/u/<username>` ou fica no texto. Eva nunca abriu o perfil, e um link
+    // levaria ao 404 que a página do perfil devolve.
     expect(await listPublicCatalogs()).toEqual([
       {
         uuid: pubUuid,
         slug: 'pub',
         name: 'Catálogo público',
         description: '',
+        ownerUsername: 'eva',
+        ownerHasProfile: false,
         skillCount: 1,
       },
     ]);
 
+    // Com o perfil dela público, o crédito do catálogo **e** o da skill viram
+    // link. Salvar sem ligar não basta: o opt-in é o consentimento.
+    await saveProfile(eva.userUuid, { bio: 'Publico catálogos.' });
+    expect((await listPublicCatalogs())[0]?.ownerHasProfile).toBe(false);
+    await saveProfile(eva.userUuid, { isPublic: true });
+    expect((await listPublicCatalogs())[0]?.ownerHasProfile).toBe(true);
+    expect((await getPublicCatalog('pub'))?.ownerHasProfile).toBe(true);
+    expect((await getSkillSummary('no-catalogo-publico'))?.ownerHasProfile).toBe(true);
+    await saveProfile(eva.userUuid, { isPublic: false });
+    expect((await getSkillSummary('no-catalogo-publico'))?.ownerHasProfile).toBe(false);
+
     const pagina = await getPublicCatalog('pub');
     expect(pagina?.skillCount).toBe(1);
+    expect(pagina?.ownerUsername).toBe('eva');
     expect(pagina?.skills.map((s) => s.slug)).toEqual(['no-catalogo-publico']);
-    // Na visibilidade do site: sem acesso, sem lista de catálogos, só vMCPs abertos.
-    expect(pagina?.skills[0]).toMatchObject({ access: null, catalogs: [], mcps: [], isPublic: false });
+    // Na visibilidade do site: sem acesso, sem lista de catálogos, só vMCPs
+    // abertos — e **com** o dono, que desde o `033` sai em toda visibilidade.
+    expect(pagina?.skills[0]).toMatchObject({
+      access: null,
+      catalogs: [],
+      mcps: [],
+      isPublic: false,
+      ownerUsername: 'eva',
+      ownerHasProfile: false,
+    });
 
     // Um membro privado que não está em vMCP aberto nenhum aparece mesmo
     // assim — decisão 5. (`isActive` explícito: quem já era membro não é
@@ -891,11 +964,11 @@ describe.skipIf(!url)('acesso granular: dono, concessões, público e o que cada
     expect(Number(restantes[0]?.n)).toBe(0);
     expect(await skillOwner('herdada')).toBeNull();
     // Quem concedeu foi embora: a concessão fica, sem `grantedBy`.
-    await setSkillGrant('minha', carlaUuid, 'view', SOURCE, { userUuid: evaUuid, label: 'eva@exemplo.dev' });
+    await setSkillGrant('minha', carlaUuid, 'view', SOURCE, { userUuid: evaUuid, label: 'eva' });
     await raw.query('DELETE FROM users WHERE uuid = $1', [evaUuid]);
     const daMinha = await listSkillGrants((await getSkillSummary('minha', { visibility: 'all' }))!.uuid);
-    expect(daMinha.map((g) => [g.email, g.grantedByUserUuid, g.grantedByEmail])).toEqual([
-      ['carla@exemplo.dev', null, null],
+    expect(daMinha.map((g) => [g.username, g.grantedByUserUuid, g.grantedByUsername])).toEqual([
+      ['carla', null, null],
     ]);
     expect(await listCatalogGrants('torto')).toEqual([]);
     expect(await listVirtualMcpGrants('torto')).toEqual([]);

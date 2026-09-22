@@ -254,7 +254,13 @@ export function NodeDrawer({
             <dt>Chaves ativas</dt>
             <dd>{detail.activeKeyCount}</dd>
             <dt>Dono</dt>
-            <dd>{detail.ownerEmail ?? <Badge tone="outline">sem dono (só admin)</Badge>}</dd>
+            <dd>
+              {detail.ownerUsername ? (
+                `@${detail.ownerUsername}`
+              ) : (
+                <Badge tone="outline">sem dono (só admin)</Badge>
+              )}
+            </dd>
           </dl>
         </div>
         <div className="sec flex flex-wrap gap-2">

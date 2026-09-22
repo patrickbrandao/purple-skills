@@ -61,8 +61,10 @@ function outcome(promise: Promise<unknown>): Promise<AppError | null> {
 let raw: pg.Client;
 
 /** Contas do cenário: Ana administra, Bruno submete, Carla edita. */
-const ana = { userUuid: '', label: 'ana@exemplo.dev' };
-const bruno = { userUuid: '', label: 'bruno@exemplo.dev' };
+// O `label` do ator é o **username** desde o `033`: é o que o painel passa
+// (`actorOf`, em `apps/admin/src/auth.ts`) e o que fica congelado na trilha.
+const ana = { userUuid: '', label: 'ana' };
+const bruno = { userUuid: '', label: 'bruno' };
 
 async function conta(texto: string, params: unknown[] = []): Promise<number> {
   const { rows } = await raw.query<{ n: string }>(texto, params);
@@ -108,8 +110,8 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
     // primeira chamada — ainda não houve nenhuma até aqui.
     process.env.DATABASE_URL = url;
 
-    ana.userUuid = (await createUser({ email: ana.label, name: 'Ana', role: 'admin' })).uuid;
-    bruno.userUuid = (await createUser({ email: bruno.label, name: 'Bruno', role: 'editor' })).uuid;
+    ana.userUuid = (await createUser({ username: ana.label, email: 'ana@exemplo.dev', name: 'Ana', role: 'admin' })).uuid;
+    bruno.userUuid = (await createUser({ username: bruno.label, email: 'bruno@exemplo.dev', name: 'Bruno', role: 'editor' })).uuid;
   }, 60_000);
 
   afterAll(async () => {
@@ -166,7 +168,7 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
     expect(await conta("SELECT count(*) AS n FROM quarantine_skills WHERE name = 'Relatórios'")).toBe(2);
 
     expect(um.ownerUserUuid).toBe(bruno.userUuid);
-    expect(um.ownerEmail).toBe(bruno.label);
+    expect(um.ownerUsername).toBe(bruno.label);
     expect(um.fileCount).toBe(3);
     expect(um.sizeBytes).toBe(
       Buffer.byteLength(PACOTE) + Buffer.byteLength('# Uso\n') + PNG.byteLength,
@@ -412,8 +414,8 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
   });
 
   it('ON DELETE SET NULL: a conta removida deixa o envio órfão, não o apaga', async () => {
-    const dono = await createUser({ email: 'dodo@exemplo.dev', name: 'Dodô', role: 'editor' });
-    const ator = { userUuid: dono.uuid, label: dono.email };
+    const dono = await createUser({ username: 'dodo', email: 'dodo@exemplo.dev', name: 'Dodô', role: 'editor' });
+    const ator = { userUuid: dono.uuid, label: dono.username };
     const envio = await createQuarantine(
       { name: 'Do Dodô', files: [{ relativePath: 'SKILL.md', content: '# oi\n' }] },
       SOURCE,
@@ -425,7 +427,7 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
 
     const depois = (await getQuarantine(envio.uuid))!;
     expect(depois.ownerUserUuid).toBeNull();
-    expect(depois.ownerEmail).toBeNull();
+    expect(depois.ownerUsername).toBeNull();
     expect(depois.files.map((f) => f.relativePath)).toEqual(['SKILL.md']);
     // `created_by_user_uuid` tem a mesma FK: nenhum uuid pendurado.
     expect(
@@ -487,7 +489,7 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
     // Quem aprovou é o dono **e** o criador: promover é criar a skill. O envio
     // é de Bruno e não deixa rastro de conta na linha de `skills`.
     expect(skill.ownerUserUuid).toBe(ana.userUuid);
-    expect(skill.ownerEmail).toBe(ana.label);
+    expect(skill.ownerUsername).toBe(ana.label);
     const { rows } = await raw.query<{ created_by_user_uuid: string }>(
       'SELECT created_by_user_uuid FROM skills WHERE slug = $1',
       [skill.slug],
@@ -590,7 +592,7 @@ describe.skipIf(!url)('quarentena: o envio que espera aprovação', () => {
 
     const skill = await promoteQuarantine(envio.uuid, SOURCE, ana);
     expect(skill.ownerUserUuid).toBe(ana.userUuid);
-    expect(skill.ownerEmail).toBe(ana.label);
+    expect(skill.ownerUsername).toBe(ana.label);
     // Sem concessão nenhuma: o acesso de quem aprovou vem de ser dono.
     expect(skill.grants).toEqual([]);
 

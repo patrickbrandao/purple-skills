@@ -8,21 +8,26 @@ import {
   listTags,
   listFiles,
   readFile,
+  getAvatarByUsername,
   getPublicCatalog,
+  getPublicProfile,
   getSkillDetail,
   healthCheck,
+  isProfilePublic,
   listOpenVirtualMcps,
   listPublicCatalogs,
   resolveDefaultVirtualMcp,
   SEARCH_QUERY_MAX_LENGTH,
 } from '@purple-skills/db';
 import {
+  avatarHeaders,
   composeSkillMd,
   contentDisposition,
   isSkillMd,
   normalizeRelativePath,
   safeContentType,
   stripFrontmatter,
+  type PublicProfile,
   type SkillDetail,
   type SkillSummary,
 } from '@purple-skills/shared';
@@ -101,10 +106,9 @@ function consultaDaBusca(raw: unknown): string | null {
  *
  * Ficam de fora, campo por campo:
  *
- * - `ownerUserUuid`/`ownerEmail` — dado pessoal. O `docs/12` decisão 11 dá o
- *   dono a quem tem `view`, e o §10 aceita e-mail exposto a **conta logada**
- *   ("instalação de colaboradores"); o anônimo não é nenhum dos dois. O UUID
- *   é ainda o `sub` do cookie do painel.
+ * - `ownerUserUuid` — é o `sub` do cookie de sessão do painel, e não tem uso
+ *   nesta página. Fica de fora mesmo agora que o dono aparece: quem credita a
+ *   autoria é `ownerUsername`, logo abaixo.
  * - `grants` (no detalhe) — a ACL é de `manage`, dono e admin (decisão 11),
  *   como o painel e o mcp-admin já fazem.
  * - `isActive`/`isPublic`/`access` — estado interno. Nesta superfície são
@@ -116,6 +120,19 @@ function consultaDaBusca(raw: unknown): string | null {
  *
  * O resto é o que a página usa. `icon` fica: é metadado público da skill, como
  * nome e descrição, e o cartão pode passar a exibi-lo.
+ *
+ * **`ownerUsername` entrou aqui** pela decisão 11 do `docs/19-username.md`: a
+ * ficha pública passa a creditar quem fez a skill. Cabe nesta lista porque o
+ * username é público por desenho — o que estava aqui antes, e saiu, era o
+ * e-mail. `null` continua significando "sem dono", e a página simplesmente não
+ * credita ninguém.
+ *
+ * **`ownerHasProfile` entrou pelo `docs/20-perfil.md`** (§7), e é um booleano
+ * de propósito: ele diz só se o crédito vira link para `/u/<username>`. Bio,
+ * foto e links **não** viajam na ficha da skill — quem os quer vai ao perfil,
+ * que é uma rota que alguém abriu de propósito. Um objeto de perfil aninhado
+ * aqui seria o mesmo erro do `...detail` que vazou e-mail: dado de gente
+ * pegando carona num corpo que existe para falar de skill.
  */
 function skillPublica(skill: SkillSummary) {
   return {
@@ -124,6 +141,8 @@ function skillPublica(skill: SkillSummary) {
     name: skill.name,
     description: skill.description,
     icon: skill.icon,
+    ownerUsername: skill.ownerUsername,
+    ownerHasProfile: skill.ownerHasProfile,
     mcps: skill.mcps.map((mcp) => ({
       uuid: mcp.uuid,
       slug: mcp.slug,
@@ -294,6 +313,108 @@ api.get(
     // Os membros são `SkillSummary` do banco: passam pela mesma projeção da
     // lista — um catálogo público multiplica o vazamento pelos membros dele.
     res.json({ ...catalog, skills: catalog.skills.map(skillPublica) });
+  }),
+);
+
+// ---------------------------------------------------------------- perfil ---
+
+/**
+ * O perfil público de uma conta (`docs/20-perfil.md` §7).
+ *
+ * **Perfil privado, conta desativada e username inexistente respondem o mesmo
+ * 404**, com a mesma frase. Distingui-los seria responder "esta conta existe,
+ * mas não quer ser vista" — que é exatamente a informação que o opt-in da
+ * decisão 4 existe para não dar. Quem separa os casos é o `getPublicProfile`
+ * do banco, devolvendo nulo para os três.
+ *
+ * As duas listas vêm projetadas pela **mesma** `skillPublica` da lista de
+ * skills: o perfil não é uma segunda porta com regras próprias, e o que ele
+ * mostra já era público antes de haver perfil (decisão 7).
+ *
+ * **Campo a campo, e não `{ ...perfil }`.** Escrevi o espalhamento primeiro, e
+ * o teste com um campo plantado na amostra o reprovou na hora: tudo o que o
+ * banco passasse a devolver em `PublicProfile` sairia daqui para o anônimo, sem
+ * ninguém decidir. É literalmente o defeito que já mandou o e-mail do dono para
+ * quem não tem login (`tasks/002`), e a resposta é a mesma da `skillPublica`:
+ * lista de permissão.
+ */
+function perfilPublico(perfil: PublicProfile) {
+  return {
+    username: perfil.username,
+    name: perfil.name,
+    bio: perfil.bio,
+    websiteUrl: perfil.websiteUrl,
+    links: perfil.links.map((link) => ({ label: link.label, url: link.url })),
+    hasAvatar: perfil.hasAvatar,
+    avatarUpdatedAt: perfil.avatarUpdatedAt,
+    skills: perfil.skills.map(skillPublica),
+    catalogs: perfil.catalogs.map((catalog) => ({
+      uuid: catalog.uuid,
+      slug: catalog.slug,
+      name: catalog.name,
+      description: catalog.description,
+      ownerUsername: catalog.ownerUsername,
+      ownerHasProfile: catalog.ownerHasProfile,
+      skillCount: catalog.skillCount,
+    })),
+  };
+}
+
+api.get(
+  '/api/profiles/:username',
+  asyncRoute(async (req, res) => {
+    const perfil = await getPublicProfile(param(req, 'username'));
+    if (!perfil) {
+      res.status(404).json({ error: 'not_found', message: 'Perfil não encontrado' });
+      return;
+    }
+    res.json(perfilPublico(perfil));
+  }),
+);
+
+/**
+ * A foto do perfil público.
+ *
+ * **Confere a política antes de pedir os bytes**, e não vai direto ao avatar:
+ * sem isso, a imagem de um perfil que acabou de virar privado continuaria
+ * servida a quem tivesse a URL — e a URL é pública por construção, porque ela
+ * esteve numa página. `getAvatarByUsername` é deliberadamente burra; quem
+ * decide é esta rota.
+ *
+ * A conferência é o `isProfilePublic`, **não** o `getPublicProfile` da rota de
+ * cima. Escrevi com o segundo primeiro, e uma revisão mostrou o custo: ele monta
+ * a listagem pública inteira da pessoa — skills com as subconsultas por linha,
+ * mais os catálogos — para ler um booleano e jogar o resto fora. Numa conta com
+ * 200 skills públicas, abrir a página materializava essas linhas **duas vezes**,
+ * uma para a página e outra para a imagem, anonimamente. Medido pelo dba com
+ * 202 skills: 4,04 ms contra **0,37 ms**, e a consulta nova toca duas páginas e
+ * não cresce com o acervo. As duas compartilham o mesmo fragmento de `WHERE` no
+ * banco, então não há como uma divergir da outra — que apareceria justamente
+ * como foto servida depois de a página ter sumido.
+ */
+api.get(
+  '/u/:username/avatar',
+  asyncRoute(async (req, res) => {
+    const username = param(req, 'username');
+    if (!(await isProfilePublic(username))) {
+      res.status(404).json({ error: 'not_found', message: 'Perfil não encontrado' });
+      return;
+    }
+
+    const avatar = await getAvatarByUsername(username);
+    if (!avatar) {
+      res.status(404).json({ error: 'not_found', message: 'Perfil não encontrado' });
+      return;
+    }
+
+    const sha256 = avatar.sha256.toString('hex');
+    res.set(avatarHeaders(avatar.mime, sha256));
+    if (req.headers['if-none-match'] === `"${sha256}"`) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader('Content-Length', String(avatar.bytes.byteLength));
+    res.send(avatar.bytes);
   }),
 );
 

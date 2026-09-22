@@ -21,6 +21,20 @@ import { SESSION_COOKIE, config, getAdminPassword, getSessionSecret } from './co
  */
 export type AuthUser = {
   uuid: string | null;
+  /**
+   * O identificador público da conta (`docs/19-username.md` decisão 1). É ele
+   * que vai para o `actor_label` da trilha e para toda superfície que nomeia
+   * uma conta. Vazio na sessão de bootstrap, que não é conta.
+   */
+  username: string;
+  /** O carimbo da foto para o avatar da sidebar; `null` cai no monograma. */
+  avatarUpdatedAt: string | null;
+  /**
+   * O endereço da própria pessoa, e **só dela**: a sessão o usa para a tela
+   * Conta e para o menu do usuário (decisão 8). Ele não entra em rótulo de
+   * auditoria, em ACL nem em nada que outra conta leia — quem precisa nomear
+   * esta conta para outra pessoa usa `username`.
+   */
   email: string;
   name: string;
   role: Role;
@@ -36,6 +50,8 @@ declare module 'express-serve-static-core' {
 
 export const LEGACY_ADMIN: AuthUser = {
   uuid: null,
+  username: '',
+  avatarUpdatedAt: null,
   email: '',
   name: 'Administrador',
   role: 'admin',
@@ -45,7 +61,7 @@ export const LEGACY_ADMIN: AuthUser = {
 
 export const actorOf = (user: AuthUser): AuditActor => ({
   userUuid: user.uuid,
-  label: user.legacy ? 'bootstrap' : user.email,
+  label: user.legacy ? 'bootstrap' : user.username,
 });
 
 /**
@@ -152,6 +168,8 @@ export async function resolveUser(req: Request): Promise<AuthUser | null> {
 
   return {
     uuid: user.uuid,
+    username: user.username,
+    avatarUpdatedAt: user.avatarUpdatedAt,
     email: user.email,
     name: user.name,
     role: user.role,
