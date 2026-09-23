@@ -43,6 +43,13 @@ referência de *por que* cada peça é assim.
 > dizem que o `leitor` *não faz* caiu com o `12` — um `membro` edita,
 > compartilha, apaga e transfere o que é seu ou lhe foi concedido; só não cria.
 
+> **Parcialmente revogado por [`21`](21-cli-admin.md), na `§2.3`.** Passou a
+> existir uma CLI de contas na imagem do painel (`purple-admin`), ao lado do
+> `/setup` — que continua sendo o caminho do primeiro administrador. Os dois
+> pontos estão marcados no lugar: a frase "Escolhido em vez de CLI" e "a
+> primeira conta é sempre o `admin` do `/setup`", que passa a ser "sempre
+> **`admin`**", do `/setup` ou da CLI.
+
 O resumo do que está no ar está na `§7.1` de
 [`02-architecture-decisions.md`](02-architecture-decisions.md); os desvios e as
 decisões que esta spec deixou em aberto, em
@@ -154,8 +161,13 @@ Enquanto a tabela `users` estiver **vazia**, a rota `/setup` aceita a
 - `/setup` responde 404;
 - o login por `ADMIN_PASSWORD` é **recusado** no painel.
 
-**A primeira conta é sempre o `admin` do `/setup`** (relatório 001 da auditoria
-de 2026-09-19). As duas regras acima fecham com **qualquer** conta, não com o
+~~**A primeira conta é sempre o `admin` do `/setup`**~~ **A primeira conta é
+sempre `admin`** (relatório 001 da auditoria de 2026-09-19).
+
+> **Revogado neste ponto por [`21`](21-cli-admin.md)** (decisão 4): além do
+> `/setup`, o `purple-admin user add` pode criar a primeira conta — e só com
+> `--role admin`; com a tabela vazia ele recusa qualquer outro papel. A
+> invariante deste parágrafo continua inteira. As duas regras acima fecham com **qualquer** conta, não com o
 primeiro administrador, então o painel não deixa a primeira nascer por outro
 caminho: com `users` vazia o SSO **não auto-provisiona** ninguém — o login volta
 à tela de entrada apontando "Criar o primeiro administrador" — e a sessão de
@@ -169,10 +181,17 @@ contas já existentes, e é decisão de produto ainda aberta. A instalação que
 caiu nesse estado sai dele pela receita de
 [`database/README.md`](../database/README.md), "Instalação sem administrador".
 
-Escolhido em vez de CLI (exige shell no host — ruim em PaaS, e um entrypoint
-novo na imagem) e em vez de env vars aplicadas no `migrate` (colocaria senha de
+~~Escolhido em vez de CLI (exige shell no host — ruim em PaaS, e um entrypoint
+novo na imagem) e~~ Escolhido em vez de env vars aplicadas no `migrate` (colocaria senha de
 pessoa em variável de ambiente e faria o passo do dba criar dados de aplicação,
 cruzando a fronteira de `database/`).
+
+> **Revogado neste ponto por [`21`](21-cli-admin.md).** A CLI passou a existir,
+> **ao lado** do `/setup`, e não no lugar dele: o argumento do PaaS continua
+> valendo para o primeiro administrador, que segue nascendo pelo navegador. A
+> CLI cobre o que o painel não alcança — o único admin sem senha e sem SMTP, a
+> instalação sem administrador ativo, a conta travada — e roda pelas mesmas
+> funções das rotas de conta.
 
 **`MCP_ADMIN_TOKEN` não fica inerte.** Continua válido como credencial de
 máquina com papel `admin`, registrado no audit como ator `token-global`. Sem

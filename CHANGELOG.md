@@ -14,6 +14,37 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## [Não lançado]
+
+### Adicionado
+
+- **`purple-admin`: contas pela linha de comando do container do painel.**
+  `docker compose exec admin purple-admin <comando>` lista, mostra e cria
+  contas (`user add --username --email --role [--password]`), define a senha
+  por username ou e-mail (`user passwd`, que sorteia uma temporária quando a
+  senha é omitida), muda o papel, desativa, reativa, destrava o login e derruba
+  as sessões. É a volta para quando ninguém consegue entrar no painel — o único
+  admin sem senha e sem SMTP, a instalação sem administrador —, que antes era SQL
+  à mão. Desenho em [`docs/21-cli-admin.md`](docs/21-cli-admin.md). Sem
+  migration.
+- **A CLI passa pelas mesmas funções das rotas de conta**, não por uma cópia
+  delas: validação, derrubada de sessões, proteção do último administrador e
+  trilha de auditoria são as do painel. Na trilha o ator é `cli`, sem conta,
+  com origem `web-admin` — o `CHECK` de `audit_log.source` não conhece outra,
+  e uma origem nova pediria migration sem dizer nada que o ator já não diga.
+- **Com a tabela `users` vazia, `user add` só cria `admin`**, e esse admin adota
+  os órfãos como o do `/api/setup`: a primeira conta continua sendo sempre de
+  administrador (relatório 001 da auditoria de 2026-09-19).
+
+### Alterado
+
+- **A redefinição de senha pelo painel virou um invólucro de
+  `setAccountPassword`**, a função que a CLI também usa. O contrato de
+  `POST /api/users/:uuid/reset-password` não mudou.
+- **O `docs/05` §2.3 foi revogado em dois pontos** ("escolhido em vez de CLI" e
+  "a primeira conta é sempre o admin do `/setup`"), marcados no lugar. O
+  `/api/setup` continua sendo o caminho do primeiro administrador.
+
 ## [1.0.0-beta.27] — 2026-09-22
 
 ### Adicionado

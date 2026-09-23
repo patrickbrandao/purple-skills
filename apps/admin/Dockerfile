@@ -38,7 +38,11 @@ ENV NODE_ENV=production \
     PORT=3001 \
     HOST=0.0.0.0
 
-RUN apk add --no-cache tini
+# `purple-admin`: a gerência de contas pela linha de comando
+# (docs/21-cli-admin.md) — `docker compose exec admin purple-admin help`.
+RUN apk add --no-cache tini \
+ && printf '#!/bin/sh\nexec node /app/apps/admin/dist/admin-cli.js "$@"\n' > /usr/local/bin/purple-admin \
+ && chmod 0755 /usr/local/bin/purple-admin
 
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/package.json ./package.json
