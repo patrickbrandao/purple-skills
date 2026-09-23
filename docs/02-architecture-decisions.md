@@ -1178,6 +1178,24 @@ Desenho em [`20-perfil.md`](20-perfil.md). Migration `034-perfil.sql`.
 - **Fora do escopo**: seguir/curtir/comentar, redimensionar a foto, índice de
   pessoas no site, perfil no MCP e e-mail de contato público.
 
+## 12.12 CLI de contas (`purple-admin`)
+
+Desenho em [`21-cli-admin.md`](21-cli-admin.md). Sem migration.
+
+- **Uma CLI na imagem do painel**, `docker compose exec admin purple-admin
+  <comando>`: listar e mostrar contas, criar (`user add`), definir a senha
+  (`user passwd`, sorteando uma temporária quando ela é omitida), mudar o papel,
+  desativar, reativar, destravar o login e derrubar as sessões.
+- **As mesmas funções das rotas de `/api/users*`**: validação, `token_version`,
+  proteção do último admin e trilha são as do painel. Na trilha o ator é `cli`,
+  sem conta, com origem `web-admin`.
+- **A primeira conta continua sendo `admin`**: com `users` vazia, `user add`
+  recusa outro papel, e o admin criado adota os órfãos como o do `/setup`.
+- **Senha pela entrada padrão** (`--password-stdin`) é o caminho recomendado; a
+  `--password` fica no histórico e na lista de processos.
+- Revoga em parte o `05` `§2.3` ("escolhido em vez de CLI"); o `/setup` segue
+  sendo o caminho do primeiro administrador.
+
 ## 13. Riscos aceitos conscientemente (v1)
 
 Para manter o software "simples, bonito e pontual" conforme pedido, as

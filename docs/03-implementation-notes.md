@@ -2325,3 +2325,34 @@ Aqui só o que é desvio ou armadilha de implementação.
   Ela aceita `name` e mais nada dali: o corpo é lido campo a campo em
   `profile.save`, e não repassado a `updateUser`. Um repasse cru poria papel,
   estado e username ao alcance de quem montasse o JSON à mão.
+
+## CLI de contas
+
+O desenho e o porquê de cada escolha estão em [`21-cli-admin.md`](21-cli-admin.md).
+Aqui só o que é desvio ou armadilha de implementação.
+
+- **Dois arquivos, e a separação é para testar.** `apps/admin/src/cli.ts` tem os
+  comandos e devolve o código de saída (`runCli`), sem tocar em `process` nem
+  fechar o banco; `admin-cli.ts` é o ponto de entrada que liga a entrada e a
+  saída padrão e chama `closeDb()` no fim — sem ele o pool do `pg` segura o
+  processo vivo. O atalho da imagem é um script de duas linhas em
+  `/usr/local/bin/purple-admin`, gravado no `Dockerfile` do painel.
+- **O ator é um `AuthUser` fabricado** (`CLI_ACTOR`: `uuid` nulo, `username`
+  `cli`, `legacy` falso), para `updateAccount` e `setAccountPassword` rotularem
+  a trilha sem ramo novo. Com `uuid` nulo as travas "você não pode mudar o
+  próprio papel/desativar a própria conta" nunca disparam — corretamente: a CLI
+  não é conta nenhuma.
+- **`setAccountPassword` é o miolo que a redefinição do painel passou a usar.**
+  `resetAccountPassword` virou um invólucro dele, sem mudar o contrato da rota;
+  a diferença é que a função aceita uma senha escolhida (que não exige troca,
+  salvo `temporary`).
+- **`user add --temporary` com senha escolhida é um segundo `UPDATE`.**
+  `createAccount` decide `mustChangePassword` pela presença da senha e não tem o
+  parâmetro; a CLI liga a flag logo depois, sem linha a mais na trilha.
+- **A conta é resolvida antes de a senha ser lida da entrada padrão**: um nome
+  errado falha sem esperar pelo `stdin`. O `@` inicial é descartado
+  (`@ana` → `ana`); com mais de um `@` o texto segue como e-mail.
+- **`parseArgs` do `node:util`, em modo estrito.** Opção desconhecida lança
+  `TypeError` com `code` `ERR_PARSE_ARGS_*`, e `runCli` a trata como erro de
+  uso (saída 2), igual às recusas de sintaxe da própria CLI. As recusas das
+  regras de conta chegam como `AppError` do db, com `status`, e saem com 1.

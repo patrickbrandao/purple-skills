@@ -555,13 +555,38 @@ export async function resetAccountPassword(
   actor: AuthUser,
   uuid: string,
 ): Promise<{ user: UserSummary; temporaryPassword: string }> {
+  const { user, password } = await setAccountPassword(actor, uuid);
+  return { user, temporaryPassword: password };
+}
+
+/**
+ * Define a senha de outra conta — o miolo da redefinição pelo painel e do
+ * `purple-admin user passwd` (`docs/21-cli-admin.md`).
+ *
+ * Sem `password`, sorteia uma temporária e a conta passa a exigir troca no
+ * próximo acesso, exatamente como o botão do painel. Com `password`, quem
+ * administra escolheu a senha — a mesma regra de `createAccount`: a conta entra
+ * sem exigir troca, a não ser que `temporary` peça. Nos dois casos as sessões
+ * caem, a trava de login sai e a troca vai para a trilha como `user.password`.
+ */
+export async function setAccountPassword(
+  actor: AuthUser,
+  uuid: string,
+  input: { password?: unknown; temporary?: boolean } = {},
+): Promise<{ user: UserSummary; password: string; generated: boolean }> {
   const target = await getUserByUuid(uuid);
   if (!target) throw notFound('Conta não encontrada');
 
-  const password = generatePassword();
+  const generated = input.password === undefined || input.password === null || input.password === '';
+  if (!generated) {
+    const problem = passwordProblem(input.password);
+    if (problem) throw badRequest(problem);
+  }
+  const password = generated ? generatePassword() : (input.password as string);
+
   const updated = await updateUser(uuid, {
     passwordHash: hashPassword(password),
-    mustChangePassword: true,
+    mustChangePassword: generated || input.temporary === true,
     bumpTokenVersion: true,
     // A ficha da conta promete que gerar a senha temporária "destrava na hora"
     // (`UserAlerts`, em `web/src/pages/UserPage.tsx`). Sem isto a temporária
@@ -580,7 +605,7 @@ export async function resetAccountPassword(
     target.username,
   );
 
-  return { user: toPublicUser(updated), temporaryPassword: password };
+  return { user: toPublicUser(updated), password, generated };
 }
 
 /** Troca de senha pelo próprio dono. Derruba as outras sessões dele. */

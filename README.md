@@ -715,6 +715,23 @@ por objeto ([`docs/12-acesso-granular.md`](docs/12-acesso-granular.md)):
   pessoa é obrigada a trocá-la no primeiro acesso.
 - **Rate limiting no login** em duas camadas: janela em memória por IP e trava
   da conta (`LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCK_SECONDS`).
+- **Linha de comando no servidor** (`purple-admin`), para quando ninguém
+  consegue entrar no painel — o único admin esqueceu a senha e não há SMTP, a
+  instalação ficou sem administrador, a conta está travada. Roda dentro do
+  container do painel e passa pelas mesmas regras e pela mesma trilha de
+  auditoria (ator `cli`):
+
+  ```bash
+  docker compose exec admin purple-admin help
+  docker compose exec admin purple-admin user passwd admin@empresa.com      # sorteia uma temporária
+  docker compose exec admin purple-admin user add --username ana --email ana@empresa.com --role editor
+  docker compose exec admin purple-admin user role ana admin
+  ```
+
+  Também há `user list`, `show`, `disable`, `enable`, `unlock` e `logout`. Para
+  informar a senha sem deixá-la no histórico, use `--password-stdin` (com
+  `exec -T`). Referência completa em
+  [`docs/21-cli-admin.md`](docs/21-cli-admin.md).
 
 O desenho completo, com as decisões e o que ficou de fora, está em
 [`docs/05-accounts-and-roles.md`](docs/05-accounts-and-roles.md).
