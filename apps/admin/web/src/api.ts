@@ -1231,11 +1231,10 @@ export function importZip(file: File, fields: ImportFields) {
  * bundle — é o único corpo com onde dizer o que ficou de fora. Quem chama
  * discrimina por `'bundle' in resposta`.
  */
-export function importToQuarantine(file: File) {
-  return request<QuarantineImportResult>('/api/skills/import', {
-    method: 'POST',
-    body: importForm(file, {}, 'quarantine'),
-  });
+export function importToQuarantine(file: File, destino: QuarantineTargetsRequest = { catalogs: [], mcps: [] }) {
+  const form = importForm(file, { mcps: destino.mcps }, 'quarantine');
+  if (destino.catalogs.length) form.append('catalogs', JSON.stringify(destino.catalogs));
+  return request<QuarantineImportResult>('/api/skills/import', { method: 'POST', body: form });
 }
 
 function importForm(file: File, fields: ImportFields, destination: ImportDestination): FormData {
@@ -1273,7 +1272,9 @@ export function uploadFiles(slug: string, files: FileList | File[], prefix = '')
  *
  * Note o que **não** existe aqui: slug, tags, ícone, `isActive`, `isPublic`,
  * vínculo com vMCP ou catálogo, contadores e concessões. A quarentena é uma
- * pasta de arquivos com dono — e como não há slug, o endereço é o `uuid`.
+ * pasta de arquivos com dono — e como não há slug, o endereço é o `uuid`. O
+ * destino da ficha (`QuarantineSheet.targets`) não é vínculo: é o que a
+ * aprovação vai criar.
  */
 export type QuarantineSummary = {
   uuid: string;
@@ -1289,6 +1290,21 @@ export type QuarantineSummary = {
   updatedAt: string;
 };
 
+/** Um catálogo do destino do envio, como a sessão o vê: cópia de `QuarantineSheetCatalogTarget`. */
+export type QuarantineCatalogTarget = CatalogRef & { isActive: boolean; editable: boolean };
+
+/** Um servidor do destino, com as portas do vínculo que a aprovação cria: cópia de `QuarantineSheetMcpTarget`. */
+export type QuarantineMcpTarget = LinkFlags & {
+  uuid: string;
+  slug: string;
+  name: string;
+  isActive: boolean;
+  editable: boolean;
+};
+
+/** O destino pedido pelo painel: catálogos pelo slug e servidores como em "Publicar em". */
+export type QuarantineTargetsRequest = { catalogs: string[]; mcps: SkillLinkInput[] };
+
 export type QuarantineDetail = QuarantineSummary & {
   files: SkillFileMeta[];
 };
@@ -1302,6 +1318,10 @@ export type QuarantineDetail = QuarantineSummary & {
  */
 export type QuarantineSheet = QuarantineDetail & {
   canPromote: boolean;
+  /** Só o que a sessão enxerga; cada item diz se ela o edita. */
+  targets: { catalogs: QuarantineCatalogTarget[]; mcps: QuarantineMcpTarget[] };
+  /** Destinos que a sessão não enxerga — sem nome, só a conta. */
+  hiddenTargetCount: number;
 };
 
 const quarantinePath = (uuid: string) => `/api/quarantine/${encodeURIComponent(uuid)}`;
@@ -1316,7 +1336,14 @@ export const getQuarantineItem = (uuid: string) => request<QuarantineSheet>(quar
 export const deleteQuarantineItem = (uuid: string) =>
   request<unknown>(quarantinePath(uuid), { method: 'DELETE' });
 
-/** Aprova: cria a skill em produção e apaga o envio. Devolve a skill criada. */
+/**
+ * Troca o destino, declarativo sobre o que a sessão enxerga; `dropHidden` tira
+ * também os que ela não enxerga. Devolve a ficha nova.
+ */
+export const setQuarantineTargets = (uuid: string, destino: QuarantineTargetsRequest & { dropHidden?: boolean }) =>
+  request<QuarantineSheet>(`${quarantinePath(uuid)}/targets`, { method: 'PUT', body: json(destino) });
+
+/** Aprova: cria a skill em produção, já no destino do envio, e apaga o envio. Devolve a skill criada. */
 export const promoteQuarantineItem = (uuid: string) =>
   request<SkillDetail>(`${quarantinePath(uuid)}/promote`, { method: 'POST' });
 

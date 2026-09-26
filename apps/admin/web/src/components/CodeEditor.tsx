@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react';
 import { lineCount } from '../explorer.js';
+import { languageFor, toCodeLines } from '../highlight.js';
 import { cx } from './ui.js';
+
+/**
+ * Acima disto o editor volta a ser texto puro: a cor é refeita a cada tecla, e
+ * um arquivo grande travaria a digitação. É bem menos que o teto do leitor
+ * (`HIGHLIGHT_MAX_CHARS`), que colore uma vez só.
+ */
+const EDIT_HIGHLIGHT_MAX_CHARS = 60_000;
 
 const INDENT = '  ';
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock']);
@@ -65,6 +73,7 @@ export function CodeEditor({
   placeholder,
   autoFocus,
   className,
+  fileName,
 }: {
   value: string;
   onChange?: (value: string) => void;
@@ -76,10 +85,31 @@ export function CodeEditor({
   /** Recebe o cursor ao aparecer. */
   autoFocus?: boolean;
   className?: string;
+  /**
+   * Com o nome do arquivo, o texto sai colorido pela gramática dele — a mesma
+   * do leitor (`toCodeLines`). Sem nome, ou com um arquivo grande demais, é
+   * texto puro, como sempre foi.
+   */
+  fileName?: string;
 }) {
   const area = useRef<HTMLTextAreaElement>(null);
   const gutter = useRef<HTMLPreElement>(null);
+  const paint = useRef<HTMLPreElement>(null);
   const releaseTab = useRef(false);
+
+  // Todas as linhas, sem o corte do leitor: a camada de cor precisa ter a
+  // altura exata do texto, senão o fim do arquivo desalinha.
+  const code = useMemo(
+    () =>
+      fileName === undefined
+        ? null
+        : toCodeLines(value, languageFor(fileName, value), {
+            maxLines: Number.POSITIVE_INFINITY,
+            maxChars: EDIT_HIGHLIGHT_MAX_CHARS,
+          }),
+    [fileName, value],
+  );
+  const colored = code !== null && code.colored;
 
   const lines = lineCount(value);
   const numbers = useMemo(
@@ -133,29 +163,69 @@ export function CodeEditor({
     }
   }
 
+  const textarea = (
+    <textarea
+      ref={area}
+      className="ce-area"
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+      onScroll={(event) => {
+        const { scrollTop, scrollLeft } = event.currentTarget;
+        if (gutter.current) gutter.current.scrollTop = scrollTop;
+        if (paint.current) {
+          paint.current.scrollTop = scrollTop;
+          paint.current.scrollLeft = scrollLeft;
+        }
+      }}
+      onKeyDown={onKeyDown}
+      readOnly={readOnly}
+      autoFocus={autoFocus}
+      wrap="off"
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      aria-label={label}
+      placeholder={placeholder}
+    />
+  );
+
   return (
-    <div className={cx('code-editor', readOnly && 'readonly', className)}>
+    <div className={cx('code-editor', readOnly && 'readonly', colored && 'colored', className)}>
       <pre ref={gutter} className="ce-gutter" aria-hidden="true">
         {numbers}
       </pre>
-      <textarea
-        ref={area}
-        className="ce-area"
-        value={value}
-        onChange={(event) => onChange?.(event.target.value)}
-        onScroll={(event) => {
-          if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop;
-        }}
-        onKeyDown={onKeyDown}
-        readOnly={readOnly}
-        autoFocus={autoFocus}
-        wrap="off"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        aria-label={label}
-        placeholder={placeholder}
-      />
+      {colored ? (
+        // A cor fica numa camada **atrás** do campo, com a mesma fonte, o mesmo
+        // recuo e a mesma altura de linha; o campo por cima tem o texto
+        // transparente e só o cursor e a seleção à vista. É o que deixa editar
+        // com cores sem trocar o `textarea` — o desfazer, a seleção e o colar
+        // continuam os do navegador.
+        <div className="ce-stack">
+          <pre ref={paint} className="ce-paint" aria-hidden="true">
+            <code className="cv-code">
+              {code.lines.map((line, index) => (
+                <span key={index}>
+                  {line.map((token, at) =>
+                    token.className ? (
+                      <span key={at} className={token.className}>
+                        {token.text}
+                      </span>
+                    ) : (
+                      token.text
+                    ),
+                  )}
+                  {'\n'}
+                </span>
+              ))}
+              {/* A linha em branco do fim, que o `toCodeLines` não conta e o campo mostra. */}
+              {value.endsWith('\n') ? ' ' : null}
+            </code>
+          </pre>
+          {textarea}
+        </div>
+      ) : (
+        textarea
+      )}
     </div>
   );
 }

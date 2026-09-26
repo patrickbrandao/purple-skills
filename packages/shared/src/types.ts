@@ -1031,7 +1031,8 @@ export type ActivityReport = {
  * A quarentena é deliberadamente pobre: não tem slug, tag, ícone, vínculo com
  * vMCP nem catálogo, não entra na busca e não é fatiada pelo RAG. O que existe
  * é uma pasta de arquivos com dono, e quem aprova a transforma numa skill de
- * verdade. Por isso **não** há colisão de nome: dois envios do mesmo pacote
+ * verdade. O **destino** (`QuarantineTargets`) não é vínculo: é o que a
+ * aprovação vai criar, e até lá o envio não aparece em lugar nenhum. Por isso **não** há colisão de nome: dois envios do mesmo pacote
  * convivem, e é o `uuid` que os distingue.
  */
 export type QuarantineSummary = {
@@ -1052,9 +1053,55 @@ export type QuarantineSummary = {
   updatedAt: string;
 };
 
+/**
+ * Um catálogo em que a skill **entra** quando o envio for aprovado
+ * (`docs/15-quarentena.md` §11). É destino, não vínculo: o envio não aparece
+ * no catálogo, e nada muda nele até a aprovação.
+ */
+export type QuarantineCatalogTarget = CatalogRef & {
+  /** O catálogo está ligado. Desligado, a skill entra assim mesmo e não sai em vMCP nenhum. */
+  isActive: boolean;
+};
+
+/**
+ * Um servidor em que a skill é **publicada** quando o envio for aprovado, com
+ * as portas do vínculo direto que a aprovação cria — as mesmas três de
+ * `virtual_mcp_skills`, pelo menos uma ligada.
+ */
+export type QuarantineMcpTarget = {
+  uuid: string;
+  slug: string;
+  name: string;
+  isActive: boolean;
+  asSkill: boolean;
+  asPrompt: boolean;
+  asResource: boolean;
+};
+
+/** Para onde a skill vai ao ser aprovada. Vazio nos dois: nasce flutuante, como antes. */
+export type QuarantineTargets = {
+  catalogs: QuarantineCatalogTarget[];
+  mcps: QuarantineMcpTarget[];
+};
+
+/**
+ * O destino como o banco o recebe: por uuid. A checagem de que quem pediu
+ * edita cada catálogo e cada servidor é do app, antes de chamar.
+ */
+export type QuarantineTargetsInput = {
+  catalogs: string[];
+  mcps: SkillLinkInput[];
+};
+
 export type QuarantineDetail = QuarantineSummary & {
   files: SkillFileMeta[];
+  /** A ficha do banco traz o destino inteiro; o painel o recorta (`QuarantineSheet`). */
+  targets: QuarantineTargets;
 };
+
+/** Um destino como a sessão o vê: `editable` é ter `edit` nele, o que aprovar e acrescentar cobram. */
+export type QuarantineSheetCatalogTarget = QuarantineCatalogTarget & { editable: boolean };
+export type QuarantineSheetMcpTarget = QuarantineMcpTarget & { editable: boolean };
 
 /**
  * O envio **como o painel o recebe**: a ficha mais o que a sessão pode fazer
@@ -1065,9 +1112,19 @@ export type QuarantineDetail = QuarantineSummary & {
  * nas duas pontas, porque é o contrato que decide se o botão "Aprovar"
  * aparece: declarado em separado de cada lado, um lado pode mudar sem o outro
  * perceber. A decisão que **vale** continua sendo a da rota de promover.
+ *
+ * `targets` traz só os destinos que a sessão **enxerga**; os outros viram
+ * `hiddenTargetCount`, sem nome nem slug — quem revisa a fila não fica sabendo,
+ * por um envio alheio, que existe um catálogo ou servidor que não lhe foi
+ * mostrado (a mesma régua do relatório 009 da auditoria de 2026-09-19).
  */
-export type QuarantineSheet = QuarantineDetail & {
+export type QuarantineSheet = Omit<QuarantineDetail, 'targets'> & {
   canPromote: boolean;
+  targets: {
+    catalogs: QuarantineSheetCatalogTarget[];
+    mcps: QuarantineSheetMcpTarget[];
+  };
+  hiddenTargetCount: number;
 };
 
 export type QuarantinePage = {

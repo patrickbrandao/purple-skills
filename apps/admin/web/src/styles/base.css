@@ -617,6 +617,13 @@ table.data tr.is-pending td {
 table.data tr.is-pending td:first-child {
   box-shadow: inset 2px 0 0 var(--warn);
 }
+/* Linha marcada para uma ação em lote (a fila da quarentena). */
+table.data tr.is-selected td {
+  background: var(--accent-tint);
+}
+table.data tr.is-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 table.data tr.is-removed .row-title {
   text-decoration: line-through;
   color: var(--text-muted);

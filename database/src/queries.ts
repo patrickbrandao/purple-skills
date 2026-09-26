@@ -66,9 +66,13 @@ import {
   type PublicProfile,
   type PublicVirtualMcp,
   type QuarantineApprovers,
+  type QuarantineCatalogTarget,
   type QuarantineDetail,
+  type QuarantineMcpTarget,
   type QuarantinePage,
   type QuarantineSummary,
+  type QuarantineTargets,
+  type QuarantineTargetsInput,
   type Role,
   type SkillCatalogRef,
   type SkillDetail,
@@ -5894,7 +5898,7 @@ function catalogAudit(
   action: 'catalog.create' | 'catalog.update' | 'catalog.delete' | 'catalog.clone',
   slug: string,
   source: AuditSource,
-  actor: AuditActor,
+  actor: AuditActor | null | undefined,
 ): AuditInput {
   return {
     skillUuid: null,
@@ -5929,13 +5933,17 @@ async function lockCatalogTx(tx: Tx, uuid: string): Promise<{ slug: string }> {
   return { slug: row.slug as string };
 }
 
-/** O fecho de toda escrita nos membros: `updated_at` e a linha `catalog.update`. */
+/**
+ * O fecho de toda escrita nos membros: `updated_at` e a linha `catalog.update`.
+ * Aceita ator nulo por causa da promoção da quarentena (`promoteQuarantine`),
+ * que, como `createSkill`, roda também sem conta.
+ */
 async function touchCatalogTx(
   tx: Tx,
   uuid: string,
   slug: string,
   source: AuditSource,
-  actor: AuditActor,
+  actor: AuditActor | null | undefined,
 ): Promise<void> {
   await tx.execute(sql`UPDATE catalogs SET updated_at = now() WHERE uuid = ${uuid}`);
   await auditTx(tx, catalogAudit('catalog.update', slug, source, actor));
@@ -9246,6 +9254,12 @@ function sessionLabel(value: unknown, field: string): string | null {
  *   `canPromoteQuarantine` de shared, com a política de
  *   `getQuarantineApprovers`). O banco não recorta por papel: `listQuarantine`
  *   recebe `ownerUserUuid` quando o app quer só os de uma conta.
+ *
+ * O **destino** (`035`, `quarantine_catalogs` e `quarantine_mcps`) não é
+ * vínculo: é o que a aprovação vai criar. Até lá o envio não aparece em
+ * catálogo nem em vMCP nenhum, e nenhuma leitura fora desta seção olha as duas
+ * tabelas. Quem grava ou cumpre um destino confere `edit` em cada alvo **no
+ * app**, antes de chamar — o banco só confere que o alvo existe.
  */
 
 /** As colunas de `QuarantineSummary`: o envio, o dono e os números da pasta. */
@@ -9344,9 +9358,15 @@ export async function listQuarantine(
 }
 
 /**
- * A ficha do envio, com a árvore de arquivos. **Uuid torto é `null`**, não
- * erro: o painel endereça o envio pelo que veio na URL, e um texto que não é
- * uuid tem de virar o 404 da tela — não o 22P02 do driver (500).
+ * A ficha do envio, com a árvore de arquivos e o destino. **Uuid torto é
+ * `null`**, não erro: o painel endereça o envio pelo que veio na URL, e um
+ * texto que não é uuid tem de virar o 404 da tela — não o 22P02 do driver
+ * (500).
+ *
+ * `targets` traz nome, slug e `isActive` **atuais** de cada catálogo e vMCP do
+ * destino, ordenados por nome (desempate pelo slug, como `listCatalogs`); sem
+ * destino, `{ catalogs: [], mcps: [] }`. O recorte do que a sessão enxerga é
+ * do app (`QuarantineSheet`).
  */
 export async function getQuarantine(uuid: string): Promise<QuarantineDetail | null> {
   if (!isUuid(uuid)) return null;
@@ -9357,7 +9377,11 @@ export async function getQuarantine(uuid: string): Promise<QuarantineDetail | nu
   const row = (result.rows as Row[])[0];
   if (!row) return null;
 
-  return { ...toQuarantineSummary(row), files: await listQuarantineFilesFrom(db(), uuid) };
+  return {
+    ...toQuarantineSummary(row),
+    files: await listQuarantineFilesFrom(db(), uuid),
+    targets: await listQuarantineTargetsFrom(db(), uuid),
+  };
 }
 
 export type CreateQuarantineInput = {
@@ -9372,16 +9396,30 @@ export type CreateQuarantineInput = {
    * arquivo que falta pode ser acrescentado depois, antes de aprovar.
    */
   files?: readonly FileInput[];
+  /**
+   * O destino (`035`): os catálogos em que a skill entra e os vMCPs em que ela
+   * ganha vínculo direto **quando o envio for aprovado** — até lá, nada muda
+   * neles. Gravado na mesma transação do envio. Omitido: sem destino, e a
+   * aprovação cria a skill flutuante. Informado, as duas listas são
+   * obrigatórias (vazia vale). A checagem de que quem envia edita cada alvo é
+   * do app, antes de chamar.
+   */
+  targets?: QuarantineTargetsInput;
 };
 
 /**
- * Grava o envio e os arquivos numa transação só: gravá-los depois deixaria o
- * envio existindo sem o pacote quando o segundo passo falhasse — a mesma razão
- * dos anexos de `createSkill`.
+ * Grava o envio, os arquivos e o destino numa transação só: gravá-los depois
+ * deixaria o envio existindo sem o pacote quando o segundo passo falhasse — a
+ * mesma razão dos anexos de `createSkill`.
  *
  * O dono é quem submeteu (`actor`), como em `createSkill`; sem conta (token
  * global, bootstrap) o envio nasce órfão, só do admin. Audita
- * `quarantine.create` com o nome do envio em `target_label`.
+ * `quarantine.create` com o nome do envio em `target_label` — o destino é
+ * parte do envio que apareceu, e não ganha linha própria.
+ *
+ * O destino é validado **antes** da transação (`parseQuarantineTargets` e
+ * `assertQuarantineTargetsExist`): uuid torto ou desconhecido, alvo repetido e
+ * vMCP com as três portas desligadas são 400, e nada é gravado.
  */
 export async function createQuarantine(
   input: CreateQuarantineInput,
@@ -9395,21 +9433,30 @@ export async function createQuarantine(
   // Validados antes de abrir a transação: um caminho recusado no meio da
   // gravação deixaria o envio criado sem parte dos arquivos.
   const files = quarantineFileInputs(input.files ?? []);
+  const targets =
+    input.targets === undefined ? NO_TARGETS : parseQuarantineTargets(input.targets, 'targets');
+  await assertQuarantineTargetsExist(db(), targets);
 
-  const uuid = await db().transaction(async (tx) => {
-    const inserted = await tx.execute(sql`
-      INSERT INTO quarantine_skills
-        (name, description, source_filename, owner_user_uuid, created_by_user_uuid)
-      VALUES (${name}, ${description}, ${sourceFilename},
-              ${actor?.userUuid ?? null}, ${actor?.userUuid ?? null})
-      RETURNING uuid
-    `);
-    const novo = (inserted.rows as Row[])[0].uuid as string;
-    // Sem travar nada: ninguém mais conhece este uuid ainda.
-    await upsertQuarantineFilesTx(tx, novo, files);
-    await auditTx(tx, quarantineAudit('quarantine.create', name, source, actor));
-    return novo;
-  });
+  let uuid: string;
+  try {
+    uuid = await db().transaction(async (tx) => {
+      const inserted = await tx.execute(sql`
+        INSERT INTO quarantine_skills
+          (name, description, source_filename, owner_user_uuid, created_by_user_uuid)
+        VALUES (${name}, ${description}, ${sourceFilename},
+                ${actor?.userUuid ?? null}, ${actor?.userUuid ?? null})
+        RETURNING uuid
+      `);
+      const novo = (inserted.rows as Row[])[0].uuid as string;
+      // Sem travar nada: ninguém mais conhece este uuid ainda.
+      await upsertQuarantineFilesTx(tx, novo, files);
+      await writeQuarantineTargetsTx(tx, novo, targets);
+      await auditTx(tx, quarantineAudit('quarantine.create', name, source, actor));
+      return novo;
+    });
+  } catch (err) {
+    throw targetGoneOr(err);
+  }
 
   const detail = await getQuarantine(uuid);
   if (!detail) throw new Error('Envio criado mas não encontrado');
@@ -9642,6 +9689,78 @@ export async function deleteQuarantine(
 }
 
 /**
+ * Define o destino do envio de forma **declarativa**, como `setCatalogSkills`:
+ * `targets` é o estado desejado inteiro. Quem saiu é removido, quem entrou é
+ * inserido e o vMCP que ficou tem só as portas reescritas (o `created_at`
+ * fica). Devolve a ficha inteira, com o destino relido.
+ *
+ * Os erros, em ordem: envio com uuid torto é 404; destino malformado — lista
+ * que falta, uuid torto, alvo repetido, porta que não é booleana ou vMCP com as
+ * três desligadas — é 400 antes de abrir a transação; envio inexistente é o 404
+ * de `lockQuarantineTx`; catálogo ou vMCP desconhecido é 400, e nada muda.
+ *
+ * **Sem mudança, sem escrita**: quando o destino pedido é o gravado (mesmos
+ * catálogos; mesmos vMCPs com as mesmas portas), nada é tocado — nem
+ * `updated_at`, nem a trilha —, como `addCatalogSkill` com quem já é membro. O
+ * painel salva a ficha inteira, e um salvar sem mudança não é evento.
+ *
+ * Com mudança: carimba `updated_at` do envio **à mão** (o trigger de
+ * `quarantine_files` não alcança o destino, e o `035` explica por que não há
+ * trigger aqui) e audita `quarantine.update` com o nome do envio em
+ * `target_label`, sem `file_path`.
+ *
+ * **A ordem das travas** é a da promoção: o envio primeiro (`FOR UPDATE`), e
+ * depois os vMCPs **antes** dos catálogos, cada lista na ordem do uuid. Aqui ela
+ * vale para o `FOR KEY SHARE` que a FK de cada INSERT pede no alvo — ver a nota
+ * de `promoteQuarantine`, que diz o que foi medido e por que ela fica mesmo sem
+ * ter aparecido na medida.
+ *
+ * O alvo apagado entre a checagem e o INSERT vira o mesmo 400 (`targetGoneOr`):
+ * o destino pedido não existe mais, e quem pediu confere de novo.
+ */
+export async function setQuarantineTargets(
+  uuid: string,
+  targets: QuarantineTargetsInput,
+  source: AuditSource,
+  actor?: AuditActor | null,
+): Promise<QuarantineDetail> {
+  assertQuarantineUuid(uuid);
+  const wanted = parseQuarantineTargets(targets, 'targets');
+
+  try {
+    await db().transaction(async (tx) => {
+      const envio = await lockQuarantineTx(tx, uuid);
+      await assertQuarantineTargetsExist(tx, wanted);
+
+      const current = await readQuarantineTargetKeysFrom(tx, uuid);
+      if (sameTargets(current, wanted)) return;
+
+      await writeQuarantineTargetsTx(tx, uuid, wanted);
+      await tx.execute(sql`UPDATE quarantine_skills SET updated_at = now() WHERE uuid = ${uuid}`);
+      await auditTx(tx, quarantineAudit('quarantine.update', envio.name, source, actor));
+    });
+  } catch (err) {
+    throw targetGoneOr(err);
+  }
+
+  const detail = await getQuarantine(uuid);
+  if (!detail) throw new Error('Envio atualizado mas não encontrado');
+  return detail;
+}
+
+export type PromoteQuarantineOptions = {
+  /**
+   * O destino que quem aprova **leu na ficha** e para o qual o app conferiu
+   * `edit` em cada alvo. Dentro da transação, com o envio travado, ele é
+   * comparado com o gravado — conjunto de catálogos; conjunto de vMCPs com as
+   * três portas — e a diferença é **409**, sem criar nada: fecha a janela entre
+   * a checagem do app e a gravação. Omitido, a promoção cumpre o que estiver
+   * gravado sem comparar.
+   */
+  expectedTargets?: QuarantineTargetsInput;
+};
+
+/**
  * A aprovação: o envio vira skill e **some da quarentena**, numa transação só —
  * senão restaria uma skill pela metade ou um envio apagado sem skill.
  *
@@ -9680,23 +9799,79 @@ export async function deleteQuarantine(
  *    instante**: o aviso de sucesso caía numa tela de "Skill não encontrada".
  *    Devolver a skill a quem a trouxe é transferir ou conceder, que são atos
  *    com trilha;
- * 5. **a skill nasce flutuante:** sem vMCP, sem catálogo, sem ícone,
- *    `is_public` falso e ligada. Publicar é um ato à parte, depois;
+ * 5. **a skill nasce onde o destino manda** (`035`): sem ícone, `is_public`
+ *    falso e ligada, como sempre, e — na mesma transação — **com participação
+ *    ativa em cada catálogo** do destino (`catalog.update` no catálogo, como
+ *    `addCatalogSkill`) e **vínculo direto com cada vMCP**, com as portas
+ *    gravadas (`linkTx`, `mcp.update` no servidor). Sem destino, nasce
+ *    flutuante, como antes. Era sempre flutuante (`docs/15` decisão 8) até o
+ *    `035`, que a revogou: quem importa escolhe o destino no upload;
  * 6. **os demais arquivos viram anexos**, com o caminho intacto;
  * 7. a linha da quarentena e os arquivos dela **somem** (a cascata cuida dos
- *    arquivos).
+ *    arquivos e do destino).
+ *
+ * **O destino esperado** (`options.expectedTargets`) é comparado com o gravado
+ * logo depois de travar o envio, antes de ler arquivo: diferente é **409**, e
+ * nada é criado nem apagado.
+ *
+ * **O alvo apagado no meio é pulado em silêncio.** O destino é lido com o
+ * envio travado, mas `deleteCatalog`/`deleteVirtualMcp` não passam pelo envio:
+ * a cascata do `035` tira a linha do destino sem pedir a dele. Se o catálogo
+ * ou o vMCP some entre a leitura e a trava do alvo, a trava volta vazia e ele
+ * fica de fora — o mesmo estado final de a remoção ter vindo logo depois da
+ * aprovação, quando a cascata de `catalog_skills`/`virtual_mcp_skills` levaria
+ * a participação e o vínculo recém-criados.
+ *
+ * **A ordem das travas**, fixa: o envio (`FOR UPDATE`, `lockQuarantineTx`);
+ * depois **todos os vMCPs**, na ordem do uuid, cada um pelo caminho de `linkTx`
+ * (trava pura, vínculo, `UPDATE` por último); e só então **todos os
+ * catálogos**, na ordem do uuid, cada um em `FOR UPDATE` (`lockCatalogTx`). As
+ * duas escolhas foram medidas, 150 rodadas por cenário contra um banco
+ * descartável (os cenários ficaram em `quarantine-targets.integration.test.ts`,
+ * com 30):
+ *
+ *   - *o uuid dentro de cada lista*, a lição de `createSkill`: com a ordem
+ *     sorteada por promoção, duas promoções com os mesmos alvos morreram por
+ *     40P01 em 78 de 150 pares; na ordem do uuid, em nenhum;
+ *   - *o vMCP antes do catálogo*, porque é a ordem de quem já existe:
+ *     `linkCatalog`, `setVirtualMcpCatalogs` e `cloneVirtualMcp` seguram o vMCP
+ *     e pedem, pela FK de `virtual_mcp_catalogs`, `FOR KEY SHARE` no catálogo —
+ *     que o `FOR UPDATE` da promoção barra. Com o catálogo primeiro, a promoção
+ *     segurava o catálogo esperando o vMCP enquanto o `linkCatalog` segurava o
+ *     vMCP esperando o catálogo: 149 mortes em 150 rodadas de duas promoções,
+ *     um `linkCatalog` e um `setVirtualMcpCatalogs` nos mesmos alvos; com o
+ *     vMCP primeiro, nenhuma. Nenhuma escrita do código trava catálogo e depois
+ *     vMCP, então esta ordem não fecha ciclo com ninguém.
+ *
+ * Na mesma medida, zero mortes contra `setQuarantineTargets` de outro envio,
+ * `setCatalogSkills`, `addCatalogSkill`, `linkSkill`, `createSkill` com vínculos
+ * e `deleteCatalog`/`deleteVirtualMcp` dos próprios alvos.
+ *
+ * `setQuarantineTargets` pede as mesmas linhas pela FK (`FOR KEY SHARE`) e grava
+ * na mesma ordem, vMCPs e depois catálogos. Ali a ordem **não** apareceu na
+ * medida — catálogos primeiro também deu zero em 300 rodadas contra a promoção
+ * —, e ela fica por precaução: o `FOR KEY SHARE` no vMCP pode esperar um
+ * `UPDATE virtual_mcps` em andamento (a espera por versão superada descrita
+ * em `linkTx`), e na mesma ordem quem ainda espera um vMCP não segura catálogo
+ * nenhum.
  *
  * A skill promovida é skill normal: os triggers do `020` a marcam pendente
  * para o RAG (`rag_stale`) e o `search_vector` é montado como em qualquer
- * criação. Audita a `create` da skill, como toda criação, e
- * `quarantine.promote` com `<nome do envio> -> <slug criado>`.
+ * criação. Audita a `create` da skill, como toda criação, as linhas de cada
+ * destino cumprido e `quarantine.promote` com `<nome do envio> -> <slug
+ * criado>`.
  */
 export async function promoteQuarantine(
   uuid: string,
   source: AuditSource,
   actor?: AuditActor | null,
+  options: PromoteQuarantineOptions = {},
 ): Promise<SkillDetail> {
   assertQuarantineUuid(uuid);
+  const expected =
+    options.expectedTargets === undefined
+      ? null
+      : parseQuarantineTargets(options.expectedTargets, 'expectedTargets');
 
   let slug = '';
 
@@ -9709,6 +9884,17 @@ export async function promoteQuarantine(
     try {
       await db().transaction(async (tx) => {
         const envio = await lockQuarantineTx(tx, uuid);
+
+        // Com o envio travado, ninguém grava destino até o COMMIT; só a cascata
+        // de um alvo apagado ainda o alcança (ver a nota acima).
+        const destino = await readQuarantineTargetKeysFrom(tx, uuid);
+        if (expected && !sameTargets(destino, expected)) {
+          throw conflict(
+            `O destino do envio "${envio.name}" mudou enquanto você aprovava: ` +
+              'confira e aprove de novo',
+          );
+        }
+
         const files = await readAllQuarantineFilesFrom(tx, uuid);
 
         const main = files.find((file) => isSkillMd(file.relativePath));
@@ -9766,6 +9952,7 @@ export async function promoteQuarantine(
           actor,
           previousContent: null,
         });
+        await fulfillQuarantineTargetsTx(tx, skillUuid, destino, source, actor);
         await auditTx(
           tx,
           quarantineAudit('quarantine.promote', `${envio.name} -> ${slug}`, source, actor),
@@ -9900,6 +10087,305 @@ async function lockQuarantineTx(
     name: row.name as string,
     description: (row.description ?? '') as string,
   };
+}
+
+/**
+ * O destino como o banco o compara e o grava: uuids em minúsculas e as duas
+ * listas **na ordem do uuid** — a ordem em que a promoção e
+ * `setQuarantineTargets` travam os alvos (ver `promoteQuarantine`).
+ */
+type TargetKeys = { catalogs: string[]; mcps: SkillLinkInput[] };
+
+const NO_TARGETS: TargetKeys = { catalogs: [], mcps: [] };
+
+const byUuid = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Valida a forma do destino, sem ir ao banco. As duas listas são obrigatórias
+ * — o destino é declarativo, e uma lista ausente lida como vazia apagaria o
+ * que estava gravado sem ninguém pedir. Tudo o que não serve é 400: uuid torto,
+ * alvo repetido, porta ausente ou não booleana (`requireBoolean`, como em
+ * `resolveLinks`) e vMCP com as três portas desligadas — o CHECK
+ * `quarantine_mcps_some_port_chk` recusaria de qualquer jeito, e aqui a
+ * mensagem diz qual.
+ */
+function parseQuarantineTargets(value: unknown, field: string): TargetKeys {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw badRequest(`O campo "${field}" deve ser um objeto com "catalogs" e "mcps"`);
+  }
+  const input = value as { catalogs?: unknown; mcps?: unknown };
+  if (!Array.isArray(input.catalogs)) {
+    throw badRequest(`O campo "${field}.catalogs" deve ser uma lista`);
+  }
+  if (!Array.isArray(input.mcps)) {
+    throw badRequest(`O campo "${field}.mcps" deve ser uma lista`);
+  }
+
+  const catalogs = new Set<string>();
+  input.catalogs.forEach((item: unknown, index: number) => {
+    if (!isUuid(item)) {
+      throw badRequest(`${field}.catalogs[${index}]: precisa ser o uuid de um catálogo`);
+    }
+    const uuid = item.toLowerCase();
+    if (catalogs.has(uuid)) throw badRequest(`Catálogo repetido no destino: ${uuid}`);
+    catalogs.add(uuid);
+  });
+
+  const seen = new Set<string>();
+  const mcps = input.mcps.map((item: unknown, index: number): SkillLinkInput => {
+    const raw = (item as Partial<SkillLinkInput> | null)?.virtualMcpUuid;
+    if (!isUuid(raw)) {
+      throw badRequest(`${field}.mcps[${index}]: "virtualMcpUuid" precisa ser um uuid`);
+    }
+    const uuid = raw.toLowerCase();
+    if (seen.has(uuid)) throw badRequest(`MCP virtual repetido no destino: ${uuid}`);
+    seen.add(uuid);
+    const subject = `MCP virtual "${uuid}"`;
+    const flags = item as SkillLinkInput;
+    const link = {
+      virtualMcpUuid: uuid,
+      asSkill: requireBoolean(flags.asSkill, 'asSkill', subject),
+      asPrompt: requireBoolean(flags.asPrompt, 'asPrompt', subject),
+      asResource: requireBoolean(flags.asResource, 'asResource', subject),
+    };
+    if (!link.asSkill && !link.asPrompt && !link.asResource) {
+      throw badRequest(
+        `${subject}: ligue pelo menos uma das portas (asSkill, asPrompt ou asResource)`,
+      );
+    }
+    return link;
+  });
+
+  return {
+    catalogs: [...catalogs].sort(byUuid),
+    mcps: mcps.sort((a, b) => byUuid(a.virtualMcpUuid, b.virtualMcpUuid)),
+  };
+}
+
+/**
+ * Catálogo ou vMCP desconhecido no destino é **400**, como em `resolveLinks`:
+ * é erro de quem mandou a lista, não recurso da URL. Uma consulta por tabela;
+ * a mensagem nomeia o primeiro que falta, na ordem do uuid.
+ *
+ * Não trava nada: a garantia de que o alvo ainda existe no COMMIT é a FK do
+ * INSERT, e o alvo apagado entre esta leitura e ele vira o mesmo 400 por
+ * `targetGoneOr`.
+ */
+async function assertQuarantineTargetsExist(
+  executor: Pick<Tx, 'execute'>,
+  targets: TargetKeys,
+): Promise<void> {
+  if (targets.catalogs.length > 0) {
+    const found = await executor.execute(sql`
+      SELECT uuid FROM catalogs WHERE uuid = ANY(${sql.param(targets.catalogs)}::uuid[])
+    `);
+    const known = new Set((found.rows as Row[]).map((row) => row.uuid as string));
+    const missing = targets.catalogs.find((uuid) => !known.has(uuid));
+    if (missing) throw badRequest(`Catálogo não encontrado: ${missing}`);
+  }
+  if (targets.mcps.length > 0) {
+    const wanted = targets.mcps.map((mcp) => mcp.virtualMcpUuid);
+    const found = await executor.execute(sql`
+      SELECT uuid FROM virtual_mcps WHERE uuid = ANY(${sql.param(wanted)}::uuid[])
+    `);
+    const known = new Set((found.rows as Row[]).map((row) => row.uuid as string));
+    const missing = wanted.find((uuid) => !known.has(uuid));
+    if (missing) throw badRequest(`MCP virtual não encontrado: ${missing}`);
+  }
+}
+
+/** O alvo que sumiu entre a checagem e o INSERT: o 400 da checagem, não 500. */
+function targetGoneOr(err: unknown): unknown {
+  if (isForeignKeyViolation(err, 'quarantine_catalogs_catalog_uuid_fkey')) {
+    return badRequest('Um catálogo do destino não existe mais: confira o destino e tente de novo');
+  }
+  if (isForeignKeyViolation(err, 'quarantine_mcps_virtual_mcp_uuid_fkey')) {
+    return badRequest('Um MCP virtual do destino não existe mais: confira o destino e tente de novo');
+  }
+  return err;
+}
+
+/**
+ * Grava o destino inteiro sobre o que houver — o `DELETE` do que saiu e o
+ * upsert do que ficou ou entrou. **vMCPs antes de catálogos**, cada lista numa
+ * statement e na ordem do uuid: as FKs travam os alvos em `FOR KEY SHARE`
+ * nessa ordem, a mesma em que a promoção os trava (ver `promoteQuarantine`).
+ * Num envio recém-criado os dois `DELETE`s não acham nada.
+ */
+async function writeQuarantineTargetsTx(
+  tx: Tx,
+  uuid: string,
+  targets: TargetKeys,
+): Promise<void> {
+  const mcps = targets.mcps.map((mcp) => mcp.virtualMcpUuid);
+  await tx.execute(sql`
+    DELETE FROM quarantine_mcps
+    WHERE quarantine_uuid = ${uuid}
+      AND virtual_mcp_uuid <> ALL(${sql.param(mcps)}::uuid[])
+  `);
+  if (targets.mcps.length > 0) {
+    const linhas = targets.mcps.map(
+      (mcp) =>
+        sql`(${uuid}, ${mcp.virtualMcpUuid}, ${mcp.asSkill}, ${mcp.asPrompt}, ${mcp.asResource})`,
+    );
+    // Só as portas no `DO UPDATE`, e só quando mudaram: o vMCP que ficou
+    // mantém o `created_at` e não gera versão nova da linha à toa.
+    await tx.execute(sql`
+      INSERT INTO quarantine_mcps
+        (quarantine_uuid, virtual_mcp_uuid, as_skill, as_prompt, as_resource)
+      VALUES ${sql.join(linhas, sql`, `)}
+      ON CONFLICT (quarantine_uuid, virtual_mcp_uuid) DO UPDATE SET
+        as_skill = EXCLUDED.as_skill,
+        as_prompt = EXCLUDED.as_prompt,
+        as_resource = EXCLUDED.as_resource
+      WHERE (quarantine_mcps.as_skill, quarantine_mcps.as_prompt, quarantine_mcps.as_resource)
+            IS DISTINCT FROM (EXCLUDED.as_skill, EXCLUDED.as_prompt, EXCLUDED.as_resource)
+    `);
+  }
+
+  await tx.execute(sql`
+    DELETE FROM quarantine_catalogs
+    WHERE quarantine_uuid = ${uuid}
+      AND catalog_uuid <> ALL(${sql.param(targets.catalogs)}::uuid[])
+  `);
+  if (targets.catalogs.length > 0) {
+    const linhas = targets.catalogs.map((catalog) => sql`(${uuid}, ${catalog})`);
+    await tx.execute(sql`
+      INSERT INTO quarantine_catalogs (quarantine_uuid, catalog_uuid)
+      VALUES ${sql.join(linhas, sql`, `)}
+      ON CONFLICT (quarantine_uuid, catalog_uuid) DO NOTHING
+    `);
+  }
+}
+
+/** O destino gravado, na forma de comparação (`TargetKeys`). */
+async function readQuarantineTargetKeysFrom(
+  executor: Pick<Tx, 'execute'>,
+  uuid: string,
+): Promise<TargetKeys> {
+  const catalogs = await executor.execute(sql`
+    SELECT catalog_uuid FROM quarantine_catalogs WHERE quarantine_uuid = ${uuid}
+  `);
+  const mcps = await executor.execute(sql`
+    SELECT virtual_mcp_uuid, as_skill, as_prompt, as_resource
+    FROM quarantine_mcps WHERE quarantine_uuid = ${uuid}
+  `);
+  return {
+    catalogs: (catalogs.rows as Row[]).map((row) => row.catalog_uuid as string).sort(byUuid),
+    mcps: (mcps.rows as Row[])
+      .map((row) => ({
+        virtualMcpUuid: row.virtual_mcp_uuid as string,
+        asSkill: Boolean(row.as_skill),
+        asPrompt: Boolean(row.as_prompt),
+        asResource: Boolean(row.as_resource),
+      }))
+      .sort((a, b) => byUuid(a.virtualMcpUuid, b.virtualMcpUuid)),
+  };
+}
+
+/** Os dois destinos são o mesmo: os mesmos catálogos e os mesmos vMCPs com as mesmas portas. */
+function sameTargets(a: TargetKeys, b: TargetKeys): boolean {
+  return (
+    a.catalogs.length === b.catalogs.length &&
+    a.catalogs.every((uuid, i) => uuid === b.catalogs[i]) &&
+    a.mcps.length === b.mcps.length &&
+    a.mcps.every((mcp, i) => {
+      const other = b.mcps[i]!;
+      return (
+        mcp.virtualMcpUuid === other.virtualMcpUuid &&
+        mcp.asSkill === other.asSkill &&
+        mcp.asPrompt === other.asPrompt &&
+        mcp.asResource === other.asResource
+      );
+    })
+  );
+}
+
+/** A ficha do destino: nome, slug e `isActive` atuais de cada alvo, por nome. */
+async function listQuarantineTargetsFrom(
+  executor: Pick<Tx, 'execute'>,
+  uuid: string,
+): Promise<QuarantineTargets> {
+  const catalogs = await executor.execute(sql`
+    SELECT c.uuid, c.slug, c.name, c.is_active
+    FROM quarantine_catalogs qc
+    JOIN catalogs c ON c.uuid = qc.catalog_uuid
+    WHERE qc.quarantine_uuid = ${uuid}
+    ORDER BY c.name ASC, c.slug ASC
+  `);
+  const mcps = await executor.execute(sql`
+    SELECT m.uuid, m.slug, m.name, m.is_active, qm.as_skill, qm.as_prompt, qm.as_resource
+    FROM quarantine_mcps qm
+    JOIN virtual_mcps m ON m.uuid = qm.virtual_mcp_uuid
+    WHERE qm.quarantine_uuid = ${uuid}
+    ORDER BY m.name ASC, m.slug ASC
+  `);
+  return {
+    catalogs: (catalogs.rows as Row[]).map(
+      (row): QuarantineCatalogTarget => ({
+        uuid: row.uuid,
+        slug: row.slug,
+        name: row.name,
+        isActive: Boolean(row.is_active),
+      }),
+    ),
+    mcps: (mcps.rows as Row[]).map(
+      (row): QuarantineMcpTarget => ({
+        uuid: row.uuid,
+        slug: row.slug,
+        name: row.name,
+        isActive: Boolean(row.is_active),
+        asSkill: Boolean(row.as_skill),
+        asPrompt: Boolean(row.as_prompt),
+        asResource: Boolean(row.as_resource),
+      }),
+    ),
+  };
+}
+
+/**
+ * Cumpre o destino na transação da promoção, com a skill já criada: vínculo
+ * direto em cada vMCP e participação ativa em cada catálogo, **nessa ordem e
+ * cada lista na ordem do uuid** (ver `promoteQuarantine`). Cada vínculo audita
+ * `mcp.update` (`linkTx`); cada catálogo, `catalog.update` (`touchCatalogTx`),
+ * como `addCatalogSkill`.
+ *
+ * A trava de cada alvo vem antes de tudo o que o toca, e o alvo que ela não
+ * acha — apagado depois de o destino ser lido — é pulado sem erro. No vMCP a
+ * trava é a mesma que `linkTx` pede em seguida (`FOR NO KEY UPDATE`; pedir de
+ * novo na mesma transação não espera), e é ela que dá o slug atual para a
+ * auditoria.
+ */
+async function fulfillQuarantineTargetsTx(
+  tx: Tx,
+  skillUuid: string,
+  targets: TargetKeys,
+  source: AuditSource,
+  actor: AuditActor | null | undefined,
+): Promise<void> {
+  for (const mcp of targets.mcps) {
+    const locked = await tx.execute(sql`
+      SELECT slug FROM virtual_mcps WHERE uuid = ${mcp.virtualMcpUuid} FOR NO KEY UPDATE
+    `);
+    const row = (locked.rows as Row[])[0];
+    if (!row) continue;
+    await linkTx(tx, skillUuid, { ...mcp, mcpSlug: row.slug as string }, source, actor);
+  }
+
+  for (const catalogUuid of targets.catalogs) {
+    // A trava de `lockCatalogTx`, sem o 404 dela.
+    const locked = await tx.execute(
+      sql`SELECT slug FROM catalogs WHERE uuid = ${catalogUuid} FOR UPDATE`,
+    );
+    const row = (locked.rows as Row[])[0];
+    if (!row) continue;
+    await tx.execute(sql`
+      INSERT INTO catalog_skills (catalog_uuid, skill_uuid)
+      VALUES (${catalogUuid}, ${skillUuid})
+      ON CONFLICT (catalog_uuid, skill_uuid) DO NOTHING
+    `);
+    await touchCatalogTx(tx, catalogUuid, row.slug as string, source, actor);
+  }
 }
 
 /**

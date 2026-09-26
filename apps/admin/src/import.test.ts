@@ -6,20 +6,23 @@ import { DEFAULT_MAX_BUNDLE_SKILLS, type QuarantineBundleResult } from '@purple-
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
 
-const { criar, criarEnvio, lerMcp, divisor } = vi.hoisted(() => ({
+const { criar, criarEnvio, lerMcp, lerCatalogo, divisor } = vi.hoisted(() => ({
   criar: vi.fn(),
   criarEnvio: vi.fn(),
   lerMcp: vi.fn(),
+  lerCatalogo: vi.fn(),
   divisor: vi.fn(),
 }));
 
-// Só `createSkill`, `createQuarantine` e `getVirtualMcp` são trocados: o resto
-// do pacote entra de verdade, e nada nele abre conexão em tempo de import.
+// Só `createSkill`, `createQuarantine`, `getVirtualMcp` e `getCatalog` são
+// trocados: o resto do pacote entra de verdade, e nada nele abre conexão em
+// tempo de import.
 vi.mock('@purple-skills/db', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   createSkill: criar,
   createQuarantine: criarEnvio,
   getVirtualMcp: lerMcp,
+  getCatalog: lerCatalogo,
 }));
 
 /**
@@ -1452,5 +1455,98 @@ describe('POST /api/skills/import — bundle', () => {
     expect(res.body).toMatchObject({ error: 'internal_error', message: 'Erro interno' });
     expect(criarEnvio).toHaveBeenCalledTimes(1);
     log.mockRestore();
+  });
+});
+
+/**
+ * O destino do envio (`docs/15-quarentena.md` §11): catálogos e servidores
+ * escolhidos no upload, que a aprovação publica. Conferidos antes de abrir o
+ * pacote, com a régua de publicar direto — `edit` em cada um.
+ */
+describe('POST /api/skills/import — destino na quarentena', () => {
+  const catalogoA = { uuid: 'cat-1', slug: 'time-a-skills', name: 'Skills do time A', access: 'edit' };
+  const umServidor = JSON.stringify([{ slug: 'time-a', asSkill: true, asPrompt: true, asResource: false }]);
+
+  beforeEach(() => {
+    lerCatalogo.mockResolvedValue(catalogoA);
+  });
+
+  it('grava catálogos e servidores no envio, sem publicar nada agora', async () => {
+    const { res } = await importar(
+      '# Corpo\n',
+      { destination: 'quarantine', catalogs: JSON.stringify(['time-a-skills']), mcps: umServidor },
+      editor,
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect(criarEnvio.mock.calls[0]![0].targets).toEqual({
+      catalogs: ['cat-1'],
+      mcps: [{ virtualMcpUuid: 'mcp-1', asSkill: true, asPrompt: true, asResource: false }],
+    });
+    expect(criar).not.toHaveBeenCalled();
+  });
+
+  it('sem destino, o envio vai com o destino vazio — a skill nasce flutuante como antes', async () => {
+    await importar('# Corpo\n', { destination: 'quarantine' });
+
+    expect(criarEnvio.mock.calls[0]![0].targets).toEqual({ catalogs: [], mcps: [] });
+  });
+
+  it('num bundle, o mesmo destino vale para cada envio', async () => {
+    const { res } = await importarPacote(
+      zipDe({ 'a/SKILL.md': '# A\n', 'b/SKILL.md': '# B\n' }),
+      { destination: 'quarantine', catalogs: JSON.stringify(['time-a-skills']) },
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect(criarEnvio).toHaveBeenCalledTimes(2);
+    for (const [input] of criarEnvio.mock.calls) expect(input.targets.catalogs).toEqual(['cat-1']);
+  });
+
+  it('catálogo que a sessão só visualiza é 403, e nada entra na fila', async () => {
+    lerCatalogo.mockResolvedValue({ ...catalogoA, access: 'view' });
+    const { res } = await importar(
+      '# Corpo\n',
+      { destination: 'quarantine', catalogs: JSON.stringify(['time-a-skills']) },
+      editor,
+    );
+
+    expect(res.statusCode).toBe(403);
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  it('catálogo que a sessão não enxerga é 404, como um que não existe', async () => {
+    lerCatalogo.mockResolvedValue(null);
+    const { res } = await importar(
+      '# Corpo\n',
+      { destination: 'quarantine', catalogs: JSON.stringify(['time-a-skills']) },
+      editor,
+    );
+
+    expect(res.statusCode).toBe(404);
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  it('servidor que a sessão só visualiza é 403 também na quarentena', async () => {
+    lerMcp.mockResolvedValue({ ...timeA, access: 'view' });
+    const { res } = await importar('# Corpo\n', { destination: 'quarantine', mcps: umServidor }, editor);
+
+    expect(res.statusCode).toBe(403);
+    expect(criarEnvio).not.toHaveBeenCalled();
+  });
+
+  it('"catalogs" fora da quarentena é 400: a importação direta não ganhou catálogo', async () => {
+    const { res } = await importar('# Corpo\n', { catalogs: JSON.stringify(['time-a-skills']) });
+
+    expect(res.statusCode).toBe(400);
+    expect(criar).not.toHaveBeenCalled();
+    expect(lerCatalogo).not.toHaveBeenCalled();
+  });
+
+  it('"catalogs" que não é lista é 400', async () => {
+    const { res } = await importar('# Corpo\n', { destination: 'quarantine', catalogs: 'time-a-skills' });
+
+    expect(res.statusCode).toBe(400);
+    expect(criarEnvio).not.toHaveBeenCalled();
   });
 });

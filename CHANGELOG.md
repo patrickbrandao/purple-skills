@@ -14,6 +14,45 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## [Não lançado]
+
+### Adicionado
+
+- **Destino do envio da quarentena.** Ao importar um pacote para a quarentena,
+  quem importa escolhe os **catálogos** em que a skill vai entrar e os
+  **servidores MCP** em que ela vai ser publicada (com as portas Tools, Prompts
+  e Resources). Nada muda até a aprovação; ao aprovar, a skill nasce dentro
+  deles na mesma transação — e com isso sai em todo servidor vinculado àqueles
+  catálogos. Num bundle, o mesmo destino vai para cada envio. O destino se
+  edita na ficha do envio (painel "Ao aprovar", `PUT
+  /api/quarantine/:uuid/targets`). Desenho em
+  [`docs/15-quarentena.md`](docs/15-quarentena.md) §11, decisões 28 a 34.
+  Migration `035-destino-da-quarentena.sql`.
+- **A permissão do destino é cobrada duas vezes**: quem escolhe precisa de
+  `edit` em cada catálogo e servidor (no upload e na ficha), e quem aprova
+  também — sem ele, a aprovação é **403** e nada é criado. Se o destino mudar
+  entre a conferência e a gravação, a aprovação é **409**. Destino que a sessão
+  não enxerga aparece só como número, com a opção de removê-lo.
+- **Aprovar e descartar em lote na fila da quarentena**: coluna de marcar,
+  "marcar todos" e as duas ações para os marcados. Cada envio passa pelas rotas
+  de sempre, um de cada vez; o que falha continua marcado, com o motivo no
+  aviso (`docs/15` decisão 35).
+- **Arquivo do envio colorido**: o envio abre no leitor da ficha da skill, com
+  realce por linguagem, e o editor também sai colorido (`CodeEditor` com
+  `fileName`; `docs/15` decisão 36).
+
+### Alterado
+
+- **Aprovar um envio não pede mais confirmação**, na ficha nem no lote.
+  Descartar continua pedindo (`docs/15` decisão 37).
+- **A skill aprovada deixou de nascer sempre flutuante**: ela nasce no destino
+  do envio, e flutuante só quando ele está vazio. Revoga a decisão 8 e um item
+  do "Fora do escopo" do `docs/15`.
+- **`catalogs` em `POST /api/skills/import` com `destination: production` é
+  400.** A importação direta e o formulário de nova skill não ganharam catálogo
+  — escolha do mantenedor; ignorar o campo faria quem o mandou achar que a
+  skill entrou no catálogo.
+
 ## [1.0.0-beta.28] — 2026-09-23
 
 ### Adicionado

@@ -32,6 +32,11 @@ const { SESSAO, db } = vi.hoisted(() => ({
     createQuarantineFile: vi.fn(),
     deleteQuarantineFile: vi.fn(),
     getQuarantineApprovers: vi.fn(),
+    setQuarantineTargets: vi.fn(),
+    listCatalogs: vi.fn(),
+    listVirtualMcps: vi.fn(),
+    getCatalog: vi.fn(),
+    getVirtualMcp: vi.fn(),
   },
 }));
 
@@ -78,6 +83,7 @@ const envio = {
     { relativePath: 'SKILL.md', mimeType: 'text/markdown', sizeBytes: 100, isText: true },
     { relativePath: 'ref/logo.png', mimeType: 'image/png', sizeBytes: 20, isText: false },
   ],
+  targets: { catalogs: [], mcps: [] },
 };
 
 let running: Server | undefined;
@@ -245,7 +251,9 @@ describe('POST /api/quarantine/:uuid/promote — o portão', () => {
     const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
 
     expect(res.status).toBe(201);
-    expect(db.promoteQuarantine).toHaveBeenCalledWith(UUID, 'web-admin', expect.anything());
+    expect(db.promoteQuarantine).toHaveBeenCalledWith(UUID, 'web-admin', expect.anything(), {
+      expectedTargets: { catalogs: [], mcps: [] },
+    });
   });
 
   it('com "admin+owner", o editor que não é dono recebe 403 com a política na mensagem', async () => {
@@ -474,5 +482,179 @@ describe('GET /api/quarantine/:uuid/download', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/zip');
     expect(res.headers['content-disposition']).toBe('attachment; filename="revisor-de-pr.zip"');
+  });
+});
+
+/**
+ * O destino do envio (`docs/15-quarentena.md` §11). Três catálogos e dois
+ * servidores de terceiros, cada um num nível diferente para a sessão: o que ela
+ * edita, o que só vê e o que nem enxerga.
+ */
+describe('o destino do envio', () => {
+  const catEditavel = { uuid: 'cat-edit', slug: 'meu', name: 'Meu catálogo', isActive: true };
+  const catVisto = { uuid: 'cat-view', slug: 'do-time', name: 'Do time', isActive: true };
+  const catOculto = { uuid: 'cat-oculto', slug: 'segredo', name: 'Catálogo secreto', isActive: true };
+  const mcpEditavel = {
+    uuid: 'mcp-edit',
+    slug: 'prod',
+    name: 'Produção',
+    isActive: true,
+    asSkill: true,
+    asPrompt: false,
+    asResource: false,
+  };
+  const comDestino = (targets: object) => ({ ...envio, targets });
+
+  beforeEach(() => {
+    comoSessao('editor', DONO);
+    db.listCatalogs.mockResolvedValue([
+      { ...catEditavel, access: 'edit', ownerUserUuid: null },
+      { ...catVisto, access: 'view', ownerUserUuid: null },
+    ]);
+    db.listVirtualMcps.mockResolvedValue([{ ...mcpEditavel, access: 'edit', ownerUserUuid: null }]);
+    db.getCatalog.mockImplementation(async (slug: string) =>
+      slug === 'meu' ? { ...catEditavel, access: 'edit' } : slug === 'do-time' ? { ...catVisto, access: 'view' } : null,
+    );
+    db.getVirtualMcp.mockImplementation(async (slug: string) => (slug === 'prod' ? { ...mcpEditavel, access: 'edit' } : null));
+    db.setQuarantineTargets.mockImplementation(async () => envio);
+    db.promoteQuarantine.mockResolvedValue({
+      uuid: 'uuid-skill',
+      slug: 'revisor-de-pr',
+      name: 'Revisor de PR',
+      skillMd: '# Corpo\n',
+      files: [],
+      grants: [],
+      access: 'owner',
+      ownerUserUuid: DONO,
+      ownerUsername: 'dono@exemplo.dev',
+      mcps: [],
+      catalogs: [],
+      tags: [],
+    });
+  });
+
+  it('a ficha mostra só o que a sessão enxerga, dizendo o que ela edita, e conta o resto sem nome', async () => {
+    db.getQuarantine.mockResolvedValue(
+      comDestino({ catalogs: [catEditavel, catVisto, catOculto], mcps: [mcpEditavel] }),
+    );
+    const res = await pedir('GET', `/api/quarantine/${UUID}`);
+    const corpo = json(res);
+
+    expect(res.status).toBe(200);
+    expect(corpo.targets).toEqual({
+      catalogs: [
+        { ...catEditavel, editable: true },
+        { ...catVisto, editable: false },
+      ],
+      mcps: [{ ...mcpEditavel, editable: true }],
+    });
+    expect(corpo.hiddenTargetCount).toBe(1);
+    expect(res.body.toString('utf8')).not.toContain('secreto');
+  });
+
+  it('sem destino, a ficha nem lista catálogos e servidores', async () => {
+    const res = await pedir('GET', `/api/quarantine/${UUID}`);
+
+    expect(json(res).hiddenTargetCount).toBe(0);
+    expect(db.listCatalogs).not.toHaveBeenCalled();
+    expect(db.listVirtualMcps).not.toHaveBeenCalled();
+  });
+
+  it('acrescentar um catálogo que a sessão edita grava, e o oculto fica como estava', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catOculto], mcps: [] }));
+    const res = await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, { catalogs: ['meu'], mcps: [] });
+
+    expect(res.status).toBe(200);
+    expect(db.setQuarantineTargets).toHaveBeenCalledWith(
+      UUID,
+      { catalogs: ['cat-edit', 'cat-oculto'], mcps: [] },
+      'web-admin',
+      expect.anything(),
+    );
+  });
+
+  it('"dropHidden" tira o que a sessão não enxerga, sem ela saber o que era', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catOculto], mcps: [] }));
+    await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, { catalogs: [], mcps: [], dropHidden: true });
+
+    expect(db.setQuarantineTargets.mock.calls[0]![1]).toEqual({ catalogs: [], mcps: [] });
+  });
+
+  it('acrescentar um catálogo que a sessão só vê é 403, sem gravar', async () => {
+    const res = await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, { catalogs: ['do-time'], mcps: [] });
+
+    expect(res.status).toBe(403);
+    expect(db.setQuarantineTargets).not.toHaveBeenCalled();
+  });
+
+  it('manter um destino que a sessão só vê não cobra de novo: ela pode revisar sem tirá-lo', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catVisto], mcps: [] }));
+    const res = await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, { catalogs: ['do-time'], mcps: [] });
+
+    expect(res.status).toBe(200);
+    expect(db.getCatalog).not.toHaveBeenCalled();
+    expect(db.setQuarantineTargets.mock.calls[0]![1]).toEqual({ catalogs: ['cat-view'], mcps: [] });
+  });
+
+  it('mudar a porta de um servidor do destino é publicar de outro jeito, e cobra "edit" de novo', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [], mcps: [mcpEditavel] }));
+    await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, {
+      catalogs: [],
+      mcps: [{ slug: 'prod', asSkill: true, asPrompt: true, asResource: false }],
+    });
+
+    expect(db.getVirtualMcp).toHaveBeenCalledTimes(1);
+    expect(db.setQuarantineTargets.mock.calls[0]![1]).toEqual({
+      catalogs: [],
+      mcps: [{ virtualMcpUuid: 'mcp-edit', asSkill: true, asPrompt: true, asResource: false }],
+    });
+  });
+
+  it('quem não enxerga o envio não troca o destino', async () => {
+    comoSessao('membro', 'uuid-membro');
+    const res = await comCorpo('PUT', `/api/quarantine/${UUID}/targets`, { catalogs: ['meu'], mcps: [] });
+
+    expect(res.status).toBe(404);
+    expect(db.setQuarantineTargets).not.toHaveBeenCalled();
+  });
+
+  it('aprovar publica o destino conferido: o banco recebe o que foi checado, para comparar', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catEditavel], mcps: [mcpEditavel] }));
+    const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
+
+    expect(res.status).toBe(201);
+    expect(db.promoteQuarantine).toHaveBeenCalledWith(UUID, 'web-admin', expect.anything(), {
+      expectedTargets: {
+        catalogs: ['cat-edit'],
+        mcps: [{ virtualMcpUuid: 'mcp-edit', asSkill: true, asPrompt: false, asResource: false }],
+      },
+    });
+  });
+
+  it('quem aprova e só vê um catálogo do destino recebe 403 com o nome dele, e nada é criado', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catVisto], mcps: [] }));
+    const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
+
+    expect(res.status).toBe(403);
+    expect(json(res).message).toMatch(/"Do time"/);
+    expect(db.promoteQuarantine).not.toHaveBeenCalled();
+  });
+
+  it('quem aprova e não enxerga um destino recebe 403 sem o nome dele', async () => {
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catOculto], mcps: [] }));
+    const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.toString('utf8')).not.toContain('secreto');
+    expect(db.promoteQuarantine).not.toHaveBeenCalled();
+  });
+
+  it('a política vem antes do destino: quem não pode aprovar nem tem o destino conferido', async () => {
+    comoSessao('editor', 'uuid-outro');
+    db.getQuarantine.mockResolvedValue(comDestino({ catalogs: [catEditavel], mcps: [] }));
+    const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
+
+    expect(res.status).toBe(403);
+    expect(db.listCatalogs).not.toHaveBeenCalled();
   });
 });

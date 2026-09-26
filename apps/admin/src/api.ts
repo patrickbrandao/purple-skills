@@ -1527,6 +1527,11 @@ api.post(
  * guarda os arquivos **crus** num envio à espera de aprovação. Importar é o
  * único caminho para a quarentena — o formulário de nova skill vai sempre para
  * produção.
+ *
+ * Na quarentena, `catalogs` e `mcps` são o **destino** (§11 do `docs/15`): nada
+ * é publicado agora, e a aprovação põe a skill nesses catálogos e servidores. Num
+ * bundle, o mesmo destino vale para cada envio. `catalogs` só existe aqui — em
+ * produção é 400, porque a importação direta não ganhou catálogo (decisão 28).
  */
 api.post(
   '/api/skills/import',
@@ -1548,6 +1553,8 @@ api.post(
       icon: textField(req.body, 'icon'),
       /** JSON: `[{ slug, asSkill, asPrompt, asResource }]`. */
       mcps: textField(req.body, 'mcps'),
+      /** JSON: `["slug-do-catalogo", …]`. Só na quarentena. */
+      catalogs: textField(req.body, 'catalogs'),
       /** `production` (padrão) ou `quarantine`. */
       destination: textField(req.body, 'destination'),
     };
@@ -1560,6 +1567,22 @@ api.post(
     }
 
     const paraQuarentena = body.destination === 'quarantine';
+    if (!paraQuarentena && body.catalogs !== undefined) {
+      res.status(400).json({
+        error: 'bad_request',
+        message: 'O campo "catalogs" só vale na importação para a quarentena',
+      });
+      return;
+    }
+    // O destino é conferido **antes** de abrir o pacote: um catálogo que a
+    // sessão não edita é 403 (ou 404, se nem o enxerga) sem nada gravado — e
+    // sem gastar a leitura de um pacote que não ia entrar.
+    const destino = paraQuarentena
+      ? await quarantine.resolveTargets(req.user!, {
+          catalogs: parseJsonList(body.catalogs),
+          mcps: parseJsonList(body.mcps),
+        })
+      : undefined;
     // O pacote é lido cru — bytes e caminhos inteiros, sem decidir texto ×
     // binário e sem cortar pasta nenhuma. Quem acha as skills lá dentro é o
     // `splitBundle`, e ele parte do diretório de cada uma: onde o
@@ -1619,7 +1642,7 @@ api.post(
           let detail: QuarantineDetail;
           try {
             detail = await createQuarantine(
-              envioDoPacote(skill, origem, fallbackName),
+              { ...envioDoPacote(skill, origem, fallbackName), targets: destino },
               SOURCE,
               actorFrom(req),
             );
@@ -1686,7 +1709,7 @@ api.post(
 
       const unica = skills[0] ?? { dir: '', files: entries };
       const detail = await createQuarantine(
-        envioDoPacote(unica, req.file.originalname, fallbackName),
+        { ...envioDoPacote(unica, req.file.originalname, fallbackName), targets: destino },
         SOURCE,
         actorFrom(req),
       );
@@ -2225,17 +2248,29 @@ api.get(
  * Quem pode promover, segundo a política da instalação e o que esta sessão é.
  * O painel usa o campo para decidir se mostra o botão; a rota de promover
  * confere de novo, que é onde a decisão vale.
+ *
+ * O destino sai recortado ao que a sessão enxerga (`quarantine.sheetOf`).
  */
 api.get(
   '/api/quarantine/:uuid',
   route(async (req, res) => {
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
-    // `QuarantineSheet` é o contrato do painel: a ficha mais o `canPromote`.
-    const sheet: QuarantineSheet = {
-      ...access.ownerByUsername(found),
-      canPromote: await quarantine.mayPromote(req.user!, found),
-    };
+    const sheet: QuarantineSheet = await quarantine.sheetOf(req.user!, found);
     res.json(sheet);
+  }),
+);
+
+/**
+ * Troca o destino do envio: `{ catalogs: [slug], mcps: [{ slug, asSkill,
+ * asPrompt, asResource }], dropHidden? }`, declarativo sobre o que a sessão
+ * enxerga (`quarantine.setTargets`). Quem enxerga o envio pode tirar destino;
+ * acrescentar cobra `edit` no catálogo ou servidor, como no envio.
+ */
+api.put(
+  '/api/quarantine/:uuid/targets',
+  route(async (req, res) => {
+    const found = await quarantine.load(req.user!, param(req, 'uuid'));
+    res.json(await quarantine.setTargets(req.user!, found, (req.body ?? {}) as Record<string, unknown>));
   }),
 );
 
@@ -2260,16 +2295,21 @@ api.get(
 /**
  * Aprova o envio: cria a skill em produção e **apaga** a linha da quarentena.
  *
- * A skill nasce flutuante e com o dono do envio — quem aprova não toma para si
- * o que outro trouxe. Slug ocupado ganha sufixo (`-2`), e sem SKILL.md a
- * promoção é recusada sem apagar nada; as duas coisas são do banco.
+ * A skill nasce com quem aprova como dono (decisão 7 do `docs/15`) e vai para o
+ * destino do envio — os catálogos e servidores escolhidos no upload ou na
+ * ficha —, na mesma transação; sem destino, nasce flutuante como antes. Quem
+ * aprova precisa editar **todo** o destino, ou é 403 sem nada criado; e se o
+ * destino mudar entre a conferência e a gravação, o banco devolve 409. Slug
+ * ocupado ganha sufixo (`-2`), e sem SKILL.md a promoção é recusada sem apagar
+ * nada; essas coisas são do banco.
  */
 api.post(
   '/api/quarantine/:uuid/promote',
   route(async (req, res) => {
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
     await quarantine.assertCanPromote(req.user!, found);
-    const detail = await promoteQuarantine(found.uuid, SOURCE, actorFrom(req));
+    const expectedTargets = await quarantine.assertCanPublishTargets(req.user!, found);
+    const detail = await promoteQuarantine(found.uuid, SOURCE, actorFrom(req), { expectedTargets });
     res.status(201).json(bodyOnly(access.withGrants(detail)));
   }),
 );

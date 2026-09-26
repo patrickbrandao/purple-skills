@@ -15,6 +15,7 @@ coverage/
 tasks/
 hub.sh
 build.sh
+destroy.sh
 sync.sh
 run-rebuild.sh
 run-builder.sh

@@ -28,6 +28,7 @@ describe('o corpo da importação para a quarentena', () => {
     createdAt: '2026-09-20T12:00:00.000Z',
     updatedAt: '2026-09-20T12:00:00.000Z',
     files: [],
+    targets: { catalogs: [], mcps: [] },
   };
 
   const variasSkills: QuarantineImportResult = {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Library, Plus, Server, Trash2, Undo2 } from 'lucide-react';
 import {
@@ -58,7 +58,7 @@ export function FlagBoxes({ value, onChange, disabled }: { value: LinkFlags; onC
 }
 
 /** As portas ligadas, em selos só de leitura. */
-function FlagBadges({ value }: { value: LinkFlags }) {
+export function FlagBadges({ value }: { value: LinkFlags }) {
   const on = SURFACES.filter((surface) => value[surface.key]);
   if (on.length === 0) return <span className="row-sub">—</span>;
   return (
@@ -100,7 +100,18 @@ function useEditableMcps(enabled = true) {
  * Só os vMCPs que a sessão edita aparecem. Sem nenhum marcado, a skill nasce
  * flutuante: existe e não é exibida em lugar nenhum.
  */
-export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; onChange: (links: SkillLinkInput[]) => void }) {
+export function PublishInPicker({
+  value,
+  onChange,
+  label = 'Publicar em',
+  hint,
+}: {
+  value: SkillLinkInput[];
+  onChange: (links: SkillLinkInput[]) => void;
+  label?: string;
+  /** O texto de baixo do rótulo; a quarentena troca o da skill nova, que fala em "nasce". */
+  hint?: ReactNode;
+}) {
   const mcps = useEditableMcps();
   const bySlug = useMemo(() => new Map(value.map((link) => [link.slug, link])), [value]);
 
@@ -115,11 +126,12 @@ export function PublishInPicker({ value, onChange }: { value: SkillLinkInput[]; 
 
   return (
     <div className="mt-5">
-      <span className="label">Publicar em</span>
+      <span className="label">{label}</span>
       <p className="panel-hint">
-        A skill só é exibida — no site e nos servidores MCP — onde estiver publicada. Sem nenhum marcado, ela
-        nasce sem vínculo e fica visível só aqui no painel; dá para publicar depois, na página dela, no canvas
-        do servidor ou por um catálogo.
+        {hint ??
+          'A skill só é exibida — no site e nos servidores MCP — onde estiver publicada. Sem nenhum marcado, ela ' +
+            'nasce sem vínculo e fica visível só aqui no painel; dá para publicar depois, na página dela, no canvas ' +
+            'do servidor ou por um catálogo.'}
       </p>
       {mcps === null && <Skel h={48} />}
       {mcps !== null && (

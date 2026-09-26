@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Download, FileArchive, Search, ShieldQuestion, Trash2, Upload } from 'lucide-react';
+import { Download, FileArchive, Search, ShieldCheck, ShieldQuestion, Trash2, Upload, X } from 'lucide-react';
 import {
   atUser,
   canCreate,
   deleteQuarantineItem,
+  plural,
+  promoteQuarantineItem,
   formatBytes,
   formatRelative,
   getQuarantineList,
@@ -13,11 +15,29 @@ import {
   type QuarantineSummary,
   type SessionUser,
 } from '../api.js';
-import { EmptyRow, Skel, useConfirm, useDebounced } from '../components/ui.js';
+import { Button, EmptyRow, Skel, useConfirm, useDebounced } from '../components/ui.js';
 import { QUARANTINE_IMPORT_PATH } from '../components/shell/routes.js';
 import { useToast } from '../components/Toast.js';
 
 const PAGE = 100;
+
+/** O que um lote deixou para trás: o envio e o motivo que o servidor deu. */
+export type Falha = { item: QuarantineSummary; message: string };
+
+/**
+ * O resumo de um lote num aviso só: quantos deram certo e, dos que não deram,
+ * o primeiro motivo — os outros ficam marcados na tabela, para a pessoa abrir
+ * um a um. Os motivos variam (política de aprovação, destino sem acesso,
+ * SKILL.md que falta), e listar todos num aviso que some em segundos não
+ * ajudaria ninguém.
+ */
+export function resumoDoLote(feitos: number, falhas: readonly Falha[], verbo: string): string {
+  const ok = feitos > 0 ? `${plural(feitos, `envio ${verbo}`, `envios ${verbo}s`)}. ` : '';
+  const [primeira] = falhas;
+  if (!primeira) return ok.trim();
+  const resto = falhas.length > 1 ? ` (e mais ${falhas.length - 1}; continuam marcados)` : ' (continua marcado)';
+  return `${ok}"${primeira.item.name}": ${primeira.message}${resto}`;
+}
 
 /**
  * A fila da quarentena (`docs/15-quarentena.md`): pacotes importados que
@@ -39,6 +59,22 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
   const [query, setQuery] = useState('');
   const dq = useDebounced(query, 300);
   const podeImportar = canCreate(user.role);
+  // Aprovar exige o papel de criar (`docs/15` decisão 18); sem ele, o botão do
+  // lote só renderia uma fila de 403.
+  const podeAprovar = canCreate(user.role);
+  const [marcados, setMarcados] = useState<Set<string>>(new Set());
+  const [emLote, setEmLote] = useState(false);
+  const todos = useRef<HTMLInputElement>(null);
+
+  // Só conta o que está na tela: trocar a busca não deixa marca escondida,
+  // que um "Descartar" levaria junto sem a pessoa ver.
+  const visiveis = useMemo(() => (items ?? []).filter((item) => marcados.has(item.uuid)), [items, marcados]);
+  const tudoMarcado = items !== null && items.length > 0 && visiveis.length === items.length;
+  const algumMarcado = visiveis.length > 0 && !tudoMarcado;
+
+  useEffect(() => {
+    if (todos.current) todos.current.indeterminate = algumMarcado;
+  }, [algumMarcado]);
 
   useEffect(() => {
     let active = true;
@@ -58,6 +94,67 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
     };
   }, [dq, toast]);
 
+  function marcar(uuid: string, on: boolean) {
+    setMarcados((atual) => {
+      const novo = new Set(atual);
+      if (on) novo.add(uuid);
+      else novo.delete(uuid);
+      return novo;
+    });
+  }
+
+  function marcarTodos(on: boolean) {
+    setMarcados(on ? new Set((items ?? []).map((item) => item.uuid)) : new Set());
+  }
+
+  /**
+   * Um envio de cada vez, pelas mesmas rotas da ficha: cada um passa pela
+   * política de aprovação e pela conferência do destino, e cada aprovação é a
+   * sua própria transação no banco. Em paralelo, quarenta aprovações
+   * disputariam as mesmas travas de catálogo e servidor à toa. O que falha fica
+   * marcado; o que deu certo sai da fila.
+   */
+  async function emSequencia(acao: (item: QuarantineSummary) => Promise<unknown>, verbo: string) {
+    const alvo = visiveis;
+    setEmLote(true);
+    const feitos = new Set<string>();
+    const falhas: Falha[] = [];
+    for (const item of alvo) {
+      try {
+        await acao(item);
+        feitos.add(item.uuid);
+      } catch (err) {
+        falhas.push({ item, message: (err as Error).message });
+      }
+    }
+    setItems((atual) => (atual ?? []).filter((linha) => !feitos.has(linha.uuid)));
+    setTotal((atual) => atual - feitos.size);
+    setMarcados(new Set(falhas.map((falha) => falha.item.uuid)));
+    setEmLote(false);
+
+    const texto = resumoDoLote(feitos.size, falhas, verbo);
+    if (falhas.length > 0) toast.error(texto);
+    else toast.success(texto);
+  }
+
+  /** Sem diálogo, como o "Aprovar" da ficha: o clique já é a decisão. */
+  function aprovarMarcados() {
+    void emSequencia((item) => promoteQuarantineItem(item.uuid), 'aprovado');
+  }
+
+  /** Descartar apaga, e não tem volta: este pede confirmação. */
+  async function descartarMarcados() {
+    const n = visiveis.length;
+    const ok = await confirm({
+      title: n === 1 ? `Descartar o envio "${visiveis[0]!.name}"?` : `Descartar ${plural(n, 'envio', 'envios')}?`,
+      description: 'Os arquivos deles somem. Nada foi publicado ainda, então nada mais é afetado.',
+      confirmLabel: 'Descartar',
+      danger: true,
+    });
+    if (!ok) return;
+    await emSequencia((item) => deleteQuarantineItem(item.uuid), 'descartado');
+  }
+
   async function descartar(item: QuarantineSummary) {
     const ok = await confirm({
       title: `Descartar o envio "${item.name}"?`,
@@ -70,6 +167,7 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
       await deleteQuarantineItem(item.uuid);
       setItems((current) => (current ?? []).filter((linha) => linha.uuid !== item.uuid));
       setTotal((current) => current - 1);
+      marcar(item.uuid, false);
       toast.success(`Envio "${item.name}" descartado.`);
     } catch (err) {
       toast.error((err as Error).message);
@@ -111,6 +209,25 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
           <ShieldQuestion />
           {items ? `${num(total)} envio${total === 1 ? '' : 's'} na fila` : 'Carregando…'}
         </span>
+        {visiveis.length > 0 && (
+          <>
+            <span className="sep" />
+            <span className="stat">{plural(visiveis.length, 'marcado', 'marcados')}</span>
+            <span className="flex flex-wrap items-center gap-2" style={{ marginLeft: 'auto' }}>
+              <Button variant="ghost" size="sm" onClick={() => marcarTodos(false)} disabled={emLote}>
+                <X /> Desmarcar
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => void descartarMarcados()} disabled={emLote}>
+                <Trash2 /> Descartar
+              </Button>
+              {podeAprovar && (
+                <Button size="sm" onClick={aprovarMarcados} disabled={emLote}>
+                  <ShieldCheck /> {emLote ? 'Processando…' : 'Aprovar'}
+                </Button>
+              )}
+            </span>
+          </>
+        )}
       </div>
 
       {items === null && <Skel h={220} />}
@@ -120,6 +237,16 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
           <table className="data">
             <thead>
               <tr>
+                <th className="num" style={{ width: 36 }}>
+                  <input
+                    ref={todos}
+                    type="checkbox"
+                    checked={tudoMarcado}
+                    onChange={(event) => marcarTodos(event.target.checked)}
+                    disabled={emLote || items.length === 0}
+                    aria-label="Marcar todos os envios da lista"
+                  />
+                </th>
                 <th>Envio</th>
                 <th className="hidden md:table-cell">Enviado por</th>
                 <th className="num hidden sm:table-cell">Arquivos</th>
@@ -130,7 +257,16 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
             </thead>
             <tbody>
               {items.map((item) => (
-                <tr key={item.uuid}>
+                <tr key={item.uuid} className={marcados.has(item.uuid) ? 'is-selected' : undefined}>
+                  <td className="num" style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={marcados.has(item.uuid)}
+                      onChange={(event) => marcar(item.uuid, event.target.checked)}
+                      disabled={emLote}
+                      aria-label={`Marcar o envio ${item.name}`}
+                    />
+                  </td>
                   <td>
                     <Link to={`/quarantine/${item.uuid}`} className="flex items-center gap-3 no-underline">
                       <span className="skill-icon sm" aria-hidden="true">
@@ -173,7 +309,7 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
                 </tr>
               ))}
               {items.length === 0 && (
-                <EmptyRow colSpan={6}>
+                <EmptyRow colSpan={7}>
                   {query ? 'Nenhum envio encontrado' : 'A quarentena está vazia'}
                 </EmptyRow>
               )}

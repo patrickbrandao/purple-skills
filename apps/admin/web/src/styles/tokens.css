@@ -22,6 +22,7 @@
   --bg: #14121b;
   --bg-sunken: #16141d;
   --bg-elev: #1a1924;
+  --bg-chrome: #0d0b10;
   --surface-2: #1e1d28;
   --surface-3: #26252d;
   --surface-4: #2c2a34;
@@ -38,7 +39,7 @@
   --text-faint: #61606f;
 
   /* roxo — a única cor de ação */
-  --accent: #7934c7;
+  --accent: #5712a5;
   --accent-hover: #8b47d9;
   --accent-soft: #935cd2;
   --accent-deep: #5a22a0;
@@ -108,8 +109,9 @@
   --bg: #f5f4f8;
   --bg-sunken: #eeedf3;
   --bg-elev: #ffffff;
+  --bg-chrome: #ffffff;
   --surface-2: #f1f0f5;
-  --surface-3: #e6e5ec;
+  --surface-3: #c6c5cc;
   --surface-4: #dddce4;
 
   --border: rgba(20, 18, 27, 0.08);
@@ -121,11 +123,11 @@
   --text-muted: #6b6975;
   --text-faint: #8f8d98;
 
-  --accent: #7934c7;
-  --accent-hover: #6a2bb3;
-  --accent-soft: #8e4fd0;
-  --accent-deep: #4e1c8c;
-  --accent-tint: rgba(121, 52, 199, 0.1);
+  --accent: #460194;
+  --accent-hover: #380880;
+  --accent-soft: #5b1ca0;
+  --accent-deep: #1b0959;
+  --accent-tint: rgba(101, 32, 179, 0.1);
   --on-accent: #ffffff;
 
   --ok: #2e7a55;
@@ -137,7 +139,7 @@
   --info: #4a63a0;
   --info-tint: rgba(74, 99, 160, 0.12);
 
-  --port-tools: #7934c7;
+  --port-tools: #5712a5;
   --port-resources: #2f7fbf;
   --port-prompts: #b47a1c;
 
