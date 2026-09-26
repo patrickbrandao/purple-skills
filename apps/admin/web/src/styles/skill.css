@@ -770,6 +770,52 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   color: var(--text-dim);
 }
 
+/* ---- editor colorido (`CodeEditor` com `fileName`) ----
+   A cor mora numa camada atrás do campo, que é quem rola; a camada acompanha
+   pelo `scrollTop`/`scrollLeft` do campo. Fonte, recuo, altura de linha e
+   tabulação têm de ser **os mesmos** dos dois lados, senão o cursor anda
+   descolado da letra. A folga de 48px embaixo e à direita é a das barras de
+   rolagem do campo, que a camada não tem — sem ela, o fim de um arquivo largo
+   não alcançava o mesmo ponto. */
+.ce-stack {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.ce-paint {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: var(--ce-pad) calc(18px + 48px) calc(var(--ce-pad) + 48px) 18px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: var(--ce-line);
+  white-space: pre;
+  tab-size: 2;
+  color: var(--text);
+  pointer-events: none;
+}
+.ce-paint .cv-code {
+  display: inline-block;
+  min-width: 100%;
+}
+/* No leitor, título sai em negrito e comentário em itálico; aqui não, porque
+   em algumas fontes mono a letra muda de largura e o cursor descola. */
+.ce-paint .cv-code * {
+  font-weight: inherit !important;
+  font-style: normal !important;
+}
+.code-editor.colored .ce-area {
+  position: relative;
+  color: transparent;
+  caret-color: var(--text);
+}
+.code-editor.colored .ce-area::selection {
+  background: var(--accent-tint);
+  color: transparent;
+}
+
 /* o botão de alternar do cabeçalho (quebrar linhas), ligado */
 .fe-toggle[aria-pressed='true'] {
   background: var(--accent-tint);

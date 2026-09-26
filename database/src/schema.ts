@@ -1083,6 +1083,60 @@ export const quarantineFiles = pgTable(
   (table) => [index('quarantine_files_quarantine_uuid_idx').on(table.quarantineUuid)],
 );
 
+/**
+ * Um catálogo do **destino** do envio (`schema/035-destino-da-quarentena.sql`):
+ * a skill entra nele, com participação ativa, quando o envio for aprovado. Não
+ * é vínculo — nada daqui aparece no catálogo até a aprovação. Apagar o
+ * catálogo tira o destino em silêncio (`ON DELETE CASCADE`).
+ */
+export const quarantineCatalogs = pgTable(
+  'quarantine_catalogs',
+  {
+    quarantineUuid: uuid('quarantine_uuid')
+      .notNull()
+      .references(() => quarantineSkills.uuid, { onDelete: 'cascade' }),
+    catalogUuid: uuid('catalog_uuid')
+      .notNull()
+      .references(() => catalogs.uuid, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: 'quarantine_catalogs_pkey',
+      columns: [table.quarantineUuid, table.catalogUuid],
+    }),
+    index('quarantine_catalogs_catalog_uuid_idx').on(table.catalogUuid),
+  ],
+);
+
+/**
+ * Um vMCP do **destino** do envio (`035`): a aprovação cria o vínculo direto
+ * com as portas daqui. Sem DEFAULT nas portas, como `virtualMcpSkills`; o CHECK
+ * de "pelo menos uma ligada" (`quarantine_mcps_some_port_chk`) fica só no SQL.
+ */
+export const quarantineMcps = pgTable(
+  'quarantine_mcps',
+  {
+    quarantineUuid: uuid('quarantine_uuid')
+      .notNull()
+      .references(() => quarantineSkills.uuid, { onDelete: 'cascade' }),
+    virtualMcpUuid: uuid('virtual_mcp_uuid')
+      .notNull()
+      .references(() => virtualMcps.uuid, { onDelete: 'cascade' }),
+    asSkill: boolean('as_skill').notNull(),
+    asPrompt: boolean('as_prompt').notNull(),
+    asResource: boolean('as_resource').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: 'quarantine_mcps_pkey',
+      columns: [table.quarantineUuid, table.virtualMcpUuid],
+    }),
+    index('quarantine_mcps_virtual_mcp_uuid_idx').on(table.virtualMcpUuid),
+  ],
+);
+
 export type SkillRow = typeof skills.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type TagRow = typeof tags.$inferSelect;
@@ -1114,3 +1168,5 @@ export type RagVectorRow = typeof ragVectors.$inferSelect;
 export type RagSkillClaimRow = typeof ragSkillClaims.$inferSelect;
 export type QuarantineSkillRow = typeof quarantineSkills.$inferSelect;
 export type QuarantineFileRow = typeof quarantineFiles.$inferSelect;
+export type QuarantineCatalogRow = typeof quarantineCatalogs.$inferSelect;
+export type QuarantineMcpRow = typeof quarantineMcps.$inferSelect;

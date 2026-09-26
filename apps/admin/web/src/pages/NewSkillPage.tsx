@@ -14,6 +14,7 @@ import {
 import { Button, Panel } from '../components/ui.js';
 import { FrontmatterPreview, SkillMetaForm, type SkillMetaValues } from '../components/SkillMetaForm.js';
 import { PublishInPicker } from '../components/SkillMcps.js';
+import { CatalogPicker, HINT_SERVIDORES_NA_QUARENTENA } from '../components/QuarantineTargets.js';
 import { PromptEditor } from '../components/PromptEditor.js';
 import { parseTags, stripFrontmatter } from '../frontmatter.js';
 import { slugify } from '../slug.js';
@@ -220,8 +221,11 @@ export function NewSkillPage() {
   // O destino só existe na importação: o formulário vai sempre para produção.
   const [destino, setDestino] = useState<Destino>(params.get('destination') === 'quarantine' ? 'quarentena' : 'producao');
   const [meta, setMeta] = useState<SkillMetaValues>({ name: '', slug: '', description: '', tags: '', icon: '' });
-  // Onde publicar já na criação. Vazio = a skill nasce flutuante.
+  // Onde publicar já na criação. Vazio = a skill nasce flutuante. Na
+  // quarentena é o destino: quem publica é a aprovação.
   const [links, setLinks] = useState<SkillLinkInput[]>([]);
+  // Os catálogos em que a skill entra ao ser aprovada: só na quarentena.
+  const [catalogos, setCatalogos] = useState<string[]>([]);
   // Enquanto o slug não for editado à mão, ele acompanha o nome.
   const [slugTocado, setSlugTocado] = useState(false);
   const [skillMd, setSkillMd] = useState(TEMPLATE);
@@ -232,9 +236,10 @@ export function NewSkillPage() {
   // e repetir o seletor de arquivo com o pacote antigo dentro só confundiria.
   const [resultado, setResultado] = useState<QuarantineBundleResult | null>(null);
 
-  // Na quarentena não há metadado separado do arquivo: nome, descrição, tags,
-  // ícone e servidores não valem nada até o envio ser aprovado, e mostrá-los
-  // prometeria algo que a tela não cumpre.
+  // Na quarentena não há metadado separado do arquivo: nome, descrição, tags e
+  // ícone não valem nada até o envio ser aprovado, e mostrá-los prometeria algo
+  // que a tela não cumpre. O destino — catálogos e servidores — vale: é o que a
+  // aprovação publica.
   const paraQuarentena = mode === 'zip' && destino === 'quarentena';
 
   function patchMeta(patch: Partial<SkillMetaValues>) {
@@ -253,7 +258,7 @@ export function NewSkillPage() {
 
     try {
       if (paraQuarentena && file) {
-        const envio = await importToQuarantine(file);
+        const envio = await importToQuarantine(file, { catalogs: catalogos, mcps: links });
         // Dois corpos na mesma rota (`docs/15-quarentena.md`): uma skill só
         // continua indo direto para a ficha do envio, como sempre; um pacote
         // com várias fica nesta tela, porque há o que conferir.
@@ -350,7 +355,10 @@ export function NewSkillPage() {
               >
                 <ShieldQuestion />
                 <span className="t">Para a quarentena</span>
-                <span className="h">Fica esperando aprovação. Não é publicado, não é indexado e não aparece no site.</span>
+                <span className="h">
+                  Fica esperando aprovação. Não é publicado, não é indexado e não aparece no site; ao aprovar, vai para
+                  os catálogos e servidores escolhidos abaixo.
+                </span>
               </button>
             </div>
           </>
@@ -360,6 +368,20 @@ export function NewSkillPage() {
           <>
             <SkillMetaForm values={meta} onChange={patchMeta} slugPlaceholder="gerado a partir do nome" slugRequired={false} nameRequired={mode === 'form'} />
             <PublishInPicker value={links} onChange={setLinks} />
+          </>
+        )}
+
+        {/* O destino da aprovação. Num pacote com várias skills, vale para
+            cada envio; dá para mudar depois, na ficha de cada um. */}
+        {paraQuarentena && (
+          <>
+            <CatalogPicker value={catalogos} onChange={setCatalogos} />
+            <PublishInPicker
+              value={links}
+              onChange={setLinks}
+              label="Publicar ao aprovar em"
+              hint={HINT_SERVIDORES_NA_QUARENTENA}
+            />
           </>
         )}
 

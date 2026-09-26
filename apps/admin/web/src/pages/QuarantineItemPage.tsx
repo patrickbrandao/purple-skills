@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Binary, Download, ExternalLink, FilePlus, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Binary, Download, Eye, ExternalLink, FilePlus, Pencil, Save, ShieldCheck, Trash2 } from 'lucide-react';
 import {
+  ApiError,
   atUser,
   createQuarantineFile,
   deleteQuarantineFile,
@@ -10,6 +11,7 @@ import {
   formatRelative,
   getQuarantineFile,
   getQuarantineItem,
+  num,
   promoteQuarantineItem,
   quarantineDownloadUrl,
   rawQuarantineFileUrl,
@@ -19,8 +21,11 @@ import {
 } from '../api.js';
 import { Button, EmptyState, Panel, Skel, useConfirm } from '../components/ui.js';
 import { CodeEditor } from '../components/CodeEditor.js';
+import { CodeView } from '../components/CodeView.js';
+import { languageFor, languageLabel, toCodeLines } from '../highlight.js';
 import { FileTypeIcon } from '../components/FileTypeIcon.js';
 import { useToast } from '../components/Toast.js';
+import { QuarantineTargetsPanel } from '../components/QuarantineTargets.js';
 
 /** O arquivo principal, comparado como o servidor o compara: sem caixa. */
 const isSkillMdPath = (path: string): boolean => path.toLowerCase() === 'skill.md';
@@ -33,9 +38,14 @@ function ordenar(files: readonly SkillFileMeta[]): SkillFileMeta[] {
   );
 }
 
+/** O rodapé do arquivo aberto: linhas e linguagem, como no leitor da skill. */
+function rodape(total: number, vazio: boolean, language: string | null): string {
+  return [vazio ? 'vazio' : `${num(total)} linha${total === 1 ? '' : 's'}`, languageLabel(language)].join(' · ');
+}
+
 /**
- * Um envio da quarentena (`docs/15-quarentena.md`): a lista de arquivos e o
- * editor cru.
+ * Um envio da quarentena (`docs/15-quarentena.md`): a lista de arquivos, o
+ * leitor colorido e o editor cru.
  *
  * "Cru" é a regra da tela, não um detalhe: aqui **não** existe formulário de
  * metadados, o SKILL.md aparece com o frontmatter dentro dele e é isso que é
@@ -58,6 +68,12 @@ export function QuarantineItemPage() {
   const [ocupado, setOcupado] = useState(false);
   /** O caminho sendo digitado no "Novo arquivo"; `null` quando a linha está fechada. */
   const [criando, setCriando] = useState<string | null>(null);
+  // O arquivo abre no leitor colorido, como na ficha da skill; editar é um
+  // passo à parte, e o editor também sai colorido pela gramática do arquivo.
+  const [editando, setEditando] = useState(false);
+  // O arquivo recém-criado nasce vazio e abre direto no editor; o efeito que
+  // carrega o arquivo lê e zera esta marca.
+  const editarAoAbrir = useRef(false);
 
   const files = useMemo(() => ordenar(item?.files ?? []), [item]);
 
@@ -86,6 +102,8 @@ export function QuarantineItemPage() {
     }
     let active = true;
     setConteudo(null);
+    setEditando(editarAoAbrir.current);
+    editarAoAbrir.current = false;
     getQuarantineFile(uuid, aberto)
       .then((file) => {
         if (!active) return;
@@ -107,6 +125,30 @@ export function QuarantineItemPage() {
   }, [uuid, aberto, toast]);
 
   const sujo = conteudo?.text !== null && conteudo !== null && rascunho !== conteudo.text;
+
+  // O leitor colore o texto **gravado**; o editor recolore o rascunho sozinho.
+  const lido = useMemo(
+    () =>
+      conteudo === null || conteudo.text === null
+        ? null
+        : toCodeLines(conteudo.text, languageFor(conteudo.path, conteudo.text)),
+    [conteudo],
+  );
+
+  /** Voltar ao leitor com rascunho pendente pergunta antes de descartá-lo. */
+  async function visualizar() {
+    if (sujo) {
+      const ok = await confirm({
+        title: `Descartar as alterações em "${conteudo?.path}"?`,
+        description: 'O que você digitou e não salvou se perde.',
+        confirmLabel: 'Descartar',
+        danger: true,
+      });
+      if (!ok) return;
+      setRascunho(conteudo?.text ?? '');
+    }
+    setEditando(false);
+  }
 
   /*
    * Rascunho pendente segura o fechar e o recarregar da aba, como na edição de
@@ -157,6 +199,7 @@ export function QuarantineItemPage() {
       const meta = await createQuarantineFile(uuid, path);
       setCriando(null);
       await recarregar();
+      editarAoAbrir.current = true;
       setAberto(meta.relativePath);
       toast.success(`"${meta.relativePath}" criado.`);
     } catch (err) {
@@ -204,16 +247,9 @@ export function QuarantineItemPage() {
     }
   }, [conteudo, rascunho, toast, uuid]);
 
+  /** Sem diálogo: o clique em "Aprovar" já é a decisão, e o painel "Ao aprovar" mostra para onde vai. */
   async function aprovar() {
     if (!item) return;
-    const ok = await confirm({
-      title: `Aprovar o envio "${item.name}"?`,
-      description:
-        'A skill é criada no acervo com estes arquivos e com você como dono, ainda sem servidor nem ' +
-        'catálogo, e o envio sai da quarentena. O nome, a descrição e as tags saem do SKILL.md.',
-      confirmLabel: 'Aprovar e criar a skill',
-    });
-    if (!ok) return;
     setOcupado(true);
     try {
       const skill = await promoteQuarantineItem(item.uuid);
@@ -221,6 +257,9 @@ export function QuarantineItemPage() {
       navigate(`/skills/${skill.slug}`);
     } catch (err) {
       toast.error((err as Error).message);
+      // 409: o destino mudou entre a leitura da ficha e a aprovação. A ficha é
+      // relida para mostrar o destino de agora antes de a pessoa tentar de novo.
+      if (err instanceof ApiError && err.status === 409) await recarregar();
       setOcupado(false);
     }
   }
@@ -275,7 +314,14 @@ export function QuarantineItemPage() {
   // promoção o decodifica para tirar nome, descrição e tags. O envio aceitou o
   // arquivo de propósito (é o pacote torto que a quarentena existe para
   // receber); o conserto é aqui, antes de aprovar.
-  const podeAprovar = skillMd !== undefined && skillMd.isText;
+  // Quem aprova publica em todo o destino, então precisa editar cada item dele
+  // (o servidor confere de novo). Com um que não edita — ou que nem enxerga —,
+  // o botão fica desligado e o painel do destino diz o que fazer.
+  const destinoTrava =
+    item.hiddenTargetCount > 0 ||
+    item.targets.catalogs.some((catalog) => !catalog.editable) ||
+    item.targets.mcps.some((mcp) => !mcp.editable);
+  const podeAprovar = skillMd !== undefined && skillMd.isText && !destinoTrava;
 
   return (
     <div className="page">
@@ -332,6 +378,8 @@ export function QuarantineItemPage() {
           </p>
         </Panel>
       )}
+
+      <QuarantineTargetsPanel item={item} onChange={setItem} disabled={ocupado} />
 
       {/* `file-tree` traz as cores por tipo de arquivo (as mesmas da edição de
           skill); `no-resizer`, a divisória que não arrasta — o nome evita os
@@ -463,21 +511,50 @@ export function QuarantineItemPage() {
                   >
                     <ExternalLink /> Cru
                   </a>
-                  <Button size="sm" onClick={() => void salvar()} disabled={!sujo || salvando}>
-                    <Save /> {salvando ? 'Salvando…' : 'Salvar'}
-                  </Button>
+                  {editando ? (
+                    <>
+                      <Button variant="quiet" size="sm" onClick={() => void visualizar()} disabled={salvando}>
+                        <Eye /> Visualizar
+                      </Button>
+                      <Button size="sm" onClick={() => void salvar()} disabled={!sujo || salvando}>
+                        <Save /> {salvando ? 'Salvando…' : 'Salvar'}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button size="sm" onClick={() => setEditando(true)}>
+                      <Pencil /> Editar
+                    </Button>
+                  )}
                 </span>
               </div>
-              <CodeEditor
-                value={rascunho}
-                onChange={setRascunho}
-                label={`Conteúdo de ${conteudo.path}`}
-                className="fe-body"
-              />
+              {editando ? (
+                <CodeEditor
+                  value={rascunho}
+                  onChange={setRascunho}
+                  label={`Conteúdo de ${conteudo.path}`}
+                  className="fe-body"
+                  fileName={conteudo.path}
+                  autoFocus
+                />
+              ) : conteudo.text === '' ? (
+                <EmptyState
+                  icon={<Binary />}
+                  title="Arquivo vazio"
+                  description="Não há nada escrito nele ainda. Use Editar para escrever."
+                />
+              ) : (
+                lido && (
+                  <CodeView key={conteudo.path} code={lido} wrap label={`Conteúdo de ${conteudo.path}`} className="fe-body" />
+                )
+              )}
               <div className="fe-foot">
-                <span>{conteudo.meta.mimeType}</span>
                 <span>
-                  O arquivo é gravado como está — o frontmatter do SKILL.md faz parte dele até o envio ser aprovado.
+                  {lido ? rodape(lido.total, conteudo.text === '', lido.language) : conteudo.meta.mimeType}
+                </span>
+                <span>
+                  {editando
+                    ? 'O arquivo é gravado como está — o frontmatter do SKILL.md faz parte dele até o envio ser aprovado.'
+                    : 'Somente leitura'}
                 </span>
               </div>
             </>

@@ -33,6 +33,17 @@ avulso): o "Importar .zip" e o "Substituir a árvore por um .zip" da guia
 > completa da §10: promete que **estes três trechos** estão riscados onde
 > estavam.
 
+> **Ampliado em 25/09/2026** com o **destino** do envio (§11): quem importa
+> para a quarentena escolhe, já no upload, catálogos e servidores MCP, e a
+> aprovação põe a skill neles na mesma transação. As decisões 28 a 34 entraram;
+> a decisão 8 e o primeiro item da §9 (fora do escopo) foram **revogados** e
+> estão riscados onde estavam, e a §3, a §5 e a §7 ganharam a marca no ponto.
+> Migration `035-destino-da-quarentena.sql`.
+>
+> No mesmo dia entrou a §12 (decisões 35 a 37): aprovar e descartar em lote,
+> o arquivo do envio colorido e a aprovação sem diálogo — que revoga um trecho
+> da decisão 32, riscado onde estava.
+
 Este documento registra o desenho fechado na conversa de 20/09/2026 e é a
 referência de *por que* cada peça é assim; o que é do banco — tabelas, queries,
 a transação da promoção — está em
@@ -101,9 +112,16 @@ skill como qualquer outra, com o pacote já conferido.
    > navegar para a skill, ou inverter o dono —, e o mantenedor escolheu
    > inverter: quem aprova responde pela skill que colocou no acervo, e quem
    > submeteu continua registrado na trilha (`quarantine.promote`).
-8. **A skill nasce flutuante.** Sem servidor, sem catálogo, `is_public` falso.
+8. ~~**A skill nasce flutuante.** Sem servidor, sem catálogo, `is_public` falso.
    Publicar é um ato à parte, depois, na ficha da skill — e é assim que a
-   aprovação não vira, por descuido, uma publicação.
+   aprovação não vira, por descuido, uma publicação.~~
+
+   > **Revogado neste ponto pela decisão 28 (25/09/2026)**, a pedido do
+   > mantenedor. A skill nasce no **destino** do envio (§11) — os catálogos e
+   > servidores escolhidos no upload ou na ficha —, e só nasce flutuante quando
+   > o destino está vazio. `is_public` continua falso. O "por descuido" que a
+   > regra evitava ficou com a confirmação: o diálogo de aprovação diz para
+   > onde a skill vai.
 9. **Slug ocupado ganha sufixo** (`-2`, `-3`), como já acontece quando o slug
    vem do nome. Aprovar não trava por causa de um nome repetido; renomear
    depois é uma edição.
@@ -279,6 +297,11 @@ O que **não** existe, e a ausência é o ponto: slug, tags, ícone, `is_active`
 `is_public`, contadores, `search_vector`, `rag_stale`, vínculo com vMCP ou
 catálogo e concessões por objeto (`*_grants`).
 
+> **Precisão de 25/09/2026:** o envio ganhou um **destino** (§11), em duas
+> tabelas próprias (`quarantine_catalogs` e `quarantine_mcps`). Não é vínculo:
+> nada em catálogo nem servidor muda até a aprovação, e nenhuma consulta de
+> catálogo ou vMCP enxerga essas tabelas.
+
 ### 3.1 Quem enxerga
 
 O dono do envio, o administrador e o editor. Submeter exige o papel de criar
@@ -317,25 +340,33 @@ dentro dele: o que está ali ainda não é skill. Só quem pode criar chega a v�
 
 - **`/quarantine`** — a fila, mais recentes primeiro: nome, arquivo de origem,
   quem enviou, quantos arquivos, tamanho e quando chegou. Daqui se baixa o
-  pacote como está e se descarta.
+  pacote como está e se descarta. Desde 25/09/2026 (decisão 35) há uma coluna
+  de marcar, com "marcar todos" no cabeçalho, e **Aprovar** e **Descartar**
+  para os marcados.
 - **`/quarantine/:uuid`** — os arquivos do envio e o editor **cru**. O
-  `SKILL.md` aparece com o frontmatter dentro dele e é gravado assim. Dá para
+  `SKILL.md` aparece com o frontmatter dentro dele e é gravado assim. Desde
+  25/09/2026 (decisão 36) o arquivo abre no **leitor colorido**, o mesmo da
+  ficha da skill, e "Editar" passa ao editor, também colorido. Dá para
   criar e remover arquivo — **só texto**, e até o teto da decisão 14; não há
   envio de arquivo aqui — pacote se importa, e um envio é o retrato de um
   pacote. Um binário que veio dentro do pacote abre como binário, para baixar
   ou remover.
 - A importação (`/new-skill?mode=zip`) ganhou a escolha de destino. Em
-  "Para a quarentena" o formulário de metadados e o seletor de servidores
-  **somem** da tela: eles não teriam onde encostar, e mostrá-los prometeria
+  "Para a quarentena" o formulário de metadados ~~e o seletor de servidores~~
+  **some** da tela: ele não teria onde encostar, e mostrá-lo prometeria
   algo que a tela não cumpre. Um pacote com **duas ou mais** skills vai para a
   fila de qualquer jeito (decisão 21), e o que volta é o resumo da §10 — a
   tela "Pacote importado", com quais entraram e quais ficaram de fora, cada
   linha levando ao envio —, não a ficha de um envio.
+
+  > **Revogado neste ponto pela decisão 28 (25/09/2026):** o seletor de
+  > servidores **volta** na quarentena, como "Publicar ao aprovar em", junto de
+  > um seletor de catálogos. Agora eles têm onde encostar: o destino do envio.
 - **Configurações → Quarentena** guarda a política da §4.
 
 O botão **Aprovar** só aparece para quem pode; a rota confere de novo, que é
 onde a decisão vale. Sem `SKILL.md` ele fica desligado, com o aviso do que
-falta.
+falta. Desde 25/09/2026 ele age **sem diálogo de confirmação** (decisão 37).
 
 ## 6. O que saiu da edição de uma skill
 
@@ -381,10 +412,13 @@ Sob `/api/quarantine`, com a sessão do painel. O endereço é o `uuid`.
 | `POST /api/quarantine/:uuid/promote` | aprova: cria a skill e apaga o envio |
 | `GET /api/quarantine/:uuid/files/*path` | o arquivo, cru com `?raw` |
 | `PUT` / `POST` / `DELETE` `…/files/*path` | grava, cria e remove |
+| `PUT /api/quarantine/:uuid/targets` | troca o destino (§11) |
 | `GET` / `PUT` `/api/settings/quarantine` | a política da §4 (só admin) |
 
 `POST /api/skills/import` ganhou o campo `destination`: `production` (o padrão,
-o comportamento de sempre) ou `quarantine`. É também a porta do **bundle**
+o comportamento de sempre) ou `quarantine`. Com `quarantine`, os campos `mcps`
+e `catalogs` (JSON) são o destino do envio (§11); `catalogs` em `production` é
+400. É também a porta do **bundle**
 (§10): com `quarantine`, o pacote de uma skill e nada de fora responde a ficha
 do envio, como sempre, e qualquer outro caso responde o resumo; com
 `production`, o pacote de duas ou mais é **400**.
@@ -420,8 +454,12 @@ e um `.html` ou `.svg` anexado rodaria JavaScript autenticado como o operador.
 
 - Rascunho de skill própria (sem importação) na quarentena.
 - Comentário, revisão em duas etapas ou histórico de versões do envio.
-- Promover para dentro de um catálogo ou servidor, ou devolver uma skill de
+- ~~Promover para dentro de um catálogo ou servidor~~, ou devolver uma skill de
   produção para a quarentena.
+
+  > **Revogado neste ponto pela decisão 28 (25/09/2026):** promover para dentro
+  > de catálogo e servidor é o destino da §11. Devolver uma skill de produção
+  > para a quarentena continua fora.
 - Fila por instalação com cota, prioridade ou responsável.
 
 ## 10. O bundle
@@ -642,3 +680,104 @@ A ordem em que a rota decide, para `quarantine`: pacote vazio → **400**; nenhu
 skill entrando e alguma pulada → **400** com a lista; duas ou mais skills, ou
 alguma pulada ao lado de outra que entrou → **201** com o resumo; zero skills e
 mais de 512 entradas → **400**, o teto desta seção; o resto → envio único.
+
+## 11. O destino
+
+Pedido do mantenedor em 25/09/2026: ao importar para a quarentena, escolher já
+no envio os **catálogos** em que a skill vai entrar e os **servidores MCP** em
+que ela vai ser publicada, para que aprovar seja também mandar para produção —
+os servidores vinculados àqueles catálogos passam a entregá-la no mesmo
+instante. As decisões marcadas "mantenedor" foram escolhas dele numa entrevista
+direta; as outras são minhas.
+
+28. **Só a quarentena tem destino** (mantenedor). A importação direta para
+    produção e o formulário de nova skill continuam como estavam: "Publicar em"
+    (servidor), sem catálogo. `catalogs` mandado com `production` é **400**, em
+    vez de ignorado — ignorar faria quem mandou achar que a skill entrou no
+    catálogo. Revoga a decisão 8 e o primeiro item da §9.
+29. **Destino não é vínculo.** Ele mora em `quarantine_catalogs` e
+    `quarantine_mcps`, com o envio, e nenhuma consulta de catálogo ou vMCP as
+    lê: até a aprovação o envio não aparece em lugar nenhum, e a decisão 4 segue
+    de pé. Um catálogo ou servidor apagado antes da aprovação sai do destino
+    pela cascata, sem aviso — o destino é intenção, e intenção sobre o que não
+    existe mais não tem o que dizer. O servidor leva as três portas do vínculo
+    (`as_skill`/`as_prompt`/`as_resource`, ao menos uma), e o que a aprovação
+    cria é um **vínculo direto**, que sobrescreve o que um catálogo entrega no
+    mesmo servidor (`docs/11` §3.2) — quem escolhe o catálogo e também o
+    servidor ao qual ele já está vinculado está pedindo as portas do servidor.
+30. **A permissão é cobrada de quem escolhe e de quem aprova** (mantenedor). A
+    régua é a de publicar direto: `edit` no catálogo e `edit` no servidor. Quem
+    escolhe paga no upload e na ficha; quem aprova paga de novo, porque é ele
+    quem vira dono da skill (decisão 7) e responde pela publicação — e porque o
+    acesso pode ter mudado entre o envio e a aprovação. Na ficha, só
+    **acrescentar** cobra: manter o que já estava não cobra de novo, e tirar não
+    cobra nada — reduzir o que a aprovação publica é o gesto de quem revisa.
+    Trocar as portas de um servidor que já é destino cobra, porque é publicar de
+    outro jeito.
+31. **Sem acesso a algum destino, a aprovação é recusada** (mantenedor): **403**
+    e nada criado. Aprovar pulando o destino publicaria menos do que o envio
+    promete, sem ninguém ter decidido isso. A mensagem nomeia o catálogo ou
+    servidor quando quem aprova o enxerga, e não nomeia quando não enxerga. A
+    janela entre essa conferência e a gravação é fechada no banco: a rota passa
+    o destino conferido (`expectedTargets`) e, se o gravado for outro quando a
+    transação trava o envio, a resposta é **409** — ninguém publica o que não
+    foi conferido.
+32. **O destino é editável na ficha** (mantenedor), num painel "Ao aprovar",
+    por quem enxerga o envio (§3.1). ~~O diálogo de aprovação diz para onde a
+    skill vai~~, e o botão **Aprovar** fica desligado quando algum destino trava a
+    sessão, com o painel dizendo o que fazer.
+
+    > **Revogado neste ponto pela decisão 37 (25/09/2026):** a aprovação não tem
+    > mais diálogo. Quem diz para onde a skill vai é o painel "Ao aprovar", que
+    > está na tela antes do clique.
+33. **Destino que a sessão não enxerga aparece como número, sem nome.** O editor
+    que revisa a fila vê envio alheio; o destino não pode ser o caminho para ele
+    ficar sabendo de um catálogo privado ou de um servidor fechado de terceiros
+    (a régua do relatório 009 da auditoria de 2026-09-19). A ficha diz "1
+    destino a que você não tem acesso" e oferece **removê-lo** (`dropHidden`),
+    que destrava a aprovação sem revelar o que era. A troca de destino não toca
+    no que a sessão não enxerga, a menos que ela peça isso.
+34. **Num bundle, o destino vale para cada envio.** O pacote de quarenta skills
+    com um catálogo escolhido vira quarenta envios com aquele catálogo; o que for
+    diferente se ajusta na ficha de cada um.
+
+O catálogo **público** merece o aviso que o seletor mostra: ele lista os
+membros no site, inclusive a skill privada (`docs/12` decisões 4 e 5), então a
+skill que nasce `is_public = false` aparece no site pelo catálogo. É o mesmo
+aviso que o seletor de servidores já dava para o servidor aberto.
+
+A trilha: trocar o destino audita `quarantine.update`; aprovar audita, além do
+`create` da skill e do `quarantine.promote`, um `catalog.update` por catálogo e
+um `mcp.update` por servidor — as mesmas linhas de pôr a skill no catálogo e de
+publicá-la à mão.
+
+## 12. Aprovar em lote e ler com cores
+
+Pedido do mantenedor em 25/09/2026, na mesma conversa do destino (§11).
+
+35. **A fila aprova e descarta em lote.** Uma coluna de marcar, com "marcar
+    todos" no cabeçalho (que fica indeterminado com parte marcada), e uma barra
+    com **Aprovar** e **Descartar** para os marcados. O lote **não** tem rota
+    própria: o painel chama, um de cada vez, as mesmas rotas da ficha — cada
+    envio passa pela política da §4, pela conferência do destino (decisões 30 e
+    31) e é a sua própria transação, como a fila da decisão 26. Em paralelo,
+    quarenta aprovações disputariam as mesmas travas de catálogo e servidor à
+    toa. O que falha **continua marcado**, e um aviso só diz quantos deram certo
+    e o primeiro motivo de falha; o que deu certo sai da fila. Só conta o que
+    está na tela: trocar a busca não deixa marca escondida, que um "Descartar"
+    levaria junto sem a pessoa ver. **Aprovar** do lote aparece só para quem
+    pode criar no acervo (decisão 18).
+36. **O arquivo do envio abre colorido.** O leitor é o `CodeView` da ficha da
+    skill, com a mesma gramática por nome de arquivo (`languageFor`) e o
+    frontmatter do `SKILL.md` como YAML; "Editar" passa ao editor, e o editor
+    também sai colorido. A cor do editor é uma camada **atrás** do `textarea`,
+    com a mesma fonte, recuo e altura de linha, e o texto do campo transparente
+    por cima — desfazer, seleção e colar continuam os do navegador. Na camada,
+    negrito e itálico são anulados, porque em algumas fontes mono mudam a
+    largura da letra e descolariam o cursor. Acima de 60 000 caracteres o
+    editor volta a texto puro: a cor é refeita a cada tecla. O `CodeEditor`
+    só colore quando recebe `fileName`, então o editor da skill não mudou.
+37. **Aprovar age sem confirmação** — na ficha e no lote. O painel "Ao aprovar"
+    já mostra o destino antes do clique, e o que a aprovação cria é uma skill,
+    que se desfaz apagando-a. **Descartar continua pedindo confirmação**, na
+    ficha e no lote: ele apaga os arquivos do envio, e isso não tem volta.

@@ -919,7 +919,12 @@ Desenho em [`15-quarentena.md`](15-quarentena.md). Migration `030`, tabelas
 - **Não há colisão de nome.** Dois envios do mesmo pacote convivem; o nome é
   rótulo e a identidade é o `uuid`, que também é o endereço no painel.
 - **Aprovar cria a skill com quem aprovou como dono**; a skill nasce
-  **flutuante**, slug ocupado ganha sufixo, e a linha da quarentena some. Sem um
+  ~~**flutuante**~~ **no destino do envio** — os catálogos e servidores
+  escolhidos no upload ou na ficha, na mesma transação, e flutuante só quando o
+  destino está vazio —, slug ocupado ganha sufixo, e a linha da quarentena
+  some. **Revogado neste ponto por [`15-quarentena.md`](15-quarentena.md)
+  decisão 28 (25/09/2026):** o destino é cobrado com `edit` de quem escolhe e de
+  quem aprova, e sem acesso a algum item a aprovação é 403 (decisões 30 e 31). Sem um
   `SKILL.md` legível, a promoção é recusada sem apagar nada. **Era**, até a
   revisão de 20/09/2026: ~~o dono era quem submeteu~~ — e aí o editor que
   aprovava envio alheio deixava de enxergar a skill que acabara de criar (404),

@@ -550,7 +550,9 @@ pela extensão —, quem importa escolhe o destino:
   slug e tags do `SKILL.md`, e com os servidores que a tela oferecer.
 - **Para a quarentena** — os arquivos ficam guardados como chegaram, esperando
   aprovação. Nada é publicado, indexado pela busca semântica nem aparece no
-  site; nenhum agente alcança o conteúdo.
+  site; nenhum agente alcança o conteúdo. Dá para escolher já aqui o
+  **destino**: os catálogos em que a skill vai entrar e os servidores MCP em que
+  ela vai ser publicada quando for aprovada.
 
 Um pacote pode trazer **várias** skills. Quem decide qual caso é o seu é a
 **raiz** do pacote: com um `SKILL.md` nela, o pacote é uma skill só e tudo o
@@ -572,9 +574,14 @@ vínculo, e o `SKILL.md` fica com o **frontmatter dentro dele** — é o arquivo
 cru que se lê e se edita, até alguém aprovar. Dois envios podem ter o mesmo
 nome; o que os distingue é o identificador e a data.
 
-**Aprovar** cria a skill no acervo, com **quem aprovou** como dono, ainda sem
-servidor nem catálogo (publicar é um passo à parte, depois), e tira o envio da
-fila. Quem submeteu fica registrado na trilha de auditoria. Quem
+**Aprovar** cria a skill no acervo, com **quem aprovou** como dono, já no
+destino do envio — dentro dos catálogos escolhidos, e com isso em todo servidor
+vinculado a eles, e publicada nos servidores escolhidos —, e tira o envio da
+fila. Sem destino ela nasce sem servidor nem catálogo, e publicar fica para
+depois. O destino se edita na ficha do envio até a aprovação; quem escolhe e
+quem aprova precisam **editar** cada catálogo e servidor dele, e quem aprova sem
+esse acesso tem a aprovação recusada, sem nada criado. Quem submeteu fica
+registrado na trilha de auditoria. Quem
 pode aprovar é escolha da instalação, em **Configurações → Quarentena**:
 
 | Opção | Quem aprova |
