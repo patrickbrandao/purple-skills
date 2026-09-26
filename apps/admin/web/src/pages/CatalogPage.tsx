@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Server, SlidersHorizontal, Users } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ExternalLink, History, Info, Library, Pencil, Plus, Server, SlidersHorizontal, Users } from 'lucide-react';
 import {
   atUser,
+  canCreate,
   canEdit as canEditAccess,
   canManage,
   formatDateTime,
@@ -20,8 +21,9 @@ import { AccessLog } from '../components/AccessLog.js';
 import { CloneButton, CloneDialog } from '../components/CloneDialog.js';
 import { SkillIcon } from '../components/SkillIcon.js';
 import { SURFACES } from '../components/SkillMcps.js';
-import { useRegisterCommands } from '../components/commands.js';
+import { useRegisterCommands, type Command } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
+import { newSkillInCatalogPath } from '../components/shell/routes.js';
 
 export type CatalogTab = 'catalog' | 'skills' | 'properties' | 'access' | 'audit';
 
@@ -79,18 +81,36 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
 
   const canEdit = detail ? canEditAccess(detail.access) : false;
   const manages = detail ? canManage(detail.access) : false;
+  // Criar skill já no catálogo cobra as duas coisas: o papel que cria no
+  // acervo (`canCreate`, editor+) e editar **este** catálogo — sem a segunda,
+  // `canCreate` sozinho deixaria qualquer editor semear skill em catálogo
+  // alheio.
+  const podeAdicionar = detail ? canEdit && canCreate(user.role) : false;
 
   const loadAccesses = useCallback(
     (query: Parameters<typeof getCatalogAccesses>[1]) => getCatalogAccesses(slug, query),
     [slug],
   );
 
-  useRegisterCommands(
-    detail && canEdit
-      ? [{ id: 'catalog-edit', label: `Editar "${detail.name}"`, group: 'Recurso', icon: <Pencil />, shortcut: 'e', run: () => navigate(`/catalogs/${detail.slug}/edit`) }]
-      : [],
-    [detail?.slug, canEdit],
-  );
+  const catalogCommands: Command[] = detail
+    ? [
+        ...(canEdit
+          ? [{ id: 'catalog-edit', label: `Editar "${detail.name}"`, group: 'Recurso' as const, icon: <Pencil />, shortcut: 'e', run: () => navigate(`/catalogs/${detail.slug}/edit`) }]
+          : []),
+        ...(podeAdicionar
+          ? [
+              {
+                id: 'catalog-new-skill',
+                label: `Nova skill no catálogo "${detail.name}"`,
+                group: 'Recurso' as const,
+                icon: <Plus />,
+                run: () => navigate(newSkillInCatalogPath(detail.slug)),
+              },
+            ]
+          : []),
+      ]
+    : [];
+  useRegisterCommands(catalogCommands, [detail?.slug, canEdit, podeAdicionar]);
 
   if (!detail) {
     return (
@@ -125,6 +145,11 @@ export function CatalogPage({ session, user }: { session: Session; user: Session
             </a>
           )}
           <CloneButton kind="catalog" object={detail} role={user.role} onClone={() => setClonando(true)} />
+          {podeAdicionar && (
+            <Link to={newSkillInCatalogPath(detail.slug)} className="btn btn-quiet">
+              <Plus /> Nova skill no catálogo
+            </Link>
+          )}
           {canEdit && (
             <Link to={`${base}/edit`} className="btn btn-primary">
               <Pencil /> Editar

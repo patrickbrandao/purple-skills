@@ -14,6 +14,20 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## [Não lançado]
+
+### Adicionado
+
+- **Botão "Nova skill no catálogo"** na ficha do catálogo, ao lado de
+  "Editar": abre `/new-skill?catalog=<slug>` com a skill já nascendo
+  vinculada a ele. Aparece só para quem edita o catálogo **e** tem papel
+  para criar no acervo; a tela confere os dois de novo, então o endereço
+  digitado à mão sem acesso volta para `/catalogs` com o aviso. A skill
+  continua nascendo em produção do jeito de sempre — o vínculo é um
+  segundo passo, depois de criada — e, na importação com destino
+  quarentena, o catálogo entra pré-marcado no seletor de destino já
+  existente. Desenho em [`docs/11-catalogos.md`](docs/11-catalogos.md) §6.1.
+
 ## [1.0.0-beta.29] — 2026-09-25
 
 ### Adicionado

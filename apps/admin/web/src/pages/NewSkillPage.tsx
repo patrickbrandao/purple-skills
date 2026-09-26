@@ -1,17 +1,21 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, FileArchive, ShieldQuestion, Sparkles, Upload } from 'lucide-react';
+import { AlertTriangle, FileArchive, Library, ShieldQuestion, Sparkles, Upload } from 'lucide-react';
 import {
+  addCatalogSkill,
+  canEdit,
   createSkill,
+  getCatalog,
   importToQuarantine,
   importZip,
   num,
   plural,
   type BundleSkipped,
+  type CatalogDetail,
   type QuarantineBundleResult,
   type SkillLinkInput,
 } from '../api.js';
-import { Button, Panel } from '../components/ui.js';
+import { Button, Panel, Skel } from '../components/ui.js';
 import { FrontmatterPreview, SkillMetaForm, type SkillMetaValues } from '../components/SkillMetaForm.js';
 import { PublishInPicker } from '../components/SkillMcps.js';
 import { CatalogPicker, HINT_SERVIDORES_NA_QUARENTENA } from '../components/QuarantineTargets.js';
@@ -226,6 +230,14 @@ export function NewSkillPage() {
   const [links, setLinks] = useState<SkillLinkInput[]>([]);
   // Os catálogos em que a skill entra ao ser aprovada: só na quarentena.
   const [catalogos, setCatalogos] = useState<string[]>([]);
+
+  // O botão "Nova skill no catálogo" da ficha do catálogo (`?catalog=slug`):
+  // a skill nasce já vinculada a ele. `catalogAlvo` só é preenchido depois de
+  // conferir `edit` — sem esse acesso a tela nem chega a mostrar o formulário
+  // (ver o efeito abaixo), então nenhum outro trecho precisa checar de novo.
+  const catalogSlug = params.get('catalog');
+  const [catalogAlvo, setCatalogAlvo] = useState<CatalogDetail | null>(null);
+  const [catalogPronto, setCatalogPronto] = useState(!catalogSlug);
   // Enquanto o slug não for editado à mão, ele acompanha o nome.
   const [slugTocado, setSlugTocado] = useState(false);
   const [skillMd, setSkillMd] = useState(TEMPLATE);
@@ -241,6 +253,41 @@ export function NewSkillPage() {
   // que a tela não cumpre. O destino — catálogos e servidores — vale: é o que a
   // aprovação publica.
   const paraQuarentena = mode === 'zip' && destino === 'quarentena';
+
+  // Confere `edit` no catálogo antes de deixar a tela seguir: o botão que
+  // trouxe até aqui já cobrou isso (`CatalogPage`), mas o endereço é público
+  // dentro do painel — alguém podia digitá-lo com o slug de um catálogo alheio.
+  // Sem acesso, ou sem o catálogo, é o mesmo 404-por-toast do resto do painel:
+  // a tela nem chega a mostrar o formulário.
+  useEffect(() => {
+    if (!catalogSlug) return;
+    let active = true;
+    getCatalog(catalogSlug)
+      .then((found) => {
+        if (!active) return;
+        if (!canEdit(found.access)) {
+          toast.error(`Você não edita o catálogo "${found.name}": peça a quem o edita para criar a skill lá.`);
+          navigate('/catalogs');
+          return;
+        }
+        setCatalogAlvo(found);
+        // A caixa do catálogo já nasce marcada; na quarentena ela continua
+        // editável, como qualquer outro item do destino (`docs/15` §11).
+        setCatalogos((atual) => (atual.includes(found.slug) ? atual : [...atual, found.slug]));
+      })
+      .catch((err) => {
+        if (!active) return;
+        toast.error((err as Error).message);
+        navigate('/catalogs');
+      })
+      .finally(() => {
+        if (active) setCatalogPronto(true);
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogSlug]);
 
   function patchMeta(patch: Partial<SkillMetaValues>) {
     if (patch.slug !== undefined) setSlugTocado(true);
@@ -287,7 +334,21 @@ export function NewSkillPage() {
               mcps: links,
             });
 
-      toast.success(`Skill "${detail.name}" criada.`);
+      // Fora da quarentena o catálogo não é campo do pedido de criação
+      // (decisão 28 do `docs/15`): a skill nasce e só então entra no
+      // catálogo, pela mesma rota que a ficha do catálogo já usa para
+      // acrescentar um membro. Falhar aqui não desfaz a skill — ela existe —,
+      // então o aviso é outro, e quem lê ainda pode acrescentá-la à mão.
+      if (catalogAlvo) {
+        try {
+          await addCatalogSkill(catalogAlvo.slug, detail.slug);
+          toast.success(`Skill "${detail.name}" criada e adicionada ao catálogo "${catalogAlvo.name}".`);
+        } catch (err) {
+          toast.error(`Skill "${detail.name}" criada, mas não entrou no catálogo "${catalogAlvo.name}": ${(err as Error).message}`);
+        }
+      } else {
+        toast.success(`Skill "${detail.name}" criada.`);
+      }
       navigate(`/skills/${detail.slug}`);
     } catch (err) {
       toast.error((err as Error).message);
@@ -308,6 +369,18 @@ export function NewSkillPage() {
     );
   }
 
+  // Enquanto o catálogo do `?catalog=slug` não foi conferido, a tela não
+  // mostra o formulário: sem acesso a ele, o efeito acima já redirecionou —
+  // mostrar o formulário antes disso deixaria a tela piscar antes de sumir.
+  if (!catalogPronto) {
+    return (
+      <div className="page">
+        <Skel h={20} w={220} className="mb-3" />
+        <Skel h={320} />
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="page">
       <div className="page-head">
@@ -318,6 +391,13 @@ export function NewSkillPage() {
               ? 'O pacote é guardado como está, sem virar skill; um pacote com várias skills vira um envio para cada uma. Nada entra no acervo antes de alguém aprovar.'
               : `Preencha o formulário ou importe um pacote (${FORMATOS_NA_TELA}) com um SKILL.md — um pacote com várias skills vai inteiro para a quarentena.`}
           </p>
+          {catalogAlvo && (
+            <p className="meta-line mt-2">
+              <span className="stat">
+                <Library /> Nasce já no catálogo <strong>{catalogAlvo.name}</strong>
+              </span>
+            </p>
+          )}
         </div>
         <div className="segmented">
           {(['form', 'zip'] as const).map((option) => (
