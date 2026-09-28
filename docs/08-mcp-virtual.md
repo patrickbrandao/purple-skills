@@ -34,6 +34,11 @@ as chaves gerenciadas do MCP principal (`MCP_PUBLIC_AUTH=managed`, `§7`).
 > número **por vMCP** — os servidores mais chamados e as chamadas por
 > transporte —, agregado e só para admin. A marca está no ponto, com o que
 > continua fora.
+>
+> **E a decisão 15, na metade das instruções, por
+> [`22`](22-instrucoes-do-mcp-virtual.md):** a `description` deixou de ir ao
+> agente. O `instructions` do `initialize` é o texto-base mais um campo
+> próprio, `instructions`. A marca está na tabela e na `§4.4`.
 
 Este documento registra o desenho do **MCP virtual**: um servidor MCP de
 leitura em `/virtual/<slug>/mcp` que publica um recorte do catálogo — inclusive
@@ -82,7 +87,7 @@ universalidade.
 | 12 | Painel | Vínculo só pelo lado do MCP; a skill mostra um selo somente-leitura |
 | 13 | Auditoria | Ações `mcp.create/update/delete`, `mcp.key.create/revoke`; `target_label` = slug |
 | 14 | Ciclo de vida | `is_active` desliga sem apagar; slug renomeável com aviso; delete em cascata com `confirm` |
-| 15 | Identidade do servidor | `name = <MCP_SERVER_NAME>-<slug>`; instruções = texto base + `description` |
+| 15 | Identidade do servidor | `name = <MCP_SERVER_NAME>-<slug>`; ~~instruções = texto base + `description`~~ instruções = texto base + `instructions` (revogado por [`22`](22-instrucoes-do-mcp-virtual.md)) |
 | 16 | Contadores | No vínculo **e** no global da skill |
 | 17 | Recusas | 404 para slug inexistente ou desligado; 401 para chave ausente ou inválida |
 | 18 | Entrega | Dois PRs: o virtual completo, depois o modo `managed` do principal |
@@ -288,9 +293,14 @@ privada o campo é omitido.~~
 
 `serverInfo.name` é `<MCP_SERVER_NAME>-<slug>` — o cliente que conecta a
 vários virtuais os distingue. As instruções repetem o fluxo do principal
-(`search_skills → get_skill → …`) e acrescentam a `description` do MCP, que é
+(`search_skills → get_skill → …`) e acrescentam ~~a `description` do MCP, que é
 o campo com que o dono contextualiza o agente sem um campo de instruções à
-parte.
+parte~~ as `instructions` do MCP.
+
+> **Revogado neste ponto por [`22`](22-instrucoes-do-mcp-virtual.md).** A
+> descrição fazia dois trabalhos — texto para as pessoas e contexto para o
+> agente — e escrever para um estragava o outro. Agora há um campo de
+> instruções à parte, e a descrição não vai mais ao agente.
 
 ### 4.5 Recusas
 

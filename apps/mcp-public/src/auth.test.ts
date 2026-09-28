@@ -24,6 +24,7 @@ const fechado = {
   slug: 'time-a',
   name: 'Time A',
   description: '',
+  instructions: '',
   isOpen: false,
 };
 

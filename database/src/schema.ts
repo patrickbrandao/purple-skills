@@ -395,7 +395,15 @@ export const virtualMcps = pgTable(
     uuid: uuid('uuid').primaryKey().default(sql`uuidv7()`),
     slug: text('slug').notNull().unique('virtual_mcps_slug_key'),
     name: text('name').notNull(),
+    /** Exibição e comentário (listagens, buscas); não vai ao agente. */
     description: text('description').notNull().default(''),
+    /**
+     * A mensagem de sistema do servidor: vai ao agente no `instructions` do
+     * `initialize`, depois do texto-base do mcp-public. O teto de
+     * `VIRTUAL_MCP_INSTRUCTIONS_MAX` (4 000) é um CHECK, que fica só no SQL
+     * (`schema/036-instrucoes-do-mcp-virtual.sql`).
+     */
+    instructions: text('instructions').notNull().default(''),
     /** Desligado: tudo sob `/virtual/<slug>` responde 404; vínculos e chaves ficam. */
     isActive: boolean('is_active').notNull().default(true),
     /** Aberto: sem chave. Com skill privada dentro, é publicação de fato. */

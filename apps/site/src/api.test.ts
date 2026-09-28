@@ -282,7 +282,7 @@ describe('o JSON anônimo do site', () => {
    * do mcp-public, que é a superfície de referência, anuncia só status, slug,
    * nome e auth (`docs/09` §3.2).
    */
-  it('o /api/meta não leva a descrição do vMCP padrão, nem quando ele é fechado', async () => {
+  it('o /api/meta não leva a descrição nem as instructions do vMCP padrão, nem quando ele é fechado', async () => {
     db.resolveDefaultVirtualMcp.mockResolvedValue({
       status: 'ok',
       mcp: {
@@ -290,6 +290,8 @@ describe('o JSON anônimo do site', () => {
         slug: 'clientes',
         name: 'Clientes',
         description: 'Skills da conta Acme, contato joana@acme.example',
+        // As instructions são tão livres quanto a descrição: a mesma regra vale.
+        instructions: 'You serve the Acme account; escalate to joana@acme.example.',
         isOpen: false,
       },
     });
@@ -466,7 +468,7 @@ describe('a paginação de GET /api/skills', () => {
 describe('o corsOpen do /api/meta', () => {
   const MCP_PADRAO = {
     status: 'ok',
-    mcp: { uuid: 'mcp-1', slug: 'public', name: 'Público', description: '', isOpen: true },
+    mcp: { uuid: 'mcp-1', slug: 'public', name: 'Público', description: '', instructions: '', isOpen: true },
   };
 
   /** O `/api/meta` de uma instalação com este `SITE_CORS_ORIGIN` (`undefined` = sem a variável). */

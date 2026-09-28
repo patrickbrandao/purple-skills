@@ -33,10 +33,16 @@ in search_skills or skills/list — check the listings before concluding that a
 skill does not exist here.`;
 
 /**
- * As instruções de um vMCP: o fluxo, mais o que o dono escreveu na descrição
- * — é por ela que ele contextualiza o agente ("skills do projeto X") sem um
- * campo de instruções à parte (`08`, decisão 15). O mesmo texto vale na raiz,
- * que é o vMCP padrão: não há mais um "catálogo completo" em outro lugar.
+ * As instruções de um vMCP: o texto-base, igual em todo servidor, mais a
+ * mensagem de sistema que o dono escreveu em `instructions` (`docs/22`, que
+ * revoga a decisão 15 do `08`). A `description` não entra: ela é texto de
+ * exibição e de comentário — listagens, buscas, o cartão do site — e pode
+ * falar de gente ou de projeto sem que isso seja orientação para o agente.
+ * O mesmo texto vale na raiz, que é o vMCP padrão.
+ *
+ * A mensagem vai **por último** e com rótulo próprio: ela contextualiza o
+ * texto-base ("estas são as skills do projeto X; comece por…"), e o agente
+ * precisa saber que ali fala quem administra o servidor, não o Purple Skills.
  */
 const instrucoes = (scope: VirtualScope) =>
   `MCP server "${scope.mcp.name}" — a catalog of skills (reusable instructions)
@@ -47,7 +53,9 @@ ${FLUXO}
 
 Downloads (download_skill and binary files) point to this same server and accept
 the same credential used to connect.${
-    scope.mcp.description ? `\n\nAbout this server:\n${scope.mcp.description}` : ''
+    scope.mcp.instructions
+      ? `\n\nInstructions from the administrator of this server:\n${scope.mcp.instructions}`
+      : ''
   }`;
 
 /**

@@ -1201,6 +1201,24 @@ Desenho em [`21-cli-admin.md`](21-cli-admin.md). Sem migration.
 - Revoga em parte o `05` `§2.3` ("escolhido em vez de CLI"); o `/setup` segue
   sendo o caminho do primeiro administrador.
 
+## 12.13 Instruções do MCP virtual
+
+Desenho em [`22-instrucoes-do-mcp-virtual.md`](22-instrucoes-do-mcp-virtual.md).
+Migration `036`.
+
+- **Dois textos por vMCP.** A `description` é para as pessoas (listagens,
+  cartão do site, comentário) e não vai mais ao agente; `instructions` é a
+  mensagem de sistema do servidor, enviada no `initialize` depois do texto-base,
+  com o rótulo `Instructions from the administrator of this server:`.
+- **Teto de 4 000 caracteres** (`VIRTUAL_MCP_INSTRUCTIONS_MAX`, com CHECK no
+  banco). Mudar é `manage`, como a descrição; a cópia de um clone as leva.
+- **A migração copia a descrição** para `instructions`, para nenhum agente
+  perceber a troca no dia da atualização.
+- **Painel e site as mostram como mensagem `system`.** O site só no cartão do
+  vMCP aberto; o `/api/meta` não as leva.
+- Revoga a decisão 15 do `08` na metade das instruções; o `serverInfo.name`
+  segue igual.
+
 ## 13. Riscos aceitos conscientemente (v1)
 
 Para manter o software "simples, bonito e pontual" conforme pedido, as

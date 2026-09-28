@@ -63,6 +63,19 @@ export function OpenMcps() {
 
               <p>{mcp.description || `Skills publicadas no servidor "${mcp.slug}".`}</p>
 
+              {/* As instructions são o que o agente recebe no `initialize`
+                  (`docs/22`): mostradas como a mensagem de sistema que são, e
+                  fechadas por padrão para o cartão não virar um texto longo. */}
+              {mcp.instructions && (
+                <details className="ep-system">
+                  <summary>
+                    <span className="ep-system-role">system</span>
+                    Instruções que o agente recebe
+                  </summary>
+                  <pre>{mcp.instructions}</pre>
+                </details>
+              )}
+
               <code className={`ep-url${mcp.url ? '' : ' off'}`}>
                 {mcp.url ?? `/virtual/${mcp.slug}/mcp`}
               </code>

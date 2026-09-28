@@ -9,6 +9,7 @@ import {
   QUARANTINE_APPROVERS_DEFAULT,
   QUARANTINE_APPROVERS_SETTING,
   SKILL_MD,
+  VIRTUAL_MCP_INSTRUCTIONS_MAX,
   VIRTUAL_MCP_PREVIEW_SIZE,
   isAccessLevel,
   isAccessScope,
@@ -4258,7 +4259,7 @@ export type DefaultMcpResolution =
  */
 export async function resolveDefaultVirtualMcp(): Promise<DefaultMcpResolution> {
   const result = await db().execute(sql`
-    SELECT st.value, m.uuid, m.slug, m.name, m.description, m.is_open, m.is_active
+    SELECT st.value, m.uuid, m.slug, m.name, m.description, m.instructions, m.is_open, m.is_active
     FROM settings st
     LEFT JOIN virtual_mcps m ON m.uuid::text = st.value
     WHERE st.key = ${DEFAULT_MCP_SETTING}
@@ -4281,6 +4282,7 @@ export async function resolveDefaultVirtualMcp(): Promise<DefaultMcpResolution> 
       slug: row.slug,
       name: row.name,
       description: row.description ?? '',
+      instructions: row.instructions ?? '',
       isOpen: Boolean(row.is_open),
     },
   };
@@ -4372,7 +4374,7 @@ function virtualMcpColumns({ onlineWindowMs, viewer }: VirtualMcpReadOptions): S
             AND ms.last_seen_at >= now() - ${windowInterval(onlineWindowMs, 'onlineWindowMs')})::int`;
 
   return sql`
-  m.uuid, m.slug, m.name, m.description, m.is_active, m.is_open,
+  m.uuid, m.slug, m.name, m.description, m.instructions, m.is_active, m.is_open,
   m.owner_user_uuid, u.username AS owner_username, m.layout, ${access} AS access,
   c.skill_count, c.tool_count, c.prompt_count, c.resource_count,
   (SELECT count(*) FROM virtual_mcp_keys k
@@ -4427,6 +4429,7 @@ function toVirtualMcpSummary(row: Row): VirtualMcpSummary {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    instructions: row.instructions ?? '',
     isActive: Boolean(row.is_active),
     isOpen: Boolean(row.is_open),
     ownerUserUuid: row.owner_user_uuid ?? null,
@@ -4656,7 +4659,13 @@ export type VirtualMcpRuntime = {
   uuid: string;
   slug: string;
   name: string;
+  /** Exibição e comentário; o mcp-public não a manda ao agente. */
   description: string;
+  /**
+   * A mensagem de sistema do servidor, que o mcp-public acrescenta ao
+   * texto-base no `instructions` do `initialize`. Vazia = só o texto-base.
+   */
+  instructions: string;
   isOpen: boolean;
 };
 
@@ -4671,7 +4680,7 @@ export async function resolveVirtualMcp(slug: string): Promise<VirtualMcpRuntime
   if (!wanted) return null;
 
   const result = await db().execute(sql`
-    SELECT uuid, slug, name, description, is_open
+    SELECT uuid, slug, name, description, instructions, is_open
     FROM virtual_mcps WHERE slug = ${wanted} AND is_active
     LIMIT 1
   `);
@@ -4683,6 +4692,7 @@ export async function resolveVirtualMcp(slug: string): Promise<VirtualMcpRuntime
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    instructions: row.instructions ?? '',
     isOpen: Boolean(row.is_open),
   };
 }
@@ -4691,7 +4701,13 @@ export type CreateVirtualMcpInput = {
   /** Omitido: gerado a partir de `name`. Informado: precisa passar em `isValidSlug`. */
   slug?: string;
   name: string;
+  /** Exibição e comentário (listagens, buscas); não vai ao agente. Omitido: vazia. */
   description?: string;
+  /**
+   * A mensagem de sistema do servidor (vai ao agente no `initialize`). Omitida:
+   * vazia. Aparada; acima de `VIRTUAL_MCP_INSTRUCTIONS_MAX` caracteres é 400.
+   */
+  instructions?: string;
   isOpen?: boolean;
   /** `null` = sem dono (sessão de bootstrap); só o admin gerencia depois. */
   ownerUserUuid: string | null;
@@ -4706,6 +4722,7 @@ export async function createVirtualMcp(
   if (!name) throw badRequest('O campo "name" é obrigatório');
 
   const description = optionalText(input.description, 'description')?.trim() ?? '';
+  const instructions = virtualMcpInstructions(input.instructions) ?? '';
   const isOpen = optionalBoolean(input.isOpen, 'isOpen') ?? false;
   const owner = ownerOrNull(input.ownerUserUuid);
 
@@ -4723,8 +4740,8 @@ export async function createVirtualMcp(
     try {
       const uuid = await db().transaction(async (tx) => {
         const inserted = await tx.execute(sql`
-          INSERT INTO virtual_mcps (slug, name, description, is_open, owner_user_uuid)
-          VALUES (${slug}, ${name}, ${description}, ${isOpen}, ${owner})
+          INSERT INTO virtual_mcps (slug, name, description, instructions, is_open, owner_user_uuid)
+          VALUES (${slug}, ${name}, ${description}, ${instructions}, ${isOpen}, ${owner})
           RETURNING uuid
         `);
         const created = (inserted.rows as Row[])[0].uuid as string;
@@ -4750,6 +4767,8 @@ export type UpdateVirtualMcpInput = {
   slug?: string;
   name?: string;
   description?: string;
+  /** Como em `CreateVirtualMcpInput`; `''` (ou só espaços) limpa. */
+  instructions?: string;
   isOpen?: boolean;
   isActive?: boolean;
   /**
@@ -4779,6 +4798,9 @@ export async function updateVirtualMcp(
   }
   if (input.description !== undefined) {
     sets.push(sql`description = ${optionalText(input.description, 'description')?.trim() ?? ''}`);
+  }
+  if (input.instructions !== undefined) {
+    sets.push(sql`instructions = ${virtualMcpInstructions(input.instructions) ?? ''}`);
   }
   const isOpen = optionalBoolean(input.isOpen, 'isOpen');
   if (isOpen !== undefined) sets.push(sql`is_open = ${isOpen}`);
@@ -5068,7 +5090,7 @@ function readNodePositions(value: unknown, field: string): NodePosition[] {
  */
 export async function listOpenVirtualMcps(): Promise<PublicVirtualMcp[]> {
   const result = await db().execute(sql`
-    SELECT m.uuid, m.slug, m.name, m.description,
+    SELECT m.uuid, m.slug, m.name, m.description, m.instructions,
       (SELECT count(*) FROM skills s
         WHERE s.is_active AND ${exposedIn(sql`m.uuid`)})::int AS skill_count,
       (m.uuid::text = (SELECT st.value FROM settings st WHERE st.key = ${DEFAULT_MCP_SETTING}))
@@ -5082,6 +5104,7 @@ export async function listOpenVirtualMcps(): Promise<PublicVirtualMcp[]> {
     slug: row.slug,
     name: row.name,
     description: row.description ?? '',
+    instructions: row.instructions ?? '',
     skillCount: Number(row.skill_count ?? 0),
     isDefault: Boolean(row.is_default),
   }));
@@ -5111,6 +5134,39 @@ function virtualMcpAudit(
 
 function assertVirtualMcpSlug(slug: string): void {
   if (!isValidSlug(slug)) throw badRequest(`Slug inválido: "${slug}"`);
+}
+
+/**
+ * As `instructions` de um vMCP como são gravadas: aparadas, com a regra de
+ * `optionalText` (string, sem o caractere nulo); `undefined` quando o campo não
+ * veio. Vazio é permitido — é o "só o texto-base".
+ *
+ * O teto é conferido aqui para a resposta ser 400 com o tamanho, e não o 500
+ * do `virtual_mcps_instructions_len_chk` (`036`). A conta é por **code point**,
+ * a mesma de `char_length` no CHECK: `length` do JavaScript conta unidades
+ * UTF-16, e um texto com emoji recusado aqui passaria no banco. Até o teto em
+ * unidades nada precisa ser contado — code points nunca são mais que elas.
+ */
+function virtualMcpInstructions(value: unknown): string | undefined {
+  const text = optionalText(value, 'instructions')?.trim();
+  if (text === undefined || text.length <= VIRTUAL_MCP_INSTRUCTIONS_MAX) return text;
+
+  let chars = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    // Alto de um par substituto seguido do baixo: um caractere só.
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) i += 1;
+    }
+    chars += 1;
+  }
+  if (chars > VIRTUAL_MCP_INSTRUCTIONS_MAX) {
+    throw badRequest(
+      `O campo "instructions" tem ${chars} caracteres; o limite é ${VIRTUAL_MCP_INSTRUCTIONS_MAX}`,
+    );
+  }
+  return text;
 }
 
 /** Slug livre a partir do nome, no padrão de `resolveSlug` — mas sobre `virtual_mcps`. */
@@ -10791,7 +10847,7 @@ export async function cloneCatalog(
 
 /**
  * Clona um MCP virtual. A cópia leva as propriedades (`name`, `description`,
- * `is_active`), o `layout` do canvas, os vínculos com **skills** e com
+ * `instructions`, `is_active`), o `layout` do canvas, os vínculos com **skills** e com
  * **catálogos** — as três portas (`as_skill`/`as_prompt`/`as_resource`) e o par
  * `pos_x`/`pos_y` de cada um — e as **concessões** (`virtual_mcp_grants`).
  * Nasce fechada (`is_open = false`).
@@ -10853,8 +10909,9 @@ export async function cloneVirtualMcp(
         // processo: o que a leitura devolve é um recorte (só `server` e
         // `internet`), e serializá-lo de volta apagaria o que ela ignora.
         const inserted = await tx.execute(sql`
-          INSERT INTO virtual_mcps (slug, name, description, is_active, is_open, owner_user_uuid, layout)
-          SELECT ${slug}, ${name ?? (original.name as string)}, description, is_active, false,
+          INSERT INTO virtual_mcps
+            (slug, name, description, instructions, is_active, is_open, owner_user_uuid, layout)
+          SELECT ${slug}, ${name ?? (original.name as string)}, description, instructions, is_active, false,
                  ${owner}::uuid, layout
             FROM virtual_mcps WHERE uuid = ${uuid}
           RETURNING uuid

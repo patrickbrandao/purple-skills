@@ -438,11 +438,25 @@ export type ApiKeySummary = {
  */
 export type VirtualSurface = 'skill' | 'prompt' | 'resource';
 
+/**
+ * Teto das `instructions` de um vMCP, em caracteres. Elas vão inteiras para o
+ * contexto do agente a cada `initialize`, somadas ao texto-base do mcp-public:
+ * 4 000 caracteres (~1 000 tokens) orientam o uso de um servidor com folga sem
+ * transformar o handshake num prompt. O banco tem o mesmo número num CHECK.
+ */
+export const VIRTUAL_MCP_INSTRUCTIONS_MAX = 4000;
+
 export type VirtualMcpSummary = {
   uuid: string;
   slug: string;
   name: string;
+  /** Texto de exibição e comentário: aparece nas listagens e buscas, não vai ao agente. */
   description: string;
+  /**
+   * A mensagem de sistema do servidor: vai ao cliente MCP no `instructions`
+   * do `initialize`, depois do texto-base (`docs/22`). Vazio = só o texto-base.
+   */
+  instructions: string;
   /** Desligado: tudo sob `/virtual/<slug>` responde 404, as chaves ficam. */
   isActive: boolean;
   /** Aberto: sem chave. Com skill privada dentro, é publicação de fato. */
@@ -583,6 +597,8 @@ export type PublicVirtualMcp = {
   slug: string;
   name: string;
   description: string;
+  /** A mensagem de sistema do servidor, a mesma que o agente recebe no `initialize`. */
+  instructions: string;
   skillCount: number;
   /** Responde também em `/mcp`. */
   isDefault: boolean;

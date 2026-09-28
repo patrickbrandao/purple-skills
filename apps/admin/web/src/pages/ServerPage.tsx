@@ -27,6 +27,7 @@ import { useToast } from '../components/Toast.js';
 import { useRegisterCommands } from '../components/commands.js';
 import { SessionsTable } from '../components/SessionsTable.js';
 import { ServerCanvas } from '../components/canvas/ServerCanvas.js';
+import { SystemMessageField } from '../components/SystemMessage.js';
 
 /**
  * Um servidor MCP virtual: o canvas (skills ligadas às portas), as sessões,
@@ -458,7 +459,7 @@ function OpenState({ mcp, manages }: { mcp: VirtualMcpDetail; manages: boolean }
   );
 }
 
-/** Nome, slug, descrição, aberto e ligado são `manage`; apagar é do dono; o dono e as concessões ficam na guia Acesso. */
+/** Nome, slug, descrição, instruções, aberto e ligado são `manage`; apagar é do dono; o dono e as concessões ficam na guia Acesso. */
 function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (detail: VirtualMcpDetail) => void }) {
   const toast = useToast();
   const confirm = useConfirm();
@@ -468,6 +469,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
   const [name, setName] = useState(mcp.name);
   const [slug, setSlug] = useState(mcp.slug);
   const [description, setDescription] = useState(mcp.description);
+  const [instructions, setInstructions] = useState(mcp.instructions);
   const [isOpen, setIsOpen] = useState(mcp.isOpen);
   const [isActive, setIsActive] = useState(mcp.isActive);
   const [busy, setBusy] = useState(false);
@@ -476,6 +478,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
     setName(mcp.name);
     setSlug(mcp.slug);
     setDescription(mcp.description);
+    setInstructions(mcp.instructions);
     setIsOpen(mcp.isOpen);
     setIsActive(mcp.isActive);
   }, [mcp]);
@@ -484,6 +487,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
     name !== mcp.name ||
     slug !== mcp.slug ||
     description !== mcp.description ||
+    instructions !== mcp.instructions ||
     isOpen !== mcp.isOpen ||
     isActive !== mcp.isActive;
 
@@ -504,6 +508,7 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
         name: name !== mcp.name ? name : undefined,
         slug: slug !== mcp.slug ? slug : undefined,
         description: description !== mcp.description ? description : undefined,
+        instructions: instructions !== mcp.instructions ? instructions : undefined,
         isOpen: isOpen !== mcp.isOpen ? isOpen : undefined,
         isActive: isActive !== mcp.isActive ? isActive : undefined,
       });
@@ -546,9 +551,10 @@ function SettingsPanel({ mcp, onSaved }: { mcp: VirtualMcpDetail; onSaved: (deta
               <input className="field field-mono" value={slug} onChange={(event) => setSlug(event.target.value)} disabled={!canEdit} />
             </Field>
           </div>
-          <Field label="Descrição" hint="Vai para as instruções do servidor: é como o agente sabe do que este MCP trata.">
+          <Field label="Descrição" hint="Para as pessoas: aparece nas listagens, nas buscas e no cartão do site, e serve de comentário. Não vai ao agente.">
             <textarea className="field" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} disabled={!canEdit} />
           </Field>
+          <SystemMessageField value={instructions} onChange={setInstructions} disabled={!canEdit} />
           <label className="check">
             <input type="checkbox" checked={isOpen} onChange={(event) => setIsOpen(event.target.checked)} disabled={!canEdit} />
             <span>

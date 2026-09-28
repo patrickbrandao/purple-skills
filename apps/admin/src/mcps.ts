@@ -146,7 +146,7 @@ export function assertNameFits(name: string, what: string, unchanged?: string): 
 
 export async function create(
   user: AuthUser,
-  body: { name?: unknown; slug?: unknown; description?: unknown; isOpen?: unknown },
+  body: { name?: unknown; slug?: unknown; description?: unknown; instructions?: unknown; isOpen?: unknown },
 ): Promise<VirtualMcpDetail> {
   const name = nameFrom(body.name);
   assertNameFits(name, 'do MCP virtual');
@@ -156,6 +156,7 @@ export async function create(
       name,
       slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined,
       description: typeof body.description === 'string' ? body.description : undefined,
+      instructions: typeof body.instructions === 'string' ? body.instructions : undefined,
       // Nasce vazio, então abrir aqui ainda não expõe nada. Quando a primeira
       // skill entrar não há confirmação a pedir: ela saiu no PR2 do `09`
       // (decisão 9 e `§4.4`), e o que informa é o aviso inline do painel
@@ -222,12 +223,13 @@ export async function update(
     name?: unknown;
     slug?: unknown;
     description?: unknown;
+    instructions?: unknown;
     isOpen?: unknown;
     isActive?: unknown;
     ownerUserUuid?: unknown;
   },
 ): Promise<VirtualMcpDetail> {
-  // Nome, slug, descrição, aberto e ligado são propriedades: `manage`.
+  // Nome, slug, descrição, instruções, aberto e ligado são propriedades: `manage`.
   const current = await load(user, slug, 'manage');
 
   const patch: Parameters<typeof updateVirtualMcp>[1] = {};
@@ -237,6 +239,7 @@ export async function update(
   }
   if (typeof body.slug === 'string') patch.slug = body.slug.trim();
   if (typeof body.description === 'string') patch.description = body.description;
+  if (typeof body.instructions === 'string') patch.instructions = body.instructions;
   if (typeof body.isOpen === 'boolean') patch.isOpen = body.isOpen;
   if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
 

@@ -87,6 +87,7 @@ const view = (mcp: VirtualMcpDetail) => ({
   slug: mcp.slug,
   name: mcp.name,
   description: mcp.description,
+  instructions: mcp.instructions,
   isActive: mcp.isActive,
   isOpen: mcp.isOpen,
   isDefault: mcp.isDefault,
@@ -188,6 +189,7 @@ export function createMcpHandlers(caller: Caller) {
       name: string;
       slug?: string;
       description?: string;
+      instructions?: string;
       is_open?: boolean;
     }): Promise<ToolResult> {
       if (!canCreate(caller.role)) {
@@ -199,6 +201,7 @@ export function createMcpHandlers(caller: Caller) {
           name: args.name,
           slug: args.slug,
           description: args.description,
+          instructions: args.instructions,
           isOpen: args.is_open === true,
           // Quem cria é o dono. O token global não é uma conta: o MCP nasce
           // órfão, administrável só por admin.
@@ -265,10 +268,11 @@ export function createMcpHandlers(caller: Caller) {
       name?: string;
       new_slug?: string;
       description?: string;
+      instructions?: string;
       is_open?: boolean;
       is_active?: boolean;
     }): Promise<ToolResult> {
-      // Nome, slug, descrição, aberto e ligado são propriedades: `manage`.
+      // Nome, slug, descrição, instruções, aberto e ligado são propriedades: `manage`.
       const current = await managed(args.slug, 'manage');
       if (args.name !== undefined) assertNameFits(args.name, 'do MCP virtual', current.name);
 
@@ -278,6 +282,7 @@ export function createMcpHandlers(caller: Caller) {
           name: args.name,
           slug: args.new_slug,
           description: args.description,
+          instructions: args.instructions,
           isOpen: args.is_open,
           isActive: args.is_active,
         },

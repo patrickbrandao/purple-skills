@@ -18,6 +18,20 @@ esse cuidado em qualquer texto novo.
 
 ### Adicionado
 
+- **Instruções próprias em cada servidor MCP virtual.** Um campo novo,
+  `instructions`, é a mensagem de sistema do servidor: vai ao cliente MCP no
+  `instructions` do `initialize`, depois do texto-base, rotulada como vinda de
+  quem administra o servidor. A `description` fica para as pessoas — listagens,
+  cartão do site, comentário — e **deixou de ir ao agente**. A migration `036`
+  copia a descrição atual para o campo novo, então nada muda para os agentes no
+  dia da atualização. Teto de 4 000 caracteres. No painel o campo aparece como
+  uma mensagem `system`, na configuração do servidor, no "Novo servidor" e na
+  gaveta do canvas; no site, fechado dentro do cartão de cada servidor aberto.
+  No mcp-admin, `create_virtual_mcp` e `update_virtual_mcp` recebem
+  `instructions`, e `get_virtual_mcp` as devolve. Clientes já conectados só
+  recebem a mudança ao reconectar. Desenho em
+  [`docs/22-instrucoes-do-mcp-virtual.md`](docs/22-instrucoes-do-mcp-virtual.md).
+
 - **Botão "Nova skill no catálogo"** na ficha do catálogo, ao lado de
   "Editar": abre `/new-skill?catalog=<slug>` com a skill já nascendo
   vinculada a ele. Aparece só para quem edita o catálogo **e** tem papel
