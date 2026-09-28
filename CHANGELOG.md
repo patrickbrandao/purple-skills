@@ -16,6 +16,8 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.30] — 2026-09-28
+
 ### Adicionado
 
 - **Instruções próprias em cada servidor MCP virtual.** Um campo novo,
