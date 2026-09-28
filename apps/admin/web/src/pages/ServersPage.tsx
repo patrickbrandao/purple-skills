@@ -21,6 +21,7 @@ import { Button, EmptyRow, Field, Kbd, McpStateBadges, Menu, MenuItem, Modal, Sk
 import { Honeycomb } from '../components/Honeycomb.js';
 import { usePalette, useRegisterCommands } from '../components/commands.js';
 import { useToast } from '../components/Toast.js';
+import { SystemMessageField } from '../components/SystemMessage.js';
 
 type Sort = 'skills' | 'name' | 'online' | 'updated';
 const SORT_LABEL: Record<Sort, string> = {
@@ -325,6 +326,7 @@ function NewServerModal({ open, onClose, onCreated }: { open: boolean; onClose: 
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [description, setDescription] = useState('');
+  const [instructions, setInstructions] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -332,11 +334,18 @@ function NewServerModal({ open, onClose, onCreated }: { open: boolean; onClose: 
     event.preventDefault();
     setBusy(true);
     try {
-      const created = await createMcp({ name, slug: slug.trim() || undefined, description: description.trim() || undefined, isOpen });
+      const created = await createMcp({
+        name,
+        slug: slug.trim() || undefined,
+        description: description.trim() || undefined,
+        instructions: instructions.trim() || undefined,
+        isOpen,
+      });
       toast.success(`Servidor "${created.name}" criado. Agora adicione skills no canvas.`);
       setName('');
       setSlug('');
       setDescription('');
+      setInstructions('');
       setIsOpen(false);
       onCreated(created.slug);
     } catch (err) {
@@ -355,9 +364,10 @@ function NewServerModal({ open, onClose, onCreated }: { open: boolean; onClose: 
         <Field label="Slug" hint="Vira o endereço: /virtual/<slug>/mcp. Gerado do nome se ficar vazio.">
           <input className="field field-mono" value={slug} onChange={(event) => setSlug(event.target.value)} placeholder="time-de-dados" />
         </Field>
-        <Field label="Descrição" hint="Vai para as instruções do servidor: é como o agente sabe do que este MCP trata.">
-          <textarea className="field" rows={3} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Skills do projeto X, para quem trabalha no repositório Y." />
+        <Field label="Descrição" hint="Para as pessoas: listagens, buscas e o cartão do site. Não vai ao agente.">
+          <textarea className="field" rows={2} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Skills do projeto X, para quem trabalha no repositório Y." />
         </Field>
+        <SystemMessageField value={instructions} onChange={setInstructions} />
         <label className="check">
           <input type="checkbox" checked={isOpen} onChange={(event) => setIsOpen(event.target.checked)} />
           Aberto: qualquer cliente conecta sem chave, e o site lista o servidor

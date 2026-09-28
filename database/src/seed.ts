@@ -398,6 +398,12 @@ async function seedDefaultMcp() {
         slug: 'public',
         name: 'Public',
         description: 'Catálogo público desta instalação, com as skills de exemplo.',
+        // A mensagem de sistema vai ao agente, então é em inglês, como o
+        // texto-base do mcp-public que ela completa.
+        instructions:
+          'These are the example skills of a demo installation: commit messages, code review, ' +
+          'full-text search in Postgres, Node.js Dockerfiles and MCP servers in TypeScript. ' +
+          'Search before starting a task in one of these areas and follow the skill you load.',
         isOpen: true,
         ownerUserUuid: null,
       },

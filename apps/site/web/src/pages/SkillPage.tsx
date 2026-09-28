@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   downloadUrl,
   skillPackageUrl,
@@ -9,7 +9,7 @@ import {
   profilePath,
   type SkillDetail,
 } from '../api.js';
-import { SkillDoc } from '../components/SkillDoc.js';
+import { SkillDoc, type DocView } from '../components/SkillDoc.js';
 import { CopyButton } from '../components/CopyButton.js';
 import { FileTree } from '../components/FileTree.js';
 import {
@@ -25,8 +25,15 @@ import {
 import { useMeta } from '../useMeta.js';
 import { fraseViaMcp, viaMcp } from '../viaMcp.js';
 
+/** O SKILL.md da raiz; um `skill.md` dentro de uma pasta é só mais um arquivo. */
+const isRootSkillMd = (path: string) => path.toLowerCase() === 'skill.md';
+
 export function SkillPage() {
   const { slug = '' } = useParams();
+  // O arquivo aberto na caixa do prompt mora no endereço (`?file=`), para o
+  // link levar direto a ele e o "voltar" do navegador fechar o que se abriu.
+  const [params, setParams] = useSearchParams();
+  const docRef = useRef<HTMLElement>(null);
   const meta = useMeta();
   const [skill, setSkill] = useState<SkillDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +98,46 @@ export function SkillPage() {
   // publica pela porta `skill` — sem ela a ferramenta responde "Skill não
   // encontrada", e sem servidor nenhum a página oferece só o download.
   const via = viaMcp(skill.mcps);
+
+  const skillMdPath = skill.files.find((file) => isRootSkillMd(file.relativePath))?.relativePath ?? 'SKILL.md';
+  const asked = params.get('file');
+  const askedFile = asked === null ? undefined : skill.files.find((file) => file.relativePath === asked);
+  // Um `?file=` que não está na skill (link velho, arquivo removido) cai na leitura.
+  const view: DocView =
+    asked === null
+      ? { kind: 'render' }
+      : isRootSkillMd(asked)
+        ? { kind: 'source' }
+        : askedFile
+          ? { kind: 'file', file: askedFile }
+          : { kind: 'render' };
+  const selected = view.kind === 'file' ? view.file.relativePath : view.kind === 'source' ? skillMdPath : null;
+
+  /** Troca o que a caixa mostra. Abrir pela árvore empilha no histórico; trocar de guia, não. */
+  function show(next: DocView, replace: boolean) {
+    setParams(
+      (current) => {
+        const updated = new URLSearchParams(current);
+        if (next.kind === 'render') updated.delete('file');
+        else updated.set('file', next.kind === 'source' ? skillMdPath : next.file.relativePath);
+        return updated;
+      },
+      { replace },
+    );
+  }
+
+  function openFromTree(path: string) {
+    const file = skill!.files.find((item) => item.relativePath === path);
+    if (!file) return;
+    show(isRootSkillMd(path) ? { kind: 'source' } : { kind: 'file', file }, path === selected);
+    // No celular a árvore fica abaixo da caixa; no desktop a página pode ter
+    // rolado para longe do topo dela. Nos dois casos, a caixa volta à vista.
+    const box = docRef.current;
+    if (box) {
+      const top = box.getBoundingClientRect().top;
+      if (top < 0 || top > window.innerHeight * 0.6) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
 
   return (
     <section className="skill-page">
@@ -164,13 +211,17 @@ export function SkillPage() {
         </header>
 
         <div className="skill-body">
-          <article className="min-w-0">
+          <article className="min-w-0 skill-doc" ref={docRef}>
             <SkillDoc
+              key={skill.slug}
               slug={skill.slug}
               name={skill.name}
               description={skill.description}
               tags={skill.tags}
               skillMd={skill.skillMd}
+              skillMdPath={skillMdPath}
+              view={view}
+              onView={(next) => show(next, true)}
             />
           </article>
 
@@ -179,9 +230,9 @@ export function SkillPage() {
               <h2>
                 <FileIcon /> Arquivos
               </h2>
-              <FileTree slug={skill.slug} files={skill.files} />
+              <FileTree slug={skill.slug} files={skill.files} selected={selected} onOpen={openFromTree} />
               <p className="ft-hint">
-                É esta a pasta que aparece ao descompactar o .zip.
+                Clique num arquivo para lê-lo. É esta a pasta que aparece ao descompactar o .zip.
               </p>
             </section>
 

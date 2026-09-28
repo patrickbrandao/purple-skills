@@ -122,6 +122,16 @@ const PARES: Par[] = [
       'idêntica entre o site e o painel. Na caixa do prompt, só o SkillDoc.tsx diverge, ' +
       'pelos ícones — e por isso não se copia por cima (docs/04, "A caixa do prompt").',
   },
+  // O leitor de arquivos: a guia Arquivos do painel e a caixa do prompt do site.
+  {
+    arquivo: 'highlight.ts',
+    origem: 'apps/site/web/src/highlight.ts',
+    copia: 'apps/admin/web/src/highlight.ts',
+    motivo:
+      'Par: highlight.ts (linguagem pelo nome e cores de sintaxe) é cópia idêntica entre ' +
+      'o site e o painel, que colorem os arquivos da skill do mesmo jeito ' +
+      '(docs/04, "O leitor de arquivos"). O CodeView.tsx, que desenha, não é cópia.',
+  },
   // useTheme.ts é o único copiado nos três apps: um por app, arquivos idênticos.
   {
     arquivo: 'useTheme.ts',

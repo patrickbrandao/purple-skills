@@ -73,6 +73,7 @@ const mcp = {
   slug: 'time-a',
   name: 'Time A',
   description: '',
+  instructions: 'Use these skills for project X.',
   isActive: true,
   isOpen: false,
   ownerUserUuid: 'uuid-editor',
@@ -204,6 +205,31 @@ describe('alcance por acesso', () => {
       'mcp-admin',
       caller('admin', null).actor,
     );
+  });
+
+  // `docs/22`: a descrição é exibição; as instructions são o que o agente lê.
+  it('repassa as instructions na criação e na edição, e as devolve em get_virtual_mcp', async () => {
+    db.createVirtualMcp.mockResolvedValue(mcp);
+    db.updateVirtualMcp.mockResolvedValue(mcp);
+    const handlers = createMcpHandlers(caller('editor'));
+
+    await handlers.create_virtual_mcp({ name: 'Time A', description: 'nota', instructions: 'Use these skills for project X.' });
+    await handlers.update_virtual_mcp({ slug: 'time-a', instructions: '' });
+    const lido = JSON.parse((await handlers.get_virtual_mcp({ slug: 'time-a' })).content[0].text);
+
+    expect(db.createVirtualMcp).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'nota', instructions: 'Use these skills for project X.' }),
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    // String vazia é "apagar", não "não mexer": precisa chegar ao banco.
+    expect(db.updateVirtualMcp).toHaveBeenCalledWith(
+      'mcp-1',
+      expect.objectContaining({ instructions: '' }),
+      'mcp-admin',
+      caller('editor').actor,
+    );
+    expect(lido.instructions).toBe('Use these skills for project X.');
   });
 
   // `docs/12` §3.2: edit mexe nos vínculos; manage muda propriedades e chaves.
@@ -714,7 +740,7 @@ describe('MCP padrão', () => {
     const membro = createMcpHandlers(caller('membro'));
     db.resolveDefaultVirtualMcp.mockResolvedValueOnce({
       status: 'ok',
-      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: false },
+      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', instructions: '', isOpen: false },
     });
     db.resolveDefaultVirtualMcp.mockResolvedValueOnce({ status: 'none', mcp: null, uuid: null, slug: null });
 
@@ -739,7 +765,7 @@ describe('MCP padrão', () => {
     const admin = createMcpHandlers(caller('admin', null));
     db.setDefaultVirtualMcp.mockResolvedValueOnce({
       status: 'ok',
-      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: true },
+      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', instructions: '', isOpen: true },
     });
     db.setDefaultVirtualMcp.mockResolvedValueOnce({ status: 'none', mcp: null, uuid: null, slug: null });
 

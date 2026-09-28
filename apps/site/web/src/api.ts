@@ -91,6 +91,8 @@ export type PublicVirtualMcp = {
   slug: string;
   name: string;
   description: string;
+  /** A mensagem de sistema que o agente recebe no `initialize` (`docs/22`); vazia quando não há. */
+  instructions: string;
   skillCount: number;
   isDefault: boolean;
   /** `<MCP_PUBLIC_URL>/virtual/<slug>/mcp`, ou nulo sem a variável. */

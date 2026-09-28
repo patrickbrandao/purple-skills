@@ -225,11 +225,12 @@ api.get(
  * chave e, quando não há nenhum em pé, por quê — em vez de anunciar um
  * endereço que responde 404. Resolvido a cada chamada, como no mcp-public.
  *
- * **Sem `description`.** `resolveDefaultVirtualMcp` não filtra visibilidade — e
- * não deve: o padrão pode ser fechado e continua respondendo em `/mcp` com
- * chave. Então o que sai daqui sai para o anônimo qualquer que seja o estado do
- * servidor, e a descrição é texto livre, onde cabe nome de cliente, de projeto
- * ou de time. Quando o padrão é **aberto** a descrição já sai em `/api/mcps`
+ * **Sem `description` nem `instructions`.** `resolveDefaultVirtualMcp` não
+ * filtra visibilidade — e não deve: o padrão pode ser fechado e continua
+ * respondendo em `/mcp` com chave. Então o que sai daqui sai para o anônimo
+ * qualquer que seja o estado do servidor, e os dois são texto livre, onde cabe
+ * nome de cliente, de projeto ou de time (as `instructions`, `docs/22`, seguem
+ * a mesma regra da descrição). Quando o padrão é **aberto** a descrição já sai em `/api/mcps`
  * (`listOpenVirtualMcps`); quando é **fechado**, saía só por aqui, e a página
  * não a usa em lugar nenhum.
  *

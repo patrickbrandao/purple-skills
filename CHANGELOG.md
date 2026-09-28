@@ -14,6 +14,45 @@ o repositório. **A data importa:** cada auditoria renumerou os relatórios do
 zero, então o mesmo número designa problemas diferentes em cada uma. Vale manter
 esse cuidado em qualquer texto novo.
 
+## [Não lançado]
+
+### Adicionado
+
+- **Instruções próprias em cada servidor MCP virtual.** Um campo novo,
+  `instructions`, é a mensagem de sistema do servidor: vai ao cliente MCP no
+  `instructions` do `initialize`, depois do texto-base, rotulada como vinda de
+  quem administra o servidor. A `description` fica para as pessoas — listagens,
+  cartão do site, comentário — e **deixou de ir ao agente**. A migration `036`
+  copia a descrição atual para o campo novo, então nada muda para os agentes no
+  dia da atualização. Teto de 4 000 caracteres. No painel o campo aparece como
+  uma mensagem `system`, na configuração do servidor, no "Novo servidor" e na
+  gaveta do canvas; no site, fechado dentro do cartão de cada servidor aberto.
+  No mcp-admin, `create_virtual_mcp` e `update_virtual_mcp` recebem
+  `instructions`, e `get_virtual_mcp` as devolve. Clientes já conectados só
+  recebem a mudança ao reconectar. Desenho em
+  [`docs/22-instrucoes-do-mcp-virtual.md`](docs/22-instrucoes-do-mcp-virtual.md).
+
+- **Botão "Nova skill no catálogo"** na ficha do catálogo, ao lado de
+  "Editar": abre `/new-skill?catalog=<slug>` com a skill já nascendo
+  vinculada a ele. Aparece só para quem edita o catálogo **e** tem papel
+  para criar no acervo; a tela confere os dois de novo, então o endereço
+  digitado à mão sem acesso volta para `/catalogs` com o aviso. A skill
+  continua nascendo em produção do jeito de sempre — o vínculo é um
+  segundo passo, depois de criada — e, na importação com destino
+  quarentena, o catálogo entra pré-marcado no seletor de destino já
+  existente. Desenho em [`docs/11-catalogos.md`](docs/11-catalogos.md) §6.1.
+- **Leitor de arquivos na página pública da skill** (site). Clicar num
+  arquivo da árvore à direita o abre numa terceira guia da caixa do prompt,
+  com as cores da linguagem — o mesmo `highlight.ts` do leitor do painel,
+  agora cópia idêntica entre os dois apps, com o site como origem. O
+  "SKILL.md" cru também sai colorido. Ao lado do Copiar, um ícone baixa o
+  arquivo à vista; binário mostra a imagem ou o convite a baixar, e arquivo
+  acima de 10 mil linhas mostra o começo e aponta o download. O arquivo
+  aberto fica no endereço (`?file=<caminho>`), para o link levar direto a
+  ele. ⌘/Ctrl-clique na árvore continua baixando o arquivo cru. Desenho em
+  [`docs/04-design-system.md`](docs/04-design-system.md), "A caixa do prompt"
+  e "O leitor de arquivos".
+
 ## [1.0.0-beta.29] — 2026-09-25
 
 ### Adicionado

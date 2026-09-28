@@ -8,6 +8,7 @@ import {
   isLegacyNewSkillPath,
   isNewSkillPath,
   legacyNewSkillTarget,
+  newSkillInCatalogPath,
 } from './routes.js';
 
 // As rotas de skill do painel, como o `App.tsx` as declara — mais o `*` do fim.
@@ -69,5 +70,17 @@ describe('o endereço antigo do formulário', () => {
   it('sem a skill "new", leva ao formulário com a query que veio', () => {
     expect(legacyNewSkillTarget('')).toBe('/new-skill');
     expect(legacyNewSkillTarget('?mode=zip')).toBe(IMPORT_SKILL_PATH);
+  });
+});
+
+describe('o botão "Nova skill no catálogo"', () => {
+  it('é o formulário com o slug do catálogo, sem mexer no destino nem no modo', () => {
+    expect(newSkillInCatalogPath('skills-do-time')).toBe('/new-skill?catalog=skills-do-time');
+  });
+
+  it('escapa o slug na query', () => {
+    // Slug com caractere que a query string reservaria — não deveria existir
+    // um assim (`isValidSlug`), mas o helper não confia nisso.
+    expect(newSkillInCatalogPath('a&b')).toBe('/new-skill?catalog=a%26b');
   });
 });

@@ -355,6 +355,94 @@ input[type='radio'] {
   padding: 0 6px;
 }
 
+/* mensagem de sistema (as instructions do vMCP, docs/22): uma mensagem de
+   papel `system` num transcript — fio roxo à esquerda, rótulo e corpo em mono.
+   A mesma moldura serve ao editor (.sysmsg-edit, com foco) e à leitura. */
+.sysmsg {
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent-soft);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sysmsg-edit:focus-within {
+  border-color: var(--accent-soft);
+  box-shadow: var(--ring-accent);
+}
+.sysmsg-over,
+.sysmsg-over:focus-within {
+  border-color: var(--danger);
+}
+.sysmsg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.sysmsg-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--accent-tint);
+  color: var(--accent-soft);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sysmsg-role svg {
+  width: 12px;
+  height: 12px;
+}
+.sysmsg-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sysmsg-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.sysmsg-count.over {
+  color: var(--danger);
+}
+.sysmsg-body {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 7px 11px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+textarea.sysmsg-body {
+  resize: vertical;
+  min-height: 96px;
+}
+textarea.sysmsg-body::placeholder {
+  color: var(--text-faint);
+}
+textarea.sysmsg-body:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.sysmsg-empty {
+  color: var(--text-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
 /* ============================================================
    CARTÕES, PAINÉIS E BLOCOS
    ============================================================ */

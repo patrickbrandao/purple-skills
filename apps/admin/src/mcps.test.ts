@@ -509,6 +509,19 @@ describe('teto de nome de vMCP e de chave', () => {
     expect(atualizar).toHaveBeenCalledWith('uuid-mcp', { name: LONGO, description: 'nova' }, 'web-admin', expect.anything());
   });
 
+  // `docs/22`: as instructions andam separadas da descrição, e o vazio apaga.
+  it('repassa as instructions ao banco na criação e na edição, inclusive vazias', async () => {
+    await create(dono, { name: 'Time A', instructions: 'Use these skills for project X.' });
+    expect(banco.createVirtualMcp).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: 'Use these skills for project X.' }),
+      'web-admin',
+      expect.anything(),
+    );
+
+    await update(dono, 'time-a', { instructions: '' });
+    expect(atualizar).toHaveBeenCalledWith('uuid-mcp', { instructions: '' }, 'web-admin', expect.anything());
+  });
+
   it('chave psv_: nome acima do teto é 400, antes de gerar a chave', async () => {
     expect((await recusa(issueKey(dono, 'time-a', LONGO))).status).toBe(400);
     expect(banco.createVirtualMcpKey).not.toHaveBeenCalled();

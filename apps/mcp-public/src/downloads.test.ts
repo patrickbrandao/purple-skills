@@ -41,7 +41,7 @@ const CONTEUDO: Record<string, string> = { 'SKILL.md': '# Minha Skill', 'ref/ext
 /** O `auth` do ponto de montagem: aqui só põe o vMCP aberto na requisição. */
 const auth: RequestHandler = (req, _res, next) => {
   req.virtual = {
-    mcp: { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', isOpen: true },
+    mcp: { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', instructions: '', isOpen: true },
     identity: 'virtual:mcp-1:open',
   } as never;
   next();

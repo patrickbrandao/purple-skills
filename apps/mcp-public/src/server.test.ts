@@ -54,7 +54,7 @@ const { cacheDeDigesto } = await import('./digest.js');
 
 /** O vMCP padrão, chamado pela raiz. */
 const raiz = {
-  mcp: { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', isOpen: true },
+  mcp: { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', instructions: '', isOpen: true },
   baseUrl: 'https://mcp.exemplo.dev',
 };
 
@@ -143,16 +143,36 @@ describe('métodos das superfícies', () => {
 
 describe('identidade do servidor', () => {
   const scope = {
-    mcp: { uuid: 'mcp-2', slug: 'time-a', name: 'Time A', description: 'Skills do projeto X.', isOpen: false },
+    mcp: {
+      uuid: 'mcp-2',
+      slug: 'time-a',
+      name: 'Time A',
+      description: 'Comentário interno: pedido do time da Ana.',
+      instructions: 'Use these skills only for project X; start with project-x-setup.',
+      isOpen: false,
+    },
     baseUrl: 'https://mcp.exemplo.dev/virtual/time-a',
   };
 
-  it('sufixa o nome do servidor com o slug e leva a descrição às instruções', async () => {
+  it('sufixa o nome do servidor com o slug e leva as instructions, não a descrição', async () => {
     const client = await conectar(scope);
+    const instrucoes = client.getInstructions() ?? '';
 
     expect(client.getServerVersion()?.name).toBe('purple-skills-time-a');
-    expect(client.getInstructions()).toContain('Skills do projeto X.');
+    expect(instrucoes).toContain('search_skills');
+    // A mensagem do dono vem depois do texto-base, rotulada.
+    expect(instrucoes).toMatch(
+      /search_skills[\s\S]*Instructions from the administrator of this server:\nUse these skills only for project X/,
+    );
+    // A descrição é exibição e comentário (`docs/22`): não vai ao agente.
+    expect(instrucoes).not.toContain('Comentário interno');
+  });
+
+  it('sem instructions, manda só o texto-base, sem rótulo vazio', async () => {
+    const client = await conectar({ ...scope, mcp: { ...scope.mcp, instructions: '' } });
+
     expect(client.getInstructions()).toContain('search_skills');
+    expect(client.getInstructions()).not.toContain('Instructions from the administrator');
   });
 
   // A raiz é o vMCP padrão: mesmo nome sufixado e as mesmas instruções que
@@ -864,7 +884,7 @@ describe('os campos de cache do protocolo', () => {
 
   it('num vMCP fechado o escopo é privado: chave é chave', async () => {
     const fechado = {
-      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', isOpen: false },
+      mcp: { uuid: 'mcp-1', slug: 'time-a', name: 'Time A', description: '', instructions: '', isOpen: false },
       baseUrl: 'https://mcp.exemplo.dev/virtual/time-a',
     };
 

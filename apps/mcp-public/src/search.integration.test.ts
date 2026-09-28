@@ -107,7 +107,7 @@ descreve('a busca híbrida do mcp-public', () => {
 
     const { createHandlers } = await import('./tools.js');
     handlers = createHandlers({
-      mcp: { uuid: mcp.uuid, slug: mcp.slug, name: mcp.name, description: '', isOpen: true },
+      mcp: { uuid: mcp.uuid, slug: mcp.slug, name: mcp.name, description: '', instructions: '', isOpen: true },
       baseUrl: 'https://mcp.exemplo.dev',
     } as never);
 

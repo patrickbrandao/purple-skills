@@ -80,7 +80,7 @@ const detail = {
  * O vMCP padrão, chamado pela raiz: `baseUrl` é a origem do servidor, sem
  * prefixo. É o mesmo servidor que responde em `/virtual/public`.
  */
-const publico = { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', isOpen: true };
+const publico = { uuid: 'mcp-1', slug: 'public', name: 'Public', description: '', instructions: '', isOpen: true };
 const raiz = { mcp: publico, baseUrl: 'https://mcp.exemplo.dev' };
 const handlers = createHandlers(raiz);
 const surfaces = createSurfaces(raiz);
@@ -611,7 +611,7 @@ describe('resources/templates/list', () => {
  * chamado (`docs/08-mcp-virtual.md` §3, §4).
  */
 describe('escopo de outro MCP virtual', () => {
-  const mcp = { uuid: 'mcp-2', slug: 'time-a', name: 'Time A', description: '', isOpen: false };
+  const mcp = { uuid: 'mcp-2', slug: 'time-a', name: 'Time A', description: '', instructions: '', isOpen: false };
   const scope = { mcp, baseUrl: 'https://mcp.exemplo.dev/virtual/time-a' };
   const virtual = createHandlers(scope);
   // Só neste vMCP fechado: não existe no site.

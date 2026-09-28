@@ -26,6 +26,15 @@ export const IMPORT_SKILL_PATH = `${NEW_SKILL_PATH}?mode=zip`;
  */
 export const QUARANTINE_IMPORT_PATH = `${IMPORT_SKILL_PATH}&destination=quarantine`;
 
+/**
+ * A mesma tela, com a skill já nascendo vinculada a um catálogo — o botão
+ * "Nova skill no catálogo" da ficha do catálogo. `NewSkillPage` lê o `catalog`
+ * e cobra `edit` nele antes de deixar a tela seguir; sem esse acesso, quem
+ * digitasse o endereço à mão não conseguiria nada além do que já não
+ * conseguia por outro caminho.
+ */
+export const newSkillInCatalogPath = (slug: string): string => `${NEW_SKILL_PATH}?catalog=${encodeURIComponent(slug)}`;
+
 /** A tela é a de criação? Para a trilha e a sidebar; a barra no fim não conta, como no roteador. */
 export const isNewSkillPath = (pathname: string): boolean => pathname.replace(/\/+$/, '') === NEW_SKILL_PATH;
 

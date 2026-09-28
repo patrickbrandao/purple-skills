@@ -221,6 +221,26 @@ catálogos", lista os catálogos de que a skill participa, com a participação
 e o estado de cada um, e o link. A ficha da skill ganha a caixa "Skill
 ligada", e a lista de skills, o filtro "desligadas".
 
+> **Acrescentado em 26/09/2026:** a ficha só leitura ganhou o botão **"Nova
+> skill no catálogo"**, ao lado de "Editar" — mesma régua de acesso
+> (`canEdit` do catálogo) e o papel que cria no acervo (`canCreate`, editor+),
+> as duas cobradas juntas, porque criar já no catálogo é ao mesmo tempo criar
+> uma skill e mexer no catálogo. Ele leva a `/new-skill?catalog=<slug>`, a
+> mesma tela de sempre com um banner "Nasce já no catálogo X": a skill nasce
+> em produção, do jeito de sempre (decisão 1 do `docs/15`, que continua
+> valendo — o campo `catalogs` não entrou no corpo de `POST /api/skills` nem
+> de `POST /api/skills/import` com `production`), e só **depois** de criada
+> entra no catálogo, pela mesma rota que a ficha do catálogo já usa
+> (`PUT /api/catalogs/:slug/skills/:skill`). Falhar nesse segundo passo não
+> desfaz a skill — ela existe, só não entrou no catálogo — e o aviso diz
+> isso, para quem lê acrescentá-la à mão. Escolhendo "Importar pacote" com
+> destino quarentena a partir deste atalho, o catálogo entra pré-marcado no
+> seletor de destino que a quarentena já tinha (`docs/15` §11) — editável,
+> como qualquer outro item dele. Quem digita o endereço à mão sem editar o
+> catálogo é levado de volta a `/catalogs` com o aviso do que faltou: o
+> atalho não abre um caminho que a ficha do catálogo já não abrisse por
+> outro lado.
+
 ### 6.2 API REST
 
 ```

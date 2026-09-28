@@ -3,6 +3,7 @@ import { ExternalLink, Globe, Library, Radio, Server, Trash2, X } from 'lucide-r
 import { num, type OnlineCount, type VirtualMcpDetail } from '../../api.js';
 import { Badge, Button, McpStateBadges } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
+import { SystemMessageView } from '../SystemMessage.js';
 import { effectivePorts, hasPending, type Pending } from './pending.js';
 import { PORTS, PORT_LABEL, type Port, type Target } from './types.js';
 
@@ -235,8 +236,12 @@ export function NodeDrawer({
           <McpStateBadges mcp={detail} />
         </div>
         <p className="mt-3 text-[13px]" style={{ color: 'var(--text-dim)' }}>
-          {detail.description || 'Sem descrição — ela vai para as instruções do servidor, é como o agente sabe do que ele trata.'}
+          {detail.description || 'Sem descrição.'}
         </p>
+        <div className="sec">
+          <p className="eyebrow">O que o agente lê</p>
+          <SystemMessageView text={detail.instructions} />
+        </div>
         <div className="sec">
           <p className="eyebrow">Portas</p>
           <dl className="kv">

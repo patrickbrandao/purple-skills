@@ -10,11 +10,13 @@ import { Check, Copy } from 'lucide-react';
    o arquivo inteiro como ele sai do download — frontmatter e
    corpo — para quem quer copiar e colar num SKILL.md próprio.
 
-   Quase cópia entre `apps/site` e `apps/admin`: só as duas linhas
-   dos ícones diferem (`./Icons.js` no site, `lucide-react` no
-   painel). NÃO copie por cima — `Icons.tsx` não existe no painel e
-   o build dele quebra. Leve a mudança à mão para os dois lados
-   (docs/04-design-system.md, "A caixa do prompt").
+   Diverge do `SkillDoc.tsx` do site, que abre numa terceira guia
+   o arquivo escolhido na árvore, com as cores da linguagem: aqui
+   o arquivo abre na guia Arquivos da ficha, e a caixa fica nas
+   duas guias. NÃO copie um por cima do outro — os ícones também
+   diferem (`lucide-react` aqui, `./Icons.js` lá), e `Icons.tsx`
+   não existe no painel (docs/04-design-system.md, "A caixa do
+   prompt").
    ============================================================ */
 
 type Props = {

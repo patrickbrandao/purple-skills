@@ -110,12 +110,25 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
   });
 
   it('escolhe, marca na listagem, audita e limpa', async () => {
-    const mcp = await createVirtualMcp({ name: 'Time A', ownerUserUuid: null, isOpen: true }, SOURCE, ana);
+    const mcp = await createVirtualMcp(
+      { name: 'Time A', instructions: 'Team A skills.', ownerUserUuid: null, isOpen: true },
+      SOURCE,
+      ana,
+    );
 
+    // A raiz é um vMCP como os outros: as instruções vêm junto, para o
+    // `initialize` do `/mcp`.
     const escolhido = await setDefaultVirtualMcp(mcp.uuid, SOURCE, ana);
     expect(escolhido).toEqual({
       status: 'ok',
-      mcp: { uuid: mcp.uuid, slug: 'time-a', name: 'Time A', description: '', isOpen: true },
+      mcp: {
+        uuid: mcp.uuid,
+        slug: 'time-a',
+        name: 'Time A',
+        description: '',
+        instructions: 'Team A skills.',
+        isOpen: true,
+      },
     });
     expect((await listVirtualMcps()).find((m) => m.uuid === mcp.uuid)?.isDefault).toBe(true);
     expect((await getVirtualMcp('time-a'))?.isDefault).toBe(true);
@@ -218,6 +231,10 @@ describe.skipIf(!url)('MCP padrão: settings, resolução e backfill', () => {
     const resolved = await resolveDefaultVirtualMcp();
     expect(resolved.status).toBe('ok');
     expect(resolved.mcp).toMatchObject({ slug: 'public-2', name: 'Public', isOpen: true });
+    // A `036` copiou a legenda do `011` para as instruções: a raiz continua
+    // dizendo ao agente o que dizia antes de as duas se separarem.
+    expect(resolved.mcp?.instructions).toBe(resolved.mcp?.description);
+    expect(resolved.mcp?.instructions).toMatch(/^Catálogo público desta instalação/);
 
     const detail = await getVirtualMcp('public-2');
     expect(detail?.ownerUserUuid).toBeNull();

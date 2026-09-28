@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { closeDb } from './client.js';
 import { runMigrations } from './migrate.js';
-import { VIRTUAL_MCP_PREVIEW_SIZE } from '@purple-skills/shared';
+import { VIRTUAL_MCP_INSTRUCTIONS_MAX, VIRTUAL_MCP_PREVIEW_SIZE } from '@purple-skills/shared';
 import { AppError } from './errors.js';
 import {
   cloneVirtualMcp,
@@ -37,6 +37,7 @@ import {
   linkSkill,
   listAudit,
   listAuditPage,
+  listOpenVirtualMcps,
   listPublishedSkills,
   listSkills,
   listTags,
@@ -132,13 +133,21 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     ana.userUuid = anaUuid;
 
     const mcp = await createVirtualMcp(
-      { name: 'Time de Dados', description: 'só o time', ownerUserUuid: brunoUuid },
+      {
+        name: 'Time de Dados',
+        description: 'só o time',
+        instructions: '  Use the data skills first.\n',
+        ownerUserUuid: brunoUuid,
+      },
       SOURCE,
       ana,
     );
     mcpUuid = mcp.uuid;
 
     expect(mcp.slug).toBe('time-de-dados');
+    // Aparadas, como a `description`, que fica sendo outra coisa.
+    expect(mcp.instructions).toBe('Use the data skills first.');
+    expect(mcp.description).toBe('só o time');
     expect(mcp.isActive).toBe(true);
     expect(mcp.isOpen).toBe(false);
     expect(mcp.ownerUserUuid).toBe(brunoUuid);
@@ -156,6 +165,8 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       ana,
     );
     expect(segundo.slug).toBe('time-de-dados-2');
+    // Omitidas, nascem vazias: o agente recebe só o texto-base.
+    expect(segundo.instructions).toBe('');
     expect(segundo.ownerUserUuid).toBeNull();
     expect(segundo.ownerUsername).toBeNull();
 
@@ -512,7 +523,14 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       slug: 'dados',
       name: 'Time de Dados',
       description: 'só o time',
+      instructions: 'Use the data skills first.',
       isOpen: true,
+    });
+    // Aberto e ligado, o site lista o servidor com as instruções.
+    expect((await listOpenVirtualMcps()).find((m) => m.uuid === mcpUuid)).toMatchObject({
+      slug: 'dados',
+      description: 'só o time',
+      instructions: 'Use the data skills first.',
     });
 
     // Aberto: as vinculadas (qualquer flag) passam a existir para o site; a
@@ -537,6 +555,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     const desligado = await updateVirtualMcp(mcpUuid, { isActive: false }, SOURCE, ana);
     expect(desligado.isActive).toBe(false);
     expect(await resolveVirtualMcp('dados')).toBeNull();
+    expect((await listOpenVirtualMcps()).find((m) => m.uuid === mcpUuid)).toBeUndefined();
     // Desligado, some do site mesmo aberto.
     expect((await listSkills({ visibility: 'open' })).total).toBe(0);
     // O painel continua enxergando, com os vínculos e as chaves.
@@ -551,6 +570,82 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       updateVirtualMcp('00000000-0000-0000-0000-000000000000', { name: 'x' }, SOURCE, ana),
     );
     expect(fantasma.status).toBe(404);
+  });
+
+  it('instructions: grava, atualiza e limpa sem tocar a description; acima do teto é 400 antes do CHECK', async () => {
+    const teto = VIRTUAL_MCP_INSTRUCTIONS_MAX;
+    const acima = `O campo "instructions" tem ${teto + 1} caracteres; o limite é ${teto}`;
+
+    // No teto passa, e o espaço das pontas não conta: é aparado antes da medida.
+    const mcp = await createVirtualMcp(
+      { name: 'Instrucoes', description: 'legenda', instructions: ` ${'a'.repeat(teto)} `, ownerUserUuid: null },
+      SOURCE,
+      ana,
+    );
+    expect(mcp.instructions).toBe('a'.repeat(teto));
+
+    const longo = await capture(
+      createVirtualMcp({ name: 'Longo', instructions: 'a'.repeat(teto + 1), ownerUserUuid: null }, SOURCE, ana),
+    );
+    expect(longo.status).toBe(400);
+    expect(longo.message).toBe(acima);
+    expect(await getVirtualMcp('longo')).toBeNull();
+
+    // A conta é por caractere, como `char_length` no CHECK: um emoji são duas
+    // unidades UTF-16 e um caractere só.
+    const emoji = String.fromCodePoint(0x1f600);
+    const comEmoji = await updateVirtualMcp(mcp.uuid, { instructions: emoji.repeat(teto) }, SOURCE, ana);
+    expect(comEmoji.instructions).toHaveLength(teto * 2);
+    const { rows: medida } = await raw.query<{ n: number }>(
+      'SELECT char_length(instructions)::int AS n FROM virtual_mcps WHERE uuid = $1',
+      [mcp.uuid],
+    );
+    expect(medida[0]?.n).toBe(teto);
+    const emojiDemais = await capture(
+      updateVirtualMcp(mcp.uuid, { instructions: emoji.repeat(teto + 1) }, SOURCE, ana),
+    );
+    expect(emojiDemais.status).toBe(400);
+    expect(emojiDemais.message).toBe(acima);
+
+    // O tipo e o nulo pela regra de `optionalText`.
+    const numero = await capture(updateVirtualMcp(mcp.uuid, { instructions: 42 as never }, SOURCE, ana));
+    expect(numero.status).toBe(400);
+    expect(numero.message).toBe('O campo "instructions" deve ser uma string');
+    const nulo = await capture(
+      updateVirtualMcp(mcp.uuid, { instructions: `a${String.fromCharCode(0)}b` }, SOURCE, ana),
+    );
+    expect(nulo.status).toBe(400);
+
+    // Recusado, nada mudou.
+    expect((await getVirtualMcpByUuid(mcp.uuid))?.instructions).toBe(emoji.repeat(teto));
+
+    // Atualizar: o runtime do mcp-public lê o novo na requisição seguinte, e
+    // mexer em outro campo não apaga as instruções.
+    await updateVirtualMcp(mcp.uuid, { instructions: 'Prefer the SQL skills.' }, SOURCE, ana);
+    const renomeado = await updateVirtualMcp(mcp.uuid, { name: 'Instrucoes 2' }, SOURCE, ana);
+    expect(renomeado.instructions).toBe('Prefer the SQL skills.');
+    expect(renomeado.description).toBe('legenda');
+    expect(await resolveVirtualMcp('instrucoes')).toMatchObject({
+      instructions: 'Prefer the SQL skills.',
+      description: 'legenda',
+    });
+
+    // Limpar: só espaço é vazio, e vazio é permitido.
+    const limpo = await updateVirtualMcp(mcp.uuid, { instructions: '  \n ' }, SOURCE, ana);
+    expect(limpo.instructions).toBe('');
+    expect(limpo.description).toBe('legenda');
+    expect((await resolveVirtualMcp('instrucoes'))?.instructions).toBe('');
+
+    // Quem passa ao largo das queries esbarra no CHECK.
+    await expect(
+      raw.query('UPDATE virtual_mcps SET instructions = repeat($1, $2) WHERE uuid = $3', [
+        'a',
+        teto + 1,
+        mcp.uuid,
+      ]),
+    ).rejects.toThrow(/virtual_mcps_instructions_len_chk/);
+
+    await deleteVirtualMcp(mcp.uuid, SOURCE, ana);
   });
 
   it('remove em cascata vínculos e chaves', async () => {
@@ -894,7 +989,13 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
     // vinculado, posições no canvas, layout, duas concessões e uma chave —
     // e ainda por cima é o vMCP **padrão** da instalação.
     const fonte = await createVirtualMcp(
-      { name: 'Fonte do Clone', description: 'a fonte', isOpen: true, ownerUserUuid: anaUuid },
+      {
+        name: 'Fonte do Clone',
+        description: 'a fonte',
+        instructions: 'Start with skill-do-clone.',
+        isOpen: true,
+        ownerUserUuid: anaUuid,
+      },
       SOURCE,
       ana,
     );
@@ -949,6 +1050,7 @@ describe.skipIf(!url)('MCP virtual: recorte, vínculos e chaves', () => {
       slug: 'fonte-do-clone-2',
       name: 'Fonte do Clone',
       description: 'a fonte',
+      instructions: 'Start with skill-do-clone.',
       // Ligado como o original; **fechado**, mesmo com o original aberto.
       isActive: true,
       isOpen: false,

@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { VIRTUAL_MCP_INSTRUCTIONS_MAX } from '@purple-skills/shared';
 import { TOKEN_CALLER, callerAtual, type Caller } from './auth.js';
 import { config } from './config.js';
 import { createCatalogHandlers } from './catalogs.js';
@@ -57,6 +58,11 @@ Important rules:
   with their own keys (psv_…), or open ones (is_open) — an open MCP is public: the
   site lists it, with its skills. The psv_ key reads the whole tree of the MCP
   (direct skills and catalogs), whatever the access level of each skill.
+  A virtual MCP has two texts: description is for people (listings, searches,
+  the site card, internal notes) and never reaches an agent; instructions is
+  the server's system message, sent to every client in initialize after the
+  standard text. Changing instructions only affects clients that connect
+  afterwards.
 - The public MCP (/mcp) is the virtual MCP chosen as the default
   (get_default_virtual_mcp / set_default_virtual_mcp, admin only). It keeps
   answering at /virtual/<slug>/mcp and gets no special treatment: it can be
@@ -72,6 +78,16 @@ Important rules:
   it disappears from every MCP and from the site), isActive of the membership in
   set_catalog_skills (only in that catalog) and is_active of the catalog
   (update_catalog).`;
+
+/**
+ * O `describe` do campo `instructions` em `create_virtual_mcp` e
+ * `update_virtual_mcp`. O teto sai da constante do shared, que é a mesma do
+ * CHECK do banco: número escrito à mão aqui seria mais uma cópia dele.
+ */
+const INSTRUCTIONS_DESCRIBE =
+  'System message of this virtual MCP: sent to every MCP client in the initialize instructions, after the ' +
+  'standard Purple Skills text. Use it to tell the agent what this server is for and how to use its skills. ' +
+  `Up to ${VIRTUAL_MCP_INSTRUCTIONS_MAX} characters.`;
 
 /**
  * Cria uma instância do servidor MCP administrativo para um chamador.
@@ -433,8 +449,9 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         slug: z.string().describe('Slug (a-z, 0-9 and hyphen). Generated from the name if omitted.').optional(),
         description: z
           .string()
-          .describe("Goes into the server instructions: it is how the agent knows what this MCP is about.")
+          .describe('Display text and general comment, shown in listings and searches. Not sent to agents.')
           .optional(),
+        instructions: z.string().describe(INSTRUCTIONS_DESCRIBE).optional(),
         is_open: z.boolean().describe('No key required (default false).').optional(),
       },
     },
@@ -471,12 +488,17 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
     {
       title: 'Update virtual MCP',
       description:
-        'Changes name, slug, description, is_open or is_active (requires "manage"). Open (is_open), the MCP is public: the site lists it, with its skills — private ones included.',
+        'Changes name, slug, description, instructions, is_open or is_active (requires "manage"). Open (is_open), the MCP is public: the site lists it, with its skills — private ones included. ' +
+        'A change to instructions reaches only clients that connect (initialize) after it.',
       inputSchema: {
         slug: z.string().describe('Current slug.'),
         name: z.string().describe(`New name (up to ${NAME_MAX} characters).`).optional(),
         new_slug: z.string().describe('New slug — changes the address of every configured client.').optional(),
-        description: z.string().optional(),
+        description: z
+          .string()
+          .describe('Display text and general comment, shown in listings and searches. Not sent to agents.')
+          .optional(),
+        instructions: z.string().describe(`${INSTRUCTIONS_DESCRIBE} An empty string removes them.`).optional(),
         is_open: z.boolean().optional(),
         is_active: z.boolean().describe('false disables it: everything under /virtual/<slug> answers 404.').optional(),
       },

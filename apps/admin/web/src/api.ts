@@ -430,11 +430,21 @@ export type VirtualMcpLayout = { server?: CanvasPoint; internet?: CanvasPoint };
 export type VirtualMcpPreviewSkill = { slug: string; name: string; icon: string | null };
 export type VirtualMcpPreviewCatalog = { slug: string; name: string; isActive: boolean };
 
+/**
+ * Cópia de `VIRTUAL_MCP_INSTRUCTIONS_MAX` de `@purple-skills/shared` (ver o
+ * cabeçalho): o teto das instruções do vMCP, que o banco também guarda num
+ * CHECK. `mcps.test.ts` confere que os dois números andam juntos.
+ */
+export const VIRTUAL_MCP_INSTRUCTIONS_MAX = 4000;
+
 export type VirtualMcpSummary = Accessible & {
   uuid: string;
   slug: string;
   name: string;
+  /** Exibição e comentário: listagens, buscas, o cartão do site. Não vai ao agente. */
   description: string;
+  /** A mensagem de sistema: vai ao cliente MCP no `initialize` (`docs/22`). */
+  instructions: string;
   isActive: boolean;
   isOpen: boolean;
   skillCount: number;
@@ -1397,13 +1407,14 @@ export const getMcps = (scope: AccessScope | '' = '') =>
 
 export const getMcp = (slug: string) => request<VirtualMcpDetail>(mcpPath(slug));
 
-export const createMcp = (body: { name: string; slug?: string; description?: string; isOpen?: boolean }) =>
+export const createMcp = (body: { name: string; slug?: string; description?: string; instructions?: string; isOpen?: boolean }) =>
   request<VirtualMcpDetail>('/api/mcps', { method: 'POST', body: json(body) });
 
 export type UpdateMcpBody = {
   name?: string;
   slug?: string;
   description?: string;
+  instructions?: string;
   isOpen?: boolean;
   isActive?: boolean;
   ownerUserUuid?: string | null;
