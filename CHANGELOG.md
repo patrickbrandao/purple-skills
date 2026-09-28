@@ -27,6 +27,17 @@ esse cuidado em qualquer texto novo.
   segundo passo, depois de criada — e, na importação com destino
   quarentena, o catálogo entra pré-marcado no seletor de destino já
   existente. Desenho em [`docs/11-catalogos.md`](docs/11-catalogos.md) §6.1.
+- **Leitor de arquivos na página pública da skill** (site). Clicar num
+  arquivo da árvore à direita o abre numa terceira guia da caixa do prompt,
+  com as cores da linguagem — o mesmo `highlight.ts` do leitor do painel,
+  agora cópia idêntica entre os dois apps, com o site como origem. O
+  "SKILL.md" cru também sai colorido. Ao lado do Copiar, um ícone baixa o
+  arquivo à vista; binário mostra a imagem ou o convite a baixar, e arquivo
+  acima de 10 mil linhas mostra o começo e aponta o download. O arquivo
+  aberto fica no endereço (`?file=<caminho>`), para o link levar direto a
+  ele. ⌘/Ctrl-clique na árvore continua baixando o arquivo cru. Desenho em
+  [`docs/04-design-system.md`](docs/04-design-system.md), "A caixa do prompt"
+  e "O leitor de arquivos".
 
 ## [1.0.0-beta.29] — 2026-09-25
 

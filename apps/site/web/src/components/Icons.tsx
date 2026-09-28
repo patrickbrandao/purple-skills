@@ -243,6 +243,13 @@ export const CopyIcon = ({ className }: Props) => (
   </svg>
 );
 
+/** Fechar — o `XIcon` deste arquivo é o logotipo da rede social, não um "×". */
+export const CloseIcon = ({ className }: Props) => (
+  <svg className={className} viewBox="0 0 24 24" {...stroke}>
+    <path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" />
+  </svg>
+);
+
 export const LayersIcon = ({ className }: Props) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="m12 2 9 4.5-9 4.5-9-4.5L12 2Z" />

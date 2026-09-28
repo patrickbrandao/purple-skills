@@ -200,9 +200,13 @@ aqui? Acrescente lá também, **à mão** — nunca por `cp`.
 > `skill.css` e `canvas.css`.
 
 `FileTree.tsx` é o único **entre os arquivos da árvore** que diverge de
-propósito: no site cada arquivo é um link de download, no painel ele também
+propósito: no site o clique abre o arquivo na caixa do prompt (e o link segue
+apontando para o arquivo cru, para ⌘/Ctrl-clique baixar), no painel ele também
 escolhe o arquivo a editar e oferece o botão de remover. (Na caixa do prompt,
 abaixo, quem diverge é o `SkillDoc.tsx`.)
+
+> **Era**, até 27/09/2026: no site cada arquivo da árvore era só um link de
+> download.
 
 ### A caixa do prompt
 
@@ -215,14 +219,39 @@ cp apps/site/web/src/frontmatter.ts apps/admin/web/src/
 cp apps/site/web/src/components/{Markdown,FileTypeIcon}.tsx apps/admin/web/src/components/
 ```
 
-`SkillDoc.tsx` **saiu desse comando**: ele diverge só nos ícones, em duas linhas
-(o `import` e o uso no botão de copiar) — o site importa `./Icons.js`, o painel
-importa `lucide-react`, e `Icons.tsx` não existe no painel. Copiar por cima
-**quebra o build do painel**; a mudança vai **à mão** para os dois lados, e o
-cabeçalho do próprio arquivo diz isso (o mesmo texto nos dois apps, para o
-`diff` continuar mostrando só os ícones). O CSS
-(`.doc-box`, `.doc-tabs`, `.doc-source`) também não é cópia: o do painel está no
-`skill.css`, com os tokens, os raios e os tamanhos do console.
+`SkillDoc.tsx` **saiu desse comando** e **diverge de propósito**. No site, o
+arquivo escolhido na árvore abre numa terceira guia da caixa, no leitor
+colorido, e o "SKILL.md" cru também sai colorido; nas duas, o Copiar ganha ao
+lado o ícone de baixar o arquivo. O que está à vista mora no endereço
+(`?file=<caminho>`: `SKILL.md` é a guia cru, sem o parâmetro é a leitura), para
+o link levar direto ao arquivo. No painel a caixa segue com as duas guias,
+porque lá o arquivo abre na guia Arquivos da ficha. Os ícones também diferem
+(`./Icons.js` no site, `lucide-react` no painel, e `Icons.tsx` não existe no
+painel): copiar um por cima do outro **quebra o build do painel** ou apaga o
+leitor do site. O CSS (`.doc-box`, `.doc-tabs`) também não é cópia: o do painel
+está no `skill.css`, com os tokens, os raios e os tamanhos do console.
+
+> **Era**, até 27/09/2026: o `SkillDoc.tsx` divergia só nos ícones, em duas
+> linhas, com o mesmo cabeçalho nos dois apps para o `diff` mostrar só elas.
+
+### O leitor de arquivos
+
+As cores de sintaxe saem de `highlight.ts` — o `lowlight` com as gramáticas
+comuns e mais algumas, a escolha da linguagem pelo nome ou pelo shebang, e o
+código quebrado em linhas de pedaços com classe `sx-*`. Ele é **cópia
+idêntica** entre os dois apps, com o site como origem (o teste fica no painel,
+`highlight.test.ts`):
+
+```bash
+cp apps/site/web/src/highlight.ts apps/admin/web/src/
+```
+
+O que desenha **não é cópia**: `CodeView.tsx` do painel usa os primitivos do
+console e tem a opção de não quebrar as linhas; o do site quebra sempre. O CSS
+(`.code-view`, `.cv-*`, `.sx-*`) está no `skill.css` do painel e no `app.css` do
+site, e os tokens `--syn-*` também: no painel ficam no `tokens.css` dele; no
+site, no próprio `.code-view` do `app.css` — o `tokens.css` do site é cópia
+com a homepage, que não tem leitor.
 
 > **Era**, até o [`10`](10-admin-canvas-e-sessoes.md): `SkillDoc.tsx` era cópia
 > idêntica entre os dois apps e o bloco de CSS era o mesmo no `app.css` e no

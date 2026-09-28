@@ -335,13 +335,17 @@ main > section[id] {
   height: 14px;
 }
 /* ============================================================
-   PROMPT DA SKILL EM DUAS GUIAS
+   PROMPT DA SKILL EM DUAS GUIAS — E O ARQUIVO ABERTO
    "Skill" renderizado e "SKILL.md" cru, com o frontmatter que o
-   download materializa. O painel tem a sua versão deste bloco em
-   styles/skill.css, redesenhada para o console: não é mais cópia
-   (docs/04-design-system.md), mas mudança de estrutura aqui pede o
-   par de lá.
+   download materializa; um arquivo escolhido na árvore abre numa
+   terceira guia, no leitor colorido. O painel tem a sua versão
+   deste bloco em styles/skill.css, redesenhada para o console:
+   não é mais cópia (docs/04-design-system.md), mas mudança de
+   estrutura aqui pede o par de lá.
    ============================================================ */
+.skill-doc {
+  scroll-margin-top: 92px;
+}
 .doc-box {
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -352,12 +356,25 @@ main > section[id] {
 .doc-tabs {
   display: flex;
   align-items: stretch;
-  gap: 2px;
+  gap: 8px;
   padding-inline: 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
 }
-.doc-tabs button {
+/* As guias rolam de lado quando não cabem; as ações ficam sempre à vista. */
+.doc-tablist {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.doc-tablist::-webkit-scrollbar {
+  display: none;
+}
+.doc-tablist button {
+  flex: none;
   border: 0;
   background: none;
   border-bottom: 2px solid transparent;
@@ -367,50 +384,375 @@ main > section[id] {
   font-size: 0.86rem;
   font-weight: 500;
   color: var(--text-faint);
+  white-space: nowrap;
   cursor: pointer;
   transition: color 0.2s ease, border-color 0.2s ease;
 }
-.doc-tabs button:hover {
+.doc-tablist button:hover {
   color: var(--brand);
 }
-.doc-tabs button.active {
+.doc-tablist button.active {
   color: var(--brand);
   border-bottom-color: var(--brand);
 }
-/* O copiar fica na ponta da tira e não é guia: sem sublinhado ativo. */
-.doc-tabs .doc-copy {
+.doc-tablist button:focus-visible,
+.doc-action:focus-visible {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+/* A guia do arquivo: ícone da extensão, nome e o × que a fecha. */
+.doc-filetab {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.doc-filetab button.active {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 0 1 auto;
+  padding-right: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.doc-filetab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16rem;
+}
+.doc-tablist .doc-close {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--text-faint);
+}
+.doc-close svg {
+  width: 13px;
+  height: 13px;
+}
+.doc-close:hover {
+  color: var(--ember);
+}
+/* Copiar e baixar ficam na ponta da tira e não são guias. */
+.doc-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  flex: none;
+}
+.doc-action {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding-inline: 12px;
+  height: 32px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
   font-family: var(--font-display);
   font-size: 0.78rem;
-  border-bottom-color: transparent;
+  font-weight: 500;
+  color: var(--text-faint);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
 }
-.doc-tabs .doc-copy svg {
+.doc-action:hover {
+  color: var(--brand);
+  background: var(--surface-3);
+}
+.doc-action svg {
   width: 14px;
   height: 14px;
+}
+.doc-download {
+  width: 32px;
+  justify-content: center;
+  padding: 0;
+}
+.doc-download svg {
+  width: 15px;
+  height: 15px;
 }
 .doc-body {
   padding: 22px 24px;
 }
-.doc-source {
+.doc-skel {
+  display: grid;
+  gap: 12px;
+}
+.doc-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 48px 24px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-faint);
+}
+.doc-empty p {
   margin: 0;
-  padding: 22px 24px;
-  overflow-x: auto;
+}
+.doc-empty .btn svg {
+  width: 14px;
+  height: 14px;
+}
+.doc-image {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    repeating-conic-gradient(var(--surface-2) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.doc-image img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+}
+.doc-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
   font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.7;
-  color: var(--text-dim);
-  white-space: pre;
-  tab-size: 2;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+.doc-foot-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 @media (max-width: 600px) {
-  .doc-body,
-  .doc-source {
+  .doc-body {
     padding: 18px 16px;
   }
+  .doc-tabs {
+    padding-inline: 6px;
+  }
+  .doc-tablist button {
+    padding-inline: 10px;
+  }
+  .doc-filetab-name {
+    max-width: 9rem;
+  }
+  /* No celular o Copiar vira só o ícone, ao lado do de baixar. */
+  .doc-action:not(.doc-download) {
+    font-size: 0;
+    gap: 0;
+    width: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+}
+
+/* ---- leitor de arquivo: código colorido com numeração ----
+   O mesmo desenho do leitor do painel (styles/skill.css), com os
+   tokens do site. A numeração é um contador no ::before de cada
+   linha: não entra na seleção. As linhas longas quebram. As cores
+   de sintaxe (`--syn-*`) vivem aqui, e não em tokens.css, porque
+   só esta caixa as usa — tokens.css é cópia com a homepage. */
+.code-view {
+  --cv-line: 1.7;
+  --cv-gutter: max(46px, calc(var(--cv-digits, 1) * 1ch + 24px));
+  --syn-keyword: #7a2dbf;
+  --syn-string: #1c7340;
+  --syn-number: #a1520a;
+  --syn-comment: #74727f;
+  --syn-function: #1b5fae;
+  --syn-type: #855400;
+  --syn-builtin: #0c716c;
+  --syn-attr: #2d58a6;
+  --syn-tag: #b0243c;
+  --syn-variable: #ad4712;
+  --syn-regexp: #9c2767;
+  --syn-meta: #4a4cc0;
+  --syn-heading: #6a22ad;
+  --syn-add-bg: rgba(46, 122, 85, 0.12);
+  --syn-del-bg: rgba(196, 43, 39, 0.1);
+  overflow-x: auto;
+  background: linear-gradient(
+    to right,
+    var(--surface-2) calc(var(--cv-gutter) - 1px),
+    var(--border) 0 var(--cv-gutter),
+    transparent 0
+  );
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+:root[data-theme='dark'] .code-view {
+  --syn-keyword: #c79bf2;
+  --syn-string: #8fd19e;
+  --syn-number: #eeb36f;
+  --syn-comment: #8f86a6;
+  --syn-function: #7cc0f2;
+  --syn-type: #e6c77c;
+  --syn-builtin: #74cfc7;
+  --syn-attr: #93b7ef;
+  --syn-tag: #ef8394;
+  --syn-variable: #f0a07a;
+  --syn-regexp: #e6a3c6;
+  --syn-meta: #a3a8ff;
+  --syn-heading: #d3b0f7;
+  --syn-add-bg: rgba(58, 137, 99, 0.18);
+  --syn-del-bg: rgba(215, 50, 45, 0.18);
+}
+.cv-pre {
+  margin: 0;
+  padding: 16px 0 22px;
+  font: inherit;
+  line-height: var(--cv-line);
+  color: var(--text);
+  tab-size: 4;
+}
+.cv-code {
+  display: block;
+  font: inherit;
+  counter-reset: cv-line;
+}
+.cv-line {
+  display: flex;
+  counter-increment: cv-line;
+}
+.cv-line::before {
+  content: counter(cv-line);
+  flex: none;
+  width: var(--cv-gutter);
+  padding: 0 10px 0 0;
+  font-size: 0.7rem;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+.cv-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 20px 0 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cv-line:hover {
+  background: color-mix(in srgb, var(--surface-3) 45%, transparent);
+}
+.cv-line:hover::before {
+  color: var(--text-dim);
+}
+.cv-more {
+  width: fit-content;
+  max-width: calc(100% - var(--cv-gutter) - 32px);
+  margin: 0 0 20px calc(var(--cv-gutter) + 16px);
+  padding: 6px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+.cv-more a {
+  color: var(--brand);
+}
+
+/* as cores: uma classe `sx-*` por escopo do highlight.js (o mesmo mapa do painel) */
+.cv-code .sx-keyword,
+.cv-code .sx-selector-tag,
+.cv-code .sx-doctag,
+.cv-code .sx-template-tag {
+  color: var(--syn-keyword);
+}
+.cv-code .sx-string,
+.cv-code .sx-char,
+.cv-code .sx-code,
+.cv-code .sx-addition {
+  color: var(--syn-string);
+}
+/* o `${…}` de uma template string volta à cor do código */
+.cv-code .sx-subst {
+  color: var(--text);
+}
+.cv-code .sx-number,
+.cv-code .sx-literal,
+.cv-code .sx-symbol,
+.cv-code .sx-bullet {
+  color: var(--syn-number);
+}
+.cv-code .sx-comment,
+.cv-code .sx-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.cv-code .sx-title,
+.cv-code .sx-link {
+  color: var(--syn-function);
+}
+.cv-code .sx-title.class_,
+.cv-code .sx-type,
+.cv-code .sx-class {
+  color: var(--syn-type);
+}
+.cv-code .sx-built_in,
+.cv-code .sx-variable.language_,
+.cv-code .sx-selector-pseudo {
+  color: var(--syn-builtin);
+}
+.cv-code .sx-attr,
+.cv-code .sx-attribute,
+.cv-code .sx-property,
+.cv-code .sx-selector-attr,
+.cv-code .sx-selector-class,
+.cv-code .sx-selector-id {
+  color: var(--syn-attr);
+}
+.cv-code .sx-params {
+  color: var(--text);
+}
+.cv-code .sx-tag,
+.cv-code .sx-name,
+.cv-code .sx-deletion {
+  color: var(--syn-tag);
+}
+.cv-code .sx-variable,
+.cv-code .sx-template-variable {
+  color: var(--syn-variable);
+}
+.cv-code .sx-regexp {
+  color: var(--syn-regexp);
+}
+.cv-code .sx-meta {
+  color: var(--syn-meta);
+}
+.cv-code .sx-section {
+  color: var(--syn-heading);
+  font-weight: 600;
+}
+.cv-code .sx-emphasis {
+  font-style: italic;
+}
+.cv-code .sx-strong {
+  font-weight: 600;
+}
+.cv-code .sx-link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.cv-code .sx-punctuation,
+.cv-code .sx-operator {
+  color: var(--text-dim);
+}
+.cv-code .sx-addition {
+  background: var(--syn-add-bg);
+}
+.cv-code .sx-deletion {
+  background: var(--syn-del-bg);
 }
 
 /* ============================================================
@@ -421,7 +763,10 @@ main > section[id] {
    ============================================================ */
 .file-tree {
   margin-top: 12px;
-
+}
+/* As cores por tipo servem à árvore e à guia do arquivo aberto na caixa. */
+.file-tree,
+.doc-box {
   --ft-default: var(--text-faint);
   --ft-folder: var(--brand);
   --ft-python: #3776ab;
@@ -442,7 +787,8 @@ main > section[id] {
   --ft-container: #2492c8;
   --ft-badge: var(--text-faint);
 }
-:root[data-theme='dark'] .file-tree {
+:root[data-theme='dark'] .file-tree,
+:root[data-theme='dark'] .doc-box {
   --ft-python: #6fb3e8;
   --ft-python-alt: #ffd85e;
   --ft-js: #f0d94a;
@@ -499,6 +845,11 @@ button.ft-row {
 .ft-row:focus-visible {
   outline: 2px solid var(--brand-soft);
   outline-offset: 1px;
+}
+/* o arquivo aberto na caixa do prompt */
+.ft-row.active {
+  background: var(--surface-3);
+  color: var(--brand);
 }
 .ft-row.primary .ft-name {
   color: var(--brand);
@@ -897,6 +1248,61 @@ button.ft-row[aria-expanded='true'] .ft-chevron {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* As instructions do vMCP (docs/22), como a mensagem de papel `system` de um
+   transcript: fio da marca à esquerda, rótulo e corpo em mono. */
+.endpoint-card .ep-system {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.endpoint-card .ep-system summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style: none;
+}
+.endpoint-card .ep-system summary::-webkit-details-marker {
+  display: none;
+}
+.endpoint-card .ep-system summary::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+}
+.endpoint-card .ep-system[open] summary::after {
+  transform: rotate(-135deg);
+}
+.endpoint-card .ep-system-role {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.endpoint-card .ep-system pre {
+  margin: 0;
+  padding: 0 12px 10px;
+  max-height: 16rem;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ============================================================
