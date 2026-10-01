@@ -287,13 +287,22 @@ o que segue é o resumo do que está no ar.
 - **O `Host` da requisição serve de base para o `redirect_uri` do OIDC, mas não
   para o link de redefinição de senha** (`003`). No OIDC o provedor compara o
   `redirect_uri` com o endereço registrado; o link de redefinição sai por e-mail
-  para a caixa de outra pessoa e não tem segunda conferência. Sem
+  para a caixa de outra pessoa e não tem segunda conferência. ~~Sem
   `ADMIN_PUBLIC_URL`, esse link só é montado quando o pedido vem de **rede
   interna** (loopback ou faixa privada, o conjunto do `TRUST_PROXY` padrão) — é o
   que mantém a instalação local funcionando sem configuração e nega a dedução a
   quem chega pela Internet, que recebe `503 public_url_required` e é mandado ao
   administrador. Exigir a variável sempre foi descartado: travaria o
-  `docker compose up`.
+  `docker compose up`.~~
+
+  > **Revogado neste ponto pela auditoria de 2026-10-01** (relatório 003): a
+  > exceção de rede interna deixava o vizinho da LAN ou de contêiner — e
+  > qualquer cliente com `TRUST_PROXY=true` — escolher o domínio do link. O
+  > motivo dela não se sustentava: o `docker compose up` sem configuração não
+  > tem SMTP, e sem SMTP a rota já responde `503 smtp_disabled` antes de
+  > montar link. Agora o link usa **só** `ADMIN_PUBLIC_URL`; sem ela, todo
+  > pedido recebe `503 public_url_required`, e o boot avisa quando o SMTP está
+  > ligado sem a variável.
 - **Vale um link de redefinição por conta de cada vez** (`027`). Emitir fecha os
   vivos, e **trocar a senha** fecha os vivos. Esta segunda regra mora no banco, num
   trigger em `users` (`AFTER UPDATE OF password_hash`), e não no app, porque são
@@ -516,8 +525,9 @@ confiar por contagem de saltos (`1`) deixaria qualquer cliente fazer o mesmo num
 instalação exposta sem proxy. Nenhum padrão resolve o vizinho que alcança a porta
 direto: para esse caso, nomear o proxy em `TRUST_PROXY` ou não publicar a porta.
 Com `TRUST_PROXY=true` — que a documentação já desaconselha em produção exposta — o
-cliente volta a controlar `req.ip`, e com ele o critério de "rede interna" do link
-de redefinição de senha (§7.1).
+cliente volta a controlar `req.ip`, e com ele o log, a auditoria e o limitador de
+taxa. ~~E o critério de "rede interna" do link de redefinição de senha (§7.1).~~
+Esse critério saiu na auditoria de 2026-10-01: o link usa só `ADMIN_PUBLIC_URL`.
 
 ## 8. Contrato das ferramentas MCP
 

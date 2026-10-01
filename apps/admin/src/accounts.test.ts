@@ -530,6 +530,37 @@ describe('tempo do login', () => {
 
     expect(semConta).toBeGreaterThan(comConta * 0.5);
   });
+
+  /**
+   * Auditoria de 2026-10-01, relatório 006: a conta travada respondia 429 com
+   * texto próprio e sem scrypt — depois de oito erros, a conta que existe se
+   * separava da que não existe pelo texto, pelo status e pelo tempo.
+   */
+  it('conta travada responde igual à inexistente, com o mesmo scrypt', async () => {
+    const travada = { ...conta('editor'), lockedUntil: '2999-01-01T00:00:00Z' };
+
+    const medir = async (registro: typeof travada | null) => {
+      db.getUserByLogin.mockResolvedValue(registro);
+      let menor = Number.POSITIVE_INFINITY;
+      let outcome: Awaited<ReturnType<typeof loginWithPassword>> | null = null;
+      for (let i = 0; i < 3; i += 1) {
+        const inicio = performance.now();
+        outcome = await loginWithPassword({ identifier: 'editor', password: SENHA });
+        menor = Math.min(menor, performance.now() - inicio);
+      }
+      return { menor, outcome };
+    };
+
+    await medir(null);
+    const semConta = await medir(null);
+    const comTrava = await medir(travada);
+
+    expect(comTrava.outcome).toEqual(semConta.outcome);
+    expect(comTrava.outcome).toMatchObject({ status: 401 });
+    // Senha certa não entra nem é conferida enquanto a trava vale.
+    expect(db.registerSuccessfulLogin).not.toHaveBeenCalled();
+    expect(comTrava.menor).toBeGreaterThan(semConta.menor * 0.5);
+  });
 });
 
 /**

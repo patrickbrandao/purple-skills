@@ -2665,13 +2665,16 @@ const usernameSpent = (username: string) =>
  */
 export async function nextFreeUsername(base: string): Promise<string> {
   const wanted = requireUsername(base);
+  // `_` e `.` são válidos em username; o `_` é curinga no `LIKE`, por isso o
+  // radical vai escapado (`likePrefixPattern`) e `ana_b` não traz `anaxb-2`.
+  const numerados = likePrefixPattern(`${wanted}-`);
 
   const result = await db().execute(sql`
     SELECT lower(username) AS nome FROM users
-     WHERE lower(username) = ${wanted} OR lower(username) LIKE ${`${wanted}-%`}
+     WHERE lower(username) = ${wanted} OR lower(username) LIKE ${numerados}
     UNION
     SELECT username_lower AS nome FROM usernames
-     WHERE username_lower = ${wanted} OR username_lower LIKE ${`${wanted}-%`}
+     WHERE username_lower = ${wanted} OR username_lower LIKE ${numerados}
   `);
   const ocupados = new Set((result.rows as Row[]).map((row) => row.nome as string));
 
@@ -11477,7 +11480,27 @@ function normalizeQuery(raw: string | null | undefined): string | null {
  * `pg_trgm` conhece o escape e extrai os trigramas do texto literal.
  */
 function likePattern(query: string): string {
-  return '%' + query.replace(/[\\%_]/g, '\\$&') + '%';
+  return '%' + likeEscape(query) + '%';
+}
+
+/**
+ * O irmão de `likePattern` para **prefixo**: `texto%`, com o mesmo escape.
+ *
+ * Quem consome é `nextFreeUsername`, que procura `joao-%`. Lá o `_` é
+ * caractere válido de username, e sem escapar `ana_b-%` casava também
+ * `anaxb-2`. O resultado não errava — a decisão final compara texto exato —,
+ * mas a consulta trazia linhas a mais, e o idioma do arquivo é escapar sempre.
+ */
+function likePrefixPattern(prefix: string): string {
+  return likeEscape(prefix) + '%';
+}
+
+/**
+ * `\`, `%` e `_` precedidos de `\`, o escape padrão do `LIKE` no Postgres —
+ * por isso nenhuma consulta daqui escreve `ESCAPE '\'`.
+ */
+function likeEscape(text: string): string {
+  return text.replace(/[\\%_]/g, '\\$&');
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -33,8 +33,7 @@ export type TrustProxyValue = boolean | number | string | ((addr: string, salto:
  *
  * O preço de não adivinhar a profundidade da cadeia: com **dois** proxies
  * internos em sequência e `TRUST_PROXY` vazio, `req.ip` passa a ser o endereço
- * do proxy de dentro — todo cliente cai no mesmo balde do limitador de taxa e o
- * link de redefinição de senha volta a aceitar o `Host` da requisição. Essa
+ * do proxy de dentro — todo cliente cai no mesmo balde do limitador de taxa. Essa
  * topologia precisa declarar `TRUST_PROXY`; instalação com um proxy (o compose
  * com Traefik, um nginx no host) não muda de comportamento.
  *
@@ -80,10 +79,6 @@ function umSaltoDePeerInterno(addr: string, salto: number): boolean {
  * `true` para os endereços que o Express chama de `loopback, uniquelocal`:
  * 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 e fc00::/7.
  * Link-local (169.254.0.0/16, fe80::/10) fica fora, como no padrão anterior.
- *
- * `apps/admin/src/config.ts` tem uma gêmea desta função, que decide se o `Host`
- * da requisição pode virar base do link de redefinição de senha: as duas
- * precisam dizer a mesma coisa, e consolidar é trocar a local por um `import`.
  */
 export function isInternalAddress(ip: string | undefined): boolean {
   if (!ip) return false;

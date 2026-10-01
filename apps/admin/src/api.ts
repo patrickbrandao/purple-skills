@@ -642,11 +642,11 @@ api.post(
     // O link sai por e-mail para a caixa de OUTRA pessoa e quem pede é qualquer
     // visitante: a base não pode ser deduzida do `Host`, que o próprio pedido
     // escolhe (ver `resetLinkBaseUrl`).
-    const base = resetLinkBaseUrl(req.protocol, req.get('host'), req.ip);
+    const base = resetLinkBaseUrl();
     if (!base) {
       console.warn(
-        '[admin] pedido de redefinição de senha recusado: defina ADMIN_PUBLIC_URL. ' +
-          'Sem ela o link só é montado para pedidos vindos de rede interna.',
+        '[admin] pedido de redefinição de senha recusado: com SMTP ligado, defina ' +
+          'ADMIN_PUBLIC_URL — sem ela o link de redefinição não é montado.',
       );
       res.status(503).json({
         error: 'public_url_required',
@@ -2121,9 +2121,17 @@ api.post(
       res.status(400).json({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
       return;
     }
-    assertTextPath(normalizeRelativePath(param(req, 'path')) ?? param(req, 'path'));
+    // Normaliza e recusa aqui, como o PUT: o banco também recusa, mas a resposta
+    // da rota não pode depender de qual camada pegou o caminho torto (auditoria
+    // de 2026-10-01, relatório 009).
+    const path = normalizeRelativePath(param(req, 'path'));
+    if (!path) {
+      res.status(400).json({ error: 'bad_request', message: `Caminho inválido: ${param(req, 'path')}` });
+      return;
+    }
+    assertTextPath(path);
     await access.loadSkillSummary(req.user!, param(req, 'slug'), 'edit');
-    res.status(201).json(await createFile(param(req, 'slug'), param(req, 'path'), content, SOURCE, actorFrom(req)));
+    res.status(201).json(await createFile(param(req, 'slug'), path, content, SOURCE, actorFrom(req)));
   }),
 );
 
@@ -2385,13 +2393,15 @@ api.post(
       res.status(400).json({ error: 'bad_request', message: 'O campo "content" deve ser uma string' });
       return;
     }
-    const path = normalizeRelativePath(param(req, 'path')) ?? param(req, 'path');
+    const path = normalizeRelativePath(param(req, 'path'));
+    if (!path) {
+      res.status(400).json({ error: 'bad_request', message: `Caminho inválido: ${param(req, 'path')}` });
+      return;
+    }
     assertTextPath(path);
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
     quarantine.assertHasRoom(found);
-    res.status(201).json(
-      await createQuarantineFile(found.uuid, param(req, 'path'), content, SOURCE, actorFrom(req)),
-    );
+    res.status(201).json(await createQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req)));
   }),
 );
 

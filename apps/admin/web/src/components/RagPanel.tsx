@@ -82,6 +82,24 @@ export function RagPanel() {
   }
 
   async function salvar() {
+    // Ligar a busca, ou levá-la a outro provedor, manda o acervo **inteiro** para
+    // fora — inclusive as skills privadas (`docs/14-rag.md` §4). A decisão é de
+    // quem opera a instalação, e por isso pede confirmação explícita
+    // (auditoria de 2026-10-01, relatório 007). Trocar só o modelo do mesmo
+    // provedor não muda o destino e não pergunta.
+    if (dados !== null && driver !== 'off' && driver !== dados.driver.value) {
+      const provedor = dados.driverOptions.find((d) => d.id === driver)?.label ?? driver;
+      const ok = await confirm({
+        title: `Enviar o conteúdo das skills para ${provedor}?`,
+        description:
+          `O indexador vai mandar o texto de todas as skills — inclusive as privadas — para ${provedor}, ` +
+          'que calcula os embeddings. Não há como indexar só parte do acervo. Confira o contrato e a ' +
+          'política de dados do provedor antes de continuar.',
+        confirmLabel: 'Ligar e enviar',
+      });
+      if (!ok) return;
+    }
+
     setBusy(true);
     try {
       const salvo = await saveRagSettings(
