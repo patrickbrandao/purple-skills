@@ -398,6 +398,21 @@ describe('as duas guardas da criação de arquivo', () => {
     expect(db.setQuarantineFile).not.toHaveBeenCalled();
   });
 
+  /*
+   * Auditoria de 2026-10-01, relatório 009: o POST passava o caminho cru ao
+   * banco, que é quem recusava. Agora a rota normaliza e recusa antes, como o
+   * PUT, e o banco recebe o caminho já canônico.
+   */
+  it('caminho torto é 400 na rota, e o banco recebe o caminho normalizado', async () => {
+    const torto = await comCorpo('POST', `/api/quarantine/${UUID}/files/..%2Ffora.md`, { content: '' });
+    expect(torto.status).toBe(400);
+    expect(json(torto).message).toMatch(/Caminho inválido/);
+    expect(db.getQuarantine).not.toHaveBeenCalled();
+
+    expect((await comCorpo('POST', `/api/quarantine/${UUID}/files/.%2Fref%2Fnotas.md`, { content: '' })).status).toBe(201);
+    expect(db.createQuarantineFile).toHaveBeenCalledWith(UUID, 'ref/notas.md', '', expect.anything(), expect.anything());
+  });
+
   it('texto passa, inclusive o nome sem extensão', async () => {
     expect((await comCorpo('POST', `/api/quarantine/${UUID}/files/notas.md`, { content: '' })).status).toBe(201);
     expect((await comCorpo('POST', `/api/quarantine/${UUID}/files/Dockerfile`, { content: '' })).status).toBe(201);

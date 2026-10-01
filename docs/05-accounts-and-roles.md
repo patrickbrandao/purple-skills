@@ -295,6 +295,15 @@ gravá-lo no `audit_log`.
 O texto completo da chave aparece **uma vez**, no momento da emissão. O banco
 guarda só o hash e o prefixo.
 
+**Trocar a senha não revoga as chaves.** A `psk_` é uma credencial própria, como
+um token pessoal: o `token_version` derruba os cookies (`§2.2`), mas
+`resolveCaller` não o confere, e nenhum dos três caminhos de troca — a própria,
+a do administrador e o link de e-mail — mexe em `api_keys`. Quem troca a senha
+por suspeita de invasão revoga também as chaves, na tela de chaves; só
+**desativar** a conta suspende todas de uma vez (e reativar as devolve). Decisão
+do mantenedor na auditoria de 2026-10-01 (relatório 002): revogar
+automaticamente derrubaria automação legítima a cada troca de rotina.
+
 ### 2.6 Recuperação de senha
 
 SMTP é **opcional**:
@@ -314,9 +323,13 @@ igual o link consumido, a redefinição pelo admin e a troca pelo próprio dono.
 redefinição pelo admin também é **auditada**, como `user.password` com o e-mail da
 conta afetada em `target_label` (`030`).
 
-Sem `ADMIN_PUBLIC_URL`, o link só é montado para pedido vindo de rede interna; de
+~~Sem `ADMIN_PUBLIC_URL`, o link só é montado para pedido vindo de rede interna; de
 fora, a rota responde `503 public_url_required` e manda procurar o administrador
-(`003`, `02` §7.1).
+(`003`, `02` §7.1).~~ **Era**, até a auditoria de 2026-10-01 (relatório 003): hoje
+o link usa só `ADMIN_PUBLIC_URL`, e sem ela **todo** pedido responde
+`503 public_url_required` e manda procurar o administrador — a rede interna não é
+mais exceção, porque deixava o vizinho da LAN escolher o domínio do link. Quem liga
+o SMTP declara também a variável; o boot avisa quando ela falta (`02` §7.1).
 
 ### 2.7 Rate limiting no login
 
@@ -332,6 +345,13 @@ Duas camadas, porque nenhuma sozinha resolve:
 
 Fecha o risco "login sem rate limiting" da `§13` justamente quando ele cresce:
 com contas nomeadas, o atacante passa a conhecer o usuário.
+
+A conta travada responde **o mesmo 401** do identificador sem conta e da senha
+errada, com o mesmo trabalho de scrypt, e o texto único menciona a trava
+("…incorretos — ou conta temporariamente bloqueada por excesso de tentativas").
+**Era**, até a auditoria de 2026-10-01 (relatório 006), um `429` com texto
+próprio e sem scrypt: depois de `LOGIN_MAX_ATTEMPTS` erros, ele dizia — pelo
+texto, pelo status e pelo tempo — que a conta existia.
 
 A trava da conta vence sozinha (`LOGIN_LOCK_SECONDS`) ou sai junto com a **senha
 temporária gerada por um administrador**: a redefinição zera `failed_attempts` e

@@ -99,6 +99,14 @@ async function main() {
   }
   console.log(`[admin] SSO: ${oidcEnabled() ? 'ligado' : 'desligado'}; ` +
     `redefinição de senha por e-mail: ${smtpEnabled() ? 'ligada' : 'desligada'}`);
+  // O link de redefinição só usa o endereço declarado (`resetLinkBaseUrl`):
+  // sem ele, o SMTP fica ligado mas todo pedido de redefinição responde 503.
+  if (smtpEnabled() && !config.publicUrl) {
+    console.warn(
+      '[admin] SMTP ligado sem ADMIN_PUBLIC_URL: o "esqueci a senha" vai responder 503 ' +
+        'até a variável ser definida (ex.: ADMIN_PUBLIC_URL=https://admin.example.com).',
+    );
+  }
 
   const server = app.listen(config.port, config.host, () => {
     console.log(`[admin] painel ouvindo em http://${config.host}:${config.port}`);

@@ -16,6 +16,82 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+Auditoria de 2026-10-01: dez relatórios de segurança, reverificados no código
+de `1.0.0-beta.30`. Quatro não procediam, três procediam e foram corrigidos, e
+três descreviam comportamento real que o mantenedor decidiu manter, com o
+motivo abaixo. Resultado medido: `npm run typecheck` limpo e, com
+`TEST_DATABASE_URL` num banco recriado do zero, **117 arquivos e 2385 testes,
+zero falhas e zero pulados**.
+
+### Mudanças incompatíveis (2026-10-01)
+
+- **Com SMTP ligado, `ADMIN_PUBLIC_URL` passou a ser obrigatória para o "esqueci
+  a senha"** (relatório 003). Antes, sem a variável, o link de redefinição
+  usava o `Host` do pedido quando ele vinha de rede interna. Com isso o vizinho
+  da LAN ou de contêiner, e qualquer cliente quando `TRUST_PROXY=true`,
+  escolhia o domínio do link que chega à caixa da vítima. Agora o link usa só a
+  variável, e sem ela `POST /api/password-reset/request` responde
+  `503 public_url_required` mesmo para pedido interno. O boot avisa quando o
+  SMTP está ligado sem ela. A exceção existia para não travar o
+  `docker compose up` sem configuração, mas essa instalação não tem SMTP e já
+  recebia `503 smtp_disabled`. **O que fazer:** quem tem `SMTP_URL` define
+  `ADMIN_PUBLIC_URL` (local: `http://localhost:3001`). O gêmeo
+  `isInternalAddress` de `apps/admin/src/config.ts` saiu; o do `shared` fica.
+
+### Corrigido (2026-10-01)
+
+- **Conta travada não diz mais que existe** (relatório 006). Depois de
+  `LOGIN_MAX_ATTEMPTS` erros, o login respondia `429` com texto próprio e sem
+  scrypt, e o identificador sem conta seguia em `401`. A diferença aparecia no
+  texto, no status e no tempo. Agora os três casos respondem o mesmo `401` com
+  o mesmo trabalho de senha, e o texto único menciona a trava ("Usuário, e-mail
+  ou senha incorretos — ou conta temporariamente bloqueada por excesso de
+  tentativas"). **Quem integra** e tratava o `429` do login como "travada" passa
+  a receber `401`. O `429` do limitador por IP continua.
+- **Ligar a busca semântica pede confirmação** (relatório 007). O
+  `docs/14-rag.md` §4 já decidia que o acervo inteiro vai ao provedor,
+  inclusive as skills privadas, mas o painel só avisava no driver Google e
+  sobre o nível gratuito. Sair de `off`, ou trocar de provedor, agora abre um
+  diálogo que diz isso. Trocar só o modelo não pergunta.
+- **Criar arquivo valida o caminho na rota, como gravar** (relatório 009). O
+  `POST` de arquivo da skill e o da quarentena passavam o caminho cru ao banco.
+  Agora normalizam e respondem `400 Caminho inválido` antes de conferir acesso,
+  e o banco recebe o caminho canônico. Não havia travessia de diretório, porque
+  o banco recusava; o que mudou é a camada que recusa e a mensagem.
+- **`nextFreeUsername` escapa o `LIKE`** (relatório 010, higiene). O `_` do
+  radical era curinga e trazia linhas a mais. O resultado não errava, porque a
+  decisão final compara o texto exato. O escape saiu de `likePattern` para
+  `likeEscape`, e o padrão de prefixo ficou em `likePrefixPattern`.
+- **Teste de regressão do link `javascript:` no Markdown** (relatório 001). Ver
+  abaixo por que o XSS não procedia. O teste existe para um `urlTransform`
+  próprio não desligar a limpeza em silêncio. Há uma cópia em cada
+  `Markdown.test.ts` do site e do painel.
+
+### Decidido e não mudado (2026-10-01)
+
+- **Trocar a senha não revoga as chaves `psk_`** (relatório 002). Procede: o
+  `token_version` derruba só cookies. Mas a chave é credencial própria, como um
+  token pessoal, e revogar a cada troca de rotina derrubaria automação
+  legítima. Quem troca a senha por suspeita de invasão revoga as chaves na tela
+  de chaves. O `docs/05` §2.5 agora diz isso.
+- **A `psv_` não depende de quem a emitiu** (relatório 005). A chave é do
+  servidor (`docs/08` §5), e conta desativada não desliga o MCP (decisão 9 do
+  `08`). Revogar a chave do time porque quem clicou em "emitir" saiu quebraria
+  agentes de terceiros.
+- **Não procediam:**
+  - **001, XSS por link `javascript:`.** O `react-markdown` 10 aplica
+    `defaultUrlTransform` antes do componente `a`, e esquema fora de
+    `http(s)`/`mailto`/`irc`/`xmpp` vira `href=""`. Os links do perfil já são
+    validados no servidor.
+  - **004, CSRF com `TRUST_PROXY` largo.** Num CSRF quem envia o pedido é o
+    navegador da vítima. A página do atacante não escreve `X-Forwarded-Host`,
+    o `Sec-Fetch-Site: cross-site` já reprova, e o cookie `Lax` não viaja num
+    POST entre sites.
+  - **008, `instructions` do vMCP sem filtro.** É o próprio recurso
+    (`docs/22`). O rótulo de origem existe, o teto vale no banco e a edição é
+    auditada como `mcp.update`. Marcar o texto como "não siga" anularia o
+    campo, e o SKILL.md do mesmo autor chega ao agente do mesmo jeito.
+
 ## [1.0.0-beta.30] — 2026-09-28
 
 ### Adicionado

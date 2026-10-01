@@ -283,8 +283,15 @@ function gastarTrabalhoDeSenha(password: string): void {
  * texto e no tempo: distingui-las transforma o formulário num verificador de
  * quem tem conta aqui. O corpo igual não basta, porque conferir a senha custa
  * scrypt e quem não tem conta não teria nada a conferir; daí o
- * `gastarTrabalhoDeSenha`. A trava por `locked_until` é a única resposta
- * diferente, e só depois de acertar o identificador.
+ * `gastarTrabalhoDeSenha`.
+ *
+ * A conta travada por `locked_until` também responde o mesmo 401, com o mesmo
+ * trabalho de senha. **Era**, até a auditoria de 2026-10-01 (relatório 006), um
+ * 429 com texto próprio e sem scrypt: depois de `LOGIN_MAX_ATTEMPTS` erros, a
+ * conta que existe respondia "bloqueada" — e mais rápido — enquanto a que não
+ * existe seguia em "incorretos", e o formulário voltava a ser um verificador de
+ * contas. Por isso o texto único menciona a trava: quem está travado com a
+ * senha certa não lê "senha incorreta" sem explicação.
  *
  * O texto do erro **não diz qual dos dois falhou**, e nem poderia: "username
  * não encontrado" contra "e-mail não encontrado" devolveria, de graça, a
@@ -294,7 +301,10 @@ export async function loginWithPassword(input: {
   identifier?: unknown;
   password?: unknown;
 }): Promise<LoginOutcome> {
-  const genericError = { error: 'Usuário, e-mail ou senha incorretos', status: 401 };
+  const genericError = {
+    error: 'Usuário, e-mail ou senha incorretos — ou conta temporariamente bloqueada por excesso de tentativas',
+    status: 401,
+  };
 
   const identifier = typeof input.identifier === 'string' ? input.identifier.trim() : '';
   const password = input.password;
@@ -313,11 +323,11 @@ export async function loginWithPassword(input: {
   }
 
   if (user.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
-    const seconds = Math.ceil((new Date(user.lockedUntil).getTime() - Date.now()) / 1000);
-    return {
-      error: `Conta temporariamente bloqueada por excesso de tentativas. Tente de novo em ${Math.ceil(seconds / 60)} min.`,
-      status: 429,
-    };
+    // Mesma resposta e mesmo custo do identificador sem conta: a trava não pode
+    // dizer que a conta existe. A senha não é conferida — acertá-la aqui não
+    // destrava nada.
+    gastarTrabalhoDeSenha(password);
+    return genericError;
   }
 
   if (!verifyPassword(password, user.passwordHash)) {

@@ -351,6 +351,11 @@ describe.skipIf(!url)('contas, chaves de API e tokens de reset', () => {
     // Base inutilizável é 400 — a função não inventa base, quem chama decide o
     // fallback (`usernameFromUuid`).
     expect((await capture(nextFreeUsername('ab'))).status).toBe(400);
+    // O `_` do radical é literal no `LIKE`: com `ana_b` gasto e `anaxb-2`
+    // também, a sugestão é `ana_b-2` — o `anaxb-2` não é do mesmo radical.
+    await raw.query("INSERT INTO usernames (username_lower) VALUES ('ana_b'), ('anaxb-2')");
+    expect(await nextFreeUsername('ana_b')).toBe('ana_b-2');
+    await raw.query("DELETE FROM usernames WHERE username_lower IN ('ana_b', 'anaxb-2')");
 
     // O caminho do auto-provisionamento OIDC: sugerir e criar.
     const sugerido = await nextFreeUsername('vinda-do-oidc');

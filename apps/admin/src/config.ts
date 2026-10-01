@@ -82,10 +82,9 @@ export const config = {
    * Endereço público do próprio painel — usado para montar o `redirect_uri` do
    * OIDC e o link de redefinição de senha. Sem ele, o `redirect_uri` cai no
    * `Host` da requisição (o provedor ainda confere o valor registrado), e o
-   * link de redefinição só aceita o `Host` quando o pedido vem de uma rede
-   * interna — ver `resetLinkBaseUrl`. Também conta como origem própria na
-   * checagem anti-CSRF (`csrfGuard`), para o proxy que publica o painel numa
-   * porta que não repassa no `Host`.
+   * link de redefinição não é montado — ver `resetLinkBaseUrl`. Também conta
+   * como origem própria na checagem anti-CSRF (`csrfGuard`), para o proxy que
+   * publica o painel numa porta que não repassa no `Host`.
    */
   publicUrl: readTextEnv('ADMIN_PUBLIC_URL', '').replace(/\/+$/, ''),
 
@@ -234,59 +233,27 @@ export function panelBaseUrl(proto: string, host: string): string {
 }
 
 /**
- * `true` para os endereços que o `TRUST_PROXY` padrão já trata como internos
- * (`loopback, uniquelocal`): 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12,
- * 192.168.0.0/16 e fc00::/7. Fora dessas faixas, a requisição atravessou uma
- * rede que esta instalação não controla.
- */
-export function isInternalAddress(ip: string | undefined): boolean {
-  if (!ip) return false;
-
-  // Socket dual-stack entrega IPv4 mapeado (`::ffff:172.18.0.1`): o que
-  // interessa classificar é o IPv4 de dentro.
-  const value = ip.trim().toLowerCase().replace(/^::ffff:/, '');
-
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(value);
-  if (v4) {
-    const first = Number(v4[1]);
-    const second = Number(v4[2]);
-    if (first === 127 || first === 10) return true;
-    if (first === 172) return second >= 16 && second <= 31;
-    return first === 192 && second === 168;
-  }
-
-  if (value === '::1') return true;
-  // fc00::/7 são os prefixos `fc` e `fd`. O primeiro hexteto sempre aparece com
-  // os quatro dígitos, porque começa por um dígito diferente de zero.
-  return /^f[cd][0-9a-f]{2}:/.test(value);
-}
-
-/**
  * Base do link de redefinição de senha — o único endereço do painel que sai por
  * e-mail. `null` significa "não há base confiável": a rota falha fechada em vez
  * de montar o link.
  *
- * Aqui o `Host` não pode ser fallback cego como no `panelBaseUrl`. Quem pede a
+ * Aqui o `Host` não pode ser fallback como no `panelBaseUrl`. Quem pede a
  * redefinição é qualquer visitante, e o link chega à caixa de **outra** pessoa:
  * deduzir o domínio do `Host` deixaria quem pede escolher o servidor que recebe
  * o token da vítima — e ele viaja na querystring, então basta o clique. No
  * `redirect_uri` do OIDC o mesmo truque não paga, porque o provedor compara com
  * o endereço registrado; neste caminho não existe segunda conferência.
  *
- * Exigir `ADMIN_PUBLIC_URL` sempre travaria quem sobe a stack sem configurar
- * nada, então o `Host` continua valendo quando o pedido vem de uma rede interna
- * (`isInternalAddress`) — o caso do `docker compose up` publicado em 127.0.0.1 e
- * do acesso pela LAN. Exposta na Internet sem a variável, a rota responde 503 e
- * a redefinição volta a ser feita por um administrador (§2.6).
+ * **Era**, até a auditoria de 2026-10-01 (relatório 003): sem a variável, o
+ * `Host` valia quando o pedido vinha de rede interna. Isso deixava o vizinho da
+ * LAN ou de contêiner — e qualquer um com `TRUST_PROXY=true` — escolher o
+ * domínio do link. A exceção existia para não travar o `docker compose up` sem
+ * configuração, mas essa instalação não tem SMTP, e a rota já responde 503
+ * `smtp_disabled` antes de chegar aqui: quem liga o `SMTP_URL` está editando o
+ * `.env` e declara também `ADMIN_PUBLIC_URL`. O boot avisa quando falta.
  */
-export function resetLinkBaseUrl(
-  proto: string,
-  host: string | undefined,
-  ip: string | undefined,
-): string | null {
-  if (config.publicUrl) return config.publicUrl;
-  if (!host || !isInternalAddress(ip)) return null;
-  return `${proto}://${host}`;
+export function resetLinkBaseUrl(): string | null {
+  return config.publicUrl || null;
 }
 
 /** Valor inválido derruba o boot, em vez de virar um ícone quebrado em silêncio. */

@@ -34,7 +34,7 @@ vi.mock('@purple-skills/db', async (original) => ({
 }));
 
 const { requireAdmin, requireCreate, requireSettingsAdmin } = await import('./auth.js');
-const { config, isInternalAddress, resetLinkBaseUrl } = await import('./config.js');
+const { config, resetLinkBaseUrl } = await import('./config.js');
 const { ownerFrom, withoutUuid } = await import('./access.js');
 const { api, csrfGuard, sessionPayload } = await import('./api.js');
 
@@ -432,7 +432,10 @@ describe('corpo ausente é 400, não 500', () => {
     const res = await chamar('post', '/api/login', { ip: '198.51.100.5', body: { identifier: 'ana@exemplo.dev', password: '' } });
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: 'unauthorized', message: 'Usuário, e-mail ou senha incorretos' });
+    expect(res.body).toEqual({
+      error: 'unauthorized',
+      message: 'Usuário, e-mail ou senha incorretos — ou conta temporariamente bloqueada por excesso de tentativas',
+    });
   });
 });
 
@@ -503,35 +506,18 @@ describe('base do link de redefinição de senha', () => {
     config.publicUrl = publicUrlOriginal;
   });
 
-  const enderecos: [string, boolean][] = [
-    ['127.0.0.1', true],
-    ['::1', true],
-    ['::ffff:172.18.0.1', true],
-    ['10.0.0.7', true],
-    ['192.168.1.10', true],
-    ['fd00::1', true],
-    ['172.15.0.1', false],
-    ['172.32.0.1', false],
-    ['203.0.113.5', false],
-    ['2001:db8::1', false],
-    ['', false],
-  ];
-
-  it.each(enderecos)('isInternalAddress(%j) = %s', (ip, esperado) => {
-    expect(isInternalAddress(ip)).toBe(esperado);
-  });
-
-  it('ADMIN_PUBLIC_URL tem prioridade e ignora o Host escolhido por quem pede', () => {
+  it('ADMIN_PUBLIC_URL é a única base, e ignora o Host escolhido por quem pede', () => {
     config.publicUrl = 'https://painel.example.com';
-    expect(resetLinkBaseUrl('https', 'evil.test', '203.0.113.5')).toBe('https://painel.example.com');
+    expect(resetLinkBaseUrl()).toBe('https://painel.example.com');
   });
 
-  it('sem ADMIN_PUBLIC_URL, o Host só vale para pedido de rede interna', () => {
-    expect(resetLinkBaseUrl('http', 'localhost:3001', '127.0.0.1')).toBe('http://localhost:3001');
-    expect(resetLinkBaseUrl('http', 'painel.intranet.br', '::ffff:10.1.2.3')).toBe('http://painel.intranet.br');
-    expect(resetLinkBaseUrl('https', 'evil.test', '203.0.113.5')).toBeNull();
-    expect(resetLinkBaseUrl('https', 'evil.test', undefined)).toBeNull();
-    expect(resetLinkBaseUrl('http', undefined, '127.0.0.1')).toBeNull();
+  /**
+   * Auditoria de 2026-10-01, relatório 003: o `Host` valia para pedido de rede
+   * interna, e o vizinho da LAN — ou qualquer um com `TRUST_PROXY=true` —
+   * escolhia o domínio do link. Sem a variável não há base nenhuma.
+   */
+  it('sem ADMIN_PUBLIC_URL não há base, nem para pedido de rede interna', () => {
+    expect(resetLinkBaseUrl()).toBeNull();
   });
 
   /** Sem `email` no corpo o fluxo para antes do banco e do envio. */
@@ -565,8 +551,15 @@ describe('base do link de redefinição de senha', () => {
     });
   });
 
-  it('pedido de rede interna continua atendido (instalação local sem configuração)', async () => {
-    const res = await pedirRedefinicao('localhost:3001', '172.18.0.1');
+  it('pedido de rede interna sem ADMIN_PUBLIC_URL também responde 503', async () => {
+    const res = await pedirRedefinicao('evil.test', '172.18.0.1');
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toMatchObject({ error: 'public_url_required' });
+  });
+
+  it('com ADMIN_PUBLIC_URL o pedido é atendido, venha de onde vier', async () => {
+    config.publicUrl = 'https://painel.example.com';
+    const res = await pedirRedefinicao('evil.test', '203.0.113.5');
     expect(res.body).toEqual({ requested: true });
   });
 
@@ -577,6 +570,10 @@ describe('base do link de redefinição de senha', () => {
    * o e-mail; a falha do SMTP ainda virava 500 só para quem tem conta.
    */
   describe('a resposta não espera o trabalho que depende de haver conta', () => {
+    beforeEach(() => {
+      config.publicUrl = 'https://painel.example.com';
+    });
+
     it('responde 200 mesmo com a consulta da conta ainda pendente', async () => {
       db.getUserByEmail.mockReturnValue(new Promise(() => {}));
 
