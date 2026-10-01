@@ -16,6 +16,8 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.31] — 2026-10-01
+
 Auditoria de 2026-10-01: dez relatórios de segurança, reverificados no código
 de `1.0.0-beta.30`. Quatro não procediam, três procediam e foram corrigidos, e
 três descreviam comportamento real que o mantenedor decidiu manter, com o
