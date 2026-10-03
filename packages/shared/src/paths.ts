@@ -155,6 +155,9 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   sample: 'text/plain',
   template: 'text/plain',
   tpl: 'text/plain',
+  // `go.sum` e afins: lista de hashes, texto puro. A conversão das linhas
+  // antigas é a `037-arquivos-sum.sql`.
+  sum: 'text/plain',
   svg: 'image/svg+xml',
   png: 'image/png',
   jpg: 'image/jpeg',

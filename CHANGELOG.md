@@ -16,6 +16,17 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.32] — 2026-10-03
+
+### Corrigido (2026-10-03)
+
+- **`go.sum` (e todo `*.sum`) aparecia como binário** no painel, no site e no
+  MCP. A extensão `sum` entrou em `MIME_BY_EXTENSION` como `text/plain`, e a
+  migration `037-arquivos-sum.sql` converte as linhas antigas de `files` e de
+  `quarantine_files` que passam na régua de texto (UTF-8 válido, sem byte
+  nulo); as que não passam ficam binárias. As skills afetadas ficam pendentes
+  no RAG; `updated_at` não muda. `go.mod` continua fora da tabela.
+
 ## [1.0.0-beta.31] — 2026-10-01
 
 Auditoria de 2026-10-01: dez relatórios de segurança, reverificados no código

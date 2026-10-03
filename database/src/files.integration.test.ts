@@ -1156,5 +1156,68 @@ describe.skipIf(!url)('arquivos: unicidade de caminho sem diferenciar caixa', ()
         await lock.query(funcaoDoTrigger('rag-stale-na-troca-de-tipo'));
       }
     });
+
+    it('`037`: o `.sum` vira texto em `files` e na quarentena, sem mexer em datas, e reaplica sem efeito', async () => {
+      await gravarComoAntes({
+        'go.sum': Buffer.from('golang.org/x/text v0.3.0 h1:abc=\n', 'utf8'),
+        'mod/GO.SUM': Buffer.from('x h1:y=\n', 'utf8'),
+        'latin1.sum': Buffer.from([0x70, 0xe7]),
+      });
+      await lock.query('UPDATE skills SET rag_stale = false WHERE uuid = $1', [uuid]);
+      const skillAntes = await lock.query('SELECT updated_at::text AS quando FROM skills WHERE uuid = $1', [uuid]);
+
+      const envio = await lock.query(
+        `INSERT INTO quarantine_skills (name, updated_at) VALUES ('Caso sum', now() - interval '1 day')
+         RETURNING uuid, updated_at::text AS quando`,
+      );
+      const quarentena = envio.rows[0].uuid as string;
+      for (const [caminho, bytes] of [
+        ['go.sum', Buffer.from('a h1:b=\n', 'utf8')],
+        ['nulo.sum', Buffer.from([0x61, 0x00])],
+      ] as const) {
+        await lock.query(
+          `INSERT INTO quarantine_files (quarantine_uuid, relative_path, binary_content, size_bytes)
+           VALUES ($1, $2, $3, $4)`,
+          [quarentena, caminho, bytes, bytes.byteLength],
+        );
+      }
+      await lock.query('UPDATE quarantine_skills SET updated_at = $2 WHERE uuid = $1', [quarentena, envio.rows[0].quando]);
+
+      await aplicar(migration('arquivos-sum'));
+
+      expect(await readTextFile(uuid, 'go.sum')).toBe('golang.org/x/text v0.3.0 h1:abc=\n');
+      expect(await readTextFile(uuid, 'mod/GO.SUM')).toBe('x h1:y=\n');
+      const depois = await foto();
+      expect(depois['go.sum']!.mime).toBe('text/plain');
+      expect(depois['latin1.sum']).toMatchObject({ texto: false, mime: 'application/octet-stream' });
+      const skill = await lock.query('SELECT rag_stale, updated_at::text AS quando FROM skills WHERE uuid = $1', [uuid]);
+      expect(skill.rows[0]).toEqual({ rag_stale: true, quando: skillAntes.rows[0].quando });
+
+      const qf = await lock.query(
+        `SELECT relative_path, text_content, mime_type FROM quarantine_files
+          WHERE quarantine_uuid = $1 ORDER BY relative_path`,
+        [quarentena],
+      );
+      expect(qf.rows).toEqual([
+        { relative_path: 'go.sum', text_content: 'a h1:b=\n', mime_type: 'text/plain' },
+        { relative_path: 'nulo.sum', text_content: null, mime_type: 'application/octet-stream' },
+      ]);
+      const qs = await lock.query('SELECT updated_at::text AS quando FROM quarantine_skills WHERE uuid = $1', [quarentena]);
+      expect(qs.rows[0].quando).toBe(envio.rows[0].quando);
+
+      // Segunda passada: nenhuma linha reescrita, nenhuma marcação.
+      await lock.query('UPDATE skills SET rag_stale = false WHERE uuid = $1', [uuid]);
+      const versoes = await lock.query(
+        'SELECT id, xmin::text AS v FROM files UNION ALL SELECT id, xmin::text FROM quarantine_files ORDER BY id',
+      );
+      await aplicar(migration('arquivos-sum'));
+      const versoesDepois = await lock.query(
+        'SELECT id, xmin::text AS v FROM files UNION ALL SELECT id, xmin::text FROM quarantine_files ORDER BY id',
+      );
+      expect(versoesDepois.rows).toEqual(versoes.rows);
+      const marcada = await lock.query('SELECT rag_stale FROM skills WHERE uuid = $1', [uuid]);
+      expect(marcada.rows[0].rag_stale).toBe(false);
+      await lock.query('DELETE FROM quarantine_skills WHERE uuid = $1', [quarentena]);
+    });
   });
 });
