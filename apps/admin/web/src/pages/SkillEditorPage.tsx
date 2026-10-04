@@ -873,7 +873,7 @@ function PropertiesTab({
     <div className="grid gap-4">
       <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <Panel title="Propriedades" icon={<SlidersHorizontal />}>
-          <SkillMetaForm values={meta} onChange={onMeta} hideDescription disabled={!canWrite} />
+          <SkillMetaForm values={meta} onChange={onMeta} disabled={!canWrite} />
           <label className="check mt-4" title="Desligada, a skill some de todo servidor e do site — direto ou por catálogo — sem perder vínculo nenhum.">
             <input type="checkbox" checked={isActive} onChange={(event) => onActive(event.target.checked)} disabled={!manages} />
             Skill ligada: desligada, não é entregue por servidor nenhum nem aparece no site (os vínculos e os catálogos ficam)
