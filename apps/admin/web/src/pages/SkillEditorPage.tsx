@@ -62,7 +62,6 @@ import {
 import { openFileState, useOpenFileFromState, useSkillFiles } from '../useSkillFiles.js';
 import { useToast } from '../components/Toast.js';
 import { useRegisterCommands, type Command } from '../components/commands.js';
-import { DescriptionBox } from './SkillViewPage.js';
 
 type Tab = 'skill' | 'files' | 'catalogs' | 'properties' | 'access';
 type DocPane = 'render' | 'source';
@@ -115,9 +114,9 @@ async function applyChange(slug: string, change: PlannedChange): Promise<void> {
 }
 
 /**
- * A ficha da skill em edição (`docs/13-fichas-e-acessos.md`): Skill (a
- * descrição e o SKILL.md), Arquivos (a árvore com o editor de cada arquivo),
- * Catálogos (a participação), Propriedades (metadados e onde está publicada)
+ * A ficha da skill em edição (`docs/13-fichas-e-acessos.md`): Skill (o
+ * SKILL.md), Arquivos (a árvore com o editor de cada arquivo), Catálogos (a
+ * participação), Propriedades (metadados, descrição e onde está publicada)
  * e Acesso (dono, visibilidade e concessões). O registro de leituras fica só
  * na leitura, na guia Auditoria — `/edit/audit` leva para lá.
  *
@@ -655,8 +654,6 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
           element={
             <SkillTab
               skill={skill}
-              description={meta.description}
-              onDescription={(description) => patchMeta({ description })}
               skillMd={skillMd}
               onSkillMd={setSkillMd}
               frontmatter={frontmatter}
@@ -738,14 +735,12 @@ export function SkillEditorPage({ session, user }: { session: Session; user: Ses
 // ------------------------------------------------------------ guia Skill ---
 
 /**
- * A descrição e o SKILL.md (renderizado ou cru, e aqui o cru é editável), com
+ * O SKILL.md (renderizado ou cru, e aqui o cru é editável), com
  * a árvore ao lado como na leitura. Escolher um arquivo o abre na guia
  * Arquivos, que é onde se cria, envia, importa e remove.
  */
 function SkillTab({
   skill,
-  description,
-  onDescription,
   skillMd,
   onSkillMd,
   frontmatter,
@@ -754,8 +749,6 @@ function SkillTab({
   onOpenFile,
 }: {
   skill: SkillDetail;
-  description: string;
-  onDescription: (value: string) => void;
   skillMd: string;
   onSkillMd: (value: string) => void;
   frontmatter: string;
@@ -767,17 +760,6 @@ function SkillTab({
 
   return (
     <>
-      <DescriptionBox description={description}>
-        <textarea
-          className="field"
-          value={description}
-          onChange={(event) => onDescription(event.target.value)}
-          rows={3}
-          disabled={!canWrite}
-          placeholder="O que esta skill faz e quando usá-la — é por ela que o agente decide acionar a skill."
-        />
-      </DescriptionBox>
-
       <div className="skill-read">
         <div className="doc-box">
           <div className="doc-tabs" role="tablist">
