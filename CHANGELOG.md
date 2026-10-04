@@ -16,6 +16,14 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.33] — 2026-10-04
+
+### Alterado (2026-10-04)
+
+- **A descrição voltou à guia Propriedades** do editor de skill. Ela continua
+  também na guia Skill, junto do SKILL.md; as duas caixas editam o mesmo valor,
+  gravado pelo Salvar do cabeçalho.
+
 ## [1.0.0-beta.32] — 2026-10-03
 
 ### Corrigido (2026-10-03)
