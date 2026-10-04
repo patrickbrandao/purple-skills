@@ -16,6 +16,13 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.34] — 2026-10-04
+
+### Alterado (2026-10-04)
+
+- **A descrição saiu da guia Skill** do editor de skill e fica só em
+  Propriedades, junto dos demais metadados. A ficha de leitura não muda.
+
 ## [1.0.0-beta.33] — 2026-10-04
 
 ### Alterado (2026-10-04)
