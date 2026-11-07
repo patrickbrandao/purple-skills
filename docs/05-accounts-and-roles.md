@@ -346,6 +346,23 @@ Duas camadas, porque nenhuma sozinha resolve:
 Fecha o risco "login sem rate limiting" da `§13` justamente quando ele cresce:
 com contas nomeadas, o atacante passa a conhecer o usuário.
 
+O login certo **não zera** a janela por IP: devolve só a própria marca
+(`forgive`), para não pesar a quem divide o NAT, e os erros anteriores continuam
+contando. **Era**, até a auditoria de 2026-11-07 (relatório 011), um `reset` do
+balde inteiro — e quem tinha uma conta qualquer alternava erros contra contas
+alheias com um acerto na própria, e a camada por IP deixava de existir: contra
+quem espalha tentativas por muitas contas, ela é a única. O `reset` ficou só no
+`/api/setup` e no login legado, que existem apenas com `users` vazia.
+
+A **troca da própria senha** (`POST /api/me/password`) tem teto próprio, **por
+conta**, com os mesmos números da trava (`LOGIN_MAX_ATTEMPTS` a cada
+`LOGIN_LOCK_SECONDS`), e responde `429` com `Retry-After` acima dele. A rota fica
+atrás da sessão, longe da janela por IP: sem o teto, uma sessão roubada testava
+a senha atual sem limite — e acertá-la vira tomada da conta —, e cada tentativa
+era um scrypt no laço (relatório 012 da auditoria de 2026-11-07). A troca certa
+não consome o teto. O teto é em memória, por container, como a janela por IP; não
+mexe em `locked_until`, então errar a senha atual não trava o login.
+
 A conta travada responde **o mesmo 401** do identificador sem conta e da senha
 errada, com o mesmo trabalho de scrypt, e o texto único menciona a trava
 ("…incorretos — ou conta temporariamente bloqueada por excesso de tentativas").

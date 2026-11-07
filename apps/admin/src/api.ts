@@ -134,6 +134,19 @@ const loginLimiter = createRateLimiter({
  */
 const limiterKey = (req: Request): string => rateLimitKey(req.ip);
 
+/**
+ * Teto da conferência da senha atual em `POST /api/me/password`, **por conta**
+ * (§2.7). A rota fica atrás da sessão, longe da janela por IP: sem este teto,
+ * uma sessão roubada testava a senha atual sem limite, e cada tentativa
+ * bloqueava o laço com um scrypt (relatório 012 da auditoria de 2026-11-07).
+ * Mesmos números da trava de login: `LOGIN_MAX_ATTEMPTS` a cada
+ * `LOGIN_LOCK_SECONDS`.
+ */
+const passwordChangeLimiter = createRateLimiter({
+  max: config.loginMaxAttempts,
+  windowSeconds: config.loginLockSeconds,
+});
+
 function param(req: Request, name: string): string {
   const value = (req.params as Record<string, unknown>)[name];
   return Array.isArray(value) ? value.join('/') : String(value ?? '');
@@ -544,7 +557,12 @@ api.post(
       return;
     }
 
-    loginLimiter.reset(limiterKey(req));
+    // Devolve só a marca deste pedido, sem zerar a janela: zerar deixava quem
+    // tem conta alternar erros contra contas alheias com um acerto na própria,
+    // e a camada por IP sumia (§2.7; relatório 011 da auditoria de 2026-11-07).
+    // O `reset` do setup e do login legado fica — os dois só existem com
+    // `users` vazia, quando não há conta alheia para atacar.
+    loginLimiter.forgive(limiterKey(req));
     issueSession(req, res, {
       uuid: outcome.user.uuid,
       role: outcome.user.role,
@@ -719,11 +737,26 @@ api.get('/api/me', (req, res) => {
 api.post(
   '/api/me/password',
   route(async (req, res) => {
+    // A sessão de bootstrap não tem uuid (e `changeOwnPassword` a recusa): cai
+    // no balde do endereço, para nem ela rodar sem teto.
+    const key = req.user?.uuid ? `user:${req.user.uuid}` : limiterKey(req);
+    if (!passwordChangeLimiter.hit(key)) {
+      const retry = passwordChangeLimiter.retryAfter(key);
+      res.setHeader('Retry-After', String(retry));
+      res.status(429).json({
+        error: 'too_many_requests',
+        message: `Tentativas demais. Espere ${Math.ceil(retry / 60)} min e tente de novo.`,
+      });
+      return;
+    }
+
     const body = jsonBody(req) as { currentPassword?: unknown; newPassword?: unknown };
     await changeOwnPassword(req.user!, {
       currentPassword: body.currentPassword,
       newPassword: body.newPassword,
     });
+    // A troca certa não pesa: só os erros consomem o teto.
+    passwordChangeLimiter.forgive(key);
     // A troca incrementa `token_version` e derruba o próprio cookie: reemitir
     // aqui evita expulsar quem acabou de trocar a senha.
     const fresh = await getUserByUuid(req.user!.uuid!);

@@ -16,6 +16,24 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+### Segurança (2026-11-07)
+
+Auditoria de 2026-11-07 (relatórios 011 e 012), os dois de severidade média.
+
+- **O login certo não zera mais a janela por IP.** Ele devolve só a própria
+  marca. Antes, `loginLimiter.reset` apagava o balde inteiro, e quem tinha uma
+  conta qualquer errava 29 vezes contra contas alheias, entrava na própria e
+  ganhava mais 30. Sobrava só a trava por conta, que não segura quem espalha
+  tentativas por muitas contas (relatório 011). O `reset` ficou no
+  `/api/setup` e no login legado, que só existem com `users` vazia. Descrito
+  no `docs/05` §2.7.
+- **A troca da própria senha tem teto por conta.** O `POST /api/me/password`
+  conferia a senha atual sem limite: uma sessão roubada a descobria por
+  tentativa, e cada erro era um scrypt no laço, sem freio (relatório 012). Agora
+  vale `LOGIN_MAX_ATTEMPTS` a cada `LOGIN_LOCK_SECONDS`, com `429` e
+  `Retry-After` acima disso. A troca certa não consome o teto, e errar ali não
+  mexe na trava do login.
+
 ## [1.0.0-beta.34] — 2026-10-04
 
 ### Alterado (2026-10-04)

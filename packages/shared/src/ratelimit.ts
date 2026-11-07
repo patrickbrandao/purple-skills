@@ -16,7 +16,11 @@
 export type RateLimiter = {
   /** `true` quando a requisição é permitida (e já foi contabilizada). */
   hit(key: string): boolean;
-  /** Zera o contador — chamado no login bem-sucedido. */
+  /**
+   * Zera o contador. No painel, só o setup e o login legado o chamam — os dois
+   * existem apenas com `users` vazia. O login por conta usa `forgive`: zerar ali
+   * deixava quem tem conta recarregar a janela com um acerto na própria.
+   */
   reset(key: string): void;
   /**
    * Devolve a marca mais recente da chave: a requisição aconteceu, mas não
