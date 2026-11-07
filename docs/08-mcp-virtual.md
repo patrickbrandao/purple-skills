@@ -242,8 +242,37 @@ duas janelas do mesmo usuário passam a se derrubar a cada chamada (10 reabertur
 em 10 chamadas, contra nenhuma hoje), e um escritório atrás de NAT vira uma
 sessão só. As saídas de verdade — balde por endereço com um teto total da
 identidade aberta, ou fatia máxima por endereço — pedem um número novo e trocam
-garantias (a de quem tem chave, quando há mais de um vMCP aberto; a de quem sai
-por NAT), então ficaram como **decisão do mantenedor**.
+garantias (~~a de quem tem chave, quando há mais de um vMCP aberto;~~ a de quem
+sai por NAT), então ficaram como **decisão do mantenedor**.
+
+> **Corrigido neste ponto pelo relatório 025 da auditoria de 2026-11-07.** A
+> "garantia de quem tem chave, quando há mais de um vMCP aberto" não existia: o
+> balde anônimo é **um por vMCP aberto**, e a soma deles cabe no teto global —
+> dez vMCPs abertos com o balde padrão de 50 são as 500 vagas de
+> `MCP_MAX_SESSIONS`, que um visitante só enche em menos de um minuto dentro do
+> limite de taxa. Daí em diante todo `initialize` novo e todo `GET /sse` novo
+> levavam 503, inclusive os de quem tem chave `psv_` de um vMCP fechado, que o
+> balde dizia proteger.
+
+**A soma dos baldes.** Desde o relatório 025, quando o teto global está cheio e
+quem pede chega **com chave própria** (identidade `virtual:<uuid>:key:<id>`), o
+`rejectWhenFull` não recusa enquanto houver sessão anônima em pé: fecha a
+anônima **mais parada de qualquer vMCP aberto**, nos dois transportes, com
+`end_reason: 'timeout'`, e a vaga fica para a chave. A vítima continua escolhida
+só por ociosidade, como dentro do balde. O que não muda:
+
+- o **anônimo** que encontra o teto cheio continua levando 503 — ele não recicla
+  sessão de ninguém, nem a de outro anônimo;
+- a chave que encontra o teto cheio **só de chaves** também leva 503: entre
+  credenciais, o que protege cada uma é o teto por credencial, não o despejo;
+- só o `initialize` (e o `GET /sse`) recicla: um POST sem sessão que não é
+  `initialize` não abre sessão, e não pode custar a vaga de ninguém;
+- a chave continua presa ao próprio teto por credencial: depois de ocupar as 50
+  vagas dela, a sessão nova derruba a mais parada **dela**, e não outra anônima.
+
+A alternativa do relatório — um teto para a soma das identidades `:open` (metade
+de `MCP_MAX_SESSIONS`, por exemplo) — pede um número novo e segue como decisão
+do mantenedor.
 
 ### 4.2 Resolução por requisição
 

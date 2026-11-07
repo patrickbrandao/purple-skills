@@ -374,6 +374,11 @@ export function readBaseUrlEnv(
  * `readSecret` (ver `assertNotPlaceholder`). Quem chama já trata `undefined`
  * como "sem chave": o driver não é montado, o boot avisa, o indexador só
  * refatia e a busca responde em modo textual sem chamar ninguém.
+ *
+ * A exceção é o `<CHAVE>_FILE` que aponta para arquivo ausente ou ilegível: o
+ * `readSecret` lança, e quem trata é `criarDriversDoAmbiente`, que põe o motivo
+ * em `problemas` e desliga só aquele driver (relatório 015 da auditoria de
+ * 2026-11-07).
  */
 export function readApiKeyEnv(
   driver: RagProviderId,

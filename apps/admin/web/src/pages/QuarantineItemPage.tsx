@@ -239,20 +239,23 @@ export function QuarantineItemPage() {
             }
           : current,
       );
+      // O carimbo do envio mudou com o salvamento, e é ele que a aprovação
+      // manda: sem reler, quem acabou de salvar recebia 409 pelo próprio texto.
+      await recarregar();
       toast.success(`"${conteudo.path}" salvo.`);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
       setSalvando(false);
     }
-  }, [conteudo, rascunho, toast, uuid]);
+  }, [conteudo, rascunho, recarregar, toast, uuid]);
 
   /** Sem diálogo: o clique em "Aprovar" já é a decisão, e o painel "Ao aprovar" mostra para onde vai. */
   async function aprovar() {
     if (!item) return;
     setOcupado(true);
     try {
-      const skill = await promoteQuarantineItem(item.uuid);
+      const skill = await promoteQuarantineItem(item.uuid, item.updatedAt);
       toast.success(`Skill "${skill.name}" criada a partir do envio.`);
       navigate(`/skills/${skill.slug}`);
     } catch (err) {

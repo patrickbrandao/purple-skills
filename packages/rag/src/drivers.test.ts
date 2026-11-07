@@ -134,6 +134,38 @@ describe('criarDriversDoAmbiente', () => {
     expect(problemas.map((p) => p.id)).toEqual(['voyage']);
     expect(problemas[0]!.motivo).toMatch(/RAG_VOYAGE_BASE_URL inválida/);
   });
+
+  it('um `_FILE` ilegível desliga só aquele driver, sem lançar', () => {
+    // Relatório 015 da auditoria de 2026-11-07: a leitura da chave ficava fora
+    // do `try`, e o ENOENT do `readSecret` derrubava o site e o mcp-public no
+    // import do módulo — com a busca semântica opcional e o driver `off`.
+    const dir = mkdtempSync(join(tmpdir(), 'ps-rag-key-'));
+    const inexistente = join(dir, 'nao-existe');
+    const comChaveDeVerdade = join(dir, 'voyage');
+    writeFileSync(comChaveDeVerdade, 'k\n');
+
+    const ambiente = () =>
+      criarDriversDoAmbiente({
+        RAG_GOOGLE_API_KEY_FILE: inexistente,
+        RAG_VOYAGE_API_KEY_FILE: comChaveDeVerdade,
+      });
+    expect(ambiente).not.toThrow();
+
+    const { resolver, comChave, problemas } = ambiente();
+    expect(comChave).toEqual(['voyage']);
+    expect(resolver('google')).toBeNull();
+    expect(resolver('voyage')).toBeInstanceOf(VoyageDriver);
+    expect(problemas.map((p) => p.id)).toEqual(['google']);
+    expect(problemas[0]!.motivo).toMatch(/^RAG_GOOGLE_API_KEY_FILE ilegível: .*ENOENT/);
+  });
+
+  it('com o único `_FILE` ilegível, nada é montado e o motivo fica registrado', () => {
+    const { comChave, problemas } = criarDriversDoAmbiente({
+      RAG_OPENAI_API_KEY_FILE: join(tmpdir(), 'ps-rag-key-inexistente', 'openai'),
+    });
+    expect(comChave).toEqual([]);
+    expect(problemas.map((p) => p.id)).toEqual(['openai']);
+  });
 });
 
 describe('modeloPadrao', () => {

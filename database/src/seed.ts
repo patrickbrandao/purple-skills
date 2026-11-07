@@ -1,6 +1,21 @@
 #!/usr/bin/env node
-/** Popula o banco com skills de exemplo — útil para demo/desenvolvimento. */
+/**
+ * Popula o banco com skills de exemplo — útil para demo/desenvolvimento.
+ *
+ * **É para instalação nova, e não mexe no que já existe** (`tasks/013` da
+ * auditoria de 2026-11-07). Cada exemplo é procurado pelo slug: o que já
+ * existe é pulado e **não ganha vínculo nenhum** — a skill com o slug de um
+ * exemplo pode ser a skill privada de alguém, e pendurá-la no `public`, que é
+ * aberto, a publicaria para qualquer visitante. Pelo mesmo motivo o `public` e
+ * o catálogo `exemplos` que já existiam ficam como estão, e só o `public`
+ * criado nesta execução pode virar o vMCP padrão.
+ *
+ * Consequência aceita: se uma execução cair entre criar as skills e vinculá-las,
+ * a seguinte acha as skills e não as vincula — o `public` fica sem elas, e quem
+ * quiser a demo inteira vincula pelo painel ou recria o banco.
+ */
 import { closeDb } from './client.js';
+import { isEntrypoint } from './migrate.js';
 import {
   createCatalog,
   createSkill,
@@ -316,11 +331,28 @@ ela aparecer.
   },
 ];
 
-async function main() {
+/** O que uma execução do seed fez — para o log e para os testes. */
+export type SeedResult = {
+  /** Os slugs criados agora, na ordem de `SEEDS`. Os que já existiam ficam de fora. */
+  created: string[];
+  /** O vMCP `public` foi criado agora (e só então recebeu as skills). */
+  createdPublicMcp: boolean;
+  /** O catálogo `exemplos` foi criado agora (e só então recebeu as skills). */
+  createdCatalog: boolean;
+  /** O `public` criado agora virou o vMCP padrão. */
+  madeDefault: boolean;
+};
+
+/**
+ * O seed inteiro. Exportado para os testes; o CLI é o bloco do fim do arquivo.
+ * Só o que **esta execução** criou entra em vínculo — ver o cabeçalho.
+ */
+export async function runSeed(): Promise<SeedResult> {
+  const created: string[] = [];
   for (const seed of SEEDS) {
     const existing = await getSkillSummary(seed.slug, { visibility: 'all' });
     if (existing) {
-      console.log(`[seed] já existe: ${seed.slug}`);
+      console.log(`[seed] já existe, sem vínculo: ${seed.slug}`);
       continue;
     }
 
@@ -342,24 +374,28 @@ async function main() {
     }
 
     console.log(`[seed] criada: ${seed.slug}`);
+    created.push(seed.slug);
   }
 
-  await seedDefaultMcp();
-  await seedCatalog();
+  const criadas = new Set(created);
+  const mcp = await seedDefaultMcp(criadas);
+  const createdCatalog = await seedCatalog(criadas);
+  return { created, createdPublicMcp: mcp.created, createdCatalog, madeDefault: mcp.madeDefault };
 }
 
 /**
- * Um catálogo de demonstração (`docs/11-catalogos.md`) com todas as skills de
- * exemplo como membros ativos, ligado e **sem vínculo com vMCP nenhum**: ele
- * existe para o painel mostrar o que é um catálogo e para alguém vinculá-lo
- * a um servidor com um gesto só. Sem o vínculo, não publica nada — o
- * rascunho continua invisível fora do painel. Idempotente pelo slug, como as
- * skills.
+ * Um catálogo de demonstração (`docs/11-catalogos.md`) com as skills de
+ * exemplo **criadas nesta execução** como membros ativos, ligado e **sem
+ * vínculo com vMCP nenhum**: ele existe para o painel mostrar o que é um
+ * catálogo e para alguém vinculá-lo a um servidor com um gesto só. Sem o
+ * vínculo, não publica nada — o rascunho continua invisível fora do painel.
+ * Idempotente pelo slug, como as skills: o `exemplos` que já existe não é
+ * tocado.
  */
-async function seedCatalog() {
+async function seedCatalog(criadas: ReadonlySet<string>): Promise<boolean> {
   if (await getCatalog('exemplos')) {
     console.log('[seed] já existe: catálogo exemplos');
-    return;
+    return false;
   }
 
   const catalog = await createCatalog(
@@ -372,47 +408,61 @@ async function seedCatalog() {
     'web-admin',
     SEED_ACTOR,
   );
-  await setCatalogSkills(
-    catalog.uuid,
-    SEEDS.map((seed) => ({ slug: seed.slug })),
-    'web-admin',
-    SEED_ACTOR,
+  const membros = SEEDS.filter((seed) => criadas.has(seed.slug));
+  if (membros.length > 0) {
+    await setCatalogSkills(
+      catalog.uuid,
+      membros.map((seed) => ({ slug: seed.slug })),
+      'web-admin',
+      SEED_ACTOR,
+    );
+  }
+  console.log(
+    `[seed] criado catálogo: exemplos (${membros.length} skill(s) de exemplo, sem vínculo com vMCP)`,
   );
-  console.log('[seed] criado catálogo: exemplos (com as skills de exemplo, sem vínculo com vMCP)');
+  return true;
 }
 
 /**
  * O `/mcp` só responde quando há um vMCP padrão
  * (`docs/09-mcp-padrao-e-skills-flutuantes.md`), então a demo cria o `public`:
- * aberto, sem dono, com as skills de exemplo nas ferramentas. O rascunho fica
- * de fora — é a skill flutuante. Se a instalação já escolheu um padrão, ele é
- * respeitado.
+ * aberto, sem dono, com as skills de exemplo **criadas nesta execução** nas
+ * ferramentas. O rascunho fica de fora — é a skill flutuante.
+ *
+ * Só o `public` criado agora vira padrão, e só se a instalação ainda não tem
+ * um: o `public` que já existia é de alguém (ou é o do backfill da `011`) e
+ * promovê-lo é decisão de quem administra, não da demo.
  */
-async function seedDefaultMcp() {
-  let mcp = await getVirtualMcp('public');
-  if (mcp) {
-    console.log('[seed] já existe: MCP virtual public');
-  } else {
-    mcp = await createVirtualMcp(
-      {
-        slug: 'public',
-        name: 'Public',
-        description: 'Catálogo público desta instalação, com as skills de exemplo.',
-        // A mensagem de sistema vai ao agente, então é em inglês, como o
-        // texto-base do mcp-public que ela completa.
-        instructions:
-          'These are the example skills of a demo installation: commit messages, code review, ' +
-          'full-text search in Postgres, Node.js Dockerfiles and MCP servers in TypeScript. ' +
-          'Search before starting a task in one of these areas and follow the skill you load.',
-        isOpen: true,
-        ownerUserUuid: null,
-      },
-      'web-admin',
-      SEED_ACTOR,
-    );
+async function seedDefaultMcp(
+  criadas: ReadonlySet<string>,
+): Promise<{ created: boolean; madeDefault: boolean }> {
+  if (await getVirtualMcp('public')) {
+    console.log('[seed] já existe: MCP virtual public (não é tocado)');
+    return { created: false, madeDefault: false };
+  }
+
+  const mcp = await createVirtualMcp(
+    {
+      slug: 'public',
+      name: 'Public',
+      description: 'Catálogo público desta instalação, com as skills de exemplo.',
+      // A mensagem de sistema vai ao agente, então é em inglês, como o
+      // texto-base do mcp-public que ela completa.
+      instructions:
+        'These are the example skills of a demo installation: commit messages, code review, ' +
+        'full-text search in Postgres, Node.js Dockerfiles and MCP servers in TypeScript. ' +
+        'Search before starting a task in one of these areas and follow the skill you load.',
+      isOpen: true,
+      ownerUserUuid: null,
+    },
+    'web-admin',
+    SEED_ACTOR,
+  );
+  const publicadas = SEEDS.filter((seed) => seed.inPublicMcp && criadas.has(seed.slug));
+  if (publicadas.length > 0) {
     await setVirtualMcpSkills(
       mcp.uuid,
-      SEEDS.filter((seed) => seed.inPublicMcp).map((seed) => ({
+      publicadas.map((seed) => ({
         slug: seed.slug,
         asSkill: true,
         asPrompt: false,
@@ -421,23 +471,27 @@ async function seedDefaultMcp() {
       'web-admin',
       SEED_ACTOR,
     );
-    console.log('[seed] criado MCP virtual: public (aberto, com as skills públicas)');
   }
+  console.log(`[seed] criado MCP virtual: public (aberto, ${publicadas.length} skill(s) de exemplo)`);
 
-  if ((await resolveDefaultVirtualMcp()).status === 'none') {
-    await setDefaultVirtualMcp(mcp.uuid, 'web-admin', SEED_ACTOR);
-    console.log('[seed] MCP padrão: public');
+  if ((await resolveDefaultVirtualMcp()).status !== 'none') {
+    return { created: true, madeDefault: false };
   }
+  await setDefaultVirtualMcp(mcp.uuid, 'web-admin', SEED_ACTOR);
+  console.log('[seed] MCP padrão: public');
+  return { created: true, madeDefault: true };
 }
 
-main()
-  .then(async () => {
-    await closeDb();
-    console.log('[seed] concluído');
-    process.exit(0);
-  })
-  .catch(async (err) => {
-    console.error('[seed] erro:', err.message);
-    await closeDb();
-    process.exit(1);
-  });
+if (isEntrypoint(process.argv[1], import.meta.url)) {
+  runSeed()
+    .then(async () => {
+      await closeDb();
+      console.log('[seed] concluído');
+      process.exit(0);
+    })
+    .catch(async (err) => {
+      console.error('[seed] erro:', err.message);
+      await closeDb();
+      process.exit(1);
+    });
+}

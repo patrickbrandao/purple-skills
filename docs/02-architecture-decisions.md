@@ -383,6 +383,15 @@ Duas credenciais valem, ambas por `Authorization: Bearer`:
   medido e recusado, e o que ainda é decisão de capacidade estão em
   [`08-mcp-virtual.md`](08-mcp-virtual.md) §4.1 (relatório 048 da auditoria de
   2026-09-19).
+- **O balde anônimo é um por vMCP aberto, e a soma deles não tira a vaga de
+  quem tem chave.** Dez vMCPs abertos com o balde padrão de 50 somam as 500 vagas
+  do teto global; cheio dessa forma, o teto recusava o `initialize` de **todo**
+  mundo, inclusive o da chave `psv_` de um vMCP fechado. Com o teto global cheio,
+  quem chega com chave própria recicla a sessão anônima mais parada de qualquer
+  vMCP aberto (`end_reason: 'timeout'`) em vez de levar 503; o anônimo e a chave
+  diante de um teto cheio só de chaves continuam levando 503. Detalhes em
+  [`08-mcp-virtual.md`](08-mcp-virtual.md) §4.1 (relatório 025 da auditoria de
+  2026-11-07).
 
 ### 7.4 Padrão de secrets (env vars)
 

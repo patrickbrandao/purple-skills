@@ -17,8 +17,8 @@ import {
   nextFreeUsername,
   notFound,
   recordAccountAudit,
-  registerFailedLogin,
   registerSuccessfulLogin,
+  reserveLoginAttempt,
   revokeApiKey,
   unauthorized,
   updateUser,
@@ -330,13 +330,23 @@ export async function loginWithPassword(input: {
     return genericError;
   }
 
-  if (!verifyPassword(password, user.passwordHash)) {
-    await registerFailedLogin(user.uuid, {
-      maxAttempts: config.loginMaxAttempts,
-      lockSeconds: config.loginLockSeconds,
-    });
+  // A tentativa é contada **antes** da senha, num UPDATE que só passa com a
+  // conta destravada. **Era**, até a auditoria de 2026-11-07 (relatório 026), a
+  // trava lida no SELECT acima e o erro gravado depois do scrypt: numa rajada
+  // simultânea todos os SELECTs voltavam antes do primeiro erro gravado, e a
+  // conta conferia muito mais que `LOGIN_MAX_ATTEMPTS` senhas. A leitura acima
+  // fica como atalho barato para a conta já travada.
+  const permitida = await reserveLoginAttempt(user.uuid, {
+    maxAttempts: config.loginMaxAttempts,
+    lockSeconds: config.loginLockSeconds,
+  });
+  if (!permitida) {
+    gastarTrabalhoDeSenha(password);
     return genericError;
   }
+
+  // A falha já foi contada na reserva; o acerto zera o contador abaixo.
+  if (!verifyPassword(password, user.passwordHash)) return genericError;
 
   await registerSuccessfulLogin(user.uuid);
   await adoptOrphansFor(user);
@@ -802,6 +812,16 @@ export async function confirmPasswordReset(
 
   const consumed = await consumeResetToken(hashToken(token));
   if (!consumed) throw badRequest('Link de redefinição inválido, expirado ou já usado');
+
+  // Conta desativada depois do pedido: o link foi queimado, mas não troca a
+  // senha — senão a reativação herdaria a senha de quem portava o link. A
+  // mensagem é a de sempre, para não contar que a conta foi desativada
+  // (relatório 014 da auditoria de 2026-11-07; a migration 038 fecha os links
+  // na própria desativação, e esta é a guarda para o que escapar dela).
+  const owner = await getUserByUuid(consumed.userUuid);
+  if (!owner || !owner.isActive) {
+    throw badRequest('Link de redefinição inválido, expirado ou já usado');
+  }
 
   const updated = await updateUser(consumed.userUuid, {
     passwordHash: hashPassword(newPassword as string),

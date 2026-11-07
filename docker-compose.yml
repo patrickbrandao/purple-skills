@@ -127,6 +127,11 @@ x-rag-providers: &rag-providers
 # Aumentou ZIP_MAX_UNCOMPRESSED_BYTES ou ADMIN_MAX_UPLOAD_BYTES no .env? Suba
 # APP_MEM_LIMIT na mesma conta (~2 × o teto descomprimido + 200 MB).
 #
+# A conta é de UM import por vez, e é isso que o painel garante: o
+# ADMIN_MAX_CONCURRENT_IMPORTS (padrão 1) recusa com 503 o import seguinte
+# enquanto um está em andamento. Subir o teto de imports pede multiplicar a
+# memória (relatório 024 da auditoria de 2026-11-07).
+#
 # `mem_limit`/`memswap_limit` são os campos que o `docker compose up` aplica de
 # fato — é o mesmo par já usado pelo mcp-inspector. `deploy.resources.limits`
 # NÃO serve aqui: fora do Swarm o `deploy` é ignorado em silêncio e o arquivo
@@ -217,6 +222,7 @@ services:
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-}
       ADMIN_ALLOWED_ORIGINS: ${ADMIN_ALLOWED_ORIGINS:-}
       ADMIN_MAX_UPLOAD_BYTES: ${ADMIN_MAX_UPLOAD_BYTES:-}
+      ADMIN_MAX_CONCURRENT_IMPORTS: ${ADMIN_MAX_CONCURRENT_IMPORTS:-}
       # Base das URLs /virtual/<slug>/mcp mostradas no snippet de conexão de
       # cada MCP virtual (docs/08-mcp-virtual.md). Vazio = o painel avisa.
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-}

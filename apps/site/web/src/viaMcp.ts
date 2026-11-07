@@ -59,7 +59,7 @@ export function fraseViaMcp(via: ViaMcp, total: number, slug: string): string {
 
   const saidas = [
     via.prompt && 'como prompt, com o próprio slug',
-    via.resource && `como resource, em skill://${slug}`,
+    via.resource && `como resource, em skill://${slug}/SKILL.md`,
   ].filter(Boolean);
   return `${publicada}, sem a porta skill: get_skill não a encontra. Ela sai ${saidas.join(', e ')}.`;
 }

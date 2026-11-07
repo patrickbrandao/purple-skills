@@ -166,7 +166,11 @@ skill como qualquer outra, com o pacote já conferido.
 14. **O envio tem teto de arquivos**, o mesmo do pacote
     (`DEFAULT_MAX_ZIP_ENTRIES`, 512): um envio é o retrato de um `.zip`, e o que
     não cabe num não deve caber no outro. Sem ele, a criação um a um não tinha
-    limite nenhum — medido, 600 chamadas gravaram 602 arquivos num envio.
+    limite nenhum — medido, 600 chamadas gravaram 602 arquivos num envio. O
+    teto vale para o `POST` e para o `PUT` de **caminho novo** (sobrescrever não
+    conta), e é contado com o envio travado. **Era**, até a auditoria de
+    2026-11-07 (relatório 016), conferido só no `POST` e antes da trava: o `PUT`
+    criava acima do teto, e dois `POST` simultâneos passavam os dois.
 15. **A lista de tags em bloco do YAML é lida.** `tags:` seguida de `- alfa` —
     a forma que a especificação Agent Skills usa com mais frequência — era
     descartada pelo parser de frontmatter, e a skill nascia sem tag nenhuma,
@@ -557,6 +561,13 @@ container. Quem precisa desse `.tar.gz` sobe `ZIP_MAX_UNCOMPRESSED_BYTES` para
 ~2 × o conteúdo e sobe o `APP_MEM_LIMIT` na mesma conta (`.env.example`), ou
 reempacota em `.zip`.
 
+A conta de memória acima é de **um** import, e o painel garante que seja assim:
+`ADMIN_MAX_CONCURRENT_IMPORTS` (padrão 1) recusa com **503** e `Retry-After` o
+import seguinte enquanto um está em andamento, antes de ler o corpo. **Era**,
+até a auditoria de 2026-11-07 (relatório 024), sem fila: um `.zip` de 1–2 MB com
+20 000 registros no diretório central custa centenas de MB para ser lido, e
+poucos em paralelo de uma conta de editor derrubavam o painel por OOM.
+
 `BUNDLE_MAX_ENTRIES` não é o 512 de `ZIP_MAX_ENTRIES` de propósito: o `.zip` de
 um repositório do GitHub passa das 512 entradas só de código e documentação, e
 o teto que protege o pacote de uma skill fecharia a porta justamente para o
@@ -721,7 +732,13 @@ direta; as outras são minhas.
     janela entre essa conferência e a gravação é fechada no banco: a rota passa
     o destino conferido (`expectedTargets`) e, se o gravado for outro quando a
     transação trava o envio, a resposta é **409** — ninguém publica o que não
-    foi conferido.
+    foi conferido. O painel manda também a **versão que exibiu**
+    (`updatedAt` do envio), e o banco a compara com o envio travado: arquivo ou
+    destino mudado depois da leitura é **409** "mudou depois que você o abriu".
+    **Era**, até a auditoria de 2026-11-07 (relatório 023), só o destino
+    conferido, e só na janela entre a rota e a gravação: o que outro editor
+    gravasse entre a leitura e o clique ia ao ar sem ninguém ter lido. Sem o
+    campo, a rota se comporta como antes.
 32. **O destino é editável na ficha** (mantenedor), num painel "Ao aprovar",
     por quem enxerga o envio (§3.1). ~~O diálogo de aprovação diz para onde a
     skill vai~~, e o botão **Aprovar** fica desligado quando algum destino trava a

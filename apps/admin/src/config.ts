@@ -55,6 +55,12 @@ export const config = {
   /** Tamanho máximo de upload de .zip. */
   maxUploadBytes: readIntEnv('ADMIN_MAX_UPLOAD_BYTES', 64 * 1024 * 1024, { min: 1024 }),
   /**
+   * Importações de pacote em andamento ao mesmo tempo, neste processo. O
+   * `APP_MEM_LIMIT` do compose é a conta de **um** import no pior caso; cada
+   * vaga a mais multiplica essa conta (relatório 024 da auditoria de 2026-11-07).
+   */
+  maxConcurrentImports: readIntEnv('ADMIN_MAX_CONCURRENT_IMPORTS', 1, { min: 1, max: 64 }),
+  /**
    * Flag `Secure` do cookie de sessão. Por padrão acompanha o protocolo da
    * requisição (funciona tanto atrás de HTTPS quanto em HTTP local); pode ser
    * forçada com `ADMIN_COOKIE_SECURE=true|false` (também `1`/`0`, `yes`/`no`,
@@ -122,6 +128,14 @@ export const config = {
 export const SESSION_COOKIE = 'ps_admin';
 /** Cookie de estado do OIDC (nonce + PKCE + destino), curto e httpOnly. */
 export const OIDC_COOKIE = 'ps_oidc';
+/**
+ * O motivo de um login por SSO recusado, para a tela de login. Vai em cookie
+ * curto, e não na querystring: texto livre na URL era exibido como erro oficial
+ * a quem abrisse um link forjado (relatório 019 da auditoria de 2026-11-07). Um
+ * site terceiro não grava cookie neste domínio. Sem `httpOnly`, de propósito: é
+ * o cliente que o lê e apaga, e ele só carrega a mensagem.
+ */
+export const SSO_ERROR_COOKIE = 'ps_sso_error';
 
 /**
  * OIDC só liga com issuer, client id e client secret presentes.

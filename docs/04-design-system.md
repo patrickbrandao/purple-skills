@@ -257,6 +257,20 @@ com a homepage, que não tem leitor.
 > idêntica entre os dois apps e o bloco de CSS era o mesmo no `app.css` e no
 > `admin.css`.
 
+**O teto das cores vale também para o SKILL.md renderizado.** O leitor desiste
+da cor acima de `HIGHLIGHT_MAX_CHARS` (250 000 caracteres do trecho mostrado), e
+desde o relatório 028 da auditoria de 2026-11-07 o `Markdown.tsx` usa o mesmo
+número: acima dele o markdown sai inteiro, só que sem `rehype-highlight` — sem
+classes `hljs`, o código fica na cor do texto. O motivo é o `detect: true`: cada
+bloco sem linguagem passa pela auto-detecção do highlight.js, que testa todas as
+gramáticas na thread principal, e um bloco gigante travava a aba de quem abria a
+ficha (no teste, 250 mil caracteres levaram 18 s com as cores e 2,5 s sem).
+`Markdown.tsx` **não** está na lista de cópias, mas hoje é igual nos dois apps,
+e o teste do teto está nos dois `Markdown.test.ts`; mudou um, mude o outro.
+
+> **Era**, até o relatório 028: o `rehype-highlight` rodava sobre o SKILL.md
+> inteiro, sem teto, enquanto o leitor de arquivos já tinha o dele.
+
 ### Camadas e o `Panel` grudento
 
 > **Revogado em parte pelo [`10`](10-admin-canvas-e-sessoes.md):** o painel ganhou

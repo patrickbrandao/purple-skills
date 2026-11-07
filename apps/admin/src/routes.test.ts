@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import AdmZip from 'adm-zip';
+import { hashPassword } from '@purple-skills/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 process.env.ADMIN_PASSWORD ??= 'senha-de-teste';
@@ -15,6 +16,12 @@ const db = vi.hoisted(() => ({
   createUser: vi.fn(),
   recordAccountAudit: vi.fn(),
   listAuditPage: vi.fn(),
+  getUserByLogin: vi.fn(),
+  getUserByUuid: vi.fn(),
+  registerFailedLogin: vi.fn(),
+  registerSuccessfulLogin: vi.fn(),
+  reserveLoginAttempt: vi.fn(),
+  updateUser: vi.fn(),
 }));
 
 // Só as duas leituras que as rotas anônimas fazem são trocadas — mais as duas
@@ -31,12 +38,20 @@ vi.mock('@purple-skills/db', async (original) => ({
   recordAccountAudit: db.recordAccountAudit,
   // A trilha de auditoria: o teste da paginação de `/api/audit` confere o que chega aqui.
   listAuditPage: db.listAuditPage,
+  // O login por conta e a troca da própria senha: os testes dos limitadores
+  // (relatórios 011 e 012 da auditoria de 2026-11-07) passam por eles.
+  getUserByLogin: db.getUserByLogin,
+  getUserByUuid: db.getUserByUuid,
+  registerFailedLogin: db.registerFailedLogin,
+  registerSuccessfulLogin: db.registerSuccessfulLogin,
+  reserveLoginAttempt: db.reserveLoginAttempt,
+  updateUser: db.updateUser,
 }));
 
 const { requireAdmin, requireCreate, requireSettingsAdmin } = await import('./auth.js');
 const { config, resetLinkBaseUrl } = await import('./config.js');
 const { ownerFrom, withoutUuid } = await import('./access.js');
-const { api, csrfGuard, sessionPayload } = await import('./api.js');
+const { api, csrfGuard, limitarImports, sessionPayload } = await import('./api.js');
 
 beforeEach(() => {
   db.countUsers.mockReset();
@@ -47,6 +62,13 @@ beforeEach(() => {
   db.nextFreeUsername.mockImplementation(async (base: string) => base);
   db.createUser.mockReset();
   db.recordAccountAudit.mockReset();
+  db.getUserByLogin.mockReset();
+  db.getUserByUuid.mockReset();
+  db.registerFailedLogin.mockReset();
+  db.registerSuccessfulLogin.mockReset();
+  db.reserveLoginAttempt.mockReset();
+  db.reserveLoginAttempt.mockResolvedValue(true);
+  db.updateUser.mockReset();
 });
 
 afterEach(() => {
@@ -775,6 +797,98 @@ describe('limitador das rotas de credencial', () => {
     }
     expect((await tentar('2001:db8:9:9::cccc')).statusCode).toBe(429);
   });
+
+  // Relatório 011 da auditoria de 2026-11-07: o acerto por conta zerava a
+  // janela, e quem tinha conta alternava erros contra contas alheias com um
+  // acerto na própria — o teto por IP sumia. O acerto agora só devolve a
+  // própria marca.
+  it('login por conta bem-sucedido não zera a janela: os erros anteriores continuam contando', async () => {
+    const senha = 'senha-certa-do-teste';
+    db.getUserByLogin.mockImplementation(async (identifier: string) =>
+      identifier === 'bia'
+        ? {
+            uuid: '00000000-0000-4000-8000-000000000b1a',
+            username: 'bia',
+            email: 'bia@exemplo.dev',
+            name: 'Bia',
+            role: 'membro',
+            isActive: true,
+            passwordHash: hashPassword(senha),
+            tokenVersion: 0,
+            lockedUntil: null,
+            failedAttempts: 0,
+            mustChangePassword: false,
+          }
+        : null,
+    );
+    const ip = '203.0.113.77';
+
+    for (let i = 1; i < TETO; i += 1) expect((await tentar(ip)).statusCode).toBe(401);
+
+    const entrou = await chamar('post', '/api/login', { ip, body: { identifier: 'bia', password: senha } });
+    expect(entrou.body).toMatchObject({ authenticated: true });
+    expect(db.registerSuccessfulLogin).toHaveBeenCalledTimes(1);
+
+    // O acerto não consumiu vaga: a próxima é a TETO-ésima da janela, e a
+    // seguinte já é barrada. Com o `reset` antigo, vinham mais TETO.
+    expect((await tentar(ip)).statusCode).toBe(401);
+    expect((await tentar(ip)).statusCode).toBe(429);
+  });
+});
+
+/**
+ * Relatório 012 da auditoria de 2026-11-07: `POST /api/me/password` conferia a
+ * senha atual sem teto nenhum. Uma sessão roubada testava a senha à vontade, e
+ * cada tentativa era um scrypt no laço.
+ */
+// Cada tentativa é um scrypt de verdade: em paralelo com a suíte, passa dos 5 s padrão.
+describe('limitador da troca da própria senha', { timeout: 30_000 }, () => {
+  const TETO = config.loginMaxAttempts;
+  const ATUAL = 'senha-atual-do-teste';
+  const NOVA = 'senha-nova-bem-comprida';
+
+  function conta(uuid: string) {
+    const user = { uuid, username: 'caio', email: 'caio@exemplo.dev', name: 'Caio', role: 'membro', mustChangePassword: false, legacy: false };
+    db.getUserByUuid.mockResolvedValue({ ...user, isActive: true, passwordHash: hashPassword(ATUAL), tokenVersion: 0 });
+    db.updateUser.mockResolvedValue({ ...user, isActive: true, tokenVersion: 1 });
+    return user;
+  }
+
+  const trocar = (user: Record<string, unknown>, currentPassword: string) =>
+    chamar('post', '/api/me/password', { user, ip: '198.51.100.90', body: { currentPassword, newPassword: NOVA } });
+
+  it(`a ${TETO + 1}ª conferência errada da mesma conta é 429, sem chegar à senha`, async () => {
+    const user = conta('00000000-0000-4000-8000-0000000000c1');
+
+    for (let i = 0; i < TETO; i += 1) {
+      const res = await trocar(user, 'errada');
+      expect(res.statusCode).toBe(401);
+    }
+    expect(db.getUserByUuid).toHaveBeenCalledTimes(TETO);
+
+    const barrado = await trocar(user, 'errada');
+    expect(barrado.statusCode).toBe(429);
+    expect(barrado.body).toMatchObject({ error: 'too_many_requests' });
+    expect(Number(barrado.headers['retry-after'])).toBeGreaterThan(0);
+    // Barrado antes de ler a conta: nem leitura, nem scrypt.
+    expect(db.getUserByUuid).toHaveBeenCalledTimes(TETO);
+
+    // O teto é da conta, não do endereço: outra conta no mesmo IP segue.
+    const outra = conta('00000000-0000-4000-8000-0000000000c2');
+    expect((await trocar(outra, 'errada')).statusCode).toBe(401);
+  });
+
+  it('a troca certa não consome o teto', async () => {
+    const user = conta('00000000-0000-4000-8000-0000000000c3');
+
+    for (let i = 1; i < TETO; i += 1) await trocar(user, 'errada');
+    const trocou = await trocar(user, ATUAL);
+    expect(trocou.body).toEqual({ changed: true });
+    expect(db.updateUser).toHaveBeenCalledTimes(1);
+
+    expect((await trocar(user, 'errada')).statusCode).toBe(401);
+    expect((await trocar(user, 'errada')).statusCode).toBe(429);
+  });
 });
 
 /**
@@ -999,5 +1113,68 @@ describe('GET /api/audit: paginação vinda da query string', () => {
     // Com `Number(...)`, `1e30` chegava ao banco como 1e30.
     await chamar('get', '/api/audit', { query: { limit: '10.9', offset: '1e30' } });
     expect(paginaPedida()).toMatchObject({ limit: 10, offset: 1 });
+  });
+});
+
+/**
+ * Relatório 024 da auditoria de 2026-11-07: um .zip de 1–2 MB com milhares de
+ * registros custa centenas de MB para ser lido, e sem fila poucos imports em
+ * paralelo derrubavam o painel por OOM. O teto padrão é um import por vez.
+ */
+describe('limitarImports', () => {
+  function respostaComEventos() {
+    const ouvintes: Record<string, (() => void)[]> = {};
+    return Object.assign(fakeResponse(), {
+      on(evento: string, fn: () => void) {
+        (ouvintes[evento] ??= []).push(fn);
+        return this;
+      },
+      emitir(evento: string) {
+        for (const fn of ouvintes[evento] ?? []) fn();
+      },
+    });
+  }
+
+  it('o segundo import com o primeiro em andamento é 503 com Retry-After, sem seguir', () => {
+    expect(config.maxConcurrentImports).toBe(1);
+    const primeiro = respostaComEventos();
+    const segue1 = vi.fn();
+    limitarImports({} as never, primeiro as never, segue1);
+    expect(segue1).toHaveBeenCalledTimes(1);
+
+    const segundo = respostaComEventos();
+    const segue2 = vi.fn();
+    limitarImports({} as never, segundo as never, segue2);
+    expect(segue2).not.toHaveBeenCalled();
+    expect(segundo.statusCode).toBe(503);
+    expect(segundo.headers['retry-after']).toBe('5');
+    expect(segundo.body).toMatchObject({ error: 'busy' });
+
+    // `finish` e `close` disparam os dois numa resposta normal: libera uma vez só.
+    primeiro.emitir('finish');
+    primeiro.emitir('close');
+
+    const terceiro = respostaComEventos();
+    const segue3 = vi.fn();
+    limitarImports({} as never, terceiro as never, segue3);
+    expect(segue3).toHaveBeenCalledTimes(1);
+
+    const quarto = respostaComEventos();
+    limitarImports({} as never, quarto as never, vi.fn());
+    expect(quarto.statusCode).toBe(503);
+
+    // Cliente que desconecta também libera.
+    terceiro.emitir('close');
+    const quinto = respostaComEventos();
+    const segue5 = vi.fn();
+    limitarImports({} as never, quinto as never, segue5);
+    expect(segue5).toHaveBeenCalledTimes(1);
+    quinto.emitir('close');
+  });
+
+  it('está na pilha do import, antes do multer', () => {
+    const pilha = handlers('post', '/api/skills/import');
+    expect(pilha).toContain(limitarImports);
+    expect(pilha.indexOf(limitarImports)).toBeLessThan(pilha.length - 2);
   });
 });

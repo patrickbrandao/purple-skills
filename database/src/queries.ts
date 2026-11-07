@@ -509,7 +509,9 @@ function surfaceFlag(alias: 'v' | 'vc', surface: VirtualSurface): SQL {
  * por servidor: os vínculos **diretos** (`direct: true`, as portas do
  * vínculo) e os servidores alcançados **só por catálogo** (`direct: false`,
  * as portas são a união dos catálogos ligados, com participação ativa,
- * vinculados a ele, e `catalogs` diz quais). Um servidor com vínculo direto
+ * vinculados a ele, e `catalogs` diz quais — mas só nomeia o catálogo que a
+ * leitura enxerga: todos em `'all'`, o público ou o da conta com `viewer`, só
+ * o público no site). Um servidor com vínculo direto
  * não aparece pelo caminho do catálogo: o direto sobrescreve
  * (`docs/11-catalogos.md` §3.2). Numa leitura `'all'` vêm todos; com
  * `viewer`, só os que a conta vê (aberto e ligado, dela ou concedido a ela);
@@ -564,7 +566,16 @@ function skillColumns(options: ReadOptions): SQL {
   // por um catálogo privado ou não) — o que muda é só o que a lista nomeia: no
   // site, catálogo privado não é nomeado (`tasks/002`). Sem isto, a resposta
   // anônima dizia por qual catálogo fechado a skill chegava a um vMCP aberto.
-  const catalogNameFilter = mode.kind === 'open' ? sql`c.is_public` : sql`true`;
+  // No `viewer`, a régua da lista `catalogs` logo abaixo (`docs/12` §3.1): só
+  // o público ou o que a conta possui ou recebeu — `c.is_active` já vem do
+  // JOIN. Antes ele nomeava ali o catálogo privado de outra conta que a lista
+  // `catalogs` da mesma ficha escondia (`tasks/027` de 2026-11-07).
+  const catalogNameFilter =
+    mode.kind === 'open'
+      ? sql`c.is_public`
+      : mode.kind === 'viewer'
+        ? sql`(c.is_public OR ${catalogSeenBy(mode.user)})`
+        : sql`true`;
   // A subconsulta do dono roda em toda visibilidade desde o `033`: o site
   // credita o dono por `@username` (`docs/19` decisão 11), e o username é o
   // dado que existe para ser creditado. Ela custa uma busca pela PK de `users`
@@ -1509,6 +1520,11 @@ export async function createSkill(
         // O SKILL.md e os anexos numa statement só (fatiada por tamanho):
         // importar um `.zip` grande era uma ida ao banco por arquivo
         // (`tasks/049`). Nenhum anexo é `SKILL.md` — o filtro acima os tirou.
+        // A skill acabou de nascer: só o próprio pacote pode colidir.
+        await assertFileTreeTx(tx, 'files', uuid, [SKILL_MD, ...attachments.map((f) => f.path)], {
+          againstTree: false,
+          skillMdIsFile: true,
+        });
         await upsertFilesTx(tx, uuid, [
           { path: SKILL_MD, buffer: Buffer.from(input.skillMd, 'utf8') },
           ...attachments,
@@ -2012,7 +2028,9 @@ export type FileInput = { relativePath: string; content: Buffer | string };
 
 /**
  * Cria ou sobrescreve um arquivo da skill (upsert, em qualquer caixa). Para
- * criar sem risco de sobrescrever, `createFile`.
+ * criar sem risco de sobrescrever, `createFile`. Caminho **novo** que colide
+ * com arquivo ou pasta — ou fica sob o `SKILL.md` — é o 409 de `createFile`
+ * (`assertFileTreeTx`); a sobrescrita não é conferida.
  *
  * **Concorrência** (`tasks/022`): a transação começa pela fila das escritas de
  * arquivo da skill (`lockSkillFilesTx`), como `createFile`, `setFiles`,
@@ -2044,6 +2062,15 @@ export async function setFile(
     await db().transaction(async (tx) => {
       await lockSkillFilesTx(tx, existing.uuid);
       const previous = await readFileFrom(tx, existing.uuid, path);
+      // Caminho novo não pode colidir com arquivo ou pasta (`assertFileTreeTx`);
+      // sobrescrever o mesmo caminho é o que o upsert faz, e segue livre.
+      if (!previous) {
+        await assertFileTreeTx(tx, 'files', existing.uuid, [path], {
+          againstTree: true,
+          allNew: true,
+          skillMdIsFile: true,
+        });
+      }
       await upsertFileTx(tx, existing.uuid, path, buffer);
       await auditTx(tx, {
         skillUuid: existing.uuid,
@@ -2360,6 +2387,12 @@ export async function setFiles(
 
   await db().transaction(async (tx) => {
     await lockSkillFilesTx(tx, existing.uuid);
+    // Com `replace`, a árvore gravada não conta: o que não veio vai sair. Sem
+    // ele, o caminho novo é conferido contra o que fica.
+    await assertFileTreeTx(tx, 'files', existing.uuid, normalized.map((f) => f.path), {
+      againstTree: !replace,
+      skillMdIsFile: true,
+    });
     await upsertFilesTx(tx, existing.uuid, normalized);
 
     let removed = 0;
@@ -3099,6 +3132,60 @@ export async function registerFailedLogin(
     failedAttempts: Number(row.failed_attempts ?? 0),
     lockedUntil: iso(row.locked_until),
   };
+}
+
+/**
+ * Conta a tentativa de login **antes** de a senha ser conferida (§2.7) e diz se
+ * ela pode seguir: `true` só quando a conta não estava travada.
+ *
+ * Por que antes (`tasks/026` da auditoria de 2026-11-07): com a trava lida num
+ * SELECT e o erro gravado por `registerFailedLogin` só depois do scrypt, uma
+ * rajada simultânea passava inteira pela leitura — cada pedido via a conta
+ * destravada e ganhava uma conferência de senha real, muito além do teto.
+ * Aqui a tentativa é reservada num UPDATE condicional: em READ COMMITTED o
+ * UPDATE concorrente espera o lock da linha e **reavalia o WHERE** com a linha
+ * nova, então o pedido seguinte ao que travou a conta já vê `locked_until` e
+ * recebe `false`. No máximo `maxAttempts` pedidos de uma rajada chegam à senha.
+ *
+ * A regra do contador é a de `registerFailedLogin`: ao atingir o teto ele
+ * **volta a zero** e a trava passa a ser `locked_until`. Como toda tentativa é
+ * contada como falha de saída, o acerto **precisa** chamar
+ * `registerSuccessfulLogin`, que zera tudo — quem usa esta função não chama
+ * `registerFailedLogin` depois do erro de senha (contaria duas vezes).
+ *
+ * A tentativa que **trava** a conta (a de número `maxAttempts`) ainda devolve
+ * `true`: a conta não estava travada quando ela chegou, e ela é uma das
+ * `maxAttempts` que o teto permite. Se a senha dela estiver certa, o sucesso
+ * destrava, como sempre.
+ *
+ * Uuid torto ou conta inexistente devolve `false`, sem erro. `updated_at` não
+ * é tocado, como em `registerFailedLogin`.
+ */
+export async function reserveLoginAttempt(
+  uuid: string,
+  options: { maxAttempts: number; lockSeconds: number },
+): Promise<boolean> {
+  if (!isUuid(uuid)) return false;
+
+  const maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
+  const lockSeconds = Math.max(1, Math.trunc(options.lockSeconds));
+
+  const result = await db().execute(sql`
+    UPDATE users SET
+      failed_attempts = CASE
+        WHEN failed_attempts + 1 >= ${maxAttempts} THEN 0
+        ELSE failed_attempts + 1
+      END,
+      locked_until = CASE
+        WHEN failed_attempts + 1 >= ${maxAttempts}
+          THEN now() + make_interval(secs => ${lockSeconds})
+        ELSE locked_until
+      END
+    WHERE uuid = ${uuid}
+      AND (locked_until IS NULL OR locked_until <= now())
+    RETURNING 1
+  `);
+  return (result.rows as Row[]).length > 0;
 }
 
 /** Login aceito: zera o contador, libera o bloqueio e marca o acesso. */
@@ -9507,7 +9594,12 @@ export async function createQuarantine(
         RETURNING uuid
       `);
       const novo = (inserted.rows as Row[])[0].uuid as string;
-      // Sem travar nada: ninguém mais conhece este uuid ainda.
+      // Sem travar nada: ninguém mais conhece este uuid ainda. Pela mesma
+      // razão, só o próprio pacote pode colidir arquivo × pasta.
+      await assertFileTreeTx(tx, 'quarantine_files', novo, files.map((f) => f.path), {
+        againstTree: false,
+        skillMdIsFile: false,
+      });
       await upsertQuarantineFilesTx(tx, novo, files);
       await writeQuarantineTargetsTx(tx, novo, targets);
       await auditTx(tx, quarantineAudit('quarantine.create', name, source, actor));
@@ -9537,6 +9629,16 @@ export async function readAllQuarantineFiles(uuid: string): Promise<FileContent[
   return readAllQuarantineFilesFrom(db(), uuid);
 }
 
+export type QuarantineFileOptions = {
+  /**
+   * O teto de arquivos do envio (`tasks/016` de 2026-11-07). Informado, um
+   * caminho **novo** num envio que já tem `maxFiles` arquivos é 400, contado
+   * com o envio travado; sobrescrever um caminho existente passa mesmo no
+   * teto. Omitido, não confere.
+   */
+  maxFiles?: number;
+};
+
 /**
  * Cria um arquivo do envio **só se o caminho está livre**, com as mesmas
  * recusas de `createFile` (o mesmo caminho, um prefixo que é arquivo, algo
@@ -9554,7 +9656,8 @@ export async function readAllQuarantineFiles(uuid: string): Promise<FileContent[
  * `FOR KEY SHARE` na linha do envio, que conflita com `FOR UPDATE`. Medido:
  * com uma transação segurando o `FOR UPDATE`, um `INSERT` cru na outra fica
  * esperando e só entra depois do `ROLLBACK` dela. Entre a conferência e o
- * INSERT não cabe ninguém.
+ * INSERT não cabe ninguém — nem o teto `options.maxFiles`, contado depois das
+ * ocupações (o caminho tomado é 409 mesmo com o envio cheio).
  */
 export async function createQuarantineFile(
   uuid: string,
@@ -9562,6 +9665,7 @@ export async function createQuarantineFile(
   content: Buffer | string,
   source: AuditSource,
   actor?: AuditActor | null,
+  options: QuarantineFileOptions = {},
 ): Promise<SkillFileMeta> {
   assertQuarantineUuid(uuid);
   const path = normalizeRelativePath(relativePath);
@@ -9610,6 +9714,8 @@ export async function createQuarantineFile(
       throw conflict(`Já existe uma pasta ${folder}`);
     }
 
+    // Depois das ocupações: o caminho tomado é 409 mesmo com o envio no teto.
+    await assertQuarantineRoomTx(tx, uuid, options.maxFiles);
     await tx.execute(insertQuarantineFileSql(uuid, path, file));
     await auditTx(tx, quarantineAudit('quarantine.update', envio.name, source, actor, path));
   });
@@ -9626,6 +9732,11 @@ export async function createQuarantineFile(
  * Cria ou sobrescreve um arquivo do envio (upsert, em qualquer caixa). Audita
  * `quarantine.update` com o caminho em `file_path` e o conteúdo anterior —
  * `quarantine.create` é o envio que apareceu, não o arquivo.
+ *
+ * Caminho **novo** passa por duas conferências, com o envio travado: arquivo ×
+ * pasta (409, `assertFileTreeTx`) e o teto `options.maxFiles` (400,
+ * `assertQuarantineRoomTx`). Sobrescrever não muda contagem nem forma, e passa
+ * nas duas.
  */
 export async function setQuarantineFile(
   uuid: string,
@@ -9633,6 +9744,7 @@ export async function setQuarantineFile(
   content: Buffer | string,
   source: AuditSource,
   actor?: AuditActor | null,
+  options: QuarantineFileOptions = {},
 ): Promise<SkillFileMeta> {
   assertQuarantineUuid(uuid);
   const path = normalizeRelativePath(relativePath);
@@ -9646,6 +9758,15 @@ export async function setQuarantineFile(
   await db().transaction(async (tx) => {
     const envio = await lockQuarantineTx(tx, uuid);
     const previous = await readQuarantineFileFrom(tx, uuid, path);
+    // Sobrescrever não muda a contagem nem a forma da árvore; caminho novo, sim.
+    if (!previous) {
+      await assertFileTreeTx(tx, 'quarantine_files', uuid, [path], {
+        againstTree: true,
+        allNew: true,
+        skillMdIsFile: false,
+      });
+      await assertQuarantineRoomTx(tx, uuid, options.maxFiles);
+    }
     await upsertQuarantineFilesTx(tx, uuid, [{ path, buffer }]);
     await auditTx(
       tx,
@@ -9681,6 +9802,12 @@ export async function setQuarantineFiles(
 
   await db().transaction(async (tx) => {
     const envio = await lockQuarantineTx(tx, uuid);
+    // Sem `replace`: o que já está no envio fica, então o lote é conferido
+    // contra ele.
+    await assertFileTreeTx(tx, 'quarantine_files', uuid, normalized.map((f) => f.path), {
+      againstTree: true,
+      skillMdIsFile: false,
+    });
     await upsertQuarantineFilesTx(tx, uuid, normalized);
     await auditTx(tx, quarantineAudit('quarantine.update', envio.name, source, actor));
   });
@@ -9817,7 +9944,31 @@ export type PromoteQuarantineOptions = {
    * gravado sem comparar.
    */
   expectedTargets?: QuarantineTargetsInput;
+  /**
+   * O `updatedAt` do envio que quem aprova **viu** (ISO, como sai em
+   * `QuarantineSummary`/`getQuarantine`). Com o envio travado, ele é comparado
+   * com `quarantine_skills.updated_at` na precisão de milissegundos — a do
+   * `updatedAt` exposto — e a diferença é **409**, sem criar nada: um arquivo
+   * criado, salvo ou apagado, ou o destino trocado, depois da leitura
+   * (`tasks/023` de 2026-11-07). Texto que não é data é 400. Omitido, não
+   * compara.
+   */
+  expectedUpdatedAt?: string;
 };
+
+/**
+ * O `expectedUpdatedAt` de `promoteQuarantine` como o banco o compara: o ISO
+ * em milissegundos, a forma do `updatedAt` exposto. `undefined` é "não
+ * compara"; o que não é texto de data é 400, antes de abrir a transação.
+ */
+function expectedQuarantineVersion(value: unknown): string | null {
+  if (value === undefined) return null;
+  const millis = typeof value === 'string' && value.trim() ? Date.parse(value) : Number.NaN;
+  if (Number.isNaN(millis)) {
+    throw badRequest('O campo "expectedUpdatedAt" precisa ser uma data ISO');
+  }
+  return new Date(millis).toISOString();
+}
 
 /**
  * A aprovação: o envio vira skill e **some da quarentena**, numa transação só —
@@ -9872,6 +10023,15 @@ export type PromoteQuarantineOptions = {
  * **O destino esperado** (`options.expectedTargets`) é comparado com o gravado
  * logo depois de travar o envio, antes de ler arquivo: diferente é **409**, e
  * nada é criado nem apagado.
+ *
+ * **A versão esperada** (`options.expectedUpdatedAt`) vem logo depois, com a
+ * mesma trava: o `updated_at` do envio, em milissegundos, diferente do que quem
+ * aprova viu é **409** — o conteúdo publicado tem de ser o revisado. Toda
+ * escrita no envio o carimba: os arquivos pelo trigger
+ * `quarantine_files_touch_trg` (`030`, inclusive a sobrescrita com os mesmos
+ * bytes) e o destino à mão, em `setQuarantineTargets`. Não há escrita de
+ * nome ou descrição do envio. Uma gravação no mesmo milissegundo da que o
+ * revisor viu não se distingue dela — o risco aceito do `tasks/023`.
  *
  * **O alvo apagado no meio é pulado em silêncio.** O destino é lido com o
  * envio travado, mas `deleteCatalog`/`deleteVirtualMcp` não passam pelo envio:
@@ -9931,6 +10091,7 @@ export async function promoteQuarantine(
     options.expectedTargets === undefined
       ? null
       : parseQuarantineTargets(options.expectedTargets, 'expectedTargets');
+  const expectedVersion = expectedQuarantineVersion(options.expectedUpdatedAt);
 
   let slug = '';
 
@@ -9951,6 +10112,14 @@ export async function promoteQuarantine(
           throw conflict(
             `O destino do envio "${envio.name}" mudou enquanto você aprovava: ` +
               'confira e aprove de novo',
+          );
+        }
+        // Depois do destino, de propósito: quem mandou as duas coisas e o
+        // destino mudou recebe a mensagem que diz o quê. O carimbo cobre o
+        // resto — arquivo e destino o atualizam (ver `expectedUpdatedAt`).
+        if (expectedVersion !== null && envio.updatedAt !== expectedVersion) {
+          throw conflict(
+            `O envio "${envio.name}" mudou depois que você o abriu: confira e aprove de novo`,
           );
         }
 
@@ -9994,11 +10163,18 @@ export async function promoteQuarantine(
         `);
         const skillUuid = (inserted.rows as Row[])[0].uuid as string;
 
+        const anexos = files
+          .filter((file) => !isSkillMd(file.relativePath))
+          .map((file) => ({ path: file.relativePath, buffer: file.buffer }));
+        // O envio gravado antes de a quarentena conferir arquivo × pasta pode
+        // trazer a árvore impossível; ela não entra no acervo (`assertFileTreeTx`).
+        await assertFileTreeTx(tx, 'files', skillUuid, [SKILL_MD, ...anexos.map((f) => f.path)], {
+          againstTree: false,
+          skillMdIsFile: true,
+        });
         await upsertFilesTx(tx, skillUuid, [
           { path: SKILL_MD, buffer: Buffer.from(stripFrontmatter(raw), 'utf8') },
-          ...files
-            .filter((file) => !isSkillMd(file.relativePath))
-            .map((file) => ({ path: file.relativePath, buffer: file.buffer })),
+          ...anexos,
         ]);
         await replaceTagsTx(tx, skillUuid, meta.tags);
 
@@ -10135,9 +10311,9 @@ function quarantineAudit(
 async function lockQuarantineTx(
   tx: Tx,
   uuid: string,
-): Promise<{ name: string; description: string }> {
+): Promise<{ name: string; description: string; updatedAt: string }> {
   const locked = await tx.execute(sql`
-    SELECT name, description
+    SELECT name, description, updated_at
     FROM quarantine_skills WHERE uuid = ${uuid} FOR UPDATE
   `);
   const row = (locked.rows as Row[])[0];
@@ -10145,6 +10321,9 @@ async function lockQuarantineTx(
   return {
     name: row.name as string,
     description: (row.description ?? '') as string,
+    // A mesma conversão de `toQuarantineSummary`: é com o `updatedAt` que o
+    // painel exibiu que a promoção compara (`expectedUpdatedAt`).
+    updatedAt: new Date(row.updated_at).toISOString(),
   };
 }
 
@@ -11335,6 +11514,171 @@ async function foldPathsTx(tx: Tx, paths: readonly string[]): Promise<string[]> 
 async function lockSkillFilesTx(tx: Tx, skillUuid: string): Promise<void> {
   const key = `purple-skills:files:${skillUuid}`;
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
+
+/**
+ * A tabela de uma árvore de arquivos: a da skill ou a do envio da quarentena.
+ * Valores fechados — o nome vai cru para o SQL.
+ */
+type FileTreeTable = 'files' | 'quarantine_files';
+
+function fileTreeRows(table: FileTreeTable, ownerUuid: string): SQL {
+  return table === 'files'
+    ? sql`SELECT relative_path FROM files WHERE skill_uuid = ${ownerUuid}`
+    : sql`SELECT relative_path FROM quarantine_files WHERE quarantine_uuid = ${ownerUuid}`;
+}
+
+type FileTreeCheck = {
+  /**
+   * Conferir os caminhos **novos** do lote contra a árvore gravada. `false`
+   * quando a árvore não conta: a skill ou o envio que acabou de nascer, e o
+   * `setFiles` com `replace`, em que o que não veio vai ser apagado.
+   */
+  againstTree: boolean;
+  /**
+   * O chamador já sabe que todo caminho é novo (o upsert de um caminho só
+   * que leu o anterior e não achou): poupa a consulta que separa os novos.
+   */
+  allNew?: boolean;
+  /**
+   * O `SKILL.md` da raiz é arquivo mesmo sem estar no lote — a skill. No envio
+   * da quarentena ele é um caminho como outro qualquer (`createQuarantineFile`).
+   */
+  skillMdIsFile: boolean;
+};
+
+/**
+ * Arquivo × pasta (`tasks/017` de 2026-11-07): numa árvore de verdade não
+ * convivem um arquivo `docs` e uma pasta `docs`. `createFile` sempre recusou;
+ * `setFile`, `setFiles`, as escritas da quarentena e a criação a partir de
+ * pacote gravavam por upsert sem conferir, e a árvore impossível virava um
+ * `.zip` que os descompactadores recusam ou extraem pela metade.
+ *
+ * Recusa com **409**, nesta ordem, e com as mensagens de `createFile`:
+ *
+ * 1. contra a árvore gravada (`againstTree`), só para caminho **novo** —
+ *    sobrescrever o mesmo caminho, em qualquer caixa, segue permitido: um
+ *    prefixo do caminho que já é arquivo (`docs` pedindo `docs/a.md`) e,
+ *    depois, arquivos abaixo dele, que já é pasta (`docs/a.md` pedindo `docs`);
+ * 2. caminho novo sob o `SKILL.md` da raiz (`skillMdIsFile`);
+ * 3. o próprio lote: um caminho que é prefixo-pasta de outro do mesmo lote.
+ *
+ * As comparações são as de `createFile`: `lower()` do Postgres com `=` e
+ * `starts_with`, nunca `LIKE` nem o `toLowerCase()` do JS. Só leitura — quem
+ * chama já está com a trava da árvore (`lockSkillFilesTx` ou
+ * `lockQuarantineTx`), tomada como primeira statement da transação; nada aqui
+ * trava linha.
+ */
+async function assertFileTreeTx(
+  tx: Tx,
+  table: FileTreeTable,
+  ownerUuid: string,
+  paths: readonly string[],
+  check: FileTreeCheck,
+): Promise<void> {
+  if (paths.length === 0) return;
+
+  let fresh: readonly string[] = paths;
+  if (check.againstTree) {
+    if (!check.allNew) {
+      const novos = await tx.execute(sql`
+        SELECT c AS caminho
+          FROM unnest(${sql.param([...paths])}::text[]) WITH ORDINALITY AS t(c, ordem)
+         WHERE NOT EXISTS (
+           SELECT 1 FROM (${fileTreeRows(table, ownerUuid)}) f
+            WHERE lower(f.relative_path) = lower(t.c)
+         )
+         ORDER BY ordem
+      `);
+      fresh = (novos.rows as Row[]).map((row) => row.caminho as string);
+    }
+
+    if (fresh.length > 0) {
+      // `conflito` é a ordem das mensagens de `createFile` (2 um prefixo que é
+      // arquivo, 3 algo abaixo do caminho); dentro dela vence o caminho mais
+      // curto, e depois o primeiro do lote.
+      const found = await tx.execute(sql`
+        WITH pedido AS (
+          SELECT lower(c) AS chave, ordem
+            FROM unnest(${sql.param([...fresh])}::text[]) WITH ORDINALITY AS t(c, ordem)
+        )
+        SELECT f.relative_path, p.chave,
+               CASE WHEN starts_with(p.chave, lower(f.relative_path) || '/') THEN 2 ELSE 3 END
+                 AS conflito
+          FROM (${fileTreeRows(table, ownerUuid)}) f
+          JOIN pedido p
+            ON starts_with(p.chave, lower(f.relative_path) || '/')
+            OR starts_with(lower(f.relative_path), p.chave || '/')
+         ORDER BY conflito, char_length(f.relative_path), f.relative_path, p.ordem
+         LIMIT 1
+      `);
+      const row = (found.rows as Row[])[0];
+      if (row) {
+        const taken = row.relative_path as string;
+        if (Number(row.conflito) === 2) throw conflict(`${taken} é um arquivo, não uma pasta`);
+        // `lower()` não cria nem tira `/`: os primeiros segmentos da linha são a pasta.
+        const depth = (row.chave as string).split('/').length;
+        throw conflict(`Já existe uma pasta ${taken.split('/').slice(0, depth).join('/')}`);
+      }
+    }
+  }
+
+  if (check.skillMdIsFile) {
+    for (const path of fresh) {
+      const slash = path.indexOf('/');
+      if (slash > 0 && isSkillMd(path.slice(0, slash))) {
+        throw conflict(`${SKILL_MD} é um arquivo, não uma pasta`);
+      }
+    }
+  }
+
+  if (paths.length > 1) {
+    const inside = await tx.execute(sql`
+      WITH lote AS (
+        SELECT c AS caminho, lower(c) AS chave, ordem
+          FROM unnest(${sql.param([...paths])}::text[]) WITH ORDINALITY AS t(c, ordem)
+      )
+      SELECT a.caminho AS arquivo, b.caminho AS abaixo
+        FROM lote a
+        JOIN lote b ON starts_with(b.chave, a.chave || '/')
+       ORDER BY char_length(a.caminho), a.ordem, char_length(b.caminho), b.ordem
+       LIMIT 1
+    `);
+    const row = (inside.rows as Row[])[0];
+    if (row) {
+      throw conflict(
+        `${row.arquivo as string} é um arquivo, não uma pasta: a mesma gravação traz ` +
+          `${row.abaixo as string}`,
+      );
+    }
+  }
+}
+
+/**
+ * O teto de arquivos por envio da quarentena (`tasks/016` de 2026-11-07),
+ * contado **com o envio travado**: a contagem que o app lia antes da trava
+ * deixava dois pedidos simultâneos passarem do teto, e o PUT de caminho novo
+ * nem a lia. `maxFiles` omitido não confere — é o chamador que sabe o teto
+ * (`DEFAULT_MAX_ZIP_ENTRIES`, no app). A mensagem é a de `assertHasRoom`.
+ */
+async function assertQuarantineRoomTx(
+  tx: Tx,
+  uuid: string,
+  maxFiles: number | undefined,
+): Promise<void> {
+  if (maxFiles === undefined) return;
+  if (!Number.isInteger(maxFiles) || maxFiles < 0) {
+    throw new Error(`maxFiles inválido: ${String(maxFiles)}`);
+  }
+  const counted = await tx.execute(
+    sql`SELECT count(*)::int AS n FROM quarantine_files WHERE quarantine_uuid = ${uuid}`,
+  );
+  const n = Number((counted.rows as Row[])[0]?.n ?? 0);
+  if (n < maxFiles) return;
+  throw badRequest(
+    `Este envio já tem ${n} arquivos, o limite por envio. ` +
+      'Remova algum, ou descarte o envio e importe o pacote de novo.',
+  );
 }
 
 /** Um arquivo só — o `setFile`. A regra do conflito é a do lote. */

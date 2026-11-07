@@ -77,6 +77,7 @@ nnn-nome.sql          nnn = 3 dígitos, com zeros à esquerda
 | `035-destino-da-quarentena.sql` | destino da quarentena: `quarantine_catalogs` e `quarantine_mcps` (os catálogos e os vMCPs, com as três portas e o CHECK de "pelo menos uma", em que a skill entra **quando o envio for aprovado**), as duas com `ON DELETE CASCADE` para o envio **e** para o alvo, e os índices inversos. Sem trigger de carimbo e sem ação nova no `CHECK` de `action`; revoga o "nasce flutuante" da promoção — ver [O destino](#o-destino) |
 | `036-instrucoes-do-mcp-virtual.sql` | `virtual_mcps.instructions` — a mensagem de sistema do servidor, que vai ao agente no `initialize` (a `description` passa a ser só exibição), `NOT NULL DEFAULT ''` com o `CHECK` `virtual_mcps_instructions_len_chk` (`char_length` ≤ 4 000, o `VIRTUAL_MCP_INSTRUCTIONS_MAX` do shared) — e o **backfill, uma vez**, que copia a `description` não vazia (`left(…, 4000)`) para nenhum servidor mudar o que o agente recebe no dia da atualização. `description` e `updated_at` intactos — ver [MCP virtual](#mcp-virtual) |
 | `037-arquivos-sum.sql` | só dados: o molde da `029` para a extensão `.sum` (o `go.sum`, que o shared passou a chamar de `text/plain`) — as linhas binárias de `files` **e de `quarantine_files`** que são UTF-8 válido sem byte nulo viram texto; hash, tamanho e `updated_at` (inclusive o de `quarantine_skills`, devolvido depois do trigger de carimbo) não mudam, e as skills donas ficam `rag_stale` |
+| `038-desativar-fecha-links-de-reset.sql` | `users_deactivation_reset_tokens_trg` (com função própria): quando `users.is_active` passa de `true` para `false`, os links de redefinição **vivos** da conta ganham `superseded_at` — o par do trigger de senha da `023` — e o backfill fecha os vivos de quem já estava desativado. Reativar não reabre nada. Ver [Links de redefinição de senha](#links-de-redefinição-de-senha) |
 
 Regras:
 
@@ -296,6 +297,15 @@ catálogo público**. O vínculo por catálogo privado continua contando para a
 exposição — a skill *está* naquele servidor —, o que não sai é o nome do
 catálogo fechado. Além de fechar o vazamento pelo lado do banco, é o que para
 de pagar uma consulta de concessões por página da skill.
+
+Com `viewer` (não admin), o `catalogs` de dentro de `mcps` usa a régua da lista
+`catalogs` de topo da mesma ficha (`tasks/027` de 2026-11-07): nomeia o
+catálogo **público** ou o que a conta **possui ou recebeu por concessão**
+(`catalogSeenBy`) — o privado de outra conta fica de fora, e o servidor
+continua listado (`direct: false`) se a conta o vê. Antes o filtro era `true`
+ali, e a ficha nomeava o catálogo que a lista logo acima escondia. Em `'all'`
+(e com admin) todos são nomeados. A ficha do vMCP **não** recorta — ver
+[Catálogos](#catálogos).
 
 **O dono saiu dessa lista na `033`.** Até ela, `ownerUserUuid`/`ownerEmail`
 vinham nulos no site, porque o rótulo do dono era o **e-mail** — dado pessoal
@@ -707,7 +717,9 @@ ou apagado como qualquer vMCP.
 O backfill do `011` cria o vMCP `public` (ou `public-N`) numa instalação que
 já tem skills: sem dono, ligado e aberto, com toda skill `is_public` vinculada
 e as flags copiadas de `use_as_*`. Numa instalação sem skills nada é criado;
-o `seed` cria o `public` com as skills de exemplo e o marca como padrão.
+o `seed` cria o `public` com as skills de exemplo e o marca como padrão — só
+quando foi ele quem o criou, e só com as skills que ele criou (ver
+[O seed](#o-seed)).
 
 ### Ícone da skill
 
@@ -925,9 +937,20 @@ vMCP **e** `view` no catálogo, e **desvincular** é só o `edit` do vMCP —
   entra nele e em nenhum deles. `unlinkedSkills` é quem não tem vínculo direto
   **nem** catálogo.
 
-O `seed` cria o catálogo `exemplos` com todas as skills de exemplo como
-membros ativos e **sem vínculo com vMCP nenhum**: ele existe para o painel
-mostrar o que é um catálogo, e não publica nada até alguém vinculá-lo.
+O `seed` cria o catálogo `exemplos` com as skills de exemplo **que ele criou**
+como membros ativos e **sem vínculo com vMCP nenhum**: ele existe para o painel
+mostrar o que é um catálogo, e não publica nada até alguém vinculá-lo (ver
+[O seed](#o-seed)).
+
+**Quem vê o vMCP vê os catálogos vinculados a ele** — nome, slug, descrição,
+estado, dono e contagem, inclusive de catálogo privado de outra conta e de
+catálogo desligado. É decisão (`tasks/027` de 2026-11-07): `loadVirtualMcpCatalogs`
+(a ficha) e `preview_catalogs` (a prévia da colmeia) não recortam pela conta
+porque o canvas é **declarativo** — `setVirtualMcpCatalogs` grava a lista
+inteira que o painel manda, e uma lista recortada apagaria, ao salvar, o
+vínculo que a conta não enxerga. O recorte vale na ficha da **skill**: ali o
+`mcps[].catalogs` só nomeia o que a leitura vê (ver
+[Onde uma skill é exibida](#onde-uma-skill-é-exibida)).
 
 ### Sessões do MCP público
 
@@ -1423,6 +1446,49 @@ antigos. Malformado é 400, antes da transação. O catálogo apagado depois de 
 ficha ser lida cai aqui também: o gravado perdeu a linha pela cascata, e a ficha
 velha dá 409.
 
+**`expectedUpdatedAt` fecha a janela entre a leitura e o clique** (`tasks/023`
+de 2026-11-07). O `expectedTargets` é lido no momento do clique e só cobre o
+destino; o conteúdo que quem aprova **leu** podia ter mudado — qualquer editor
+edita o envio de outra conta — e o que ia ao ar não era o revisado. O app passa
+o `updatedAt` que exibiu (ISO, como sai em `QuarantineSummary`/`getQuarantine`)
+em `options.expectedUpdatedAt`; com o envio travado, logo depois da conferência
+do destino, ele é comparado com `quarantine_skills.updated_at` **em
+milissegundos** — a precisão do `updatedAt` exposto, que é esse carimbo
+truncado (o driver converte o `timestamptz` truncando, e a comparação passa
+pela mesma conversão). Diferente é **409**, `O envio "<nome>" mudou depois que
+você o abriu: confira e aprove de novo`, sem criar nada; quem manda os dois e o
+destino mudou recebe a mensagem do destino. Texto que não é data é 400 (`O
+campo "expectedUpdatedAt" precisa ser uma data ISO`), antes da transação; a
+mesma data com outro fuso é a mesma versão. Omitido, não compara.
+
+O carimbo cobre **toda** escrita no envio: os arquivos pelo trigger
+`quarantine_files_touch_trg` (`createQuarantineFile`, `setQuarantineFile` —
+inclusive a sobrescrita com os mesmos bytes —, `setQuarantineFiles` e
+`deleteQuarantineFile`) e o destino à mão em `setQuarantineTargets` (que não
+carimba quando nada muda). Nome e descrição do envio não têm escrita. Uma
+gravação no mesmo milissegundo da versão vista não se distingue dela — o risco
+aceito.
+
+**O teto de arquivos por envio** (`tasks/016` de 2026-11-07).
+`createQuarantineFile` e `setQuarantineFile` aceitam `options: { maxFiles? }`
+(`QuarantineFileOptions`, depois do `actor`). Informado, um caminho **novo**
+num envio que já tem `maxFiles` arquivos é **400** (`Este envio já tem <n>
+arquivos, o limite por envio. Remova algum, ou descarte o envio e importe o
+pacote de novo.`, o texto do `assertHasRoom` do painel), contado **com o envio
+travado** — a contagem lida antes da trava deixava dois pedidos simultâneos
+passarem, e o PUT de caminho novo nem a lia. Sobrescrever um caminho existente
+passa mesmo no teto; em `createQuarantineFile` o caminho ocupado continua 409,
+conferido antes do teto. Omitido, não confere: o teto é do app
+(`DEFAULT_MAX_ZIP_ENTRIES`). `setQuarantineFiles` e `createQuarantine` não o
+recebem — o lote é conferido pelo app na importação.
+
+**Arquivo × pasta.** `createQuarantine`, `setQuarantineFile` (caminho novo) e
+`setQuarantineFiles` recusam com 409 o que colide com arquivo ou pasta do envio
+e o lote que colide consigo mesmo — a regra e as mensagens de
+[Arquivos da skill](#arquivos-da-skill), sem a do `SKILL.md`, que aqui é um
+caminho como outro. A promoção confere o pacote inteiro antes de criar a skill:
+o envio gravado torto antes da regra é 409 e fica onde está.
+
 O alvo apagado **no meio** da promoção — depois de o destino ser lido, antes de
 ser travado — é **pulado**: a trava volta vazia e ele fica de fora. É o mesmo
 estado final de a remoção ter vindo logo depois da aprovação, quando a cascata
@@ -1566,7 +1632,7 @@ coisas. Por isso a invalidação **não** é `used_at = now()` nos anteriores (f
 a tabela mentir sobre quem redefiniu senha) nem um `DELETE` (apagaria o registro
 da tentativa, que o `006` guarda de propósito).
 
-Quem fecha são dois pontos, e o fechamento só toca link **vivo** — link que
+Quem fecha são três pontos, e o fechamento só toca link **vivo** — link que
 venceu sem ninguém clicar continua "morto por prazo" em vez de ser reetiquetado:
 
 - **a emissão.** `createResetToken` fecha os vivos da conta e insere o novo numa
@@ -1578,7 +1644,18 @@ venceu sem ninguém clicar continua "morto por prazo" em vez de ser reetiquetado
   três caminhos que trocam senha — o link consumido, o reset do admin e a troca
   pelo próprio dono, todos por `updateUser` — e a regra é do dado: **senha
   nova, nenhum link antigo serve.** Um caminho novo a herda sem precisar
-  lembrar dela; um logout (`bumpTokenVersion`) não fecha nada.
+  lembrar dela; um logout (`bumpTokenVersion`) não fecha nada;
+- **a desativação.** Desde a `038` (`tasks/014` de 2026-11-07), um segundo
+  trigger em `users` (`users_deactivation_reset_tokens_trg`, `AFTER UPDATE OF
+  is_active` com `WHEN (OLD.is_active AND NOT NEW.is_active)`) fecha os vivos
+  da conta. Antes, o link pedido com a conta ativa trocava a senha da conta já
+  desativada, e era essa senha — escolhida por quem portava o link — que valia
+  na reativação. **Reativar não reabre nada**: quem quiser redefinir pede outro
+  link. A função é própria (`users_deactivation_reset_tokens_tg`), e não a do
+  `023`, para a `023` reaplicada não alcançar esta regra. O backfill fechou os
+  links vivos de quem já estava desativado. A outra metade é do app: a
+  confirmação do link confere `isActive`, que cobre a corrida entre consumir o
+  link e trocar a senha — essa nenhum trigger alcança.
 
 Não há unicidade parcial de "um vivo por conta": dois pedidos simultâneos não
 veem a linha um do outro e um `UNIQUE` transformaria duplo clique em erro. Os
@@ -1602,6 +1679,34 @@ docker compose run --rm seed       # skills de exemplo (opcional)
 | `postgres` | `pgvector/pgvector:pg18-trixie` | o banco; volume `pgdata` |
 | `migrate` | `tmsoftbrasil/purple-skills-db` (perfil `migrate`) | aplica o schema e sai |
 | `seed` | `tmsoftbrasil/purple-skills-db` (perfil `seed`) | popula o catálogo de exemplo e sai |
+
+### O seed
+
+O `seed` (`src/seed.ts`, `npm run seed`) é para **instalação nova** e **não mexe
+no que já existe** (`tasks/013` de 2026-11-07). Ele cria as seis skills de
+exemplo, o vMCP `public` (aberto, sem dono, com as cinco que não são o
+rascunho) e o catálogo `exemplos` (privado, sem vínculo com vMCP), e marca o
+`public` como padrão quando a instalação ainda não tem um. Cada coisa é
+procurada pelo slug, e o que já existe é pulado **sem ganhar vínculo**:
+
+- a skill com o slug de um exemplo pode ser a skill **privada** de alguém. O
+  seed vinculava ao `public` e ao `exemplos` a lista estática de slugs, e a
+  skill alheia ia parar num servidor aberto — legível no site, na REST e no
+  `/mcp` por qualquer visitante, com o ator `seed` na trilha. Agora só as
+  skills **criadas nesta execução** entram nos dois;
+- o `public` e o `exemplos` que já existem ficam como estão — nem membros, nem
+  portas, nem `updated_at`;
+- só o `public` **criado agora** vira padrão. O que já existia (de outra conta,
+  ou o do backfill da `011`) não é promovido: escolher o padrão é de quem
+  administra.
+
+Numa instalação vazia o resultado é o de sempre, e a segunda execução não faz
+nada. A consequência aceita: uma execução que cair entre criar as skills e
+vinculá-las deixa a seguinte sem o que vincular — o `public` fica sem os
+exemplos, e quem quiser a demo inteira vincula pelo painel ou recria o banco.
+`runSeed()` é exportada do módulo (não do pacote) para a suíte
+`seed.integration.test.ts`; o CLI só roda quando o arquivo é o entrypoint
+(`isEntrypoint`, o mesmo do `migrate`).
 
 `migrate` e `seed` usam o mesmo `database/Dockerfile` — é a única imagem que
 carrega o SQL. Ela é publicada no Docker Hub como `tmsoftbrasil/purple-skills-db`,
@@ -1694,9 +1799,9 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | Contadores | `incrementViewCount`, `incrementDownloadCount` (só somam; os apps migram para `recordSkillAccess`) |
 | RAG | `getRagSettings`, `seedRagSetting`, `setRagSetting`, `setRagIndexerStatus`, `resolveRagSpace`, `findRagSpace`, `ragSchemaReady`, `claimStaleSkills`, `releaseStaleSkill`, `readSkillForRag`, `replaceSkillTexts`, `listPendingRagTexts`, `releaseRagTextReservations`, `markRagTextRefused`, `clearRagRefusals`, `collectOrphanRagTexts`, `insertRagVectors`, `ragCoverage`, `markAllSkillsStale`, `RAG_SETTING_KEYS`, `RAG_EDITABLE_SETTINGS`, `RAG_CLAIM_MAX_ATTEMPTS` |
 | Clonagem | `cloneSkill`, `cloneCatalog`, `cloneVirtualMcp` — o **uuid do original**, `CloneInput`, a origem e o ator; devolvem a ficha da cópia (`SkillDetail`/`CatalogDetail`/`VirtualMcpDetail`). Ver [Clonagem](#clonagem) |
-| Quarentena | `listQuarantine`, `getQuarantine`, `createQuarantine`, `readQuarantineFile`, `readAllQuarantineFiles`, `createQuarantineFile`, `setQuarantineFile`, `setQuarantineFiles`, `deleteQuarantineFile`, `deleteQuarantine`, `setQuarantineTargets`, `promoteQuarantine` (com `options.expectedTargets`), `getQuarantineApprovers`, `setQuarantineApprovers` — ver [Quarentena](#quarentena) e [O destino](#o-destino). O envio é endereçado pelo **uuid**; `QuarantineSummary`/`QuarantineDetail`/`QuarantinePage`, `QuarantineTargets`/`QuarantineTargetsInput` e `QuarantineApprovers` vêm de shared |
+| Quarentena | `listQuarantine`, `getQuarantine`, `createQuarantine`, `readQuarantineFile`, `readAllQuarantineFiles`, `createQuarantineFile`, `setQuarantineFile`, `setQuarantineFiles`, `deleteQuarantineFile`, `deleteQuarantine`, `setQuarantineTargets`, `promoteQuarantine` (com `options.expectedTargets` e `options.expectedUpdatedAt`), `QuarantineFileOptions` (o `{ maxFiles }` de `createQuarantineFile`/`setQuarantineFile`), `getQuarantineApprovers`, `setQuarantineApprovers` — ver [Quarentena](#quarentena) e [O destino](#o-destino). O envio é endereçado pelo **uuid**; `QuarantineSummary`/`QuarantineDetail`/`QuarantinePage`, `QuarantineTargets`/`QuarantineTargetsInput` e `QuarantineApprovers` vêm de shared |
 | Extensão de skills (MCP) | `listSkillsManifest(virtualMcpUuid, { slug? })` e `readSkillMdBodies(uuids)` — o manifesto da SEP-2640 e os corpos do `SKILL.md` em lote; `SkillManifestEntry`, `SkillManifestFile` e `SkillMdBody`. Ver [Manifesto da extensão de skills](#manifesto-da-extensão-de-skills) |
-| Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByUsername`, `getUserByLogin` (o campo único do login), `getUserByOidc`, `createUser`, `updateUser`, `registerFailedLogin`, `registerSuccessfulLogin` |
+| Contas | `countUsers`, `listUsers`, `getUserByUuid`, `getUserByEmail`, `getUserByUsername`, `getUserByLogin` (o campo único do login), `getUserByOidc`, `createUser`, `updateUser`, `reserveLoginAttempt` (conta a tentativa **antes** da senha e diz se ela pode seguir — ver [Contas, chaves e senha](#contas-chaves-e-senha)), `registerFailedLogin`, `registerSuccessfulLogin` |
 | Username | `nextFreeUsername(base)` — o primeiro nome livre nas **duas** fontes, para a sugestão do painel e o auto-provisionamento OIDC — e `reserveUsername(candidate, userUuid)`, que toma e grava numerando em vez de recusar. Ver [Username](#username) |
 | Perfil | `getProfile(userUuid)` (o vazio e privado quando não há linha), `saveProfile(userUuid, input)` (upsert parcial; aceita `name` e o grava em `users`), `clearProfile(userUuid, source, actor)` (a limpeza do admin: esvazia, desliga, apaga a foto e audita `user.profile`, numa transação), `getPublicProfile(username)` (só com `is_public` **e** conta ativa; `null` sem distinguir os motivos), `isProfilePublic(username)` — a mesma pergunta **sem** montar as listas, para a rota da imagem — e `listPublicByOwner(username)`. A foto: `setAvatar(userUuid, bytes, mime?)` — o tipo sai dos **bytes**, e o `mime` informado é conferência —, `deleteAvatar`, `getAvatar(userUuid)`, `getAvatarByUsername(username)` e `avatarStamp(userUuid)`. As duas leituras de avatar **não** olham `is_public`: a política é de quem chama. Ver [Perfil](#perfil) |
 | Chaves de API | `listApiKeys`, `createApiKey`, `revokeApiKey`, `getApiKeyByPrefix`, `touchApiKey` |
@@ -1706,7 +1811,7 @@ import { getDb, listSkills, createSkill, AppError } from '@purple-skills/db';
 | MCP padrão | `DEFAULT_MCP_SETTING`, `resolveDefaultVirtualMcp`, `setDefaultVirtualMcp` |
 | Erros | `AppError`, `notFound`, `badRequest`, `conflict`, `unauthorized`, `isUniqueViolation`, `isForeignKeyViolation` |
 | Schema/tipos | `skills`, `files`, `tags`, `skillTags`, `auditLog`, `users`, `apiKeys`, `resetTokens`, `virtualMcps`, `virtualMcpSkills`, `virtualMcpKeys`, `catalogs`, `catalogSkills`, `virtualMcpCatalogs`, `skillGrants`, `catalogGrants`, `virtualMcpGrants`, `settings`, `mcpSessions`, `mcpCallCounters`, `skillAccesses`, `ragSpaces`, `ragTexts`, `ragSkillTexts`, `ragVectors`, `ragTextStatus`, `ragSkillClaims`, `quarantineSkills`, `quarantineFiles`, `quarantineCatalogs`, `quarantineMcps`, `usernames`, `userProfiles`, `userAvatars`, `SkillRow`, `FileRow`, `TagRow`, `AuditRow`, `UserRow`, `UsernameRow`, `UserProfileRow`, `UserAvatarRow`, `ApiKeyRow`, `ResetTokenRow`, `VirtualMcpRow`, `VirtualMcpSkillRow`, `VirtualMcpKeyRow`, `CatalogRow`, `CatalogSkillRow`, `VirtualMcpCatalogRow`, `SkillGrantRow`, `CatalogGrantRow`, `VirtualMcpGrantRow`, `SettingRow`, `McpSessionRow`, `McpCallCounterRow`, `SkillAccessRow`, `RagSpaceRow`, `RagTextRow`, `RagSkillTextRow`, `RagVectorRow`, `RagTextStatusRow`, `RagSkillClaimRow`, `QuarantineSkillRow`, `QuarantineFileRow`, `QuarantineCatalogRow`, `QuarantineMcpRow` |
-| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `RevokedApiKey`, `RevokedVirtualMcpKey`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `AdoptOrphansResult`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListActivityDaysOptions`, `ActivityOfDayOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `PendingRagTextsOptions`, `ClaimStaleSkillsOptions`, `ReleaseRagTextsOptions`, `RagVectorInput`, `RagCoverage`, `ListQuarantineOptions`, `CreateQuarantineInput`, `PromoteQuarantineOptions`, `CloneInput`, `SaveProfileInput`, `Avatar`, `AvatarMeta`, `PublicByOwner` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
+| Tipos de query | `UserRecord`, `CreateUserInput`, `UpdateUserInput`, `ApiKeyRecord`, `RevokedApiKey`, `RevokedVirtualMcpKey`, `Stats`, `ListOptions`, `SkillVisibility`, `Viewer`, `SortOrder`, `PublicationSurface`, `PublishedSkill`, `FileInput`, `FileContent`, `SetFilesOptions`, `CreateSkillInput`, `UpdateSkillInput`, `SkillLinkFlags`, `VirtualScope`, `VirtualMcpRuntime`, `VirtualMcpKeyRecord`, `VirtualMcpKeyWithMcp`, `DefaultMcpResolution`, `CreateVirtualMcpInput`, `UpdateVirtualMcpInput`, `VirtualMcpReadOptions`, `VirtualMcpCanvasInput`, `CreateCatalogInput`, `UpdateCatalogInput`, `CatalogReadOptions`, `AdoptOrphansResult`, `OpenMcpSessionInput`, `ListMcpSessionsOptions`, `ListSkillAccessesOptions`, `ListActivityDaysOptions`, `ActivityOfDayOptions`, `ListAuditOptions`, `SemanticScope`, `SearchMode`, `SkillSearchResult`, `RagNeighbor`, `RagSettingKey`, `RagEditableSetting`, `RagSettings`, `RagSettingRow`, `RagSeedResult`, `RagSpaceInput`, `RagSpace`, `RagSkillContent`, `RagSkillFile`, `RagTextInput`, `RagPendingText`, `PendingRagTextsOptions`, `ClaimStaleSkillsOptions`, `ReleaseRagTextsOptions`, `RagVectorInput`, `RagCoverage`, `ListQuarantineOptions`, `CreateQuarantineInput`, `PromoteQuarantineOptions`, `QuarantineFileOptions`, `CloneInput`, `SaveProfileInput`, `Avatar`, `AvatarMeta`, `PublicByOwner` (a entrada e a saída de `recordSkillAccess`/`listSkillAccesses` — `SkillAccessInput`, `SkillAccessEntry`, `SkillAccessPage` e os quatro literais — vêm de shared) |
 | Migrations | `runMigrations` (aceita `{ refuseRetroactive }` — ver [Reaplicar migration antiga](#reaplicar-migration-antiga)), `schemaDir`, tipo `RunMigrationsOptions` |
 
 As funções de escrita já gravam em `audit_log`, recebem a origem
@@ -1839,7 +1944,7 @@ num texto, `bytea` vazio num binário.
 
 | Função | Semântica | Auditoria |
 |--------|-----------|-----------|
-| `setFile(slug, caminho, conteúdo, source, actor?)` | **upsert**: sobrescreve o arquivo existente em qualquer caixa, e a caixa nova passa a ser a gravada | `create` ou `update`, com o conteúdo anterior |
+| `setFile(slug, caminho, conteúdo, source, actor?)` | **upsert**: sobrescreve o arquivo existente em qualquer caixa, e a caixa nova passa a ser a gravada; caminho **novo** que colide com arquivo ou pasta é 409 (ver abaixo) | `create` ou `update`, com o conteúdo anterior |
 | `createFile(slug, caminho, conteúdo, source, actor?)` | **cria só se o caminho está livre**; ocupado é 409 e nada muda. Mesmos parâmetros e retorno (`SkillFileMeta`) de `setFile` | `create` com o caminho normalizado e `previousContent` nulo; recusa não audita |
 | `setFiles(slug, arquivos, source, { replace?, expectedDeletions? }, actor?)` | upsert em lote; com `replace` (padrão) apaga o que ficou de fora, menos o `SKILL.md` | um `delete` por caminho removido, com o conteúdo anterior dos textuais, **mais** um `update` sem caminho |
 | `deleteFile(slug, caminho, source, actor?)` | apaga a linha daquele caminho; o `SKILL.md` é 400 e caminho ausente é 404 | `delete` com o conteúdo anterior |
@@ -1930,10 +2035,34 @@ acontece, e o 409 da contagem não tinha saída. Só leitura, sem trava (a janel
 até a escrita é do `expectedDeletions`); caminho inválido é o 400 de `setFiles`
 e uuid torto é `[]`.
 
-Limite conhecido de `setFile`, que fica: não confere arquivo × pasta (um
-`setFile('docs/a.md')` numa skill com o arquivo `docs` grava os dois). **Era**,
-até a fila, também um limite conhecido o deadlock entre ele e uma escrita em
-lote na mesma skill indexada (`setFiles` × `setFile`, desde a `020`).
+**Arquivo × pasta em toda escrita** (`tasks/017` de 2026-11-07). Era limite
+conhecido de `setFile` não conferir arquivo × pasta — um `setFile('docs/a.md')`
+numa skill com o arquivo `docs` gravava os dois, e `PUT …/files/SKILL.md/x`
+gravava a linha `SKILL.md/x` —, e o mesmo valia para `setFiles`, `createSkill`
+com anexos, as escritas da quarentena e a promoção. A árvore impossível virava
+um `.zip` que os descompactadores recusam ou extraem pela metade. Hoje todas
+passam por `assertFileTreeTx` (interna), com a fila (ou a trava do envio) já na
+mão e só lendo — nenhuma trava nova, nenhuma ordem nova:
+
+| Escrita | O que é conferido |
+|---------|-------------------|
+| `setFile` | só caminho **novo** (sem linha no mesmo caminho, em qualquer caixa): prefixo que é arquivo, pasta abaixo, e caminho sob o `SKILL.md` da raiz. Sobrescrever segue livre — inclusive numa árvore torta de antes |
+| `setFiles` sem `replace` | os caminhos novos do lote contra a árvore, como no `setFile`, **e** o lote contra si mesmo |
+| `setFiles` com `replace` | só o lote contra si mesmo e o caminho sob o `SKILL.md` — o resto da árvore vai ser apagado |
+| `createSkill` (anexos) e `promoteQuarantine` | o pacote contra si mesmo, com o `SKILL.md` dentro: a skill acabou de nascer |
+
+Tudo é **409** (`conflict`) e nada é gravado. Contra a árvore, as mensagens são
+as de `createFile` (`<prefixo gravado> é um arquivo, não uma pasta`, `Já existe
+uma pasta <pasta gravada>`, `SKILL.md é um arquivo, não uma pasta`); o lote que
+colide consigo mesmo é `<arquivo> é um arquivo, não uma pasta: a mesma gravação
+traz <caminho abaixo dele>`, com as grafias como vieram. As comparações são as
+de `createFile`: `lower()` do Postgres, `=` e `starts_with`. A recusa de lote é
+do banco, e não de um helper no shared, para a caixa ser dobrada por uma régua
+só.
+
+**Era**, até a fila, também um limite conhecido o deadlock entre `setFile` e
+uma escrita em lote na mesma skill indexada (`setFiles` × `setFile`, desde a
+`020`).
 
 ### Leitura por vMCP e vínculo pelo lado da skill
 
@@ -2228,6 +2357,20 @@ pelo site, que não têm o que fazer com um hash.
     ambiente de teste ainda consegue desativar a última admin.
 - `registerFailedLogin(uuid, { maxAttempts, lockSeconds })` faz tudo num UPDATE
   só. Ao atingir o teto, grava `locked_until` e **zera** o contador.
+- `reserveLoginAttempt(uuid, { maxAttempts, lockSeconds }): Promise<boolean>`
+  (`tasks/026` de 2026-11-07) conta a tentativa **antes** de a senha ser
+  conferida, com a mesma régua de `registerFailedLogin` (travar no teto e zerar
+  o contador), e devolve `true` só se a conta **não estava travada**. É um
+  UPDATE com `WHERE … AND (locked_until IS NULL OR locked_until <= now())`: em
+  READ COMMITTED o UPDATE concorrente espera o lock da linha e reavalia o WHERE
+  com a linha nova, então de uma rajada simultânea no máximo `maxAttempts`
+  pedidos recebem `true` — com a trava lida num SELECT e o erro gravado depois
+  do scrypt, a rajada inteira passava pela leitura. A tentativa que trava (a de
+  número `maxAttempts`) ainda recebe `true`. Toda tentativa reservada é contada
+  como falha: o acerto **tem** de chamar `registerSuccessfulLogin`, que zera, e
+  o erro de senha **não** chama `registerFailedLogin` (contaria duas vezes).
+  Uuid torto ou conta inexistente é `false`; `updated_at` não é tocado.
+  `registerFailedLogin` continua exportada, com o mesmo contrato.
 - `getApiKeyByPrefix` faz só o primeiro passo: achar a linha pelo prefixo
   público. Comparar o segredo com `keyHash` é do app
   (`verifyApiKeySecret` de shared).
@@ -2243,7 +2386,8 @@ pelo site, que não têm o que fazer com um hash.
   assinatura (`{ userUuid, tokenHash, expiresAt }`) não mudou. `consumeResetToken`
   é um UPDATE condicional atômico: dois cliques no mesmo link não redefinem a
   senha duas vezes, e link substituído ou vencido devolve `null`, sem distinguir
-  o motivo. Trocar a senha por `updateUser` fecha os vivos por trigger — ver
+  o motivo. Trocar a senha por `updateUser` fecha os vivos por trigger, e
+  desativar a conta também (`038`) — ver
   [Links de redefinição de senha](#links-de-redefinição-de-senha).
 - `recordAccountAudit` grava os eventos de conta (`user.create`, `user.role`,
   `user.deactivate`, `user.activate`, `user.password`, `user.link`,
@@ -2867,8 +3011,14 @@ TEST_DATABASE_URL=postgres://postgres:CHANGE_ME@127.0.0.1:5432/purple_skills_tes
     database/src/locks.integration.test.ts database/src/skills.integration.test.ts \
     database/src/quarantine.integration.test.ts database/src/manifest.integration.test.ts \
     database/src/activity.integration.test.ts database/src/profile.integration.test.ts \
-    database/src/quarantine-targets.integration.test.ts
+    database/src/quarantine-targets.integration.test.ts database/src/seed.integration.test.ts \
+    database/src/login-guards.integration.test.ts database/src/file-tree.integration.test.ts \
+    database/src/quarantine-version.integration.test.ts database/src/catalog-names.integration.test.ts
 ```
+
+Para a pasta inteira (`npx vitest run database`), passe `--no-file-parallelism`:
+as suítes se enfileiram pelo advisory lock (abaixo), e com os arquivos em
+paralelo as que ficam esperando estouram o tempo do `beforeAll`.
 
 A suíte do RAG e a do `schema.ts` exigem **pgvector** no servidor (a imagem
 `pgvector/pgvector` já o traz) e um papel que possa `CREATE EXTENSION`, como o
@@ -2883,7 +3033,7 @@ A suíte do RAG e a do `schema.ts` exigem **pgvector** no servidor (a imagem
 | `virtual-mcp-instructions.integration.test.ts` | a `036` sobre uma base parada no `035` — **o único lugar** onde o backfill roda sobre servidores do mundo antigo: a `description` copiada para `instructions` (e intacta), o sem legenda seguindo vazio, o desligado recebendo a cópia, a legenda maior que o teto cortada em 4 000 **caracteres** (inclusive a de emojis), `updated_at` intocado, o `CHECK` com o número do shared e a reaplicação que **não** devolve as instruções que o dono apagou nem duplica o `CHECK` |
 | `settings.integration.test.ts` | MCP padrão: escolha e limpeza com auditoria, o uuid em **maiúsculas** que grava o canônico em vez de virar "removido", as três causas de recusa da raiz, o CHECK com `mcp.default` e o caminho de atualização de uma base parada no `010` (`011` em diante aplicadas de uma vez e **re-executadas** sobre o resultado, para provar que o SQL não falha nem muda a **estrutura** na segunda passada — de **dado** não prova nada: toda skill do cenário é privada, e o `012` reaplicado derruba o `is_public` do `017`; ver `migrate.integration.test.ts`). A lista de migrations é lida da pasta, não escrita à mão — menos a `022`, que fica **fora da segunda passada**: ela cria um GIN sobre `skill_accesses.user_email`, coluna que a `033` apagou, e reaplicada falha (ver [Reaplicar migration antiga](#reaplicar-migration-antiga)) |
 | `sessions.integration.test.ts` | sessões do MCP público: abrir/tocar/fechar, o `clientInfo` que só entra uma vez, o reuso de linha do stateless, a expiração com fim presumido por transporte, a listagem com filtros, recorte e `isOnline`, o contador por transporte, `onlineSessions` no resumo do vMCP com e sem janela, a linha que sobrevive à remoção do vMCP sem ser podada, o offset além da faixa do `bigint` saturando, e o `clientInfo` com byte nulo e caractere de controle: a sessão entra com o rótulo limpo, o `touch` não perde as requisições, o nome além do teto entra cortado e o nulo num campo obrigatório é 400 |
-| `catalogs.integration.test.ts` | catálogos (inclui o recorte do site: o catálogo **privado** do caminho não é nomeado em `mcps[].catalogs` fora de `'all'`/`viewer`, e o dono vem nulo): criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; a re-execução do `016`; e a **clonagem de catálogo** (`031`), **depois** dela de propósito — a re-execução estreita o `CHECK` de `audit_log.action` para a lista da época e `catalog.clone` volta a ser recusada até a `031` ser reaplicada (que é como o teste começa, provando a idempotência dela): membros copiados com o `is_active` de cada participação, cópia privada com o original público, sem vínculo com vMCP e sem concessão, original intacto, o `-2`/`-3`, o slug pedido (livre, 409 e 400), os 404 e a linha `catalog.clone` com `<origem> -> <cópia>`, sozinha na trilha |
+| `catalogs.integration.test.ts` | catálogos (inclui o recorte do site: o catálogo **privado** do caminho não é nomeado em `mcps[].catalogs` no site, e o dono vem nulo — o `viewer` está em `catalog-names.integration.test.ts`): criar/atualizar/apagar com auditoria e alcance por dono; `setCatalogSkills` declarativa preservando a participação de quem ficou; a precedência (o vínculo direto sobrescreve, dois catálogos somam); as três desativações tirando a skill do servidor e do site; `mcps` com `direct: false` e `catalogs`; os contadores por caminho; `activeSkillCount` do nó excluindo quem tem vínculo direto; `catalogPositions` no canvas e o CHECK de par; as cascatas; `stats` e `listOpenVirtualMcps` com catálogo; a re-execução do `016`; e a **clonagem de catálogo** (`031`), **depois** dela de propósito — a re-execução estreita o `CHECK` de `audit_log.action` para a lista da época e `catalog.clone` volta a ser recusada até a `031` ser reaplicada (que é como o teste começa, provando a idempotência dela): membros copiados com o `is_active` de cada participação, cópia privada com o original público, sem vínculo com vMCP e sem concessão, original intacto, o `-2`/`-3`, o slug pedido (livre, 409 e 400), os 404 e a linha `catalog.clone` com `<origem> -> <cópia>`, sozinha na trilha |
 | `virtual-mcps.integration.test.ts` também cobre | a visibilidade `'open'` do site (só vMCP aberto e ligado), `mcps` na skill, `listPublishedSkills` por vMCP, o `icon` da skill (regra de shared, 400 no inválido, CHECK de tamanho), os contadores por porta e os dois previews da colmeia (`preview` e `previewCatalogs`, com o teto `VIRTUAL_MCP_PREVIEW_SIZE` e o `isActive` do catálogo), e o canvas (`setVirtualMcpCanvas`, posição preservada por `setVirtualMcpSkills`, `linkSkill` com posição, `layout` que ignora lixo, os CHECKs de `014`) |
 | `access.integration.test.ts` | acesso granular: o `017` sobre uma base parada no `016` (backfill do dono, órfã sem criador, `leitor` → `membro` e o CHECK novo — mais o username que a `033` derivou do **nome** daquela conta legada, e a linha dela no livro); o que cada conta vê por `viewer` (dona, concessão direta, pública, via vMCP aberto, via catálogo público, via contêiner concedido, e o negativo), o `access` por linha, `mcps`/`catalogs` recortados, `scope` nos três tipos (inclusive para o admin), listagens e detalhes de catálogo/vMCP por `viewer`; `set*Grant` como upsert e as recusas, `remove*Grant` e os 404, as seis ações de auditoria com o formato do label; a concessão de **conta desativada** marcada em `Grant.isActive` e revogável nos três tipos (com a mudança de nível ainda recusada, e sem devolver nada na reativação); a **ficha do catálogo recortada pela conta** — `mcps` só com os vMCPs que ela vê (inclusive para a dona do catálogo) e `skills` só com os membros que ela abre, com `mcpCount`/`skillCount` globais; transferência que apaga a concessão do novo dono e recusa inativo/inexistente/torto nos três tipos; o flag público em skill e catálogo e o site acompanhando; `lookupUsers` por nome e por username, com o **e-mail recusado dos dois lados** (inclusive `%%` e `_` como caractere); `listPublicCatalogs`/`getPublicCatalog` com membros privados e o `ownerUsername` que a decisão 11 do `docs/19` passou a expor ao anônimo; as cascatas; a re-execução do `017` que não devolve dono a ninguém; e o UPDATE parcial das duas escritas de skill, com a escrita concorrente (renomeação, público e desligamento) sobrevivendo à trava da linha; mais o `ownerHasProfile` (`034`) no catálogo público e na skill dele, falso enquanto a dona não abre o perfil, falso com o perfil salvo e privado, verdadeiro com ele público |
 | `rag.integration.test.ts` | busca semântica (`020`): os 29 cenários de verificação do DDL — o backfill do hash numa base parada no `019` (sem tocar `updated_at`), a coluna gerada que o Postgres recusa, os triggers de pendência (skill, arquivo de texto, binário que não marca, UPDATE sem mudança, SKILL.md, tag, contador), o `CHECK` do hash e o texto com prefixo recusado, a deduplicação de textos iguais, o `CHECK` de dimensão e a FK composta, cobertura e pendências (com o texto órfão de fora), a fusão RRF, as cascatas de espaço, skill e arquivo e o texto em uso protegido, a reserva em lote e duas em paralelo, o HNSW acima de 2000 dimensões, a identidade do espaço com os dois prefixos (e os limites dos prefixos) e o mesmo texto em dois espaços; mais o **recorte de visibilidade real** nas duas pernas (o vMCP fechado que não vaza no site nem em outro servidor), a paginação e o `total` do conjunto fundido (inclusive a página além do fim e o conjunto fundido vazio, em que a contagem volta a ser uma consulta à parte, e as 120 skills com o mesmo termo, que provam que a perna textual entra inteira: o `total` é o da busca textual mais os vizinhos, e duas páginas cobrem o conjunto sem repetir nem pular), a semeadura e o painel em `settings` com as duas ações novas de auditoria, o **termo literal** (`%`, `_` e `\` como caractere, com as skills de controle que o curinga traria, nas duas pernas, e caixa/acento/palavra parcial intactos) e a re-execução da `020`; mais a **fila de textos** do `025` (a recusa gravada que tira o texto da fila daquele espaço e não é reescrita na segunda vez, o espaço/texto inexistente que não grava nem lança, a reserva com prazo que não deixa duas chamadas em paralelo pegarem o mesmo texto, a reserva vencida que volta à fila, a gravação do vetor que encerra a reserva, o hash sem texto que `insertRagVectors` ignora em vez de perder o lote, e a coleta de órfãos levando vetor e estado pelas cascatas; a **devolução da reserva** do lote que falha, um texto de cada vez e o lote inteiro, sem tocar a recusa, e o **adiamento** com `retryAfterMs`; `clearRagRefusals` limpando um espaço só, sem tocar a reserva nem o outro espaço, com a auditoria); a **troca binário ↔ texto** com o conteúdo igual marcando nos dois sentidos, e o binário regravado igual continuando sem marcar (`027`); e a **reserva de skills com prazo** (`028`: a linha gravada e baixada por terminar e por devolver, o lote do indexador morto que volta só depois do prazo e na ordem de processamento, a skill que derruba o indexador travada no teto de tentativas e visível em `stuckSkills`, o conteúdo novo que recomeça a conta, a reserva viva segurando a skill remarcada, duas réplicas repartindo as vencidas, a statement que pula a linha travada em vez de esperar, a cascata e `ragSchemaReady` esperando a sexta tabela). As listas de migrations são lidas da pasta, e a reexecução da `020` leva a `027` junto |
@@ -2898,9 +3048,14 @@ A suíte do RAG e a do `schema.ts` exigem **pgvector** no servidor (a imagem
 | `locks.integration.test.ts` | a **ordem de travas** no recorte do vMCP (`tasks/023`): `linkSkill` e `unlinkSkill` esperando o canvas na linha do servidor, sem segurar o vínculo (um cliente cru faz o papel do canvas e atualiza o vínculo por cima, sem deadlock); as quatro travas do recorte em `FOR NO KEY UPDATE` — cada função real é pausada depois de travar o vMCP e um terceiro cliente consegue o `FOR KEY SHARE NOWAIT` que a FK de `skill_accesses` pede; a regra "trava pura no começo, `UPDATE` no fim", conferida pelo `pgrowlocks` (contrib; pulada com aviso se o servidor não tiver) com a função pausada no vínculo; pares concorrentes no mesmo vínculo (`linkSkill`/`unlinkSkill`/`recordSkillAccess` × canvas e recorte); `createSkill` publicando nos mesmos servidores em ordens opostas; o vMCP apagado no meio de um `linkSkill` virando o 400 da validação; e o canvas tudo ou nada com o `layout` gravado por último |
 | `skills.integration.test.ts` | **slug gerado perto do teto** (`tasks/035`): três e quatro homônimos de nome longo, a base de 94 caracteres atravessando `-9` → `-10`, dois nomes diferentes com o mesmo prefixo dividindo os desempates encurtados, o mesmo para vMCP e catálogo, e o caso comum e o slug pedido em uso (409 com o próprio slug) intactos; **paginação com desempate** (`tasks/036`): sobre 90 skills inseridas num `INSERT` só — empatadas em nome, `updated_at` e contadores —, as páginas de `score`, `recent`, `name` e da relevância textual são uma partição do conjunto, e a busca híbrida com o `rrf` empatado entre as pernas (30 só-texto × 30 só-vetor, página de 1) também; e a **clonagem de skill** (`031`): propriedades, arquivos (texto e binário, byte a byte, com o hash recalculado) e tags copiados, a cópia nascendo privada mesmo com o original público, desligada como ele, flutuante (sem vMCP, sem catálogo e sem concessão) mesmo com o original publicado e compartilhado, pendente de RAG e com o criador acompanhando o dono; o `-2` e o `-3`, o nome pedido que não mexe no desempate, o slug pedido livre, ocupado (409) e inválido (400), os 404 de uuid torto, sumido e dono inexistente sem deixar rastro, e a linha `skill.clone` com `<origem> -> <cópia>` e sem `create` junto; mais o `ownerHasProfile` (`034`) seguindo o **dono da linha**: verdadeiro na fonte, cuja dona tem página, e falso na cópia, de quem clonou e não tem. Exige pgvector |
 | `manifest.integration.test.ts` | o manifesto da extensão de skills (SEP-2640, ver [Manifesto da extensão de skills](#manifesto-da-extensão-de-skills)): o recorte de `listSkillsManifest` (vínculo direto com `as_skill`, o que só tem prompt/resource, a desligada, a de outro vMCP, a que chega por catálogo e a que o vínculo direto sem `as_skill` esconde apesar do catálogo), `options.slug` devolvendo uma entrada ou nenhuma (inclusive a vazia), as **tags ordenadas por nome** com os `tags.id` semeados em ordem inversa (pedir as tags fora de ordem numa skill só não prova nada: `replaceTagsTx` ordena os nomes antes de gravar), o inventário com o `SKILL.md` primeiro (provado por um anexo que a coleção do banco põe antes dele) e o `sha256` hexadecimal batendo com o calculado em Node sobre os mesmos bytes — texto multibyte e binário —, com `sizeBytes` em bytes; a skill sem linha de `SKILL.md` listada mesmo assim; e `readSkillMdBodies` com lista vazia, uuid torto, uuid inexistente, várias skills de uma vez, uuid repetido e um lote de 55 corpos que atravessa o teto de fatiamento; mais o `updatedAt` subindo com o `SKILL.md` — a chave de cache do texto composto |
+| `seed.integration.test.ts` | o seed (`tasks/013`): a instalação vazia com tudo criado, vinculado e o `public` promovido, e a segunda passada sem nenhuma linha nova na trilha; a skill **privada** de outra conta com o slug de um exemplo, que fica fora do `public` e do `exemplos`, invisível ao site e com o conteúdo intacto; o `public` que já existia, que não ganha skill nem é promovido |
+| `login-guards.integration.test.ts` | `reserveLoginAttempt` (`tasks/026`): a contagem, a tentativa que trava ainda passando, a travada recusada sem empurrar o prazo, o recomeço depois do prazo, o sucesso que zera, a **rajada de 30 com só 8 passando**, uuid torto e inexistente, `updated_at` intocado e a régua dividida com `registerFailedLogin`; a `038` (`tasks/014`): desativar fecha o link vivo (o usado e o vencido intactos), outra escrita não fecha, reativar não reabre, a conta alheia intocada, e o backfill de quem já estava desativado **reaplicado duas vezes** sem mudar o carimbo |
+| `file-tree.integration.test.ts` | arquivo × pasta (`tasks/017`): `setFile` sob arquivo, sobre pasta e sob o `SKILL.md` (409 sem gravar nem auditar), a sobrescrita em outra caixa livre e a árvore torta antiga ainda regravável; `setFiles` com e sem `replace` (contra a árvore, contra si mesmo, tudo ou nada); `createSkill`, `createQuarantine`, `setQuarantineFile`, `setQuarantineFiles` e a promoção do envio torto; o teto do envio (`tasks/016`): o PUT de caminho novo no teto (400) e a sobrescrita que passa, o 409 do ocupado antes do teto e **seis pedidos simultâneos com uma vaga**, para `createQuarantineFile` e `setQuarantineFile` |
+| `quarantine-version.integration.test.ts` | a versão na aprovação (`tasks/023`): o `updatedAt` exposto igual ao carimbo truncado em ms, na ficha e na fila; as cinco escritas que carimbam e o destino sem mudança que não; o envio editado depois da leitura (409, nada criado) e a aprovação com a versão atual escrita em outro fuso; a precedência da mensagem do destino; os textos que não são data (400) e a opção omitida |
+| `catalog-names.integration.test.ts` | o catálogo nomeado em `mcps[].catalogs` (`tasks/027`): o `viewer` sem acesso não lê o privado alheio (o servidor segue listado), a dona, o admin e `'all'` leem os dois, o site só o público, a concessão que passa a nomear, e a ficha do vMCP que segue listando todos |
 | `migrate.test.ts` (sem banco) | `migrationNumber` nos dois formatos de nome, e `isEntrypoint` com caminhos reais num diretório temporário: espaço e acento (a URL percent-encodada que a comparação antiga não reconhecia), symlink, `--preserve-symlinks-main`, outro arquivo e `argv[1]` ausente ou inexistente |
 
-As vinte de integração recriam o mesmo banco e o Vitest roda arquivos em
+As vinte e seis de integração recriam o mesmo banco e o Vitest roda arquivos em
 paralelo: elas se serializam por um advisory lock (`pg_advisory_lock`) segurado
 durante todo o arquivo. Suíte de integração nova aqui dentro precisa usar o
 mesmo número.

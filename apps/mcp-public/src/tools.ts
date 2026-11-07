@@ -286,7 +286,13 @@ export function createHandlers(scope: VirtualScope) {
       // As distâncias vão para o log, não para o cliente (§8.1 item 7).
       if (result.mode === 'hybrid') console.log(logDaBusca(result.mode, result.neighbors));
 
-      if (result.items.length === 0) {
+      // O texto amigável é só para "a busca não achou nada" (`total === 0`).
+      // Página vazia com total positivo é quem paginou além do fim: vai o JSON
+      // de sempre, com `results: []` e o `total` certo — o que o `server.ts` e o
+      // docs/03 prometem desde o relatório 086 de 2026-09-19. Com o critério na
+      // página, o agente lia "Nenhuma skill encontrada" e concluía que não havia
+      // skill sobre o assunto (relatório 020 da auditoria de 2026-11-07).
+      if (result.total === 0) {
         return text(
           // A consulta ecoada é a normalizada: é o que foi procurado, e é
           // assim que o cliente descobre que a dele foi cortada.

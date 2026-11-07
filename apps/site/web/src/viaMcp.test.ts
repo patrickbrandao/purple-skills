@@ -75,7 +75,12 @@ describe('a frase da seção "Via MCP"', () => {
     expect(frase([porta(false, true)])).toContain('como prompt');
     expect(frase([porta(false, true)])).not.toContain('skill://');
 
-    expect(frase([porta(false, false, true)])).toContain('skill://minha-skill');
-    expect(frase([porta(false, true, true)])).toMatch(/como prompt, .* e como resource, em skill:\/\/minha-skill\.$/);
+    // A URI do resource é a do SKILL.md: `skill://<slug>` passou a ser o
+    // diretório da skill (decisão 5 do docs/17) e responde "não encontrado" a
+    // `resources/read` — relatório 021 da auditoria de 2026-11-07.
+    expect(frase([porta(false, false, true)])).toContain('skill://minha-skill/SKILL.md');
+    expect(frase([porta(false, true, true)])).toMatch(
+      /como prompt, .* e como resource, em skill:\/\/minha-skill\/SKILL\.md\.$/,
+    );
   });
 });

@@ -165,7 +165,10 @@ export type DriversDoAmbiente = {
   resolver: DriverResolver;
   /** Ids com chave no ambiente, na ordem do registro. */
   comChave: RagProviderId[];
-  /** Quem tinha chave mas não subiu, e por quê. */
+  /**
+   * Quem tinha chave mas não subiu, e por quê — inclusive quem apontou um
+   * `<CHAVE>_FILE` que não deu para ler (esse não entra em `comChave`).
+   */
   problemas: { id: RagProviderId; motivo: string }[];
 };
 
@@ -178,7 +181,8 @@ export type DriversDoAmbiente = {
  * `rag.driver` passa a valer no ciclo seguinte, sem recriar container nenhum.
  *
  * Um driver que não sobe não derruba os outros: o motivo fica em `problemas`,
- * para o boot registrar uma linha e seguir.
+ * para o boot registrar uma linha e seguir. Vale também para a leitura da
+ * chave — um `_FILE` ilegível desliga só aquele driver. Esta função não lança.
  */
 export function criarDriversDoAmbiente(
   env: NodeJS.ProcessEnv = process.env,
@@ -188,7 +192,20 @@ export function criarDriversDoAmbiente(
   const problemas: DriversDoAmbiente['problemas'] = [];
 
   for (const id of DRIVERS_IMPLEMENTADOS) {
-    const apiKey = readApiKeyEnv(id, env);
+    // A leitura da chave fica dentro de um `try` próprio: um `<CHAVE>_FILE`
+    // ausente ou ilegível faz o `readSecret` lançar (ENOENT, EACCES), e fora do
+    // `try` isso derrubava o site e o mcp-public já no import do módulo — com o
+    // driver `off` no banco, por uma configuração opcional (relatório 015 da
+    // auditoria de 2026-11-07). O driver fica de fora de `comChave`: ninguém
+    // leu chave nenhuma, e é o motivo em `problemas` que diz por quê.
+    let apiKey: string | undefined;
+    try {
+      apiKey = readApiKeyEnv(id, env);
+    } catch (erro) {
+      const motivo = erro instanceof Error ? erro.message : String(erro);
+      problemas.push({ id, motivo: `${driverInfo(id).apiKeyEnv}_FILE ilegível: ${motivo}` });
+      continue;
+    }
     if (!apiKey) continue;
     comChave.push(id);
     try {

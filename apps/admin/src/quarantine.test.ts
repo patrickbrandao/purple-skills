@@ -256,6 +256,29 @@ describe('POST /api/quarantine/:uuid/promote — o portão', () => {
     });
   });
 
+  // Relatório 023 da auditoria de 2026-11-07: a aprovação não conferia se o
+  // conteúdo mudou entre a leitura e o clique. A rota repassa a versão que a
+  // tela exibiu; quem compara, com o envio travado, é o banco.
+  it('a versão que a tela exibiu vai ao banco como expectedUpdatedAt', async () => {
+    comoSessao('editor', DONO);
+    const visto = '2026-11-07T14:20:00.123Z';
+    const res = await comCorpo('POST', `/api/quarantine/${UUID}/promote`, { updatedAt: visto });
+
+    expect(res.status).toBe(201);
+    expect(db.promoteQuarantine).toHaveBeenCalledWith(UUID, 'web-admin', expect.anything(), {
+      expectedTargets: { catalogs: [], mcps: [] },
+      expectedUpdatedAt: visto,
+    });
+  });
+
+  it.each([[123], ['ontem'], [null]])('updatedAt %j que não é data ISO é 400, sem promover', async (updatedAt) => {
+    comoSessao('editor', DONO);
+    const res = await comCorpo('POST', `/api/quarantine/${UUID}/promote`, { updatedAt });
+
+    expect(res.status).toBe(400);
+    expect(db.promoteQuarantine).not.toHaveBeenCalled();
+  });
+
   it('com "admin+owner", o editor que não é dono recebe 403 com a política na mensagem', async () => {
     comoSessao('editor', 'uuid-outro');
     const res = await pedir('POST', `/api/quarantine/${UUID}/promote`);
@@ -330,6 +353,9 @@ describe('arquivos do envio', () => {
 
     expect(res.status).toBe(200);
     expect(db.setQuarantineFile.mock.calls[0]![2]).toBe(texto);
+    // Relatório 016 da auditoria de 2026-11-07: o PUT de caminho novo criava
+    // acima do teto. Quem conta, com o envio travado, é o banco; a rota passa o teto.
+    expect(db.setQuarantineFile.mock.calls[0]![5]).toEqual({ maxFiles: 512 });
   });
 
   it('?raw desce como texto, sob CSP de sandbox e sem cache compartilhado', async () => {
@@ -410,7 +436,9 @@ describe('as duas guardas da criação de arquivo', () => {
     expect(db.getQuarantine).not.toHaveBeenCalled();
 
     expect((await comCorpo('POST', `/api/quarantine/${UUID}/files/.%2Fref%2Fnotas.md`, { content: '' })).status).toBe(201);
-    expect(db.createQuarantineFile).toHaveBeenCalledWith(UUID, 'ref/notas.md', '', expect.anything(), expect.anything());
+    expect(db.createQuarantineFile).toHaveBeenCalledWith(UUID, 'ref/notas.md', '', expect.anything(), expect.anything(), {
+      maxFiles: 512,
+    });
   });
 
   it('texto passa, inclusive o nome sem extensão', async () => {

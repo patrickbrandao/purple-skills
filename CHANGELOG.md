@@ -16,6 +16,134 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+Auditoria de 2026-11-07: 18 relatórios (011–028), todos corrigidos. Dois de
+severidade média, 011 e 012, e o resto de baixa. Cinco candidatos foram
+refutados ainda na verificação e não viraram relatório.
+
+### Mudanças incompatíveis (2026-11-07)
+
+Cada item diz o que o operador ou quem integra precisa fazer.
+
+- **Migration `038`.** Rode `docker compose run --rm migrate`. Ela cria um
+  trigger que fecha os links de redefinição quando a conta é desativada e, no
+  backfill, fecha os links vivos das contas já desativadas (relatório 014).
+- **Um import por vez no painel.** `POST /api/skills/import` responde `503` com
+  `Retry-After` enquanto outro import está em andamento.
+  `ADMIN_MAX_CONCURRENT_IMPORTS` (padrão 1) muda o teto, e o `APP_MEM_LIMIT`
+  precisa subir na mesma proporção (relatório 024).
+- **Arquivo e pasta com o mesmo caminho dão `409`.** Isso vale para toda
+  escrita: PUT, upload avulso, importação, `set_file` e `set_files` do
+  mcp-admin, e a aprovação da quarentena. Envio gravado torto antes desta versão
+  não é aprovado e fica na fila até alguém arrumar o caminho (relatório 017).
+- **Upload avulso com `prefix` inválido dá `400`.** Antes ele gravava na raiz
+  (relatório 018).
+
+### Segurança (2026-11-07)
+
+- **O login certo não zera mais a janela por IP.** Ele devolve só a própria
+  marca. Antes, `loginLimiter.reset` apagava o balde inteiro, e quem tinha uma
+  conta qualquer errava 29 vezes contra contas alheias, entrava na própria e
+  ganhava mais 30. Sobrava só a trava por conta, que não segura quem espalha
+  tentativas por muitas contas (relatório 011). O `reset` ficou no
+  `/api/setup` e no login legado, que só existem com `users` vazia. Descrito
+  no `docs/05` §2.7.
+- **A troca da própria senha tem teto por conta.** O `POST /api/me/password`
+  conferia a senha atual sem limite: uma sessão roubada a descobria por
+  tentativa, e cada erro era um scrypt no laço, sem freio (relatório 012). Agora
+  vale `LOGIN_MAX_ATTEMPTS` a cada `LOGIN_LOCK_SECONDS`, com `429` e
+  `Retry-After` acima disso. A troca certa não consome o teto, e errar ali não
+  mexe na trava do login.
+- **A tentativa de login é contada antes da senha** (relatório 026).
+  `reserveLoginAttempt` conta a tentativa num `UPDATE` condicional, que só deixa
+  seguir se a conta não estava travada, e o scrypt vem depois. Antes, a trava
+  era lida num `SELECT` e o erro gravado depois do scrypt. Numa rajada
+  simultânea, todos os pedidos liam a conta destravada. Medido: de 30 pedidos
+  paralelos, passam 8, que é o `LOGIN_MAX_ATTEMPTS`.
+- **Desativar a conta fecha os links de redefinição** (relatório 014). O
+  trigger da migration `038` grava `superseded_at` nos links vivos. A
+  confirmação também confere se a conta está ativa. Antes, um link pedido
+  antes da desativação trocava a senha, e a reativação herdava a senha de quem
+  tinha o link. Reativar não reabre o link.
+- **O erro do SSO não vem mais da URL** (relatório 019). O callback grava o
+  motivo no cookie `ps_sso_error`, que dura um minuto, e redireciona para
+  `/?sso_error=1`. Sem esse cookie, a tela de login mostra um texto fixo. Antes,
+  qualquer link `/?sso_error=…` fazia o painel exibir uma frase forjada como se
+  fosse erro oficial.
+- **O seed não publica skill de outra conta** (relatório 013). Agora só as
+  skills criadas na própria execução entram no vMCP `public` e no catálogo
+  `exemplos`, e só um `public` criado agora pode virar o vMCP padrão. Antes, a
+  skill privada de outra conta que tivesse o slug de um exemplo ia parar no
+  servidor aberto. O database/README.md ganhou a seção "O seed".
+- **A aprovação confere a versão revisada** (relatório 023). O painel manda o
+  `updatedAt` que exibiu, e o banco compara com o envio travado. Se o arquivo
+  ou o destino mudou depois disso, a resposta é `409` e nada é criado. Antes,
+  só o destino era conferido, e o que outro editor gravasse entre a leitura e
+  o clique ia ao ar. A ficha relê o envio depois de salvar, para o revisor não
+  levar `409` pelo próprio texto.
+- **Imports simultâneos não derrubam mais o painel** (relatório 024). Um `.zip`
+  de 1 a 2 MB com milhares de registros no diretório central custa centenas de
+  MB para ser lido, e poucos imports em paralelo levavam o container ao OOM.
+  Agora há um teto de imports simultâneos (ver "Mudanças incompatíveis").
+- **Quem tem chave não fica de fora quando o teto de sessões enche**
+  (relatório 025). Com o teto global do MCP público cheio, quem chega com
+  chave própria recicla a sessão anônima mais parada de qualquer vMCP aberto.
+  Antes, recebia `503`: cada vMCP aberto tem um balde anônimo de 50 vagas, e dez
+  deles somam as 500 de `MCP_MAX_SESSIONS`. A reciclagem só acontece em
+  `initialize` e `GET /sse`. O docs/08 §4.1 e o docs/02 §7.3 registram a regra.
+
+### Corrigido (2026-11-07)
+
+- **O teto de arquivos por envio vale para o PUT e é contado sob a trava**
+  (relatório 016). Antes, o PUT de caminho novo criava acima de 512 arquivos, e
+  dois POST simultâneos passavam do teto juntos.
+- **Arquivo e pasta não convivem mais** (relatório 017). Antes, essas escritas
+  montavam árvores impossíveis, que viravam um `.zip` quebrado. Sobrescrever o
+  mesmo caminho continua livre, e no `setFiles` com `replace` só o próprio lote
+  conta.
+- **`prefix` inválido no upload avulso dá 400** (relatório 018). Antes era
+  trocado pela raiz em silêncio, e o upsert sobrescrevia ali o arquivo homônimo.
+- **Um `RAG_*_API_KEY_FILE` ilegível não derruba mais o boot** (relatório 015).
+  A leitura da chave ficava fora do `try`, e o ENOENT derrubava o site e o
+  mcp-public já no import, mesmo com `rag.driver=off`. Agora o driver fica de
+  fora e o motivo vai para `problemas`. O site e o mcp-public passaram a imprimir
+  esses problemas no boot.
+- **`search_skills` além do fim devolve o JSON com o total** (relatório 020).
+  Antes, a página vazia respondia "Nenhuma skill encontrada", como se a busca não
+  tivesse achado nada.
+- **`?page=` inválido na home do site** (relatório 022). Antes, `?page=abc`
+  deixava o paginador em "NaN / N", `?page=1.5` repetia meia página e uma página
+  além da última dizia que não havia skills. Agora a página é normalizada, e uma
+  além da última leva à última.
+- **O SKILL.md acima de 250 000 caracteres sai sem cores** (relatório 028), o
+  mesmo teto que o leitor de arquivos já tinha. No teste, um bloco de 250 mil
+  caracteres levou 18 s com as cores e 2,5 s sem.
+- **A ficha da skill não nomeia catálogo privado de outra conta** (relatório
+  027). No modo `viewer`, `mcps[].catalogs` usa a mesma régua da lista de
+  catálogos da própria ficha.
+
+### Alterado (2026-11-07)
+
+- **`skill://<slug>/SKILL.md` nas dicas de resource** (relatório 021). Valia para
+  o `describe` de `asResource` em quatro tools do mcp-admin, para o painel
+  (`SkillMcps`, diálogo de acrescentar skill) e para a ficha pública do site.
+  Desde a decisão 5 do docs/17, a URI antiga é o diretório, e quem seguia a dica
+  recebia "não encontrado".
+
+### Decidido e não mudado (2026-11-07)
+
+- **A ficha e a prévia do vMCP continuam nomeando todos os catálogos
+  vinculados** (parte do relatório 027). O canvas grava a lista inteira, então
+  uma lista recortada apagaria, ao salvar, o vínculo que a conta não enxerga.
+  Quem vê o servidor vê os nomes dos catálogos ligados a ele. Registrado no
+  database/README.md.
+- **Refutados na verificação:**
+  - **O avatar revelar conta desativada:** está documentado no docs/20 §5.
+  - **`*_FILE` sem secret montado no compose:** falhar alto é o certo para
+    segredo obrigatório.
+  - **`APP_VERSION` sobrescrito pelo compose:** está documentado.
+  - **`MIGRATE_ALLOW_RETRO` fora do `.env`:** é de propósito (database/README).
+  - **Caractere nulo em argumento de tool:** é aceito no docs/03.
+
 ## [1.0.0-beta.34] — 2026-10-04
 
 ### Alterado (2026-10-04)

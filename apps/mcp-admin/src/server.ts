@@ -204,7 +204,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
               slug: z.string().describe('Virtual MCP slug.'),
               asSkill: z.boolean().describe('In the tools (search_skills, get_skill…).'),
               asPrompt: z.boolean().describe('As a prompt, under its slug.'),
-              asResource: z.boolean().describe('As the resource skill://<slug>.'),
+              asResource: z.boolean().describe('As the resource skill://<slug>/SKILL.md.'),
             }),
           )
           .describe(
@@ -294,7 +294,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
         mcp: z.string().describe('Virtual MCP slug.'),
         asSkill: z.boolean().describe('In the tools (search_skills, get_skill…).'),
         asPrompt: z.boolean().describe('As a prompt, under its slug.'),
-        asResource: z.boolean().describe('As the resource skill://<slug>.'),
+        asResource: z.boolean().describe('As the resource skill://<slug>/SKILL.md.'),
       },
     },
     (args) => guard(() => mcps().link_skill(args)),
@@ -534,7 +534,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
               slug: z.string(),
               asSkill: z.boolean().describe('In the tools (search_skills, get_skill…).'),
               asPrompt: z.boolean().describe('As a prompt, under its slug.'),
-              asResource: z.boolean().describe('As the resource skill://<slug>.'),
+              asResource: z.boolean().describe('As the resource skill://<slug>/SKILL.md.'),
             }),
           )
           .describe('The complete list. An empty one empties the MCP.'),
@@ -712,7 +712,7 @@ export function createMcpServer(caller: Caller = TOKEN_CALLER): McpServer {
               slug: z.string().describe('Catalog slug.'),
               asSkill: z.boolean().describe('In the tools (search_skills, get_skill…).'),
               asPrompt: z.boolean().describe('As a prompt, under its slug.'),
-              asResource: z.boolean().describe('As the resource skill://<slug>.'),
+              asResource: z.boolean().describe('As the resource skill://<slug>/SKILL.md.'),
             }),
           )
           .describe('The complete list. An empty one removes every catalog from the MCP.'),

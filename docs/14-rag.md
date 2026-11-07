@@ -217,6 +217,20 @@ duas chaves no `.env`, a troca vale no ciclo seguinte, sem recriar container.
 Um driver que não sobe (URL base inválida, por exemplo) não derruba os outros:
 o motivo vai para o log do boot e a busca segue com quem subiu.
 
+O mesmo vale para a **leitura** da chave: um `RAG_<DRIVER>_API_KEY_FILE` que
+aponta para arquivo ausente ou ilegível desliga só aquele driver — ele fica de
+fora de `comChave` (o painel o mostra como chave ausente), o motivo vai para
+`problemas` e o site, o mcp-public e o indexador imprimem uma linha
+`driver de RAG <id> não subiu: RAG_<DRIVER>_API_KEY_FILE ilegível: …` no boot.
+É a exceção à regra de "valor inválido derruba o boot" do §5.2, pela mesma razão
+do `CHANGE_ME`: a busca semântica é opcional, e o `x-rag-providers` do compose
+repassa os mesmos `_FILE` aos três serviços — montar o secret só no indexador
+deixava o site e o mcp-public em loop de restart.
+
+**Era**, até o relatório 015 da auditoria de 2026-11-07: a chave era lida fora
+do `try`, e o ENOENT do `readSecret` derrubava o site e o mcp-public já no
+import do módulo, mesmo com `rag.driver=off`.
+
 ## 6. Os drivers
 
 A interface é a mesma para os três, e os erros são divididos pelo **que o

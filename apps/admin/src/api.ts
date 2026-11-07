@@ -102,7 +102,7 @@ import {
   revokeKey,
   updateAccount,
 } from './accounts.js';
-import { config, oidcEnabled, resetLinkBaseUrl, smtpEnabled } from './config.js';
+import { SSO_ERROR_COOKIE, config, oidcEnabled, resetLinkBaseUrl, smtpEnabled } from './config.js';
 import {
   MAX_FILES_PER_REQUEST,
   avatarUpload,
@@ -133,6 +133,50 @@ const loginLimiter = createRateLimiter({
  * justamente nas rotas de credencial. `::ffff:a.b.c.d` volta a contar como IPv4.
  */
 const limiterKey = (req: Request): string => rateLimitKey(req.ip);
+
+/**
+ * Teto da conferência da senha atual em `POST /api/me/password`, **por conta**
+ * (§2.7). A rota fica atrás da sessão, longe da janela por IP: sem este teto,
+ * uma sessão roubada testava a senha atual sem limite, e cada tentativa
+ * bloqueava o laço com um scrypt (relatório 012 da auditoria de 2026-11-07).
+ * Mesmos números da trava de login: `LOGIN_MAX_ATTEMPTS` a cada
+ * `LOGIN_LOCK_SECONDS`.
+ */
+const passwordChangeLimiter = createRateLimiter({
+  max: config.loginMaxAttempts,
+  windowSeconds: config.loginLockSeconds,
+});
+
+/**
+ * Teto de importações simultâneas neste processo (`ADMIN_MAX_CONCURRENT_IMPORTS`,
+ * padrão 1). O `mem_limit` do compose é dimensionado para o pior import
+ * legítimo (~700 MB), e um .zip de 1–2 MB chega perto disso — 20 000 registros
+ * no diretório central custam ~10 KB de RSS cada, e os dados descomprimidos vão
+ * até 256 MiB. Sem fila, poucos imports em paralelo de uma conta de editor
+ * derrubavam o painel por OOM (relatório 024 da auditoria de 2026-11-07). Entra
+ * antes do `multer`: quem vai ser recusado nem tem o corpo lido.
+ */
+let importsEmCurso = 0;
+export function limitarImports(_req: Request, res: Response, next: NextFunction): void {
+  if (importsEmCurso >= config.maxConcurrentImports) {
+    res.setHeader('Retry-After', '5');
+    res.status(503).json({
+      error: 'busy',
+      message: 'Outra importação está em andamento. Tente de novo em alguns segundos.',
+    });
+    return;
+  }
+  importsEmCurso += 1;
+  let liberado = false;
+  const liberar = () => {
+    if (liberado) return;
+    liberado = true;
+    importsEmCurso -= 1;
+  };
+  res.on('finish', liberar);
+  res.on('close', liberar);
+  next();
+}
 
 function param(req: Request, name: string): string {
   const value = (req.params as Record<string, unknown>)[name];
@@ -544,7 +588,12 @@ api.post(
       return;
     }
 
-    loginLimiter.reset(limiterKey(req));
+    // Devolve só a marca deste pedido, sem zerar a janela: zerar deixava quem
+    // tem conta alternar erros contra contas alheias com um acerto na própria,
+    // e a camada por IP sumia (§2.7; relatório 011 da auditoria de 2026-11-07).
+    // O `reset` do setup e do login legado fica — os dois só existem com
+    // `users` vazia, quando não há conta alheia para atacar.
+    loginLimiter.forgive(limiterKey(req));
     issueSession(req, res, {
       uuid: outcome.user.uuid,
       role: outcome.user.role,
@@ -615,10 +664,20 @@ api.get(
       res.redirect('/');
     } catch (err) {
       // O usuário chega aqui por navegação: devolver JSON deixaria a tela
-      // branca. A mensagem volta pela querystring, para a tela de login.
+      // branca. Na querystring vai só o marcador; o texto vai num cookie curto
+      // que só este servidor grava. **Era**, até a auditoria de 2026-11-07
+      // (relatório 019), o texto na URL — e a tela exibia como erro oficial
+      // qualquer `?sso_error=` de um link forjado.
       const message = err instanceof AppError ? err.message : 'Falha no login por SSO';
       if (!(err instanceof AppError)) console.error('[admin] falha no callback OIDC:', err);
-      res.redirect(`/?sso_error=${encodeURIComponent(message)}`);
+      res.cookie(SSO_ERROR_COOKIE, message, {
+        httpOnly: false,
+        sameSite: 'lax',
+        secure: config.cookieSecure ?? req.secure,
+        maxAge: 60 * 1000,
+        path: '/',
+      });
+      res.redirect('/?sso_error=1');
     }
   }),
 );
@@ -719,11 +778,26 @@ api.get('/api/me', (req, res) => {
 api.post(
   '/api/me/password',
   route(async (req, res) => {
+    // A sessão de bootstrap não tem uuid (e `changeOwnPassword` a recusa): cai
+    // no balde do endereço, para nem ela rodar sem teto.
+    const key = req.user?.uuid ? `user:${req.user.uuid}` : limiterKey(req);
+    if (!passwordChangeLimiter.hit(key)) {
+      const retry = passwordChangeLimiter.retryAfter(key);
+      res.setHeader('Retry-After', String(retry));
+      res.status(429).json({
+        error: 'too_many_requests',
+        message: `Tentativas demais. Espere ${Math.ceil(retry / 60)} min e tente de novo.`,
+      });
+      return;
+    }
+
     const body = jsonBody(req) as { currentPassword?: unknown; newPassword?: unknown };
     await changeOwnPassword(req.user!, {
       currentPassword: body.currentPassword,
       newPassword: body.newPassword,
     });
+    // A troca certa não pesa: só os erros consomem o teto.
+    passwordChangeLimiter.forgive(key);
     // A troca incrementa `token_version` e derruba o próprio cookie: reemitir
     // aqui evita expulsar quem acabou de trocar a senha.
     const fresh = await getUserByUuid(req.user!.uuid!);
@@ -1536,6 +1610,7 @@ api.post(
 api.post(
   '/api/skills/import',
   requireCreate,
+  limitarImports,
   limitRequestBytes,
   upload.single('file'),
   route(async (req, res) => {
@@ -2190,7 +2265,14 @@ api.post(
     if (rejectOversizedBatch(uploaded, res)) return;
 
     // `prefix[a]=x` chega como objeto sem protótipo, e `String()` dele estoura.
-    const prefix = normalizeRelativePath(textField(req.body, 'prefix') ?? '') ?? '';
+    // Vazio (ou só `/`, `\`, `.`) é a raiz; o resto que não normaliza é 400.
+    // **Era**, até a auditoria de 2026-11-07 (relatório 018), trocado pela raiz
+    // em silêncio — e o upsert sobrescrevia ali o que foi pedido para a pasta.
+    const rawPrefix = textField(req.body, 'prefix') ?? '';
+    const naRaiz = rawPrefix.split(/[\\/]/).every((segment) => segment === '' || segment === '.');
+    const prefix = naRaiz ? '' : normalizeRelativePath(rawPrefix);
+    if (prefix === null) throw badRequest(`Pasta de destino inválida: ${rawPrefix}`);
+    if (isSkillMd(prefix)) throw badRequest('SKILL.md é um arquivo, não uma pasta');
     const files = await setFiles(
       param(req, 'slug'),
       uploaded.map((file) => {
@@ -2317,7 +2399,18 @@ api.post(
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
     await quarantine.assertCanPromote(req.user!, found);
     const expectedTargets = await quarantine.assertCanPublishTargets(req.user!, found);
-    const detail = await promoteQuarantine(found.uuid, SOURCE, actorFrom(req), { expectedTargets });
+    // A versão que quem aprova **viu**: arquivo ou destino mudado depois da
+    // leitura é 409 no banco. **Era**, até a auditoria de 2026-11-07 (relatório
+    // 023), só o destino conferido, e só entre esta rota e a gravação — o que
+    // fosse editado entre a leitura humana e o clique ia ao ar sem ninguém ler.
+    const visto = (req.body as { updatedAt?: unknown } | undefined)?.updatedAt;
+    if (visto !== undefined && (typeof visto !== 'string' || Number.isNaN(Date.parse(visto)))) {
+      throw badRequest('O campo "updatedAt" deve ser uma data ISO');
+    }
+    const detail = await promoteQuarantine(found.uuid, SOURCE, actorFrom(req), {
+      expectedTargets,
+      expectedUpdatedAt: visto,
+    });
     res.status(201).json(bodyOnly(access.withGrants(detail)));
   }),
 );
@@ -2379,7 +2472,13 @@ api.put(
       return;
     }
     assertTextPath(path);
-    res.json(await setQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req)));
+    // Caminho novo conta contra o teto do envio, conferido sob a trava no banco
+    // (relatório 016 da auditoria de 2026-11-07): o PUT criava acima do teto.
+    res.json(
+      await setQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req), {
+        maxFiles: quarantine.MAX_FILES_POR_ENVIO,
+      }),
+    );
   }),
 );
 
@@ -2401,7 +2500,14 @@ api.post(
     assertTextPath(path);
     const found = await quarantine.load(req.user!, param(req, 'uuid'));
     quarantine.assertHasRoom(found);
-    res.status(201).json(await createQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req)));
+    // O `assertHasRoom` acima é a resposta rápida; quem decide é a contagem
+    // feita com o envio travado — a de cima é lida antes da trava, e dois POST
+    // simultâneos passavam do teto (relatório 016 da auditoria de 2026-11-07).
+    res.status(201).json(
+      await createQuarantineFile(found.uuid, path, content, SOURCE, actorFrom(req), {
+        maxFiles: quarantine.MAX_FILES_POR_ENVIO,
+      }),
+    );
   }),
 );
 

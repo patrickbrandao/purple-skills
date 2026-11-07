@@ -22,7 +22,7 @@ import { useToast } from './Toast.js';
 /** As três portas de um vínculo, como o painel as rotula. */
 export const SURFACES = [
   { key: 'asSkill' as const, label: 'Tools', title: 'Nas ferramentas: search_skills, get_skill…', port: 'tools' },
-  { key: 'asResource' as const, label: 'Resources', title: 'Como resource skill://<slug>', port: 'resources' },
+  { key: 'asResource' as const, label: 'Resources', title: 'Como resource skill://<slug>/SKILL.md', port: 'resources' },
   { key: 'asPrompt' as const, label: 'Prompts', title: 'Como prompt, pelo slug (slash-command)', port: 'prompts' },
 ] as const;
 
