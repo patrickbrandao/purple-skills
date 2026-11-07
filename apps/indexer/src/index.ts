@@ -98,7 +98,9 @@ export function driverDoAmbiente(env: NodeJS.ProcessEnv = process.env): DriversD
 function montarPortas(): IndexerPorts {
   const { resolver, comChave, problemas } = driverDoAmbiente();
   for (const { id, motivo } of problemas) {
-    console.warn(`[indexer] driver ${id} tem chave mas não subiu: ${motivo}`);
+    // Inclui o `<CHAVE>_FILE` ilegível (relatório 015 da auditoria de
+    // 2026-11-07), que não chega a ser "chave": daí não dizer "tem chave".
+    console.warn(`[indexer] driver ${id} não subiu: ${motivo}`);
   }
   return {
     driver: resolver,

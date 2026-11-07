@@ -139,7 +139,9 @@ export function QuarantinePage({ user }: { user: SessionUser }) {
 
   /** Sem diálogo, como o "Aprovar" da ficha: o clique já é a decisão. */
   function aprovarMarcados() {
-    void emSequencia((item) => promoteQuarantineItem(item.uuid), 'aprovado');
+    // A versão da lista carregada: item editado depois disso falha com 409 e
+    // continua marcado, para ser relido antes de aprovar.
+    void emSequencia((item) => promoteQuarantineItem(item.uuid, item.updatedAt), 'aprovado');
   }
 
   /** Descartar apaga, e não tem volta: este pede confirmação. */

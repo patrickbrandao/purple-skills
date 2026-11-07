@@ -445,6 +445,127 @@ describe('teto de sessões na identidade aberta', () => {
 });
 
 /**
+ * Cada vMCP aberto tem o próprio balde anônimo (`virtual:<uuid>:open`), e a
+ * soma dos baldes pode encher o teto global sozinha: dez vMCPs abertos com o
+ * balde padrão de 50 são as 500 vagas. Relatório 025 da auditoria de
+ * 2026-11-07 — quem tem chave levava 503 em todo vMCP, inclusive nos fechados,
+ * que o balde dizia proteger. Agora a chave recicla a anônima mais parada, de
+ * qualquer vMCP aberto; o anônimo, com o teto cheio, continua levando 503.
+ */
+describe('teto global cheio de sessões anônimas de vários vMCPs abertos', () => {
+  const startDoisAbertos = () =>
+    startApp({
+      maxSessions: 4,
+      maxSessionsPerIdentity: 2,
+      mounts: [
+        {
+          basePath: '/virtual/:slug',
+          auth: (_req, _res, next) => next(),
+          createServer: () => new McpServer({ name: 'virtual', version: '0.0.0' }),
+          // Com o header, a chave do vMCP; sem ele, o anônimo daquele vMCP —
+          // o mesmo formato de `auth.ts`.
+          identityOf: (req) => {
+            const chave = req.header(IDENTITY_HEADER);
+            return chave ? `virtual:${req.params.slug}:key:${chave}` : `virtual:${req.params.slug}:open`;
+          },
+        },
+      ],
+    });
+
+  const initializeComo = (url: string, chave?: string) =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...(chave ? { [IDENTITY_HEADER]: chave } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'teste', version: '1' } },
+      }),
+    });
+
+  /** Enche as quatro vagas com anônimos: duas de cada vMCP aberto, a mais parada primeiro. */
+  async function encherDeAnonimos(base: string) {
+    const maisParada = await openSse(`${base}/virtual/aberto-a/sse`);
+    const outras = [
+      await openSse(`${base}/virtual/aberto-a/sse`),
+      await openSse(`${base}/virtual/aberto-b/sse`),
+      await openSse(`${base}/virtual/aberto-b/sse`),
+    ];
+    // Atividade nas outras três: a primeira fica, sem dúvida, a mais parada.
+    for (const endpoint of outras) expect((await post(`${base}${endpoint}`)).status).toBe(202);
+    return { maisParada, outras };
+  }
+
+  it('a chave de um vMCP fechado entra, e cai a anônima mais parada', async () => {
+    tracker = fakeTracker();
+    const base = await startDoisAbertos();
+    const { maisParada, outras } = await encherDeAnonimos(base);
+
+    const res = await initializeComo(`${base}/virtual/fechado/mcp`, 'k1');
+    expect(res.status).toBe(200);
+    await res.text();
+
+    expect((await post(`${base}${maisParada}`)).status).toBe(404);
+    for (const endpoint of outras) expect((await post(`${base}${endpoint}`)).status).toBe(202);
+    // O painel vê `timeout`, como em toda reciclagem por teto.
+    expect(tracker.events).toContain('closed:sse:timeout');
+  });
+
+  it('vale também para o GET /sse de quem tem chave', async () => {
+    const base = await startDoisAbertos();
+    const { maisParada } = await encherDeAnonimos(base);
+
+    const daChave = await openSse(`${base}/virtual/fechado/sse`, 'k1');
+
+    expect((await post(`${base}${daChave}`, 'k1')).status).toBe(202);
+    expect((await post(`${base}${maisParada}`)).status).toBe(404);
+  });
+
+  it('o anônimo que chega com o teto cheio continua levando 503', async () => {
+    const base = await startDoisAbertos();
+    const { maisParada, outras } = await encherDeAnonimos(base);
+
+    const res = await initializeComo(`${base}/virtual/aberto-c/mcp`);
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBeTruthy();
+    for (const endpoint of [maisParada, ...outras]) expect((await post(`${base}${endpoint}`)).status).toBe(202);
+  });
+
+  it('a chave que encontra o teto cheio só de chaves leva 503, sem derrubar ninguém', async () => {
+    const base = await startDoisAbertos();
+    const dasChaves = [
+      await openSse(`${base}/virtual/fechado/sse`, 'k1'),
+      await openSse(`${base}/virtual/fechado/sse`, 'k1'),
+      await openSse(`${base}/virtual/fechado/sse`, 'k2'),
+      await openSse(`${base}/virtual/fechado/sse`, 'k2'),
+    ];
+
+    const res = await initializeComo(`${base}/virtual/fechado/mcp`, 'k3');
+
+    expect(res.status).toBe(503);
+    for (const [i, endpoint] of dasChaves.entries()) {
+      expect((await post(`${base}${endpoint}`, i < 2 ? 'k1' : 'k2')).status).toBe(202);
+    }
+  });
+
+  it('um POST de chave sem sessão que não é initialize não custa a vaga de um anônimo', async () => {
+    const base = await startDoisAbertos();
+    const { maisParada } = await encherDeAnonimos(base);
+
+    const res = await post(`${base}/virtual/fechado/mcp`, 'k1', { accept: 'application/json, text/event-stream' });
+
+    expect(res.status).toBe(503);
+    expect((await post(`${base}${maisParada}`)).status).toBe(202);
+  });
+});
+
+/**
  * O limite de taxa é a camada que falta antes dos tetos de sessão: eles limitam
  * o que fica em pé, ele limita o que entra. Fica **antes** da autenticação de
  * propósito — é ele que protege a consulta que o `auth` faz —, e por isso o

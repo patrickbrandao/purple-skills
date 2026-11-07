@@ -6,9 +6,9 @@
  * são os mesmos para todos os servidores virtuais. O recorte de visibilidade
  * continua por escopo, dentro da consulta.
  *
- * Nada aqui lança. Sem chave, com o driver `off`, sem a migration, sem espaço
- * ou com o Google fora do ar, a busca responde `mode: 'text'` — a mesma de
- * antes do RAG.
+ * Nada aqui lança. Sem chave, com um `<CHAVE>_FILE` ilegível, com o driver
+ * `off`, sem a migration, sem espaço ou com o Google fora do ar, a busca
+ * responde `mode: 'text'` — a mesma de antes do RAG.
  */
 import { findRagSpace, getRagSettings, ragSchemaReady } from '@purple-skills/db';
 import { criarBuscaSemantica, criarDriversDoAmbiente, RAG_DRIVERS } from '@purple-skills/rag';
@@ -29,18 +29,27 @@ export const buscaSemantica = criarBuscaSemantica({
   log: (mensagem) => console.log(`[mcp-public] ${mensagem}`),
 });
 
-/** Para o boot dizer, uma vez, o que o operador precisa saber. */
-export function avisoDeBoot(): string | null {
+/**
+ * Para o boot dizer, uma vez, o que o operador precisa saber.
+ *
+ * Inclui uma linha por driver que não subiu (`problemas`) — entre eles o de
+ * `<CHAVE>_FILE` ilegível, que desliga só aquele driver em vez de derrubar o
+ * servidor (relatório 015 da auditoria de 2026-11-07).
+ */
+export function avisosDeBoot(): string[] {
+  const avisos = drivers.problemas.map(
+    ({ id, motivo }) => `[mcp-public] driver de RAG ${id} não subiu: ${motivo}`,
+  );
   if (drivers.comChave.length === 0) {
     const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
     // O placeholder conta como ausente (`readApiKeyEnv`, relatório 021 da
     // auditoria de 2026-09-19): sem dizer isso, quem copiou o `.env.example` lê
     // "nenhuma chave" com três variáveis preenchidas e procura o defeito no
     // lugar errado.
-    return (
+    avisos.push(
       `[mcp-public] nenhuma chave de RAG no ambiente (${vars}; o CHANGE_ME do .env.example conta ` +
-      'como chave ausente): a busca responde em modo textual'
+        'como chave ausente): a busca responde em modo textual',
     );
   }
-  return null;
+  return avisos;
 }

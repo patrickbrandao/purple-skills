@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { searchSkills, type SearchResult } from '../../api.js';
+import { paginaDaUrl, paginaPresa, totalDePaginas } from '../../pagina.js';
 import { useSkillsSummary } from '../../useSkillsSummary.js';
 import { useReveal } from '../../useReveal.js';
 import { SkillCard } from '../SkillCard.js';
@@ -26,7 +27,9 @@ export function PublicSkills() {
   const q = params.get('q') ?? '';
   const tag = params.get('tag') ?? '';
   const sort = params.get('sort') ?? 'score';
-  const page = Math.max(1, Number(params.get('page') ?? '1'));
+  // Normalizada: a URL é entrada de fora (relatório 022 da auditoria de
+  // 2026-11-07, ver `pagina.ts`).
+  const page = paginaDaUrl(params.get('page'));
 
   const [input, setInput] = useState(q);
   const [result, setResult] = useState<SearchResult | null>(null);
@@ -81,9 +84,19 @@ export function PublicSkills() {
   }
 
   const totalPages = useMemo(
-    () => (result ? Math.max(1, Math.ceil(result.total / PAGE_SIZE)) : 1),
+    () => (result ? totalDePaginas(result.total, PAGE_SIZE) : 1),
     [result],
   );
+
+  // Link salvo antes de skills serem despublicadas: a página pedida passou do
+  // fim. Leva à última, sem entrada nova no histórico (`update` substitui), em
+  // vez de dizer que não há skill nenhuma.
+  useEffect(() => {
+    if (loading || !result) return;
+    const destino = paginaPresa(page, result.total, PAGE_SIZE);
+    if (destino !== null) update({ page: destino > 1 ? String(destino) : null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, result, page]);
 
   return (
     <section className="skills-sec" id="skills">
@@ -180,7 +193,7 @@ export function PublicSkills() {
           </div>
         )}
 
-        {result && result.items.length === 0 && !loading && (
+        {result && result.items.length === 0 && !loading && page <= totalPages && (
           <div className="empty mt-4">
             <img className="wiz" src="/assets/images/icon-purple-left-156x224.png" alt="" />
             <h3>Nenhuma skill pública encontrada.</h3>

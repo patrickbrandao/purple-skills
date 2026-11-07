@@ -126,6 +126,19 @@ describe('search_skills', () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it('além do fim da lista devolve o JSON com o total, e não "nenhuma encontrada"', async () => {
+    // Relatório 020 da auditoria de 2026-11-07: o critério era a página vazia,
+    // e o agente que pedia a página seguinte lia que a busca não achou nada.
+    db.listSkills.mockResolvedValue({ items: [], total: 5, limit: 10, offset: 20 });
+
+    const result = await handlers.search_skills({ query: 'git', offset: 20 });
+
+    expect(result.content[0].text).not.toContain('Nenhuma skill encontrada');
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload).toMatchObject({ total: 5, limit: 10, offset: 20, results: [] });
+    expect(result.isError).toBeUndefined();
+  });
+
   /**
    * O critério de aceite do PR 4 (`docs/14-rag.md` §12): com a busca
    * semântica indisponível, os resultados são **idênticos aos de hoje**.

@@ -227,6 +227,12 @@ Opcional, ligado por `OIDC_ISSUER`. Fluxo authorization code + PKCE via
   procurar o erro no domínio de quem tentou entrar.
 - A allowlist vale nos **três** caminhos: autenticar, provisionar e **vincular**.
   E-mail fora dos domínios autorizados não faz nenhum dos três.
+- **O motivo da recusa volta num cookie, não na URL.** O callback grava o texto
+  em `ps_sso_error` (um minuto, `SameSite=Lax`) e manda para `/?sso_error=1`; a
+  tela de login lê, apaga e exibe. Sem o cookie, ela exibe um texto fixo.
+  **Era**, até a auditoria de 2026-11-07 (relatório 019), o texto na
+  querystring — e um link forjado fazia o painel exibir qualquer frase como erro
+  oficial. Um site terceiro não grava cookie neste domínio.
 - **Vinculação é sempre pelo e-mail.** Um login OIDC cujo e-mail bate com uma
   conta local assume aquela conta, com o papel que ela já tem. O vínculo entra
   na trilha como `user.link` (`§2.8`).
@@ -323,6 +329,13 @@ igual o link consumido, a redefinição pelo admin e a troca pelo próprio dono.
 redefinição pelo admin também é **auditada**, como `user.password` com o e-mail da
 conta afetada em `target_label` (`030`).
 
+**Desativar a conta fecha os links vivos** (migration `038`), e o link de conta
+desativada não troca a senha: queima o token e responde a mensagem genérica de
+link inválido, sem contar que a conta foi desativada. **Era**, até a auditoria de
+2026-11-07 (relatório 014), o link pedido antes da desativação valendo até o TTL —
+e a reativação herdava a senha de quem portava o link, com
+`must_change_password` desligado.
+
 ~~Sem `ADMIN_PUBLIC_URL`, o link só é montado para pedido vindo de rede interna; de
 fora, a rota responde `503 public_url_required` e manda procurar o administrador
 (`003`, `02` §7.1).~~ **Era**, até a auditoria de 2026-10-01 (relatório 003): hoje
@@ -362,6 +375,14 @@ a senha atual sem limite — e acertá-la vira tomada da conta —, e cada tenta
 era um scrypt no laço (relatório 012 da auditoria de 2026-11-07). A troca certa
 não consome o teto. O teto é em memória, por container, como a janela por IP; não
 mexe em `locked_until`, então errar a senha atual não trava o login.
+
+A tentativa é contada **antes** da senha: um `UPDATE` atômico
+(`reserveLoginAttempt`) conta e só deixa seguir se a conta não estava travada, e
+o scrypt vem depois. **Era**, até a auditoria de 2026-11-07 (relatório 026), a
+trava lida num `SELECT` e o erro gravado depois do scrypt: numa rajada
+simultânea, todos os `SELECT` voltavam antes do primeiro erro gravado, e a conta
+conferia muito mais que `LOGIN_MAX_ATTEMPTS` senhas — e uma certa no meio
+destravava. A leitura da trava continua antes, como atalho barato.
 
 A conta travada responde **o mesmo 401** do identificador sem conta e da senha
 errada, com o mesmo trabalho de scrypt, e o texto único menciona a trava

@@ -394,6 +394,22 @@ describe('POST /api/skills/:slug/files — envio avulso, só texto', () => {
     expect(db.setFiles).not.toHaveBeenCalled();
   });
 
+  // Relatório 018 da auditoria de 2026-11-07: o `prefix` que não normalizava
+  // virava a raiz em silêncio, e o upsert sobrescrevia ali o homônimo.
+  it.each([['..'], ['../fora'], ['C:x'], ['skill.md']])('prefix %j é 400, e nada é gravado', async (prefix) => {
+    const res = await enviar([['README.md', Buffer.from('# oi\n', 'utf8')]], { prefix });
+
+    expect(res.status).toBe(400);
+    expect(db.setFiles).not.toHaveBeenCalled();
+  });
+
+  it.each([['/'], ['./'], ['']])('prefix %j é a raiz, como sempre', async (prefix) => {
+    const res = await enviar([['README.md', Buffer.from('# oi\n', 'utf8')]], { prefix });
+
+    expect(res.status).toBe(200);
+    expect(gravados()[0]!.relativePath).toBe('README.md');
+  });
+
   it('SKILL.md dentro de pasta é arquivo comum: o frontmatter dele não é tirado', async () => {
     const dentro = Buffer.from('---\nname: exemplo\n---\n# Exemplo\n', 'utf8');
     const res = await enviar([['SKILL.md', dentro]], { prefix: 'exemplos' });

@@ -5,9 +5,9 @@ import { Button, Modal } from '../ui.js';
 import { SkillIcon } from '../SkillIcon.js';
 import { PORTS, PORT_LABEL, type Port } from './types.js';
 
-const PORT_HINT: Record<Port, string> = {
+export const PORT_HINT: Record<Port, string> = {
   tools: 'Aparece em search_skills / get_skill e tem download.',
-  resources: 'Lida como resource em skill://<slug>.',
+  resources: 'Lida como resource em skill://<slug>/SKILL.md.',
   prompts: 'Oferecida como prompt (slash-command) pelo slug.',
 };
 

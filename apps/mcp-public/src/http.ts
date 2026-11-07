@@ -5,6 +5,7 @@ import cors from 'cors';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { healthCheck } from '@purple-skills/db';
 import { createRateLimiter, rateLimitKey, readIntEnv, trustProxySetting, type RateLimiter } from '@purple-skills/shared';
 import type { SessionTracker, StatefulTransport } from './sessions.js';
@@ -132,6 +133,11 @@ const MAX_SESSIONS = readIntEnv('MCP_MAX_SESSIONS', 500);
  * mesma identidade (`virtual:<uuid>:open`), então quem abre sessão e vai embora
  * enche as vagas e nega o serviço a quem tem chave `psv_` de um vMCP fechado —
  * que não compartilha risco nenhum com a superfície aberta.
+ *
+ * O balde, porém, é um **por vMCP aberto**, e a soma deles cabe no teto global
+ * (dez abertos × 50 = 500): o que fecha essa conta é o `rejectWhenFull`, que
+ * com o teto cheio recicla a anônima mais parada para quem chega com chave
+ * (relatório 025 da auditoria de 2026-11-07).
  *
  * O padrão é um décimo do teto global (nunca menos de 10), para os dois
  * números subirem juntos quando o operador levanta `MCP_MAX_SESSIONS`.
@@ -365,11 +371,44 @@ export function createHttpApp(options: McpHttpOptions): Express {
    *
    * A faxina roda antes da recusa, e a recusa sai com `Retry-After` e aponta o
    * transporte sem sessão: um 503 seco não diz ao cliente o que fazer.
+   *
+   * Quem chega com **chave própria** (`requester` com `:key:`) não leva a
+   * recusa enquanto houver sessão anônima em pé: cai a anônima mais parada, de
+   * **qualquer** vMCP aberto, e a vaga fica para a chave. O balde anônimo é um
+   * por vMCP aberto (`virtual:<uuid>:open`), e a soma deles enche o teto
+   * global — dez vMCPs abertos com o balde padrão de 50 são as 500 vagas —,
+   * negando justamente o serviço que o balde existe para proteger (relatório
+   * 025 da auditoria de 2026-11-07). A vítima continua escolhida só por
+   * ociosidade, como dentro do balde (`tasks/048`). O anônimo que chega com o
+   * teto cheio continua levando o 503 — ele não recicla sessão de ninguém —, e
+   * a chave que encontra o teto cheio só de chaves também.
    */
-  const rejectWhenFull = (res: Response): boolean => {
+  const rejectWhenFull = (res: Response, requester: string | undefined): boolean => {
     if (liveSessions() < maxSessions) return false;
     expireIdle();
     if (liveSessions() < maxSessions) return false;
+
+    if (AUTENTICADA_POR_CHAVE.test(requester ?? '')) {
+      let stalest: { transport: StatefulTransport; id: string; lastSeen: number } | undefined;
+      for (const [id, tracked] of streamableSessions) {
+        if (ANONIMA.test(tracked.identity ?? '') && (!stalest || tracked.lastSeen < stalest.lastSeen)) {
+          stalest = { transport: 'streamable', id, lastSeen: tracked.lastSeen };
+        }
+      }
+      for (const [id, tracked] of sseSessions) {
+        if (ANONIMA.test(tracked.identity ?? '') && (!stalest || tracked.lastSeen < stalest.lastSeen)) {
+          stalest = { transport: 'sse', id, lastSeen: tracked.lastSeen };
+        }
+      }
+      if (stalest) {
+        drop(stalest.transport, stalest.id, 'timeout');
+        warnLimit(
+          `teto global de ${maxSessions} sessões atingido: reciclada a sessão anônima parada há mais tempo ` +
+            'para abrir a de uma chave — os baldes dos vMCPs abertos somados enchem o teto; MCP_MAX_SESSIONS sobe os dois',
+        );
+        return false;
+      }
+    }
 
     const retryS = Math.ceil(sweepMs / 1000);
     warnLimit(`teto global de ${maxSessions} sessões atingido: sessão nova recusada`);
@@ -583,7 +622,11 @@ export function createHttpApp(options: McpHttpOptions): Express {
           return;
         }
 
-        if (rejectWhenFull(res)) return;
+        // Só o `initialize` abre sessão: um POST sem sessão que não é
+        // `initialize` o SDK recusa adiante, e não pode custar a vaga de um
+        // anônimo — sem este corte, uma chave derrubava todas as sessões
+        // abertas com POSTs vazios, sem abrir nenhuma.
+        if (rejectWhenFull(res, isInitializeRequest(req.body) ? identity(req) : undefined)) return;
 
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -663,7 +706,7 @@ export function createHttpApp(options: McpHttpOptions): Express {
     // -------------------------------------------------------- SSE legado ---
 
     router.get('/sse', auth, async (req, res) => {
-      if (rejectWhenFull(res)) return;
+      if (rejectWhenFull(res, identity(req))) return;
 
       // O endpoint anunciado ao cliente é relativo ao ponto de montagem: num
       // virtual, `/virtual/<slug>/messages`. `req.baseUrl` já é o prefixo

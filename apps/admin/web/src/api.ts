@@ -1353,9 +1353,14 @@ export const deleteQuarantineItem = (uuid: string) =>
 export const setQuarantineTargets = (uuid: string, destino: QuarantineTargetsRequest & { dropHidden?: boolean }) =>
   request<QuarantineSheet>(`${quarantinePath(uuid)}/targets`, { method: 'PUT', body: json(destino) });
 
-/** Aprova: cria a skill em produção, já no destino do envio, e apaga o envio. Devolve a skill criada. */
-export const promoteQuarantineItem = (uuid: string) =>
-  request<SkillDetail>(`${quarantinePath(uuid)}/promote`, { method: 'POST' });
+/**
+ * Aprova: cria a skill em produção, já no destino do envio, e apaga o envio.
+ * Devolve a skill criada. `updatedAt` é a versão que a tela exibiu: se o envio
+ * mudou depois disso, o servidor responde 409 e nada é criado (relatório 023 da
+ * auditoria de 2026-11-07).
+ */
+export const promoteQuarantineItem = (uuid: string, updatedAt?: string) =>
+  request<SkillDetail>(`${quarantinePath(uuid)}/promote`, { method: 'POST', body: json({ updatedAt }) });
 
 export const quarantineDownloadUrl = (uuid: string) => `${quarantinePath(uuid)}/download`;
 

@@ -20,6 +20,7 @@ const db = vi.hoisted(() => ({
   getUserByUuid: vi.fn(),
   registerFailedLogin: vi.fn(),
   registerSuccessfulLogin: vi.fn(),
+  reserveLoginAttempt: vi.fn(),
   updateUser: vi.fn(),
 }));
 
@@ -43,13 +44,14 @@ vi.mock('@purple-skills/db', async (original) => ({
   getUserByUuid: db.getUserByUuid,
   registerFailedLogin: db.registerFailedLogin,
   registerSuccessfulLogin: db.registerSuccessfulLogin,
+  reserveLoginAttempt: db.reserveLoginAttempt,
   updateUser: db.updateUser,
 }));
 
 const { requireAdmin, requireCreate, requireSettingsAdmin } = await import('./auth.js');
 const { config, resetLinkBaseUrl } = await import('./config.js');
 const { ownerFrom, withoutUuid } = await import('./access.js');
-const { api, csrfGuard, sessionPayload } = await import('./api.js');
+const { api, csrfGuard, limitarImports, sessionPayload } = await import('./api.js');
 
 beforeEach(() => {
   db.countUsers.mockReset();
@@ -64,6 +66,8 @@ beforeEach(() => {
   db.getUserByUuid.mockReset();
   db.registerFailedLogin.mockReset();
   db.registerSuccessfulLogin.mockReset();
+  db.reserveLoginAttempt.mockReset();
+  db.reserveLoginAttempt.mockResolvedValue(true);
   db.updateUser.mockReset();
 });
 
@@ -837,7 +841,8 @@ describe('limitador das rotas de credencial', () => {
  * senha atual sem teto nenhum. Uma sessão roubada testava a senha à vontade, e
  * cada tentativa era um scrypt no laço.
  */
-describe('limitador da troca da própria senha', () => {
+// Cada tentativa é um scrypt de verdade: em paralelo com a suíte, passa dos 5 s padrão.
+describe('limitador da troca da própria senha', { timeout: 30_000 }, () => {
   const TETO = config.loginMaxAttempts;
   const ATUAL = 'senha-atual-do-teste';
   const NOVA = 'senha-nova-bem-comprida';
@@ -1108,5 +1113,68 @@ describe('GET /api/audit: paginação vinda da query string', () => {
     // Com `Number(...)`, `1e30` chegava ao banco como 1e30.
     await chamar('get', '/api/audit', { query: { limit: '10.9', offset: '1e30' } });
     expect(paginaPedida()).toMatchObject({ limit: 10, offset: 1 });
+  });
+});
+
+/**
+ * Relatório 024 da auditoria de 2026-11-07: um .zip de 1–2 MB com milhares de
+ * registros custa centenas de MB para ser lido, e sem fila poucos imports em
+ * paralelo derrubavam o painel por OOM. O teto padrão é um import por vez.
+ */
+describe('limitarImports', () => {
+  function respostaComEventos() {
+    const ouvintes: Record<string, (() => void)[]> = {};
+    return Object.assign(fakeResponse(), {
+      on(evento: string, fn: () => void) {
+        (ouvintes[evento] ??= []).push(fn);
+        return this;
+      },
+      emitir(evento: string) {
+        for (const fn of ouvintes[evento] ?? []) fn();
+      },
+    });
+  }
+
+  it('o segundo import com o primeiro em andamento é 503 com Retry-After, sem seguir', () => {
+    expect(config.maxConcurrentImports).toBe(1);
+    const primeiro = respostaComEventos();
+    const segue1 = vi.fn();
+    limitarImports({} as never, primeiro as never, segue1);
+    expect(segue1).toHaveBeenCalledTimes(1);
+
+    const segundo = respostaComEventos();
+    const segue2 = vi.fn();
+    limitarImports({} as never, segundo as never, segue2);
+    expect(segue2).not.toHaveBeenCalled();
+    expect(segundo.statusCode).toBe(503);
+    expect(segundo.headers['retry-after']).toBe('5');
+    expect(segundo.body).toMatchObject({ error: 'busy' });
+
+    // `finish` e `close` disparam os dois numa resposta normal: libera uma vez só.
+    primeiro.emitir('finish');
+    primeiro.emitir('close');
+
+    const terceiro = respostaComEventos();
+    const segue3 = vi.fn();
+    limitarImports({} as never, terceiro as never, segue3);
+    expect(segue3).toHaveBeenCalledTimes(1);
+
+    const quarto = respostaComEventos();
+    limitarImports({} as never, quarto as never, vi.fn());
+    expect(quarto.statusCode).toBe(503);
+
+    // Cliente que desconecta também libera.
+    terceiro.emitir('close');
+    const quinto = respostaComEventos();
+    const segue5 = vi.fn();
+    limitarImports({} as never, quinto as never, segue5);
+    expect(segue5).toHaveBeenCalledTimes(1);
+    quinto.emitir('close');
+  });
+
+  it('está na pilha do import, antes do multer', () => {
+    const pilha = handlers('post', '/api/skills/import');
+    expect(pilha).toContain(limitarImports);
+    expect(pilha.indexOf(limitarImports)).toBeLessThan(pilha.length - 2);
   });
 });

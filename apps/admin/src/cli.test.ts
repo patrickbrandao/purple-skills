@@ -30,6 +30,7 @@ const db = vi.hoisted(() => ({
   nextFreeUsername: vi.fn(),
   recordAccountAudit: vi.fn(),
   registerFailedLogin: vi.fn(),
+  reserveLoginAttempt: vi.fn(),
   registerSuccessfulLogin: vi.fn(),
   revokeApiKey: vi.fn(),
   updateUser: vi.fn(),
@@ -85,6 +86,8 @@ beforeEach(() => {
     conta(changes),
   );
   db.recordAccountAudit.mockResolvedValue(undefined);
+  // A reserva da tentativa (relatório 026 da auditoria de 2026-11-07): conta destravada.
+  db.reserveLoginAttempt.mockResolvedValue(true);
   db.adoptOrphans.mockResolvedValue({ skills: 0, catalogs: 0 });
 });
 

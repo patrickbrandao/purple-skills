@@ -5,8 +5,9 @@
  * pernas da fusão — uma skill que o site não mostra não aparece por ter vetor
  * parecido com a consulta.
  *
- * Nada aqui lança: sem chave, com o driver `off`, sem a migration, sem espaço
- * ou com o Google fora do ar, a resposta sai com `mode: 'text'`.
+ * Nada aqui lança: sem chave, com um `<CHAVE>_FILE` ilegível, com o driver
+ * `off`, sem a migration, sem espaço ou com o Google fora do ar, a resposta sai
+ * com `mode: 'text'`.
  */
 import { findRagSpace, getRagSettings, ragSchemaReady } from '@purple-skills/db';
 import {
@@ -28,15 +29,26 @@ export const buscaSemantica = criarBuscaSemantica({
   log: (mensagem) => console.log(`[site] ${mensagem}`),
 });
 
-/** Aviso de boot, uma vez, para o operador saber por que a busca é textual. */
-export function avisoDeBoot(): string | null {
-  if (drivers.comChave.length > 0) return null;
+/**
+ * Avisos de boot, uma vez, para o operador saber por que a busca é textual.
+ *
+ * Inclui uma linha por driver que não subiu (`problemas`) — entre eles o de
+ * `<CHAVE>_FILE` ilegível, que desliga só aquele driver em vez de derrubar o
+ * site (relatório 015 da auditoria de 2026-11-07). Sem essa linha, o único
+ * sinal seria a busca textual.
+ */
+export function avisosDeBoot(): string[] {
+  const avisos = drivers.problemas.map(
+    ({ id, motivo }) => `[site] driver de RAG ${id} não subiu: ${motivo}`,
+  );
+  if (drivers.comChave.length > 0) return avisos;
   const vars = RAG_DRIVERS.map((d) => d.apiKeyEnv).join(', ');
   // O placeholder conta como ausente (`readApiKeyEnv`, relatório 021 da auditoria
   // de 2026-09-19): sem dizer isso, quem copiou o `.env.example` lê "nenhuma
   // chave" com três variáveis preenchidas e procura o defeito no lugar errado.
-  return (
+  avisos.push(
     `[site] nenhuma chave de RAG no ambiente (${vars}; o CHANGE_ME do .env.example conta como ` +
-    'chave ausente): a busca responde em modo textual'
+      'chave ausente): a busca responde em modo textual',
   );
+  return avisos;
 }

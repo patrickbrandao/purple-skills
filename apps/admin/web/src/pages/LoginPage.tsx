@@ -9,6 +9,7 @@ import {
 } from '../api.js';
 import { normalizeUsername, usernameFromName } from '@purple-skills/shared/username';
 import { Button } from '../components/ui.js';
+import { lerErroDoSso } from '../ssoError.js';
 
 /**
  * Tudo o que acontece **antes** de existir sessão: entrar, criar o primeiro
@@ -55,7 +56,10 @@ export function LoginPage({
   const [usernameTouched, setUsernameTouched] = useState(false);
   const [password, setPassword] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [error, setError] = useState<string | null>(ssoError);
+  // O texto do `?sso_error=` não é exibido: qualquer um monta esse link, e ele
+  // aparecia como erro do próprio painel (relatório 019 da auditoria de
+  // 2026-11-07). O motivo de verdade vem no cookie que só o servidor grava.
+  const [error, setError] = useState<string | null>(() => (ssoError ? lerErroDoSso() : null));
   const [notice, setNotice] = useState<string | null>(arrival ?? null);
   const [submitting, setSubmitting] = useState(false);
 

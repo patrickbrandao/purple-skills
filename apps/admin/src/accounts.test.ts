@@ -30,6 +30,7 @@ const db = vi.hoisted(() => ({
   nextFreeUsername: vi.fn(),
   recordAccountAudit: vi.fn(),
   registerFailedLogin: vi.fn(),
+  reserveLoginAttempt: vi.fn(),
   registerSuccessfulLogin: vi.fn(),
   revokeApiKey: vi.fn(),
   updateUser: vi.fn(),
@@ -102,6 +103,8 @@ beforeEach(() => {
   // `clearAllMocks` limpa as chamadas, não a implementação: sem isto a trilha
   // "fora do ar" de um caso de melhor esforço vaza para os testes seguintes.
   db.recordAccountAudit.mockResolvedValue(undefined);
+  // A reserva da tentativa (relatório 026 da auditoria de 2026-11-07): conta destravada.
+  db.reserveLoginAttempt.mockResolvedValue(true);
   // Tabela vazia é o estado normal do bootstrap.
   db.countUsers.mockResolvedValue(0);
   // O username é derivado do nome quem chama não informa um (`docs/19-username.md`
@@ -561,6 +564,37 @@ describe('tempo do login', () => {
     expect(db.registerSuccessfulLogin).not.toHaveBeenCalled();
     expect(comTrava.menor).toBeGreaterThan(semConta.menor * 0.5);
   });
+
+  /**
+   * Relatório 026 da auditoria de 2026-11-07: a trava era lida no SELECT e o
+   * erro gravado depois do scrypt, e uma rajada passava inteira pela leitura.
+   * Agora a tentativa é reservada no banco antes da senha; quem decide é a
+   * reserva, não a leitura.
+   */
+  it('a reserva recusada barra até a senha certa, com a conta lida como destravada', async () => {
+    db.getUserByLogin.mockResolvedValue(conta('editor'));
+    db.reserveLoginAttempt.mockResolvedValue(false);
+
+    const outcome = await loginWithPassword({ identifier: 'editor', password: SENHA });
+
+    expect(outcome).toMatchObject({ status: 401 });
+    expect(db.reserveLoginAttempt).toHaveBeenCalledWith('uuid-editor', { maxAttempts: 5, lockSeconds: 60 });
+    expect(db.registerSuccessfulLogin).not.toHaveBeenCalled();
+  });
+
+  it('a tentativa é reservada antes da senha, e o erro não grava de novo', async () => {
+    db.getUserByLogin.mockResolvedValue(conta('editor'));
+
+    const errou = await loginWithPassword({ identifier: 'editor', password: 'senha-errada-qualquer' });
+    expect(errou).toMatchObject({ status: 401 });
+    expect(db.reserveLoginAttempt).toHaveBeenCalledTimes(1);
+    expect(db.registerFailedLogin).not.toHaveBeenCalled();
+
+    const entrou = await loginWithPassword({ identifier: 'editor', password: SENHA });
+    expect(entrou).toHaveProperty('user');
+    expect(db.reserveLoginAttempt).toHaveBeenCalledTimes(2);
+    expect(db.registerSuccessfulLogin).toHaveBeenCalledWith('uuid-editor');
+  });
 });
 
 /**
@@ -828,6 +862,20 @@ describe('auditoria da troca de senha', () => {
         targetLabel: 'editor',
       }),
     );
+  });
+
+  // Relatório 014 da auditoria de 2026-11-07: o link pedido antes da
+  // desativação trocava a senha da conta desativada, e a reativação herdava a
+  // senha de quem portava o link.
+  it('o link de conta desativada não troca a senha, e a mensagem é a de sempre', async () => {
+    db.consumeResetToken.mockResolvedValue({ userUuid: 'uuid-editor' });
+    db.getUserByUuid.mockResolvedValue({ ...conta('editor'), isActive: false });
+
+    await expect(confirmPasswordReset('t'.repeat(32), SENHA)).rejects.toThrow(
+      'Link de redefinição inválido, expirado ou já usado',
+    );
+    expect(db.updateUser).not.toHaveBeenCalled();
+    expect(db.recordAccountAudit).not.toHaveBeenCalled();
   });
 
   it('uma falha na trilha não derruba a redefinição: a senha temporária só existe na resposta', async () => {
