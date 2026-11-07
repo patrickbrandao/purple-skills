@@ -16,6 +16,8 @@ esse cuidado em qualquer texto novo.
 
 ## [Não lançado]
 
+## [1.0.0-beta.35] — 2026-11-07
+
 Auditoria de 2026-11-07: 18 relatórios (011–028), todos corrigidos. Dois de
 severidade média, 011 e 012, e o resto de baixa. Cinco candidatos foram
 refutados ainda na verificação e não viraram relatório.
